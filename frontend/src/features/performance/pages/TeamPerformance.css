@@ -1,0 +1,63 @@
+/* ── TeamPerformance ──────────────────────────────────────────── tp- prefix */
+.tp-root { padding: 24px; }
+
+.tp-header   { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.tp-title    { font-size: 20px; font-weight: 700; color: #111827; margin: 0; }
+.tp-sub      { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
+.tp-header-r { display: flex; align-items: center; gap: 10px; }
+.tp-period-sel { border: 1px solid #d1d5db; border-radius: 8px; padding: 7px 12px; font-size: 13px; color: #374151; background: #fff; cursor: pointer; }
+
+.tp-summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.tp-sum-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 16px; display: flex; align-items: center; gap: 10px; flex: 1; min-width: 140px; }
+.tp-sum-icon { width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tp-sum-num  { font-size: 20px; font-weight: 800; color: #111827; line-height: 1.1; }
+.tp-sum-lbl  { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; margin-top: 2px; }
+
+.tp-chart-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px 18px; margin-bottom: 20px; }
+.tp-card-title { font-size: 14px; font-weight: 700; color: #111827; margin-bottom: 12px; }
+
+.tp-table-hd    { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.tp-table-title { font-size: 14px; font-weight: 700; color: #111827; }
+.tp-sort        { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tp-sort-lbl    { font-size: 12px; color: #6b7280; }
+.tp-sort-btn    { background: none; border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 10px; font-size: 12px; color: #6b7280; cursor: pointer; transition: all .15s; }
+.tp-sort-btn:hover { background: #f9fafb; }
+.tp-sort-active { background: #eef2ff; border-color: #6366f1; color: #4338ca; font-weight: 600; }
+
+.tp-loading { display: flex; justify-content: center; padding: 80px; }
+.tp-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: tp-spin .6s linear infinite; }
+@keyframes tp-spin { to { transform: rotate(360deg); } }
+
+.tp-table-wrap { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: auto; }
+.tp-table      { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 700px; }
+.tp-table thead tr { background: #fafafa; border-bottom: 1px solid #e5e7eb; }
+.tp-table th { padding: 11px 12px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
+.tp-table td { padding: 11px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+.tp-row:last-child td { border-bottom: none; }
+.tp-row:hover > td { background: #fafafa; }
+
+.tp-emp    { display: flex; align-items: center; gap: 8px; }
+.tp-rank   { width: 20px; text-align: center; font-size: 11px; font-weight: 700; color: #9ca3af; }
+.tp-avatar { width: 30px; height: 30px; border-radius: 50%; background: #eef2ff; color: #4338ca; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tp-emp-name { font-size: 13px; font-weight: 600; color: #111827; }
+.tp-emp-role { font-size: 11px; color: #6b7280; }
+
+.tp-stars      { display: flex; align-items: center; gap: 2px; }
+.tp-rating-num { font-size: 12px; font-weight: 600; color: #374151; margin-left: 4px; }
+
+.tp-goals      { display: flex; align-items: center; gap: 6px; }
+.tp-goals-num  { font-size: 12px; font-weight: 600; color: #374151; white-space: nowrap; }
+.tp-goals-track { flex: 1; height: 4px; background: #f3f4f6; border-radius: 2px; overflow: hidden; min-width: 40px; }
+.tp-goals-fill  { height: 100%; background: #6366f1; border-radius: 2px; }
+
+.tp-att-num { font-size: 13px; font-weight: 600; }
+
+.tp-score-cell  { display: flex; align-items: center; gap: 6px; }
+.tp-score-num   { font-size: 13px; font-weight: 700; min-width: 36px; }
+.tp-score-track { flex: 1; height: 5px; background: #f3f4f6; border-radius: 3px; overflow: hidden; min-width: 50px; }
+.tp-score-fill  { height: 100%; border-radius: 3px; }
+
+.tp-trend         { font-size: 13px; font-weight: 700; }
+.tp-trend-up      { color: #15803d; }
+.tp-trend-down    { color: #dc2626; }
+.tp-trend-stable  { color: #9ca3af; }
