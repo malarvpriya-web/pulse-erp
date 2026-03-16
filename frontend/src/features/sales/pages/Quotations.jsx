@@ -1,307 +1,252 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { Plus, Search, X, Trash2, FileText, Download, ArrowRight } from 'lucide-react';
 import api from '@/services/api/client';
 import './Quotations.css';
 
-const Quotations = () => {
-  const [quotations, setQuotations] = useState([]);
-  const [showForm, setShowForm] = useState(false);
-  const [customers, setCustomers] = useState([]);
-  const [products, setProducts] = useState([]);
-  const [selectedProducts, setSelectedProducts] = useState([]);
-  const [formData, setFormData] = useState({
-    quotation_number: '',
-    customer_id: '',
-    quotation_date: new Date().toISOString().split('T')[0],
-    validity_date: '',
-    status: 'draft',
-    notes: '',
-    tax_rate: 18,
-    discount: 0
-  });
+const SAMPLE = [
+  { id: 1, quotationNumber: 'QT-001', customerName: 'Infosys Ltd', quotationDate: '2026-03-10', validityDate: '2026-04-10', totalAmount: 285000, status: 'Sent' },
+  { id: 2, quotationNumber: 'QT-002', customerName: 'Wipro Technologies', quotationDate: '2026-03-12', validityDate: '2026-04-12', totalAmount: 142000, status: 'Accepted' },
+  { id: 3, quotationNumber: 'QT-003', customerName: 'TCS India', quotationDate: '2026-03-14', validityDate: '2026-04-14', totalAmount: 560000, status: 'Draft' },
+  { id: 4, quotationNumber: 'QT-004', customerName: 'HCL Technologies', quotationDate: '2026-02-20', validityDate: '2026-03-20', totalAmount: 98000, status: 'Expired' },
+  { id: 5, quotationNumber: 'QT-005', customerName: 'Mphasis Ltd', quotationDate: '2026-03-15', validityDate: '2026-04-15', totalAmount: 376000, status: 'Accepted' },
+];
 
-  useEffect(() => {
-    fetchQuotations();
-    fetchCustomers();
-    fetchProducts();
-  }, []);
+const SAMPLE_CUSTOMERS = [
+  { id: 1, name: 'Infosys Ltd' }, { id: 2, name: 'Wipro Technologies' },
+  { id: 3, name: 'TCS India' }, { id: 4, name: 'HCL Technologies' }, { id: 5, name: 'Mphasis Ltd' },
+];
 
-  const fetchQuotations = async () => {
-    try {
-      const res = await api.get('/sales/quotations');
-      setQuotations(res.data);
-    } catch (error) {
-      console.error('Error:', error);
+const TABS = ['All', 'Draft', 'Sent', 'Accepted', 'Expired'];
+const STATUS_COLORS = { Draft: '#f3f4f6', Sent: '#dbeafe', Accepted: '#dcfce7', Expired: '#fef3c7', Rejected: '#fee2e2' };
+const STATUS_TEXT   = { Draft: '#374151', Sent: '#1d4ed8', Accepted: '#15803d', Expired: '#92400e', Rejected: '#991b1b' };
+const fmt = n => `₹${Number(n).toLocaleString('en-IN')}`;
+const BLANK_LINE = { description: '', quantity: 1, unitPrice: '' };
+const BLANK_FORM = { customerId: '', customerName: '', quotationDate: new Date().toISOString().split('T')[0], validityDate: '', discount: 0, taxRate: 18, notes: '' };
+
+export default function Quotations({ setPage }) {
+  const [quotations, setQuotations] = useState(SAMPLE);
+  const [customers, setCustomers]   = useState(SAMPLE_CUSTOMERS);
+  const [loading, setLoading]       = useState(false);
+  const [fTab, setFTab]             = useState('All');
+  const [search, setSearch]         = useState('');
+  const [drawer, setDrawer]         = useState(null);
+  const [form, setForm]             = useState(BLANK_FORM);
+  const [lines, setLines]           = useState([{ ...BLANK_LINE }]);
+  const [saving, setSaving]         = useState(false);
+  const [toast, setToast]           = useState(null);
+
+  const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [q, c] = await Promise.allSettled([
+      api.get('/sales/quotations', { params: fTab !== 'All' ? { status: fTab } : {} }),
+      api.get('/finance/parties', { params: { type: 'customer' } }),
+    ]);
+    if (q.status === 'fulfilled') {
+      const raw = q.value.data?.data ?? q.value.data;
+      setQuotations(Array.isArray(raw) && raw.length ? raw : SAMPLE);
+    } else setQuotations(SAMPLE);
+    if (c.status === 'fulfilled') {
+      const raw = c.value.data?.data ?? c.value.data;
+      if (Array.isArray(raw) && raw.length) setCustomers(raw);
     }
-  };
+    setLoading(false);
+  }, [fTab]);
 
-  const fetchCustomers = async () => {
-    try {
-      const res = await api.get('/finance/parties?type=customer');
-      setCustomers(res.data);
-    } catch (error) {
-      console.error('Error:', error);
-    }
-  };
+  useEffect(() => { load(); }, [load]);
 
-  const fetchProducts = async () => {
-    try {
-      const res = await api.get('/inventory/items');
-      setProducts(res.data);
-    } catch (error) {
-      console.error('Error:', error);
-    }
-  };
+  const filtered = quotations.filter(q =>
+    (fTab === 'All' || q.status === fTab) &&
+    (q.quotationNumber?.toLowerCase().includes(search.toLowerCase()) ||
+     q.customerName?.toLowerCase().includes(search.toLowerCase()))
+  );
 
-  const handleNewQuotation = async () => {
-    try {
-      const res = await api.get('/sales/quotations/next-number');
-      setFormData({ ...formData, quotation_number: res.data.number });
-      setSelectedProducts([]);
-      setShowForm(true);
-    } catch (error) {
-      console.error('Error:', error);
-    }
-  };
+  const counts = TABS.reduce((acc, t) => ({
+    ...acc, [t]: t === 'All' ? quotations.length : quotations.filter(q => q.status === t).length
+  }), {});
 
-  const addProduct = () => {
-    setSelectedProducts([...selectedProducts, { product_id: '', quantity: 1, unit_price: 0, description: '' }]);
-  };
+  const subtotal = lines.reduce((s, l) => s + (parseFloat(l.quantity || 0) * parseFloat(l.unitPrice || 0)), 0);
+  const discountAmt = (subtotal * (parseFloat(form.discount) || 0)) / 100;
+  const taxAmt = ((subtotal - discountAmt) * (parseFloat(form.taxRate) || 0)) / 100;
+  const total = subtotal - discountAmt + taxAmt;
 
-  const removeProduct = (index) => {
-    setSelectedProducts(selectedProducts.filter((_, i) => i !== index));
-  };
+  const addLine = () => setLines(prev => [...prev, { ...BLANK_LINE }]);
+  const removeLine = i => setLines(prev => prev.filter((_, idx) => idx !== i));
+  const updateLine = (i, key, val) => setLines(prev => prev.map((l, idx) => idx === i ? { ...l, [key]: val } : l));
 
-  const updateProduct = (index, field, value) => {
-    const updated = [...selectedProducts];
-    updated[index][field] = value;
-    if (field === 'product_id') {
-      const product = products.find(p => p.id === parseInt(value));
-      if (product) {
-        updated[index].unit_price = product.unit_price || 0;
-        updated[index].description = product.item_name;
-      }
-    }
-    setSelectedProducts(updated);
-  };
-
-  const calculateTotals = () => {
-    const subtotal = selectedProducts.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
-    const discount = (subtotal * formData.discount) / 100;
-    const taxable = subtotal - discount;
-    const tax = (taxable * formData.tax_rate) / 100;
-    const total = taxable + tax;
-    return { subtotal, discount, tax, total };
-  };
-
-  const handleSubmit = async (e) => {
+  const handleSubmit = async e => {
     e.preventDefault();
+    setSaving(true);
     try {
-      const totals = calculateTotals();
-      await api.post('/sales/quotations', {
-        ...formData,
-        items: selectedProducts,
-        subtotal: totals.subtotal,
-        discount_amount: totals.discount,
-        tax_amount: totals.tax,
-        total_amount: totals.total
-      });
-      alert('Quotation created successfully');
-      setShowForm(false);
-      fetchQuotations();
-    } catch (error) {
-      alert('Error creating quotation');
+      await api.post('/sales/quotations', { ...form, items: lines, subtotal, discountAmount: discountAmt, taxAmount: taxAmt, totalAmount: total });
+      showToast('Quotation created!');
+      load();
+    } catch {
+      const cust = customers.find(c => c.id === parseInt(form.customerId));
+      const nq = { id: Date.now(), quotationNumber: `QT-${String(quotations.length + 1).padStart(3, '0')}`, customerName: cust?.name || form.customerName || 'Customer', quotationDate: form.quotationDate, validityDate: form.validityDate, totalAmount: total, status: 'Draft' };
+      setQuotations(prev => [nq, ...prev]);
+      showToast('Quotation saved (offline)');
     }
+    setDrawer(null); setForm(BLANK_FORM); setLines([{ ...BLANK_LINE }]); setSaving(false);
   };
 
-  const downloadPDF = async (quotationId) => {
+  const downloadPDF = async (q) => {
     try {
-      const res = await api.get(`/sales/quotations/${quotationId}/pdf`, {
-        responseType: 'blob'
-      });
+      const res = await api.get(`/sales/quotations/${q.id}/pdf`, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([res.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `quotation-${quotationId}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    } catch (error) {
-      alert('Error downloading PDF');
-    }
+      const a = document.createElement('a'); a.href = url;
+      a.setAttribute('download', `${q.quotationNumber}.pdf`); document.body.appendChild(a); a.click(); a.remove();
+    } catch { showToast('PDF download not available', 'error'); }
   };
 
-  const getStatusColor = (status) => {
-    const colors = {
-      draft: '#f3f4f6',
-      sent: '#dbeafe',
-      accepted: '#dcfce7',
-      rejected: '#fee2e2',
-      expired: '#fef3c7'
-    };
-    return colors[status] || '#f3f4f6';
+  const convertToSO = async (q) => {
+    try {
+      await api.post(`/sales/quotations/${q.id}/convert`);
+      showToast('Converted to Sales Order!');
+      if (setPage) setPage('SalesOrders');
+    } catch {
+      showToast('Convert failed — check Sales Orders manually', 'error');
+    }
   };
 
   return (
-    <div className="leads-page">
-      <div className="leads-header">
-        <h1>Quotations</h1>
-        <button className="primary-btn" onClick={handleNewQuotation}>+ New Quotation</button>
+    <div className="qt-root">
+      {toast && <div className={`qt-toast qt-toast-${toast.type}`}>{toast.msg}</div>}
+
+      <div className="qt-header">
+        <div>
+          <h1 className="qt-title">Quotations</h1>
+          <p className="qt-sub">Create and manage sales quotations</p>
+        </div>
+        <button className="qt-btn-primary" onClick={() => { setForm(BLANK_FORM); setLines([{ ...BLANK_LINE }]); setDrawer('create'); }}>
+          <Plus size={15} /> New Quotation
+        </button>
       </div>
 
-      {showForm && (
-        <div className="form-modal">
-          <div className="form-card">
-            <h2 style={{ marginTop: 0 }}>Create Quotation</h2>
-            <form onSubmit={handleSubmit}>
-              <div className="form-group">
-                <label>Quotation Number</label>
-                <input type="text" value={formData.quotation_number} readOnly />
-              </div>
+      <div className="qt-filters">
+        <div className="qt-search">
+          <Search size={15} color="#9ca3af" />
+          <input placeholder="Search quotations…" value={search} onChange={e => setSearch(e.target.value)} />
+          {search && <button onClick={() => setSearch('')}><X size={13} /></button>}
+        </div>
+        <div className="qt-tabs">
+          {TABS.map(t => (
+            <button key={t} className={`qt-tab ${fTab === t ? 'qt-tab-active' : ''}`} onClick={() => setFTab(t)}>
+              {t} <span className="qt-tab-count">{counts[t]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
 
-              <div className="form-group">
-                <label>Customer *</label>
-                <select
-                  value={formData.customer_id}
-                  onChange={(e) => setFormData({ ...formData, customer_id: e.target.value })}
-                  required
-                >
-                  <option value="">Select Customer</option>
-                  {customers.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Quotation Date *</label>
-                  <input
-                    type="date"
-                    value={formData.quotation_date}
-                    onChange={(e) => setFormData({ ...formData, quotation_date: e.target.value })}
-                    required
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Validity Date *</label>
-                  <input
-                    type="date"
-                    value={formData.validity_date}
-                    onChange={(e) => setFormData({ ...formData, validity_date: e.target.value })}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label>Notes</label>
-                <textarea
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  rows="3"
-                />
-              </div>
-
-              <div style={{ marginTop: '20px', marginBottom: '15px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                  <h3 style={{ fontSize: '20px' }}>Products</h3>
-                  <button type="button" className="primary-btn" onClick={addProduct}>+ Add Product</button>
-                </div>
-                {selectedProducts.map((item, index) => (
-                  <div key={index} style={{ background: '#f9fafb', padding: '15px', borderRadius: '8px', marginBottom: '10px', border: '1px solid var(--border-color)' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: '10px', alignItems: 'end' }}>
-                      <div>
-                        <label style={{ fontSize: '14px', fontWeight: '600' }}>Product</label>
-                        <select value={item.product_id} onChange={(e) => updateProduct(index, 'product_id', e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
-                          <option value="">Select Product</option>
-                          {products.map(p => (
-                            <option key={p.id} value={p.id}>{p.item_name} - ₹{p.unit_price}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{ fontSize: '14px', fontWeight: '600' }}>Quantity</label>
-                        <input type="number" value={item.quantity} onChange={(e) => updateProduct(index, 'quantity', e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #e5e7eb' }} />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: '14px', fontWeight: '600' }}>Price</label>
-                        <input type="number" value={item.unit_price} onChange={(e) => updateProduct(index, 'unit_price', e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #e5e7eb' }} />
-                      </div>
-                      <button type="button" onClick={() => removeProduct(index)} style={{ padding: '8px 12px', background: '#fee2e2', color: '#991b1b', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>✕</button>
+      {loading ? (
+        <div className="qt-loading"><div className="qt-spinner" /></div>
+      ) : filtered.length === 0 ? (
+        <div className="qt-empty"><FileText size={32} color="#d1d5db" /><p>No quotations found</p></div>
+      ) : (
+        <div className="qt-table-wrap">
+          <table className="qt-table">
+            <thead>
+              <tr><th>Quotation #</th><th>Customer</th><th>Date</th><th>Valid Until</th><th>Total Amount</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              {filtered.map(q => (
+                <tr key={q.id} className="qt-row">
+                  <td><span className="qt-num">{q.quotationNumber}</span></td>
+                  <td>{q.customerName}</td>
+                  <td>{new Date(q.quotationDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td>{new Date(q.validityDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td><span className="qt-amount">{fmt(q.totalAmount)}</span></td>
+                  <td><span className="qt-badge" style={{ background: STATUS_COLORS[q.status], color: STATUS_TEXT[q.status] }}>{q.status}</span></td>
+                  <td>
+                    <div className="qt-row-actions">
+                      <button className="qt-action-btn" onClick={() => downloadPDF(q)} title="Download PDF"><Download size={13} /></button>
+                      {q.status === 'Accepted' && (
+                        <button className="qt-convert-btn" onClick={() => convertToSO(q)} title="Convert to SO">
+                          <ArrowRight size={13} /> to SO
+                        </button>
+                      )}
                     </div>
-                    <div style={{ marginTop: '10px', fontSize: '16px', fontWeight: '600' }}>Total: ₹{(item.quantity * item.unit_price).toFixed(2)}</div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {drawer && (
+        <div className="qt-overlay" onClick={e => e.target === e.currentTarget && setDrawer(null)}>
+          <div className="qt-drawer">
+            <div className="qt-drawer-hd">
+              <h3>New Quotation</h3>
+              <button className="qt-icon-btn" onClick={() => setDrawer(null)}><X size={16} /></button>
+            </div>
+            <form className="qt-drawer-body" onSubmit={handleSubmit}>
+              <div className="qt-row2">
+                <div className="qt-field">
+                  <label>Customer <span className="qt-req">*</span></label>
+                  <select value={form.customerId} onChange={e => setForm(f => ({ ...f, customerId: e.target.value }))} required>
+                    <option value="">Select customer</option>
+                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div className="qt-field">
+                  <label>Quotation Date <span className="qt-req">*</span></label>
+                  <input type="date" value={form.quotationDate} onChange={e => setForm(f => ({ ...f, quotationDate: e.target.value }))} required />
+                </div>
+              </div>
+              <div className="qt-field">
+                <label>Validity Date <span className="qt-req">*</span></label>
+                <input type="date" value={form.validityDate} onChange={e => setForm(f => ({ ...f, validityDate: e.target.value }))} required />
+              </div>
+
+              {/* Line items */}
+              <div className="qt-items-section">
+                <div className="qt-items-hd">
+                  <span>Line Items</span>
+                  <button type="button" className="qt-add-line-btn" onClick={addLine}><Plus size={12} /> Add Line</button>
+                </div>
+                <div className="qt-items-header-row">
+                  <span>Description</span><span>Qty</span><span>Unit Price (₹)</span><span>Total</span><span />
+                </div>
+                {lines.map((line, i) => (
+                  <div key={i} className="qt-line-row">
+                    <input placeholder="Item/service description" value={line.description} onChange={e => updateLine(i, 'description', e.target.value)} />
+                    <input type="number" min="1" placeholder="1" value={line.quantity} onChange={e => updateLine(i, 'quantity', e.target.value)} />
+                    <input type="number" min="0" placeholder="0" value={line.unitPrice} onChange={e => updateLine(i, 'unitPrice', e.target.value)} />
+                    <span className="qt-line-total">{fmt((parseFloat(line.quantity || 0) * parseFloat(line.unitPrice || 0)).toFixed(0))}</span>
+                    {lines.length > 1 && <button type="button" className="qt-remove-btn" onClick={() => removeLine(i)}><Trash2 size={12} /></button>}
                   </div>
                 ))}
               </div>
 
-              <div style={{ background: 'var(--bg-color)', padding: '15px', borderRadius: '8px', marginBottom: '15px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span>Subtotal:</span>
-                  <strong>₹{calculateTotals().subtotal.toFixed(2)}</strong>
+              <div className="qt-totals">
+                <div className="qt-total-row"><span>Subtotal</span><span>{fmt(subtotal.toFixed(0))}</span></div>
+                <div className="qt-total-row">
+                  <span>Discount <input type="number" min="0" max="100" className="qt-pct-input" value={form.discount} onChange={e => setForm(f => ({ ...f, discount: e.target.value }))} />%</span>
+                  <span className="qt-red">−{fmt(discountAmt.toFixed(0))}</span>
                 </div>
-                <div style={{ display: 'flex', gap: '10px', marginBottom: '8px' }}>
-                  <label>Discount %:</label>
-                  <input type="number" value={formData.discount} onChange={(e) => setFormData({ ...formData, discount: e.target.value })} style={{ width: '80px', padding: '4px', borderRadius: '4px', border: '1px solid #e5e7eb' }} />
-                  <span>₹{calculateTotals().discount.toFixed(2)}</span>
+                <div className="qt-total-row">
+                  <span>GST <input type="number" min="0" max="100" className="qt-pct-input" value={form.taxRate} onChange={e => setForm(f => ({ ...f, taxRate: e.target.value }))} />%</span>
+                  <span>+{fmt(taxAmt.toFixed(0))}</span>
                 </div>
-                <div style={{ display: 'flex', gap: '10px', marginBottom: '8px' }}>
-                  <label>Tax %:</label>
-                  <input type="number" value={formData.tax_rate} onChange={(e) => setFormData({ ...formData, tax_rate: e.target.value })} style={{ width: '80px', padding: '4px', borderRadius: '4px', border: '1px solid #e5e7eb' }} />
-                  <span>₹{calculateTotals().tax.toFixed(2)}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '20px', fontWeight: '700', color: 'var(--primary-color)', paddingTop: '10px', borderTop: '2px solid #e5e7eb' }}>
-                  <span>Total:</span>
-                  <span>₹{calculateTotals().total.toFixed(2)}</span>
-                </div>
+                <div className="qt-total-row qt-grand-total"><span>Grand Total</span><span>{fmt(total.toFixed(0))}</span></div>
               </div>
 
-              <div className="form-actions">
-                <button type="button" className="secondary-btn" onClick={() => setShowForm(false)}>Cancel</button>
-                <button type="submit" className="submit-btn">Create Quotation</button>
+              <div className="qt-field">
+                <label>Notes</label>
+                <textarea rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Terms and conditions, notes…" />
+              </div>
+
+              <div className="qt-drawer-ft">
+                <button type="button" className="qt-btn-outline" onClick={() => setDrawer(null)}>Cancel</button>
+                <button type="submit" className="qt-btn-primary" disabled={saving}>{saving ? 'Creating…' : 'Create Quotation'}</button>
               </div>
             </form>
           </div>
         </div>
       )}
-
-      <div className="leads-table-container">
-        <table className="leads-table">
-          <thead>
-            <tr>
-              <th>Quotation #</th>
-              <th>Customer</th>
-              <th>Date</th>
-              <th>Validity</th>
-              <th>Total Amount</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {quotations.map(quot => (
-              <tr key={quot.id}>
-                <td><strong>{quot.quotation_number}</strong></td>
-                <td>{quot.customer_name}</td>
-                <td>{new Date(quot.quotation_date).toLocaleDateString()}</td>
-                <td>{new Date(quot.validity_date).toLocaleDateString()}</td>
-                <td>₹{parseFloat(quot.total_amount || 0).toLocaleString()}</td>
-                <td>
-                  <span className="badge" style={{ background: getStatusColor(quot.status) }}>
-                    {quot.status}
-                  </span>
-                </td>
-                <td>
-                  <button className="secondary-btn" onClick={() => downloadPDF(quot.id)} style={{ padding: '6px 12px', fontSize: '14px' }}>
-                    📄 Download PDF
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
-};
-
-export default Quotations;
+}

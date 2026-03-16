@@ -185,7 +185,8 @@ Tickets: {
   LeadActivities:      { component: lazy(() => import('@/features/crm/pages/LeadActivities')) },
 
   // Sales
-  Quotations:    { component: lazy(() => import('@/features/sales/pages/Quotations')) },
+  Quotations:    { component: lazy(() => import('@/features/sales/pages/Quotations')),
+                  props: ctx => ({ setPage: ctx.setPage }) },
   SalesOrders:   { component: lazy(() => import('@/features/sales/pages/SalesOrders')) },
   SalesTargets:  { component: lazy(() => import('@/features/sales/pages/SalesTargets')) },
   SalesForecasts:{ component: lazy(() => import('@/features/sales/pages/SalesForecasts')) },
@@ -230,7 +231,8 @@ Tickets: {
   AgentWorkload:      { component: lazy(() => import('@/features/servicedesk/pages/AgentWorkload')) },
 
   // Travel Desk
-  TravelDashboard: { component: lazy(() => import('@/features/travel/pages/TravelDashboard')) },
+  TravelDashboard: { component: lazy(() => import('@/features/travel/pages/TravelDashboard')),
+                    props: ctx => ({ setPage: ctx.setPage }) },
   TravelRequests:  { component: lazy(() => import('@/features/travel/pages/TravelRequests')) },
   TravelCalendar:  { component: lazy(() => import('@/features/travel/pages/TravelCalendar')) },
   TravelBookings:  { component: lazy(() => import('@/features/travel/pages/TravelBookings')) },

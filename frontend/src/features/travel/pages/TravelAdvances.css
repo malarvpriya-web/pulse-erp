@@ -1,0 +1,77 @@
+/* ── TravelAdvances ──────────────────────────────────────────── tvadv- prefix */
+.tvadv-root { padding: 24px; }
+
+.tvadv-header   { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.tvadv-title    { font-size: 20px; font-weight: 700; color: #111827; margin: 0; }
+.tvadv-sub      { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
+
+.tvadv-toast { position: fixed; top: 20px; right: 24px; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+.tvadv-toast-success { background: #dcfce7; color: #15803d; }
+.tvadv-toast-error   { background: #fee2e2; color: #dc2626; }
+
+.tvadv-filters  { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.tvadv-search   { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 0 12px; max-width: 340px; }
+.tvadv-search input { flex: 1; border: none; outline: none; font-size: 13px; padding: 9px 0; background: transparent; }
+.tvadv-search button { background: none; border: none; cursor: pointer; color: #9ca3af; display: flex; }
+
+.tvadv-tabs      { display: flex; gap: 4px; flex-wrap: wrap; }
+.tvadv-tab       { background: none; border: 1px solid #e5e7eb; border-radius: 7px; padding: 5px 12px; font-size: 12px; color: #6b7280; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 5px; }
+.tvadv-tab:hover { background: #f9fafb; }
+.tvadv-tab-active { background: #eef2ff; border-color: #6366f1; color: #4338ca; font-weight: 600; }
+.tvadv-tab-count  { background: #e5e7eb; border-radius: 10px; padding: 1px 6px; font-size: 10px; }
+.tvadv-tab-active .tvadv-tab-count { background: #c7d2fe; color: #4338ca; }
+
+.tvadv-loading { display: flex; justify-content: center; padding: 80px; }
+.tvadv-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: tvadv-spin .6s linear infinite; }
+@keyframes tvadv-spin { to { transform: rotate(360deg); } }
+
+.tvadv-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 80px; color: #9ca3af; font-size: 14px; }
+
+.tvadv-table-wrap { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: auto; }
+.tvadv-table      { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 820px; }
+.tvadv-table thead tr { background: #fafafa; border-bottom: 1px solid #e5e7eb; }
+.tvadv-table th { padding: 11px 12px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
+.tvadv-table td { padding: 11px 12px; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+.tvadv-row:last-child td { border-bottom: none; }
+.tvadv-row:hover > td { background: #fafafa; }
+
+.tvadv-num    { font-weight: 700; color: #4338ca; font-size: 12px; font-family: monospace; }
+.tvadv-emp    { display: flex; align-items: center; gap: 8px; }
+.tvadv-avatar { width: 28px; height: 28px; border-radius: 50%; background: #eef2ff; color: #4338ca; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tvadv-ref    { background: #f3f4f6; color: #374151; border-radius: 4px; padding: 2px 7px; font-size: 11px; }
+.tvadv-amount { font-weight: 700; color: #111827; }
+.tvadv-badge  { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+
+.tvadv-row-actions  { display: flex; gap: 5px; }
+.tvadv-approve-btn  { background: #dcfce7; border: none; border-radius: 6px; padding: 5px 7px; cursor: pointer; color: #15803d; display: flex; align-items: center; transition: background .15s; }
+.tvadv-approve-btn:hover { background: #bbf7d0; }
+.tvadv-reject-btn   { background: #fee2e2; border: none; border-radius: 6px; padding: 5px 7px; cursor: pointer; color: #dc2626; display: flex; align-items: center; transition: background .15s; }
+.tvadv-reject-btn:hover { background: #fecaca; }
+.tvadv-disburse-btn { background: #dbeafe; border: none; border-radius: 6px; padding: 5px 10px; cursor: pointer; color: #1d4ed8; font-size: 11px; font-weight: 600; transition: background .15s; }
+.tvadv-disburse-btn:hover { background: #bfdbfe; }
+
+/* Drawer */
+.tvadv-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; justify-content: flex-end; }
+.tvadv-drawer  { width: 420px; max-width: 95vw; background: #fff; display: flex; flex-direction: column; height: 100vh; box-shadow: -8px 0 32px rgba(0,0,0,.12); animation: tvadv-slide .2s ease; }
+@keyframes tvadv-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
+.tvadv-drawer-hd { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #e5e7eb; }
+.tvadv-drawer-hd h3 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }
+.tvadv-drawer-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.tvadv-drawer-ft   { display: flex; gap: 8px; justify-content: flex-end; padding: 16px 20px; border-top: 1px solid #e5e7eb; }
+
+.tvadv-field { display: flex; flex-direction: column; gap: 5px; }
+.tvadv-field label { font-size: 12px; font-weight: 600; color: #374151; }
+.tvadv-req { color: #ef4444; }
+.tvadv-field input,
+.tvadv-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
+.tvadv-field input:focus,
+.tvadv-field textarea:focus { outline: none; border-color: #6366f1; }
+
+.tvadv-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.tvadv-btn-primary:hover    { background: #4f46e5; }
+.tvadv-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+.tvadv-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
+.tvadv-btn-outline:hover { background: #f9fafb; }
+.tvadv-icon-btn { background: none; border: 1px solid #e5e7eb; border-radius: 7px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6b7280; }
+.tvadv-icon-btn:hover { background: #f3f4f6; }
