@@ -1,0 +1,125 @@
+/* ── CandidatePipeline ───────────────────────────────────────── cp- prefix */
+.cp-root { padding: 24px; min-height: 100vh; }
+
+.cp-header   { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+.cp-title    { font-size: 20px; font-weight: 700; color: #111827; margin: 0; }
+.cp-sub      { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
+.cp-header-r { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.cp-job-sel { border: 1px solid #d1d5db; border-radius: 7px; padding: 7px 12px; font-size: 13px; color: #374151; background: #fff; max-width: 260px; }
+
+.cp-toast { position: fixed; top: 20px; right: 24px; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+.cp-toast-success { background: #dcfce7; color: #15803d; }
+.cp-toast-error   { background: #fee2e2; color: #dc2626; }
+
+/* Stats strip */
+.cp-stats { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.cp-stat  {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-left: 3px solid var(--c, #6366f1);
+}
+.cp-stat-num   { font-size: 18px; font-weight: 800; color: #111827; }
+.cp-stat-label { font-size: 12px; color: #6b7280; }
+
+.cp-loading { display: flex; justify-content: center; padding: 80px; }
+.cp-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: cp-spin .6s linear infinite; }
+@keyframes cp-spin { to { transform: rotate(360deg); } }
+
+/* Board */
+.cp-board { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 1100px) { .cp-board { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 700px)  { .cp-board { grid-template-columns: repeat(2, 1fr); } }
+
+.cp-col { display: flex; flex-direction: column; min-height: 300px; }
+.cp-col-hd { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 10px 10px 0 0; }
+.cp-col-title { font-size: 12px; font-weight: 700; }
+.cp-col-count { font-size: 11px; font-weight: 700; }
+
+.cp-col-body {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+.cp-col-empty { text-align: center; padding: 20px; font-size: 12px; color: #9ca3af; }
+
+/* Candidate Card */
+.cp-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: box-shadow .15s;
+}
+.cp-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+
+.cp-card-hd  { display: flex; align-items: flex-start; gap: 8px; }
+.cp-avatar   { width: 34px; height: 34px; border-radius: 50%; background: #eef2ff; color: #4338ca; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.cp-avatar-sm { width: 26px; height: 26px; font-size: 11px; }
+.cp-cname    { font-size: 13px; font-weight: 700; color: #111827; display: block; }
+.cp-role     { font-size: 11px; color: #6b7280; display: block; margin-top: 1px; }
+
+.cp-card-info { display: flex; flex-direction: column; gap: 3px; }
+.cp-email, .cp-phone { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #6b7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cp-card-ft { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px; }
+.cp-src-badge { padding: 2px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; text-transform: capitalize; }
+
+.cp-score { display: flex; align-items: center; gap: 3px; }
+.cp-score span { font-size: 12px; font-weight: 700; }
+
+.cp-card-moves { display: flex; justify-content: flex-end; gap: 4px; border-top: 1px solid #f3f4f6; padding-top: 6px; }
+.cp-move-btn   { background: #f3f4f6; border: none; border-radius: 5px; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #374151; transition: background .15s; }
+.cp-move-btn:hover    { background: #e5e7eb; }
+.cp-move-btn:disabled { opacity: .3; cursor: not-allowed; }
+
+/* Rejected */
+.cp-rejected-section { margin-top: 24px; }
+.cp-rejected-title   { font-size: 13px; font-weight: 600; color: #9ca3af; margin: 0 0 10px; }
+.cp-rejected-list    { display: flex; flex-wrap: wrap; gap: 8px; }
+.cp-rejected-card    { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #fee2e2; border-radius: 8px; padding: 8px 12px; }
+.cp-rej-badge        { font-size: 10px; font-weight: 600; color: #dc2626; background: #fee2e2; padding: 2px 8px; border-radius: 20px; }
+
+/* Drawer */
+.cp-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; justify-content: flex-end; }
+.cp-drawer  { width: 440px; max-width: 95vw; background: #fff; display: flex; flex-direction: column; height: 100vh; box-shadow: -8px 0 32px rgba(0,0,0,.12); animation: cp-slide .2s ease; }
+@keyframes cp-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
+.cp-drawer-hd { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #e5e7eb; }
+.cp-drawer-hd h3 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }
+.cp-drawer-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.cp-drawer-ft   { display: flex; gap: 8px; justify-content: flex-end; padding: 16px 20px; border-top: 1px solid #e5e7eb; }
+
+.cp-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.cp-field { display: flex; flex-direction: column; gap: 5px; }
+.cp-field label { font-size: 12px; font-weight: 600; color: #374151; }
+.cp-req { color: #ef4444; }
+.cp-field input,
+.cp-field select,
+.cp-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
+.cp-field input:focus,
+.cp-field select:focus,
+.cp-field textarea:focus { outline: none; border-color: #6366f1; }
+
+.cp-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.cp-btn-primary:hover    { background: #4f46e5; }
+.cp-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+.cp-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
+.cp-btn-outline:hover { background: #f9fafb; }
+
+.cp-icon-btn { background: none; border: 1px solid #e5e7eb; border-radius: 7px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6b7280; }
+.cp-icon-btn:hover { background: #f3f4f6; }

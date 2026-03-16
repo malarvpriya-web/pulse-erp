@@ -1,0 +1,526 @@
+/* EmployeeDashboard.css — all classes prefixed with ed- */
+
+/* ── Root / Page ─────────────────────────────────────────────────────────── */
+.ed-root {
+  padding: 24px;
+  background: #f8f9fc;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  box-sizing: border-box;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+.ed-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.ed-greeting {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 4px 0;
+}
+
+.ed-date {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0;
+}
+
+/* ── Status Badges ────────────────────────────────────────────────────────── */
+.ed-status-badge {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ed-status-present {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.ed-status-absent {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.ed-status-late {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* ── KPI Grid ────────────────────────────────────────────────────────────── */
+.ed-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.ed-kpi {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  padding: 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.ed-kpi-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ed-kpi-label {
+  font-size: 12px;
+  color: #9ca3af;
+  margin: 0 0 4px 0;
+}
+
+.ed-kpi-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 2px 0;
+}
+
+.ed-kpi-sub {
+  font-size: 11px;
+  color: #6b7280;
+  margin: 0;
+}
+
+.ed-clock-time {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* ── Middle Row ──────────────────────────────────────────────────────────── */
+.ed-mid-row {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────────── */
+.ed-card {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  overflow: hidden;
+}
+
+.ed-card-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f0f0f4;
+}
+
+.ed-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  display: flex;
+  align-items: center;
+}
+
+.ed-card-body {
+  padding: 20px;
+}
+
+/* ── Announcement rows ────────────────────────────────────────────────────── */
+.ed-ann-row {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid #f9f9fb;
+}
+
+.ed-ann-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #6366f118;
+  color: #6366f1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ed-ann-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #111827;
+}
+
+.ed-ann-date {
+  font-size: 11px;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+.ed-ann-desc {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+  margin-bottom: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── Holiday rows ────────────────────────────────────────────────────────── */
+.ed-hol-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid #f9f9fb;
+}
+
+.ed-hol-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #f59e0b18;
+  color: #f59e0b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ed-hol-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #111827;
+  margin: 0 0 2px 0;
+}
+
+.ed-hol-date {
+  font-size: 11px;
+  color: #9ca3af;
+  margin: 0;
+}
+
+/* ── Quick Actions ────────────────────────────────────────────────────────── */
+.ed-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.ed-qa-card {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+}
+
+.ed-qa-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  transform: translateY(-2px);
+}
+
+.ed-qa-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ed-qa-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.ed-qa-sub {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: -6px;
+}
+
+/* ── Drawer overlay ──────────────────────────────────────────────────────── */
+.ed-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 100;
+  animation: ed-fade-in 0.2s ease;
+}
+
+@keyframes ed-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Drawer ──────────────────────────────────────────────────────────────── */
+.ed-drawer {
+  position: fixed;
+  right: 0;
+  top: 0;
+  height: 100%;
+  width: 420px;
+  background: #fff;
+  z-index: 101;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.12);
+  animation: ed-slide-in 0.25s ease;
+}
+
+@keyframes ed-slide-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+.ed-drawer-hd {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #f0f0f4;
+  flex-shrink: 0;
+}
+
+.ed-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.ed-drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid #f0f0f4;
+  flex-shrink: 0;
+}
+
+/* ── Form elements ────────────────────────────────────────────────────────── */
+.ed-form-group {
+  margin-bottom: 16px;
+}
+
+.ed-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.ed-select,
+.ed-input,
+.ed-textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+  background: #fff;
+  color: #111827;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.ed-select:focus,
+.ed-input:focus,
+.ed-textarea:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px #6366f114;
+}
+
+.ed-textarea {
+  resize: vertical;
+  min-height: 96px;
+}
+
+.ed-days-calc {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #6366f1;
+  font-weight: 500;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.ed-btn-primary {
+  padding: 9px 18px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.ed-btn-primary:hover {
+  background: #4f46e5;
+}
+
+.ed-btn-ghost {
+  padding: 9px 18px;
+  background: #fff;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.ed-btn-ghost:hover {
+  background: #f9fafb;
+}
+
+.ed-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: #f3f4f6;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  transition: background 0.15s;
+  padding: 0;
+}
+
+.ed-icon-btn:hover {
+  background: #e5e7eb;
+}
+
+.ed-text-btn {
+  font-size: 12px;
+  color: #6366f1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  font-family: inherit;
+  font-weight: 500;
+  transition: color 0.15s;
+}
+
+.ed-text-btn:hover {
+  color: #4f46e5;
+}
+
+/* ── Toast ────────────────────────────────────────────────────────────────── */
+.ed-toast {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  font-size: 13px;
+  font-family: inherit;
+  animation: ed-toast-in 0.25s ease;
+  max-width: 340px;
+}
+
+@keyframes ed-toast-in {
+  from { opacity: 0; transform: translateY(-12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.ed-toast-success {
+  border-left: 4px solid #10b981;
+  color: #065f46;
+}
+
+.ed-toast-error {
+  border-left: 4px solid #ef4444;
+  color: #991b1b;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+  .ed-kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ed-quick-actions {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .ed-root {
+    padding: 16px;
+  }
+
+  .ed-kpis {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ed-mid-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ed-quick-actions {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ed-drawer {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .ed-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .ed-quick-actions {
+    grid-template-columns: 1fr;
+  }
+}

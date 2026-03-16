@@ -1,0 +1,65 @@
+.po-page {
+  /* Padding handled by layout */
+}
+
+.po-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.po-header h1 {
+  /* Inherits from global h1 */
+}
+
+/* .primary-btn is now global in Layout.css */
+
+.po-table-container {
+  /* Inherits from global .card style */
+  overflow: hidden;
+  padding: 0; /* Reset padding for table container to let table fill it */
+}
+
+.po-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.po-table th, .po-table td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.po-table th {
+  background-color: #f9fafb;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.status-badge {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.status-approved { background-color: #d1fae5; color: #065f46; }
+.status-pending { background-color: #fef3c7; color: #92400e; }
+.status-draft { background-color: #f3f4f6; color: var(--text-secondary); }
+.status-rejected { background-color: #fee2e2; color: #991b1b; }
+
+.action-btn {
+  background: none;
+  border: 1px solid var(--border-color);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.action-btn:hover {
+  background-color: var(--bg-color);
+}

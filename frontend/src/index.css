@@ -1,0 +1,119 @@
+/* Global font and styles */
+* {
+  font-family: Arial, Helvetica, sans-serif;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1.6;
+}
+
+/* Global button styles matching logout button */
+button, .btn, .primary-btn, .add-page-back-btn {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: none;
+  background: #ffffff;
+  color: black;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+button:hover, .btn:hover, .primary-btn:hover, .add-page-back-btn:hover {
+  background: #0284c7;
+  color: white;
+}
+
+.filter {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: black;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+.filter:hover {
+  background: #0284c7;
+  color: white;
+}
+
+input, select, textarea {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 18px;
+}
+
+select {
+  background: white;
+  color: black;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+select:focus {
+  outline: none;
+  background: white;
+  color: black;
+}
+
+select option {
+  background: white;
+  color: black;
+  padding: 10px;
+}
+
+h1 {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 20px 0;
+}
+
+h2 {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 15px 0;
+}
+
+h3 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 10px 0;
+}
+
+p {
+  font-size: 18px;
+  margin: 8px 0;
+}
+
+table {
+  font-size: 18px;
+  width: 100%;
+}
+
+td, th {
+  font-size: 18px;
+  padding: 14px;
+}
+
+label {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.search-box {
+  font-size: 18px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}

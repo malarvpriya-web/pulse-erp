@@ -1,0 +1,72 @@
+/* OpportunitiesKanban.css — prefix: ok- */
+.ok-root  { padding: 24px; background: #f8f9fc; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; }
+
+.ok-header  { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.ok-title   { font-size: 22px; font-weight: 700; color: #111827; margin: 0; }
+.ok-sub     { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
+.ok-header-r{ display: flex; align-items: center; gap: 10px; }
+
+.ok-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6366f1; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.ok-btn-primary:hover { background: #4f46e5; }
+.ok-btn-primary:disabled { opacity: .6; cursor: default; }
+.ok-btn-outline { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; color: #374151; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.ok-icon-btn    { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; color: #6b7280; }
+
+/* kanban board */
+.ok-board { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; flex: 1; min-height: 0; }
+@media (max-width: 1200px) { .ok-board { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 800px)  { .ok-board { grid-template-columns: repeat(2, 1fr); } }
+
+.ok-col      { background: #f3f4f6; border-radius: 12px; display: flex; flex-direction: column; max-height: calc(100vh - 180px); }
+.ok-col-hd   { padding: 12px 14px 10px; border-radius: 12px 12px 0 0; background: #fff; border: 1px solid #f0f0f4; border-bottom: none; }
+.ok-col-hd-top{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+.ok-col-title { font-size: 13px; font-weight: 700; }
+.ok-col-count { padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.ok-col-val   { font-size: 12px; color: #6b7280; font-weight: 500; }
+.ok-col-body  { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.ok-col-empty { color: #9ca3af; font-size: 12px; text-align: center; padding: 20px 0; }
+
+/* cards */
+.ok-card       { background: #fff; border: 1px solid #f0f0f4; border-radius: 10px; padding: 12px; transition: box-shadow .15s; }
+.ok-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.ok-card-title   { font-size: 13px; font-weight: 600; color: #111827; margin-bottom: 3px; line-height: 1.3; }
+.ok-card-company { font-size: 11px; color: #9ca3af; margin-bottom: 6px; }
+.ok-card-value   { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+.ok-card-date    { font-size: 11px; color: #6b7280; margin-top: 6px; }
+
+.ok-prob-wrap  { display: flex; align-items: center; gap: 6px; }
+.ok-prob-track { flex: 1; background: #f3f4f6; border-radius: 3px; height: 4px; }
+.ok-prob-bar   { height: 4px; border-radius: 3px; transition: width .3s; }
+.ok-prob-num   { font-size: 11px; color: #6b7280; min-width: 28px; text-align: right; }
+
+.ok-card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; gap: 6px; }
+.ok-assignee    { font-size: 11px; color: #6b7280; flex: 1; }
+.ok-move-sel    { font-size: 11px; border: 1px solid #e5e7eb; border-radius: 5px; padding: 2px 4px; background: #f9fafb; cursor: pointer; outline: none; max-width: 100px; }
+
+/* loading */
+.ok-loading { display: flex; justify-content: center; align-items: center; height: 300px; }
+.ok-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: ok-spin .7s linear infinite; }
+@keyframes ok-spin { to { transform: rotate(360deg); } }
+
+/* drawer */
+.ok-overlay  { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: flex; justify-content: flex-end; }
+.ok-drawer   { background: #fff; width: 440px; height: 100vh; display: flex; flex-direction: column; box-shadow: -8px 0 32px rgba(0,0,0,.12); }
+.ok-drawer-hd{ display: flex; align-items: center; justify-content: space-between; padding: 20px; border-bottom: 1px solid #f0f0f4; }
+.ok-drawer-hd h3 { margin: 0; font-size: 16px; font-weight: 700; color: #111827; }
+.ok-drawer-body  { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.ok-drawer-ft    { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 20px; border-top: 1px solid #f0f0f4; background: #f9fafb; }
+
+.ok-field       { display: flex; flex-direction: column; gap: 6px; }
+.ok-field label { font-size: 12px; font-weight: 600; color: #374151; }
+.ok-field input, .ok-field textarea, .ok-field select {
+  border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 12px;
+  font-size: 13px; color: #111827; outline: none; background: #fff;
+  font-family: inherit; width: 100%; box-sizing: border-box;
+}
+.ok-field input:focus, .ok-field textarea:focus, .ok-field select:focus { border-color: #6366f1; }
+.ok-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* toast */
+.ok-toast        { position: fixed; top: 24px; right: 24px; z-index: 9999; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+.ok-toast-success{ background: #10b981; color: #fff; }
+.ok-toast-error  { background: #ef4444; color: #fff; }

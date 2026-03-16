@@ -1,0 +1,646 @@
+/* ============================================================
+   AllLeaves.css  —  al- prefix, plain CSS, no Tailwind
+   ============================================================ */
+
+/* ---------- Page root ---------- */
+.al-root {
+  padding: 24px;
+  background: #f8f9fc;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  box-sizing: border-box;
+}
+
+/* ---------- Page header ---------- */
+.al-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.al-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
+}
+
+/* ---------- Section title ---------- */
+.al-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 16px 0;
+}
+
+/* ============================================================
+   LEAVE BALANCE CARDS
+   ============================================================ */
+.al-balance-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.al-balance-card {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  padding: 20px;
+}
+
+.al-bal-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.al-bal-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.al-bal-type {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.al-bal-used {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.al-bal-total {
+  font-size: 13px;
+  color: #9ca3af;
+  font-weight: 400;
+}
+
+.al-bal-bar-wrap {
+  height: 6px;
+  background: #f3f4f6;
+  border-radius: 3px;
+  margin: 10px 0 6px;
+  overflow: hidden;
+}
+
+.al-bal-bar {
+  height: 6px;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.al-bal-remaining {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+/* ============================================================
+   TEAM LEAVE CALENDAR
+   ============================================================ */
+.al-week-card {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.al-week-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+}
+
+.al-week-day {
+  background: #f9fafb;
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 80px;
+}
+
+.al-week-day-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  margin-bottom: 4px;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.al-week-day-date {
+  font-size: 12px;
+  color: #6b7280;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.al-leave-chip {
+  background: rgba(99, 102, 241, 0.09);
+  color: #4f46e5;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 3px 7px;
+  margin-bottom: 3px;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.al-empty-day {
+  color: #d1d5db;
+  font-size: 11px;
+  text-align: center;
+  padding-top: 8px;
+}
+
+/* ============================================================
+   LEAVE HISTORY TABLE
+   ============================================================ */
+.al-table-section {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  overflow: hidden;
+}
+
+.al-table-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f0f0f4;
+  flex-wrap: wrap;
+}
+
+.al-search-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 320px;
+}
+
+.al-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #9ca3af;
+  pointer-events: none;
+}
+
+.al-search {
+  width: 100%;
+  padding: 8px 12px 8px 34px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  box-sizing: border-box;
+  font-family: inherit;
+  color: #374151;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.al-search:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.al-filter-select {
+  padding: 8px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #374151;
+  background: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.al-filter-select:focus {
+  border-color: #6366f1;
+}
+
+.al-table-wrap {
+  overflow-x: auto;
+}
+
+.al-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.al-table th {
+  padding: 10px 16px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f4;
+  white-space: nowrap;
+}
+
+.al-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f9f9fb;
+  color: #374151;
+  vertical-align: middle;
+}
+
+.al-table tr:last-child td {
+  border-bottom: none;
+}
+
+.al-table tbody tr:hover {
+  background: #fafafa;
+}
+
+/* ---------- Status badges ---------- */
+.al-status-badge {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.al-badge-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.al-badge-approved {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.al-badge-rejected {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* ---------- Action buttons ---------- */
+.al-action-btn-approve {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: #dcfce7;
+  color: #16a34a;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 4px;
+  transition: background 0.15s;
+}
+
+.al-action-btn-approve:hover {
+  background: #bbf7d0;
+}
+
+.al-action-btn-reject {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: #fee2e2;
+  color: #dc2626;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.al-action-btn-reject:hover {
+  background: #fecaca;
+}
+
+/* ---------- Empty state ---------- */
+.al-empty {
+  text-align: center;
+  padding: 40px;
+  color: #9ca3af;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+/* ============================================================
+   APPLY LEAVE DRAWER
+   ============================================================ */
+.al-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 100;
+  animation: al-fade-in 0.2s ease;
+}
+
+.al-drawer {
+  position: fixed;
+  right: 0;
+  top: 0;
+  height: 100%;
+  width: 440px;
+  background: #fff;
+  z-index: 101;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.12);
+  animation: al-slide-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes al-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+@keyframes al-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.al-drawer-hd {
+  padding: 20px 24px;
+  border-bottom: 1px solid #f0f0f4;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  flex-shrink: 0;
+}
+
+.al-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.al-drawer-footer {
+  padding: 16px 24px;
+  border-top: 1px solid #f0f0f4;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ---------- Form elements ---------- */
+.al-form-group {
+  margin-bottom: 16px;
+}
+
+.al-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.al-select,
+.al-input,
+.al-textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+  color: #374151;
+  background: #fff;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.al-select:focus,
+.al-input:focus,
+.al-textarea:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.al-days-calc {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6366f1;
+  font-weight: 500;
+  padding: 6px 10px;
+  background: #ede9fe;
+  border-radius: 6px;
+  display: inline-block;
+}
+
+.al-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.al-form-row .al-form-group {
+  margin-bottom: 0;
+}
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+.al-btn-primary {
+  padding: 9px 18px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background 0.2s;
+}
+
+.al-btn-primary:hover:not(:disabled) {
+  background: #4f46e5;
+}
+
+.al-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.al-btn-ghost {
+  padding: 9px 18px;
+  background: #fff;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.2s;
+}
+
+.al-btn-ghost:hover {
+  background: #f9fafb;
+}
+
+.al-btn-add {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background 0.2s;
+}
+
+.al-btn-add:hover {
+  background: #4f46e5;
+}
+
+.al-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: #f3f4f6;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  transition: background 0.15s;
+}
+
+.al-icon-btn:hover {
+  background: #e5e7eb;
+}
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+.al-toast {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  animation: al-toast-in 0.2s ease;
+  max-width: 360px;
+}
+
+@keyframes al-toast-in {
+  from { transform: translateX(120%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.al-toast-success {
+  border-left: 4px solid #10b981;
+  color: #065f46;
+}
+
+.al-toast-error {
+  border-left: 4px solid #ef4444;
+  color: #991b1b;
+}
+
+/* ============================================================
+   LOADING SPINNER
+   ============================================================ */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1100px) {
+  .al-balance-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .al-root {
+    padding: 16px;
+  }
+
+  .al-balance-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .al-week-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .al-drawer {
+    width: 100%;
+  }
+
+  .al-table-controls {
+    flex-wrap: wrap;
+  }
+
+  .al-search-wrap {
+    max-width: 100%;
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .al-balance-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .al-week-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .al-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}

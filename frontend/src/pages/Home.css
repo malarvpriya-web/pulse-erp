@@ -1,0 +1,79 @@
+/* Home.css — prefix: hm- */
+.hm-root { padding: 24px; background: #f8f9fc; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+/* hero */
+.hm-hero { background: linear-gradient(135deg, #6366f1 0%, #4f46e5 60%, #4338ca 100%); border-radius: 16px; padding: 28px 32px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; }
+.hm-hero-l { display: flex; flex-direction: column; gap: 4px; }
+.hm-greeting { font-size: 14px; color: rgba(255,255,255,0.8); margin: 0; }
+.hm-name { font-size: 26px; font-weight: 700; color: #fff; margin: 0; }
+.hm-role-badge { display: inline-block; padding: 3px 10px; border-radius: 20px; background: rgba(255,255,255,0.2); color: #fff; font-size: 11px; font-weight: 600; width: fit-content; margin-top: 4px; }
+.hm-date { font-size: 12px; color: rgba(255,255,255,0.7); margin: 6px 0 0; }
+
+.hm-hero-r { display: flex; gap: 24px; flex-wrap: wrap; }
+.hm-hero-kpi { display: flex; flex-direction: column; align-items: center; background: rgba(255,255,255,0.15); border-radius: 12px; padding: 14px 20px; min-width: 90px; }
+.hm-hero-kpi-val   { font-size: 26px; font-weight: 800; color: #fff; line-height: 1; }
+.hm-hero-kpi-label { font-size: 10px; color: rgba(255,255,255,0.8); margin-top: 4px; text-align: center; text-transform: uppercase; letter-spacing: .04em; }
+
+/* quick links */
+.hm-section    { margin-bottom: 24px; }
+.hm-section-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.hm-section-title { font-size: 14px; font-weight: 700; color: #111827; }
+.hm-icon-btn  { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; color: #6b7280; }
+
+.hm-quick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.hm-quick-card { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: #fff; border: 1px solid #f0f0f4; border-radius: 10px; cursor: pointer; transition: box-shadow .15s; width: 100%; text-align: left; }
+.hm-quick-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.08); border-color: var(--c); }
+.hm-quick-icon { width: 34px; height: 34px; background: color-mix(in srgb, var(--c) 12%, transparent); color: var(--c); border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.hm-quick-label { font-size: 12px; font-weight: 600; color: #374151; flex: 1; }
+.hm-quick-arrow { color: #d1d5db; }
+.hm-quick-card:hover .hm-quick-arrow { color: var(--c); }
+
+/* main grid */
+.hm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+@media (max-width: 900px) { .hm-grid { grid-template-columns: 1fr; } }
+
+.hm-card { background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; display: flex; flex-direction: column; overflow: hidden; }
+.hm-card-hd { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #f0f0f4; }
+.hm-card-title { font-size: 13px; font-weight: 700; color: #111827; display: flex; align-items: center; }
+.hm-card-body { padding: 12px 16px; flex: 1; display: flex; flex-direction: column; gap: 0; }
+.hm-scroll { overflow-y: auto; max-height: 240px; }
+.hm-empty { font-size: 13px; color: #9ca3af; text-align: center; padding: 16px 0; margin: 0; }
+.hm-text-btn { display: flex; align-items: center; gap: 4px; background: none; border: none; color: #6366f1; font-size: 12px; font-weight: 500; cursor: pointer; padding: 0; }
+
+/* tasks */
+.hm-task-row    { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #f9fafb; }
+.hm-task-row:last-child { border-bottom: none; }
+.hm-task-dot    { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.hm-dot-in_progress { background: #f59e0b; }
+.hm-dot-todo        { background: #6b7280; }
+.hm-dot-done        { background: #10b981; }
+.hm-task-info   { flex: 1; min-width: 0; }
+.hm-task-title  { display: block; font-size: 12px; font-weight: 500; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hm-task-proj   { display: block; font-size: 10px; color: #9ca3af; margin-top: 1px; }
+.hm-priority-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; flex-shrink: 0; white-space: nowrap; }
+
+/* approvals */
+.hm-appr-row    { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #f9fafb; }
+.hm-appr-row:last-child { border-bottom: none; }
+.hm-appr-avatar { width: 32px; height: 32px; border-radius: 50%; background: #eef2ff; color: #6366f1; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.hm-appr-info   { flex: 1; min-width: 0; }
+.hm-appr-from   { display: block; font-size: 12px; font-weight: 600; color: #111827; }
+.hm-appr-detail { display: block; font-size: 10px; color: #9ca3af; margin-top: 1px; }
+.hm-type-badge  { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; background: #eef2ff; color: #6366f1; white-space: nowrap; }
+.hm-appr-time   { font-size: 10px; color: #9ca3af; margin-top: 2px; text-align: right; }
+
+/* announcements */
+.hm-ann-row   { padding: 10px 0; border-bottom: 1px solid #f9fafb; }
+.hm-ann-row:last-child { border-bottom: none; }
+.hm-ann-title { font-size: 12px; font-weight: 600; color: #111827; }
+.hm-ann-msg   { font-size: 11px; color: #6b7280; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hm-ann-date  { font-size: 10px; color: #9ca3af; margin-top: 4px; }
+
+/* celebrations */
+.hm-cel-row  { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f9fafb; }
+.hm-cel-row:last-child { border-bottom: none; }
+.hm-cel-icon { font-size: 22px; flex-shrink: 0; }
+.hm-cel-info { flex: 1; }
+.hm-cel-name { font-size: 13px; font-weight: 600; color: #111827; }
+.hm-cel-dept { font-size: 11px; color: #9ca3af; margin-top: 1px; }
+.hm-cel-type { font-size: 11px; font-weight: 600; color: #6366f1; flex-shrink: 0; }

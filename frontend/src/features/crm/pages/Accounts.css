@@ -1,0 +1,73 @@
+/* Accounts.css — prefix: ac- */
+.ac-root  { padding: 24px; background: #f8f9fc; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+.ac-header  { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.ac-title   { font-size: 22px; font-weight: 700; color: #111827; margin: 0; }
+.ac-sub     { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
+.ac-header-r{ display: flex; align-items: center; gap: 10px; }
+
+.ac-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6366f1; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.ac-btn-primary:hover { background: #4f46e5; }
+.ac-btn-primary:disabled { opacity: .6; cursor: default; }
+.ac-btn-outline { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; color: #374151; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.ac-icon-btn    { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; color: #6b7280; }
+.ac-edit-btn    { background: none; border: none; cursor: pointer; color: #6b7280; padding: 4px; border-radius: 4px; }
+.ac-edit-btn:hover { background: #f3f4f6; color: #6366f1; }
+
+.ac-filters { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+.ac-search  { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 7px 12px; max-width: 360px; color: #6b7280; }
+.ac-search input { border: none; outline: none; flex: 1; font-size: 13px; background: transparent; }
+.ac-search button { background: none; border: none; cursor: pointer; color: #9ca3af; }
+.ac-tabs       { display: flex; gap: 4px; flex-wrap: wrap; }
+.ac-tab        { padding: 5px 12px; border: 1px solid #e5e7eb; background: #fff; border-radius: 20px; font-size: 12px; color: #6b7280; cursor: pointer; }
+.ac-tab-active { background: #6366f1; color: #fff; border-color: #6366f1; }
+
+/* card grid */
+.ac-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+
+.ac-card       { background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; padding: 16px; cursor: pointer; transition: box-shadow .15s; display: flex; flex-direction: column; gap: 10px; }
+.ac-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+.ac-card-hd    { display: flex; align-items: flex-start; gap: 10px; }
+.ac-avatar     { width: 38px; height: 38px; border-radius: 10px; background: #eef2ff; color: #6366f1; font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.ac-card-info  { flex: 1; min-width: 0; }
+.ac-card-name  { display: block; font-size: 14px; font-weight: 700; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-card-industry { display: block; font-size: 11px; color: #9ca3af; }
+.ac-badge      { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+
+.ac-card-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background: #f9fafb; border-radius: 8px; padding: 10px; }
+.ac-stat       { display: flex; flex-direction: column; gap: 2px; }
+.ac-stat-label { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: .04em; }
+.ac-stat-val   { font-size: 13px; font-weight: 700; color: #111827; }
+
+.ac-card-phone { font-size: 12px; color: #6b7280; }
+.ac-card-footer{ display: flex; align-items: center; justify-content: space-between; }
+.ac-status     { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 12px; }
+.ac-status.active   { background: #f0fdf4; color: #15803d; }
+.ac-status.inactive { background: #f3f4f6; color: #6b7280; }
+.ac-status.prospect { background: #fef3c7; color: #92400e; }
+
+.ac-loading { display: flex; justify-content: center; align-items: center; height: 200px; }
+.ac-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: ac-spin .7s linear infinite; }
+@keyframes ac-spin { to { transform: rotate(360deg); } }
+.ac-empty   { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; gap: 12px; color: #9ca3af; background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; }
+
+.ac-overlay  { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: flex; justify-content: flex-end; }
+.ac-drawer   { background: #fff; width: 440px; height: 100vh; display: flex; flex-direction: column; box-shadow: -8px 0 32px rgba(0,0,0,.12); }
+.ac-drawer-hd{ display: flex; align-items: center; justify-content: space-between; padding: 20px; border-bottom: 1px solid #f0f0f4; }
+.ac-drawer-hd h3 { margin: 0; font-size: 16px; font-weight: 700; color: #111827; }
+.ac-drawer-body  { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.ac-drawer-ft    { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 20px; border-top: 1px solid #f0f0f4; background: #f9fafb; }
+
+.ac-field       { display: flex; flex-direction: column; gap: 6px; }
+.ac-field label { font-size: 12px; font-weight: 600; color: #374151; }
+.ac-field input, .ac-field textarea, .ac-field select {
+  border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 12px;
+  font-size: 13px; color: #111827; outline: none; background: #fff;
+  font-family: inherit; width: 100%; box-sizing: border-box;
+}
+.ac-field input:focus, .ac-field textarea:focus, .ac-field select:focus { border-color: #6366f1; }
+.ac-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.ac-toast        { position: fixed; top: 24px; right: 24px; z-index: 9999; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+.ac-toast-success{ background: #10b981; color: #fff; }
+.ac-toast-error  { background: #ef4444; color: #fff; }

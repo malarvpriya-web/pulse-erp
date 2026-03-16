@@ -1,0 +1,78 @@
+.fr-root{padding:24px;background:#f8f9fc;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+
+/* header */
+.fr-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;}
+.fr-title{font-size:20px;font-weight:600;color:#111827;margin:0;}
+.fr-sub{font-size:12px;color:#9ca3af;margin:3px 0 0;}
+.fr-header-r{display:flex;gap:10px;}
+.fr-btn-outline{display:flex;align-items:center;gap:6px;padding:8px 14px;background:#fff;color:#374151;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;cursor:pointer;}
+.fr-btn-outline:hover{background:#f9fafb;}
+
+/* health */
+.fr-health{display:grid;grid-template-columns:auto 1fr;gap:20px;background:#fff;border-radius:12px;border:1px solid #f0f0f4;padding:20px;margin-bottom:16px;align-items:center;}
+@media(max-width:768px){.fr-health{grid-template-columns:1fr;}}
+.fr-health-score{display:flex;align-items:center;gap:16px;}
+.fr-score-circle{flex-shrink:0;}
+.fr-health-title{font-size:16px;font-weight:600;color:#111827;margin:0 0 4px;}
+.fr-health-sub{font-size:12px;color:#9ca3af;margin:0 0 10px;}
+.fr-health-chips{display:flex;gap:8px;flex-wrap:wrap;}
+.fr-chart-title{font-size:12px;font-weight:600;color:#374151;margin:0 0 8px;}
+
+/* chips */
+.fr-chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:500;padding:3px 8px;border-radius:20px;}
+.fr-chip-good{background:#dcfce7;color:#16a34a;}
+.fr-chip-warn{background:#fef3c7;color:#d97706;}
+.fr-chip-bad{background:#fee2e2;color:#dc2626;}
+
+/* filter tabs */
+.fr-filter-tabs{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap;}
+.fr-filter-tab{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:20px;border:1px solid #e5e7eb;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;}
+.fr-filter-tab.active{background:#6366f1;color:#fff;border-color:#6366f1;}
+.fr-tab-count{font-size:10px;background:rgba(0,0,0,.08);padding:1px 6px;border-radius:20px;}
+.fr-filter-tab.active .fr-tab-count{background:rgba(255,255,255,.25);}
+
+/* section */
+.fr-section{background:#fff;border-radius:12px;border:1px solid #f0f0f4;margin-bottom:12px;overflow:hidden;}
+.fr-section-hd{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;cursor:pointer;border-left:4px solid #e5e7eb;background:#fafafa;}
+.fr-section-hd:hover{background:#f3f4f6;}
+.fr-section-left{display:flex;align-items:center;gap:10px;}
+.fr-section-title{font-size:14px;font-weight:700;}
+.fr-section-desc{font-size:12px;color:#9ca3af;}
+.fr-section-summary{display:flex;gap:6px;}
+
+/* cards grid */
+.fr-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:14px;}
+
+/* ratio card */
+.fr-card{background:#fff;border-radius:10px;border:1px solid #f0f0f4;border-top:3px solid #e5e7eb;padding:14px;display:flex;flex-direction:column;gap:8px;}
+.fr-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
+.fr-card-left{flex:1;min-width:0;}
+.fr-card-name{display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;}
+.fr-rating-badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:2px 7px;border-radius:20px;border:1px solid;}
+.fr-card-right{text-align:right;flex-shrink:0;}
+.fr-card-val{display:block;font-size:20px;font-weight:700;line-height:1;}
+.fr-card-bench{display:block;font-size:10px;color:#9ca3af;margin-top:2px;}
+
+/* trend bars */
+.fr-card-trend{display:flex;align-items:flex-end;gap:3px;height:44px;margin-top:2px;}
+.fr-trend-bar-wrap{flex:1;display:flex;align-items:flex-end;}
+.fr-trend-bar{width:100%;border-radius:2px 2px 0 0;min-height:4px;transition:height .3s;}
+.fr-card-trend-label{font-size:10px;color:#d1d5db;text-align:center;margin-top:-4px;}
+
+/* expand */
+.fr-expand-btn{display:flex;align-items:center;gap:4px;background:none;border:none;font-size:11px;color:#9ca3af;cursor:pointer;padding:0;align-self:flex-start;}
+.fr-expand-btn:hover{color:#6366f1;}
+.fr-card-detail{background:#f9fafb;border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px;}
+.fr-detail-desc{font-size:11px;color:#6b7280;margin:0;line-height:1.5;}
+.fr-detail-formula{display:flex;gap:6px;align-items:flex-start;}
+.fr-formula-label{font-size:10px;color:#9ca3af;flex-shrink:0;margin-top:1px;}
+.fr-formula{font-size:11px;font-family:monospace;color:#374151;background:#fff;padding:2px 6px;border-radius:4px;border:1px solid #e5e7eb;}
+.fr-detail-row{display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-top:1px solid #f0f0f0;}
+.fr-detail-row span{color:#9ca3af;}
+.fr-detail-row strong{color:#374151;}
+.fr-pos{color:#10b981;}
+.fr-neg{color:#ef4444;}
+
+/* legend */
+.fr-legend{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#fff;border-radius:10px;border:1px solid #f0f0f4;margin-top:4px;flex-wrap:wrap;}
+.fr-legend-title{font-size:12px;font-weight:600;color:#374151;}

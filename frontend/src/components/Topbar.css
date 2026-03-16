@@ -1,0 +1,50 @@
+.topbar {
+  height: 100px;
+  width: 100%;
+  background-color: white;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 var(--spacing-lg);
+  box-shadow: var(--shadow-sm);
+  z-index: 20;
+}
+
+.brand-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.top-logo {
+  height: 100px;
+  width: auto;
+  object-fit: contain;
+}
+
+.brand-title {
+  font-size: 50px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.logout-btn {
+  background-color: #b5b5b5;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.logout-btn:hover {
+  background-color: #0284c7;
+  color: white;
+}

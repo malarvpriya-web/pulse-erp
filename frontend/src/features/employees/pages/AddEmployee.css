@@ -1,0 +1,477 @@
+/* ================= PAGE ================= */
+
+.add-employee-page{
+  padding-top:30px; /* Matches Employee Dashboard */
+  width:100%;
+}
+
+/* TOP RIGHT BACK BUTTON */
+.add-page-back-btn{
+  background:#b5b5b5;
+  color:white;
+  border:none;
+  padding:10px 20px;
+  border-radius:8px;
+  cursor:pointer;
+  font-size:18px;
+  font-weight:500;
+  transition:0.2s;
+}
+
+.add-page-back-btn:hover{
+  background:#0284c7;
+  color: white;
+}
+
+/* ================= FORM CARD ================= */
+
+.add-employee-form{
+  background:white;
+  padding:30px; /* Standardized padding */
+  border-radius:16px;
+  box-shadow:0 4px 14px rgba(0,0,0,0.06);
+  width:100%;
+  margin-top:22px;
+}
+
+/* ================= SECTION HEADINGS ================= */
+
+.add-employee-form h2{
+  margin-top:30px;
+  margin-bottom:15px;
+  font-size:20px;
+  font-weight:600;
+  border-bottom:2px solid #f1f5f9;
+  padding-bottom:6px;
+}
+
+/* ================= GRID ================= */
+
+.form-grid{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:20px;
+}
+
+/* ================= FIELD ================= */
+
+.form-grid > div{
+  display:flex;
+  flex-direction:column;
+  font-size: 18px;
+}
+
+.form-grid label{
+  font-size:18px;
+  font-weight:600;
+  margin-bottom:6px;
+  color:#374151;
+}
+
+.form-grid input,
+.form-grid select,
+.form-grid textarea{
+  padding:12px 18px;
+  border-radius:10px;
+  border:1px solid #e5e7eb;
+  font-size:18px;
+  background:#f9fafb;
+  font-family: inherit;
+}
+
+.form-grid textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+/* ================= UPLOAD ================= */
+
+.upload-grid{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:20px;
+  font-size: 18px;
+  margin-top:10px;
+}
+
+.upload-box{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-size:18px;
+  font-weight:600;
+  color:#374151;
+}
+
+.upload-box input{
+  flex:1;
+}
+
+.upload-box input{
+  padding:10px;
+  border-radius:10px;
+  border:1px solid #e5e7eb;
+  background:#f9fafb;
+  font-size: 18px;
+}
+
+/* ================= BUTTON ================= */
+
+.save-btn{
+  margin-top:35px;
+  padding:10px 20px;
+  border:none;
+  border-radius:8px;
+  background:#b5b5b5;
+  color:white;
+  font-size:18px;
+  font-weight:500;
+  cursor:pointer;
+  transition:0.2s;
+}
+
+.save-btn:hover{
+  background:#0284c7;
+  color: white;
+}
+
+/* ================= RESPONSIVE ================= */
+
+@media(max-width:1200px){
+  .form-grid,
+  .upload-grid{
+    grid-template-columns:repeat(2,1fr);
+  }
+}
+
+@media(max-width:600px){
+  .form-grid,
+  .upload-grid{
+    grid-template-columns:1fr;
+  }
+}
+.page-header{
+  display:flex;
+  justify-content:space-between; /* ⭐ left + right */
+  align-items:center;
+  margin-bottom:10px;
+}
+.accordion {
+  margin-bottom: 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 18px;
+}
+
+.accordion-header {
+  background: #f3f4f6;
+  padding: 15px;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.accordion-body {
+  padding: 20px;
+  background: white;
+  font-size: 18px;
+}
+
+.add-employee-form {
+  font-size: 18px;
+}
+
+.add-employee-form label {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.add-employee-form input,
+.add-employee-form select,
+.add-employee-form textarea {
+  font-size: 18px;
+  padding: 12px 14px;
+}
+
+select {
+  height: 50px;
+  font-size: 18px;
+}
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 50px;
+  font-size: 18px;
+}
+
+.radio-options {
+  display: flex;
+  gap: 20px;
+  margin-top: 5px;
+  font-size: 18px;
+}
+
+/* ================= APPROVAL MODAL ================= */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.modal-content {
+  background: white;
+  border-radius: 12px;
+  padding: 30px;
+  max-width: 500px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  animation: slideUp 0.3s ease;
+  text-align: center; /* Center content for minimal look */
+  font-family: 'Inter', sans-serif;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.approval-modal h2 {
+  margin-bottom: 25px;
+  font-size: 20px;
+  color: #1e293b;
+  border-bottom: none;
+  padding-bottom: 10px;
+  font-weight: 600;
+  text-transform: none; /* Ensure sentence case */
+}
+
+.approval-section {
+  margin-bottom: 25px;
+}
+
+.approval-section h3 {
+  font-size: 20px;
+  color: #475569;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+/* Approval Summary Table */
+.approval-summary {
+  width: 100%;
+  border-collapse: collapse;
+  background: #f8fafc;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.approval-summary tr {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.approval-summary tr:last-child {
+  border-bottom: none;
+}
+
+.approval-summary td {
+  padding: 12px 15px;
+  font-size: 18px;
+}
+
+.approval-summary td:first-child {
+  font-weight: 600;
+  color: #475569;
+  width: 120px;
+  background: #f1f5f9;
+}
+
+.approval-summary td:last-child {
+  color: #1e293b;
+}
+
+/* Approvers Grid */
+.approvers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 15px;
+}
+
+.approver-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 500;
+}
+
+.approver-checkbox:hover {
+  border-color: #0284c7;
+  background: #f0f9ff;
+}
+
+.approver-checkbox input[type="checkbox"] {
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+.approver-checkbox input[type="checkbox"]:checked + span {
+  color: #0284c7;
+}
+
+/* Textarea Styling */
+.approval-section textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 18px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.approval-section textarea:focus {
+  outline: none;
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.1);
+}
+
+/* Approval Status */
+.approval-status {
+  background: #f8fafc;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.approval-status strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #475569;
+}
+
+.status-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 18px;
+  background: white;
+  cursor: pointer;
+}
+
+.status-select:focus {
+  outline: none;
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.1);
+}
+
+/* Modal Buttons */
+.modal-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center; /* Center buttons */
+  margin-top: 25px;
+  padding-top: 0;
+  border-top: none;
+}
+
+.btn-approve,
+.btn-cancel {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: none; /* Ensure sentence case */
+}
+
+.btn-approve {
+  background: #b5b5b5;
+  color: white;
+}
+
+.btn-approve:hover {
+  background: #0284c7;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+.btn-cancel {
+  background: #b5b5b5;
+  color: white;
+}
+
+.btn-cancel:hover {
+  background: #0284c7;
+}
+.permission-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 20px;
+  margin-top: 10px;
+}
+
+.permission-card {
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permission-card h3 {
+  color: black;
+  margin-bottom: 8px;
+}
+
+.permission-card label {
+  display: flex;
+  gap: 8px;
+  color:black;
+  font-weight: 500;
+  cursor: pointer;
+}
+.notes-textarea {
+  width: 100%;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  font-size: 18px;
+  font-family: inherit;
+  resize: vertical;
+}

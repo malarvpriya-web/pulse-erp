@@ -1,0 +1,66 @@
+.management-insight-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.insight-card {
+  background: white;
+  border-radius: 10px;
+  padding: 16px 20px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-left: 4px solid;
+  transition: all 0.15s ease;
+  min-height: 120px;
+  max-height: 120px;
+}
+
+.insight-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.insight-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.insight-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.insight-label {
+  font-size: 13px;
+  color: #6b7280;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.insight-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+@media (max-width: 1024px) {
+  .management-insight-bar {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .management-insight-bar {
+    grid-template-columns: 1fr;
+  }
+  
+  .insight-value {
+    font-size: 24px;
+  }
+}

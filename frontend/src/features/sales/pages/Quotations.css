@@ -1,0 +1,15 @@
+.quotations-page {
+  padding-top: 30px; /* Matches Employee Dashboard */
+}
+
+.quotations-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.quotations-header h1 {
+  font-size: 22px;
+  font-weight: 600;
+}

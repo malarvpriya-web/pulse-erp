@@ -1,0 +1,468 @@
+/* Payroll.css */
+.py-root {
+  padding: 24px;
+  background: #f8f9fc;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.py-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.py-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
+}
+
+/* KPI */
+.py-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.py-kpi {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  padding: 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.py-kpi-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.py-kpi-label { font-size: 12px; color: #9ca3af; margin: 0 0 2px; }
+.py-kpi-val   { font-size: 22px; font-weight: 700; color: #111827; margin: 0 0 2px; }
+.py-kpi-sub   { font-size: 11px; color: #6b7280; margin: 0; }
+
+/* Status chips */
+.py-status-chips {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.py-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.py-chip-paid       { background: #dcfce7; color: #166534; }
+.py-chip-pending    { background: #fef3c7; color: #92400e; }
+.py-chip-processing { background: #dbeafe; color: #1e40af; }
+
+/* Cards */
+.py-card {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+
+.py-card-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f0f0f4;
+}
+
+.py-card-title { font-size: 14px; font-weight: 600; color: #111827; }
+.py-card-body  { padding: 20px; }
+
+/* Table controls */
+.py-table-controls {
+  display: flex;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid #f0f0f4;
+  flex-wrap: wrap;
+}
+
+.py-search-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 300px;
+}
+
+.py-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #9ca3af;
+  pointer-events: none;
+}
+
+.py-search {
+  width: 100%;
+  padding: 8px 12px 8px 34px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+.py-search:focus { border-color: #6366f1; box-shadow: 0 0 0 3px #6366f118; }
+
+.py-filter {
+  padding: 8px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #374151;
+  background: #fff;
+  cursor: pointer;
+  outline: none;
+}
+
+/* Table */
+.py-table-wrap { overflow-x: auto; }
+
+.py-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.py-table th {
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f4;
+  white-space: nowrap;
+}
+
+.py-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #f9f9fb;
+  color: #374151;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.py-table tr:last-child td { border-bottom: none; }
+.py-table tr:hover td      { background: #fafafe; }
+
+.py-emp-name  { font-size: 13px; font-weight: 500; color: #111827; display: block; }
+.py-emp-dept  { font-size: 11px; color: #9ca3af; display: block; }
+.py-emp-id    { font-size: 11px; color: #b0b8c4; font-family: monospace; display: block; }
+.py-amt       { font-weight: 500; color: #111827; }
+.py-deduction { color: #ef4444; }
+.py-net       { color: #10b981; font-weight: 600; }
+
+/* Badges */
+.py-badge {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-block;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+.py-badge-paid       { background: #dcfce7; color: #166534; }
+.py-badge-pending    { background: #fef3c7; color: #92400e; }
+.py-badge-processing { background: #dbeafe; color: #1e40af; }
+.py-badge-on_hold    { background: #fee2e2; color: #991b1b; }
+
+/* Action buttons */
+.py-action-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  margin-right: 4px;
+  transition: all 0.15s;
+}
+.py-action-btn:hover { background: #f3f4f6; color: #111827; border-color: #d1d5db; }
+
+/* Month pills */
+.py-month-pills { display: flex; gap: 6px; }
+
+.py-month-pill {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  color: #374151;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.py-month-pill:hover  { border-color: #6366f1; color: #6366f1; }
+.py-month-pill.active { background: #6366f1; color: #fff; border-color: #6366f1; }
+
+/* Drawer */
+.py-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.3);
+  z-index: 100;
+  animation: py-fade-in 0.2s ease;
+}
+
+.py-drawer {
+  position: fixed;
+  right: 0;
+  top: 0;
+  height: 100%;
+  width: 520px;
+  background: #fff;
+  z-index: 101;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 20px rgba(0,0,0,0.12);
+  animation: py-slide-in 0.25s ease;
+}
+
+.py-drawer-sm { width: 420px; }
+
+.py-drawer-hd {
+  padding: 18px 24px;
+  border-bottom: 1px solid #f0f0f4;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.py-drawer-title { font-size: 15px; font-weight: 600; color: #111827; }
+
+.py-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.py-drawer-footer {
+  padding: 14px 24px;
+  border-top: 1px solid #f0f0f4;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* Payslip */
+.py-slip-header {
+  text-align: center;
+  padding: 20px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+.py-slip-title  { font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; opacity: 0.8; margin: 0 0 6px; }
+.py-slip-name   { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
+.py-slip-meta   { font-size: 12px; opacity: 0.85; margin: 3px 0 0; }
+
+.py-slip-section-hd {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 12px 0 6px;
+}
+
+.py-slip-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.py-slip-table td {
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+}
+.py-slip-table td:last-child { text-align: right; font-weight: 500; }
+.py-slip-total-row td {
+  font-weight: 700;
+  color: #111827;
+  border-top: 2px solid #f0f0f4;
+  border-bottom: 2px solid #f0f0f4;
+  padding: 10px 0;
+}
+
+.py-net-pay-box {
+  background: linear-gradient(135deg, #dcfce7, #d1fae5);
+  border: 1px solid #86efac;
+  border-radius: 10px;
+  padding: 18px;
+  text-align: center;
+  margin: 16px 0;
+}
+.py-net-pay-label { font-size: 11px; font-weight: 600; color: #166534; text-transform: uppercase; letter-spacing: 0.1em; margin: 0 0 6px; }
+.py-net-pay-val   { font-size: 28px; font-weight: 700; color: #15803d; margin: 0; }
+
+/* Form */
+.py-form-group { margin-bottom: 16px; }
+.py-label { font-size: 13px; font-weight: 500; color: #374151; display: block; margin-bottom: 6px; }
+
+.py-select,
+.py-textarea,
+.py-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+  outline: none;
+}
+.py-select:focus,
+.py-textarea:focus,
+.py-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px #6366f118; }
+
+.py-warning {
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 12px;
+  color: #92400e;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+/* Buttons */
+.py-btn-primary {
+  padding: 9px 18px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: opacity 0.15s;
+}
+.py-btn-primary:hover { opacity: 0.9; }
+
+.py-btn-ghost {
+  padding: 9px 18px;
+  background: #fff;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.py-btn-ghost:hover { background: #f3f4f6; }
+
+.py-btn-generate {
+  padding: 9px 16px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.py-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: #f3f4f6;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+}
+.py-icon-btn:hover { background: #e5e7eb; }
+
+/* Toast */
+.py-toast {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  font-size: 13px;
+  min-width: 260px;
+  animation: py-toast-in 0.25s ease;
+}
+.py-toast-success { border-left: 4px solid #10b981; color: #065f46; }
+.py-toast-error   { border-left: 4px solid #ef4444; color: #991b1b; }
+
+/* Empty */
+.py-empty { text-align: center; padding: 40px; color: #9ca3af; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+/* Spin */
+.py-spin { animation: py-spin-anim 1s linear infinite; }
+
+/* Animations */
+@keyframes py-toast-in  { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+@keyframes py-slide-in  { from{transform:translateX(100%)} to{transform:translateX(0)} }
+@keyframes py-fade-in   { from{opacity:0} to{opacity:1} }
+@keyframes py-spin-anim { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+
+/* Responsive */
+@media (max-width: 1200px) {
+  .py-kpis { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 768px) {
+  .py-root { padding: 16px; }
+  .py-kpis { grid-template-columns: 1fr; }
+  .py-drawer, .py-drawer-sm { width: 100%; }
+}

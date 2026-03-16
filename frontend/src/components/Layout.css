@@ -1,0 +1,167 @@
+:root {
+  /* 🎯 PRIMARY COLORS */
+  --primary-color: #2563eb;       /* Blue-600 */
+  --primary-hover: #1d4ed8;       /* Blue-700 */
+  --primary-light: #eff6ff;       /* Blue-50 */
+  
+  /* 🎨 NEUTRALS */
+  --bg-color: #f8fafc;            /* Slate-50 - Lighter, cleaner background */
+  --card-bg: #ffffff;             /* White */
+  --text-primary: #111827;        /* Gray-900 */
+  --text-secondary: #6b7280;      /* Gray-500 */
+  --border-color: #e5e7eb;        /* Gray-200 */
+  
+  /* 📏 DIMENSIONS */
+  --header-height: 100px;
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 70px;
+  
+  /* 📐 SPACING */
+  --spacing-xs: 8px;
+  --spacing-sm: 12px;
+  --spacing-md: 20px;
+  --spacing-lg: 32px;
+  
+  /* 🧱 BORDERS & SHADOWS */
+  --border-radius: 8px;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  
+  /* 🔤 TYPOGRAPHY */
+  --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-size-base: 18px;
+  --font-size-lg: 20px;
+  --font-size-xl: 22px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family);
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+}
+
+/* 📏 LAYOUT STRUCTURE */
+.layout {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.main-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+}
+
+.page-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-md);
+  background-color: var(--bg-color);
+}
+
+/* 🎨 GLOBAL BUTTON STYLES */
+.primary-btn {
+  background-color: #b5b5b5;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: var(--border-radius);
+  font-weight: 500;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.1s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: none;
+}
+
+.primary-btn:hover {
+  background-color: #0284c7;
+  color: white;
+}
+
+.primary-btn:active {
+  transform: translateY(1px);
+}
+
+.secondary-btn, .cancel-btn {
+  background-color: #b5b5b5;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: var(--border-radius);
+  font-weight: 500;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.secondary-btn:hover, .cancel-btn:hover {
+  background-color: #0284c7;
+  color: white;
+}
+
+/* 🧱 GLOBAL CARD STYLES */
+.card, .widget, .section-card, .po-table-container, .leads-table-container {
+  background: var(--card-bg);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-sm);
+  padding: var(--spacing-md);
+  border: 1px solid var(--border-color);
+  margin-bottom: var(--spacing-md);
+}
+
+/* 🔤 TYPOGRAPHY UTILS */
+h1, .page-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 var(--spacing-lg) 0;
+}
+
+h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-md);
+}
+
+/* 📊 GLOBAL TABLE STYLES */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  text-align: left;
+  padding: 12px 16px;
+  background-color: #f9fafb;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 18px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border-color);
+}
+
+td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 18px;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}

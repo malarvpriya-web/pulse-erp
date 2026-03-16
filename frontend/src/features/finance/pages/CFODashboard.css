@@ -1,0 +1,163 @@
+.cfo-root{padding:24px;background:#f8f9fc;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+.cfo-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px;color:#6b7280;}
+.cfo-spinner{width:36px;height:36px;border:3px solid #e5e7eb;border-top-color:#6366f1;border-radius:50%;animation:cfospin .8s linear infinite;}
+@keyframes cfospin{to{transform:rotate(360deg);}}
+
+/* header */
+.cfo-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;}
+.cfo-title-row{display:flex;align-items:center;gap:10px;}
+.cfo-title{font-size:20px;font-weight:600;color:#111827;margin:0;}
+.cfo-badge{background:#6366f1;color:#fff;font-size:10px;font-weight:600;padding:3px 9px;border-radius:20px;}
+.cfo-sub{font-size:12px;color:#9ca3af;margin:4px 0 0;}
+.cfo-header-r{display:flex;align-items:center;gap:10px;}
+.cfo-period{display:flex;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;}
+.cfo-period-tab{padding:6px 12px;border:none;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;}
+.cfo-period-tab.active{background:#6366f1;color:#fff;}
+.cfo-refresh{display:flex;align-items:center;gap:6px;padding:8px 14px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;}
+.cfo-refresh:hover{background:#4f46e5;}
+
+/* executive KPI strip */
+.cfo-exec-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px;}
+@media(max-width:1400px){.cfo-exec-kpis{grid-template-columns:repeat(3,1fr);}}
+@media(max-width:768px){.cfo-exec-kpis{grid-template-columns:repeat(2,1fr);}}
+
+.cfo-exec-kpi{border-radius:12px;padding:16px;color:#fff;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;min-height:110px;}
+.cfo-kpi-rev   {background:linear-gradient(135deg,#6366f1,#8b5cf6);}
+.cfo-kpi-profit{background:linear-gradient(135deg,#10b981,#059669);}
+.cfo-kpi-ebitda{background:linear-gradient(135deg,#3b82f6,#1d4ed8);}
+.cfo-kpi-cash  {background:linear-gradient(135deg,#f59e0b,#d97706);}
+.cfo-kpi-ar    {background:linear-gradient(135deg,#8b5cf6,#7c3aed);}
+.cfo-kpi-burn  {background:linear-gradient(135deg,#ef4444,#dc2626);}
+
+.cfo-exec-kpi-body{position:relative;z-index:1;}
+.cfo-exec-label{font-size:11px;opacity:.85;margin:0 0 6px;text-transform:uppercase;letter-spacing:.4px;}
+.cfo-exec-val{font-size:22px;font-weight:700;margin:0 0 6px;line-height:1;}
+.cfo-exec-meta{display:flex;align-items:center;gap:8px;font-size:12px;opacity:.9;}
+.cfo-exec-vs{font-size:11px;opacity:.8;}
+.cfo-margin-badge{background:rgba(255,255,255,.2);padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;}
+.cfo-exec-kpi-chart{position:absolute;bottom:0;left:0;right:0;opacity:.6;}
+.cfo-exec-icon{position:absolute;right:12px;top:12px;opacity:.2;color:#fff;}
+
+/* grid */
+.cfo-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px;}
+.cg12{grid-column:span 12;}
+.cg8{grid-column:span 8;}
+.cg6{grid-column:span 6;}
+.cg4{grid-column:span 4;}
+.cg3{grid-column:span 3;}
+@media(max-width:1200px){.cg8,.cg6{grid-column:span 12;}.cg4,.cg3{grid-column:span 6;}}
+@media(max-width:768px){.cg8,.cg6,.cg4,.cg3{grid-column:span 12;}}
+
+/* card */
+.cfo-card{background:#fff;border-radius:12px;border:1px solid #f0f0f4;padding:16px;height:100%;box-sizing:border-box;}
+.cfo-card-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.cfo-card-title{font-size:13px;font-weight:600;color:#374151;}
+.cfo-card-sub{font-size:12px;color:#9ca3af;}
+.cfo-icon-btn{background:none;border:1px solid #e5e7eb;border-radius:6px;padding:4px 7px;cursor:pointer;color:#6b7280;display:flex;align-items:center;}
+.cfo-icon-btn:hover{background:#f3f4f6;}
+
+/* modal */
+.cfo-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;}
+.cfo-modal{background:#fff;border-radius:16px;width:100%;max-width:960px;max-height:90vh;display:flex;flex-direction:column;}
+.cfo-modal-hd{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #f0f0f4;}
+.cfo-modal-hd h3{font-size:15px;font-weight:600;color:#111827;margin:0;}
+.cfo-modal-body{padding:20px;overflow-y:auto;flex:1;}
+
+/* trend */
+.cfo-trend{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;padding:2px 6px;border-radius:20px;}
+.cfo-trend.up{background:rgba(255,255,255,.25);color:#fff;}
+.cfo-trend.down{background:rgba(255,255,255,.25);color:#fff;}
+
+/* chart meta */
+.cfo-chart-meta{display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap;}
+.cfo-cm-chip{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;font-size:12px;}
+.cfo-cm-rev{background:#ede9fe;}
+.cfo-cm-target{background:#fef3c7;}
+.cfo-cm-profit{background:#dcfce7;}
+.cfo-cm-chip strong{font-size:14px;font-weight:700;color:#111827;}
+.cfo-cm-gap{font-size:11px;color:#dc2626;}
+
+/* P&L summary */
+.cfo-pl-summary{display:flex;flex-direction:column;gap:8px;margin-bottom:12px;}
+.cfo-pl-row{display:flex;justify-content:space-between;font-size:13px;padding:6px 10px;background:#f9fafb;border-radius:6px;}
+.cfo-pl-row strong{font-size:14px;font-weight:700;}
+
+/* waterfall */
+.cfo-waterfall{display:flex;gap:4px;height:160px;align-items:flex-end;margin-top:8px;}
+.cfo-wf-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;}
+.cfo-wf-bar-wrap{flex:1;width:100%;display:flex;flex-direction:column;}
+.cfo-wf-spacer{flex-shrink:0;}
+.cfo-wf-bar{border-radius:3px 3px 0 0;min-height:4px;transition:height .5s;}
+.cfo-wf-base{flex-shrink:0;}
+.cfo-wf-val{font-size:9px;font-weight:600;text-align:center;white-space:nowrap;}
+.cfo-wf-label{font-size:9px;color:#9ca3af;text-align:center;white-space:nowrap;}
+
+/* cash flow */
+.cfo-cf-kpis{display:flex;gap:10px;margin-bottom:10px;}
+.cfo-cf-kpi{display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:7px;font-size:12px;flex:1;}
+.cfo-cf-kpi.green{background:#dcfce7;color:#166534;}
+.cfo-cf-kpi.red{background:#fee2e2;color:#991b1b;}
+.cfo-cf-kpi.amber{background:#fef3c7;color:#92400e;}
+.cfo-cf-kpi strong{font-size:13px;font-weight:700;}
+
+/* forecast legend */
+.cfo-forecast-legend{display:flex;gap:16px;margin-bottom:8px;font-size:12px;}
+.cfo-fl-item{font-weight:500;}
+
+/* ratios */
+.cfo-ratios-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+@media(max-width:900px){.cfo-ratios-grid{grid-template-columns:repeat(2,1fr);}}
+.cfo-ratio-item{padding:10px;border-radius:8px;position:relative;border:1px solid transparent;}
+.cfo-ratio-good{background:#f0fdf4;border-color:#bbf7d0;}
+.cfo-ratio-warn{background:#fffbeb;border-color:#fde68a;}
+.cfo-ratio-label{font-size:10px;color:#9ca3af;margin-bottom:4px;}
+.cfo-ratio-val{font-size:16px;font-weight:700;color:#111827;}
+.cfo-ratio-bench{font-size:10px;color:#9ca3af;margin-top:2px;}
+.cfo-ratio-icon{position:absolute;top:8px;right:8px;}
+.cfo-ratio-icon.green{color:#10b981;}
+.cfo-ratio-icon.amber{color:#f59e0b;}
+
+/* ROI */
+.cfo-roi-list{display:flex;flex-direction:column;gap:10px;}
+.cfo-roi-row{display:flex;align-items:center;gap:10px;}
+.cfo-roi-dept{font-size:12px;color:#374151;width:90px;flex-shrink:0;font-weight:500;}
+.cfo-roi-bars{flex:1;display:flex;flex-direction:column;gap:3px;}
+.cfo-roi-bar-wrap{height:6px;background:#f3f4f6;border-radius:3px;overflow:hidden;}
+.cfo-roi-cost-bar{height:100%;background:#ef4444;border-radius:3px;transition:width .5s;}
+.cfo-roi-rev-bar{height:100%;background:#10b981;border-radius:3px;transition:width .5s;}
+.cfo-roi-nums{display:flex;flex-direction:column;align-items:flex-end;font-size:10px;color:#9ca3af;min-width:80px;}
+.cfo-roi-cost{color:#ef4444;}
+.cfo-roi-rev{color:#10b981;}
+.cfo-roi-badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;min-width:48px;text-align:center;}
+.cfo-roi-badge.good{background:#dcfce7;color:#16a34a;}
+.cfo-roi-badge.neg{background:#fee2e2;color:#dc2626;}
+
+/* gauges */
+.cfo-gauges{display:flex;justify-content:space-around;margin-bottom:12px;}
+.cfo-gauge{display:flex;justify-content:center;}
+.cfo-wc-stats{display:flex;flex-direction:column;gap:8px;}
+.cfo-wc-stat{display:flex;justify-content:space-between;padding:8px;background:#f9fafb;border-radius:7px;font-size:12px;color:#6b7280;}
+.cfo-wc-stat strong{font-size:14px;font-weight:700;}
+
+/* expense */
+.cfo-exp-total{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.cfo-exp-total span{font-size:12px;color:#9ca3af;}
+.cfo-exp-total strong{font-size:15px;font-weight:700;color:#374151;}
+.cfo-exp-legend{display:flex;flex-direction:column;gap:4px;margin-top:8px;}
+.cfo-exp-row{display:flex;align-items:center;gap:6px;font-size:12px;}
+.cfo-exp-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0;}
+.cfo-exp-name{flex:1;color:#6b7280;}
+.cfo-exp-pct{font-weight:600;color:#374151;}
+
+/* alerts */
+.cfo-alert{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-radius:8px;margin-bottom:8px;gap:10px;}
+.cfo-alert-high{background:#fee2e2;}
+.cfo-alert-medium{background:#fef3c7;}
+.cfo-alert-low{background:#f3f4f6;}
+.cfo-alert-body{display:flex;align-items:center;gap:7px;font-size:12px;color:#374151;flex:1;}
+.cfo-alert-high .cfo-alert-body{color:#991b1b;}
+.cfo-alert-medium .cfo-alert-body{color:#92400e;}
+.cfo-alert-action{font-size:11px;font-weight:600;color:#6366f1;background:none;border:1px solid #c7d2fe;border-radius:6px;padding:3px 9px;cursor:pointer;white-space:nowrap;}
+
+/* colours */
+.green{color:#10b981;}.red{color:#ef4444;}.amber{color:#f59e0b;}

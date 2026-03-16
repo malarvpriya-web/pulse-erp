@@ -1,0 +1,2 @@
+ALTER TABLE employees
+ADD COLUMN emp_id VARCHAR(10);

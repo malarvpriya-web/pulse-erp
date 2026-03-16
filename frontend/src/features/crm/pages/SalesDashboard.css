@@ -1,0 +1,68 @@
+/* SalesDashboard.css — prefix: csd- */
+.csd-root { padding: 24px; background: #f8f9fc; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+.csd-header   { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+.csd-title    { font-size: 22px; font-weight: 700; color: #111827; margin: 0; }
+.csd-sub      { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
+.csd-header-r { display: flex; align-items: center; gap: 10px; }
+
+.csd-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6366f1; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.csd-btn-primary:hover { background: #4f46e5; }
+.csd-btn-outline { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; color: #374151; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.csd-btn-outline:hover { background: #f9fafb; }
+.csd-icon-btn    { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; color: #6b7280; }
+.csd-text-btn    { display: flex; align-items: center; gap: 4px; background: none; border: none; color: #6366f1; font-size: 12px; font-weight: 500; cursor: pointer; padding: 0; }
+
+.csd-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 24px; }
+.csd-kpi  { background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; padding: 16px; display: flex; align-items: flex-start; gap: 12px; }
+.csd-kpi-alert { border-left: 3px solid #ef4444; }
+.csd-kpi-icon  { width: 38px; height: 38px; background: color-mix(in srgb, var(--c) 12%, transparent); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--c); flex-shrink: 0; }
+.csd-kpi-label { font-size: 12px; color: #6b7280; margin: 0 0 4px; }
+.csd-kpi-val   { font-size: 22px; font-weight: 700; color: #111827; margin: 0; }
+.csd-kpi-sub   { font-size: 11px; color: #9ca3af; margin: 3px 0 0; }
+
+.csd-grid  { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+.csd-fc5   { grid-column: span 5; }
+.csd-fc7   { grid-column: span 7; }
+.csd-fc12  { grid-column: span 12; }
+@media (max-width: 900px) { .csd-fc5, .csd-fc7, .csd-fc12 { grid-column: span 12; } }
+
+.csd-card      { background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; overflow: hidden; }
+.csd-card-hd   { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #f0f0f4; }
+.csd-card-title{ font-size: 14px; font-weight: 600; color: #111827; }
+.csd-card-body { padding: 16px; }
+
+/* funnel legend */
+.csd-funnel-legend { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.csd-funnel-row    { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.csd-funnel-dot    { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.csd-funnel-stage  { flex: 1; color: #374151; }
+.csd-funnel-count  { color: #6b7280; min-width: 50px; }
+.csd-funnel-val    { font-weight: 600; color: #111827; min-width: 60px; text-align: right; }
+
+/* top opps */
+.csd-top-opps  { display: flex; flex-direction: column; gap: 0; padding: 0; }
+.csd-opp-row   { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #f9fafb; }
+.csd-opp-row:last-child { border-bottom: none; }
+.csd-opp-rank  { width: 20px; height: 20px; border-radius: 50%; background: #f3f4f6; color: #6b7280; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.csd-opp-info  { flex: 1; min-width: 0; }
+.csd-opp-name  { display: block; font-size: 13px; font-weight: 500; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.csd-opp-company { display: block; font-size: 11px; color: #9ca3af; }
+.csd-opp-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.csd-opp-val   { font-size: 13px; font-weight: 700; color: #111827; }
+.csd-opp-pct   { font-size: 11px; color: #6b7280; }
+.csd-badge     { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+
+/* nav cards */
+.csd-nav-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+@media (max-width: 700px) { .csd-nav-cards { grid-template-columns: repeat(2, 1fr); } }
+.csd-nav-card  { background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; padding: 16px; display: flex; flex-direction: column; gap: 4px; cursor: pointer; position: relative; transition: box-shadow .15s; }
+.csd-nav-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.csd-nav-icon  { width: 36px; height: 36px; background: color-mix(in srgb, var(--c) 12%, transparent); border-radius: 9px; display: flex; align-items: center; justify-content: center; color: var(--c); margin-bottom: 4px; }
+.csd-nav-label { font-size: 14px; font-weight: 600; color: #111827; }
+.csd-nav-sub   { font-size: 12px; color: #6b7280; }
+.csd-nav-arrow { position: absolute; top: 16px; right: 16px; color: #d1d5db; }
+
+.csd-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 300px; gap: 12px; color: #9ca3af; }
+.csd-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: csd-spin .7s linear infinite; }
+@keyframes csd-spin { to { transform: rotate(360deg); } }

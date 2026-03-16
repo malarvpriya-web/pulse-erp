@@ -1,0 +1,155 @@
+.orgchart-page {
+  padding: 30px;
+  font-family: Arial, sans-serif;
+}
+
+.orgchart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+}
+
+.orgchart-header h1 {
+  font-size: 28px;
+  margin: 0;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 10px;
+}
+
+.view-toggle button {
+  padding: 10px 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 600;
+  transition: 0.2s;
+}
+
+.view-toggle button.active {
+  background: #0284c7;
+  color: white;
+  border-color: #0284c7;
+}
+
+.view-toggle button:hover {
+  background: #f3f4f6;
+}
+
+.view-toggle button.active:hover {
+  background: #0369a1;
+}
+
+.org-list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.department-section h2 {
+  font-size: 24px;
+  margin-bottom: 15px;
+  color: #0284c7;
+}
+
+.employees-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.employee-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px;
+  transition: 0.2s;
+}
+
+.employee-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  transform: translateY(-2px);
+}
+
+.employee-info h3 {
+  font-size: 20px;
+  margin: 0 0 8px 0;
+}
+
+.employee-info .designation {
+  font-size: 18px;
+  color: #6b7280;
+  margin: 5px 0;
+}
+
+.employee-info .email {
+  font-size: 16px;
+  color: #9ca3af;
+  margin: 5px 0;
+}
+
+.employee-info .manager {
+  font-size: 16px;
+  color: #0284c7;
+  margin: 10px 0 0 0;
+  font-weight: 600;
+}
+
+.org-tree-view {
+  background: white;
+  padding: 30px;
+  border-radius: 12px;
+  overflow-x: auto;
+}
+
+.tree-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 20px 0;
+}
+
+.tree-employee-card {
+  background: #f3f4f6;
+  border: 2px solid #0284c7;
+  border-radius: 12px;
+  padding: 15px 20px;
+  text-align: center;
+  min-width: 200px;
+}
+
+.tree-employee-card h4 {
+  font-size: 18px;
+  margin: 0 0 5px 0;
+}
+
+.tree-employee-card p {
+  font-size: 16px;
+  color: #6b7280;
+  margin: 0;
+}
+
+.tree-children {
+  display: flex;
+  gap: 30px;
+  margin-top: 30px;
+  padding-top: 30px;
+  border-top: 2px solid #e5e7eb;
+  position: relative;
+}
+
+.tree-children::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 2px;
+  height: 30px;
+  background: #e5e7eb;
+  transform: translateX(-50%);
+}
