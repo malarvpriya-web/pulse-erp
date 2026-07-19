@@ -35,6 +35,9 @@ jobs:
       NODE_ENV: test
       JWT_SECRET: ci-jwt-secret-minimum-32-characters-long-abc
       DATABASE_URL: postgresql://pulse:pulse_test_pw@localhost:5432/pulse_test
+      # The CI postgres container refuses SSL handshakes; DATABASE_URL
+      # otherwise implies forced SSL and every connection fails.
+      DB_SSL: "false"
       ENCRYPTION_KEY: ci-encryption-key-exactly-32-chars!
       PORT: 5001
 

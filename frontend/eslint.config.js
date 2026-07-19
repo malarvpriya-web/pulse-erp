@@ -5,10 +5,14 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  // Never lint build output or dev-only tools
+  // Never lint build output or dev-only tools. android/ios are Capacitor
+  // native projects whose assets/public is a copy of dist — linting the
+  // minified bundles produces hundreds of false errors.
   globalIgnores([
     'dist',
     'node_modules',
+    'android',
+    'ios',
     'src/utils/devLogin.js',
   ]),
   {

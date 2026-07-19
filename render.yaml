@@ -39,6 +39,11 @@ services:
       # Frontend origin for CORS — must match the deployed pulse-frontend service URL
       - key: FRONTEND_URL
         value: https://pulse-frontend.onrender.com
+      # Off-host backup bucket. sync:false = must be entered in the Render
+      # dashboard; the server refuses to boot in production without it (and
+      # ALLOW_LOCAL_BACKUPS_ONLY is only for the self-contained compose stack).
+      - key: BACKUP_S3_BUCKET
+        sync: false
       # ── Monitoring ──────────────────────────────────────────────────────────
       # Slack/Discord/PagerDuty incoming-webhook URL for operational alerts
       - key: ALERT_WEBHOOK_URL

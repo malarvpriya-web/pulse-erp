@@ -252,9 +252,16 @@ process.on('uncaughtException', (err) => {
   if (process.env.NODE_ENV === 'production' && !process.env.ENCRYPTION_KEY) {
     REQUIRED.push('ENCRYPTION_KEY');
   }
-  // BACKUP_S3_BUCKET is required in production — local backups are lost on container restart.
+  // BACKUP_S3_BUCKET is required in production — local backups are lost with
+  // the container. ALLOW_LOCAL_BACKUPS_ONLY=true is the explicit opt-out for
+  // self-contained stacks (compose demos, CI boot checks) where a named
+  // volume is the accepted backup destination. Never set it on a real deploy.
   if (process.env.NODE_ENV === 'production' && !process.env.BACKUP_S3_BUCKET) {
-    REQUIRED.push('BACKUP_S3_BUCKET');
+    if (String(process.env.ALLOW_LOCAL_BACKUPS_ONLY).toLowerCase() === 'true') {
+      console.warn('⚠️  ALLOW_LOCAL_BACKUPS_ONLY=true — backups live only in the backups volume.');
+    } else {
+      REQUIRED.push('BACKUP_S3_BUCKET');
+    }
   }
   // PERMISSION_FAIL_OPEN disables authorization wherever the matrix has no row.
   // It is an emergency hatch; left set, it silently restores the vulnerability

@@ -42,10 +42,17 @@ const POOL_OPTS = {
 const rejectUnauthorized = String(process.env.DB_SSL_REJECT_UNAUTHORIZED).toLowerCase() === 'true';
 const sslConfig = { rejectUnauthorized };
 
+// DB_SSL=false turns SSL off entirely, for Postgres servers that don't speak
+// it at all: the docker-compose db service and CI's postgres:16-alpine both
+// refuse SSL handshakes, so forcing ssl here makes every connection fail with
+// "The server does not support SSL connections". Unset or any other value
+// keeps SSL on wherever it previously applied (managed Postgres unchanged).
+const sslDisabled = String(process.env.DB_SSL).toLowerCase() === 'false';
+
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: sslConfig,   // required by Render / Neon / Supabase
+      ssl: sslDisabled ? false : sslConfig,   // required by Render / Neon / Supabase
       ...POOL_OPTS,
     })
   : new Pool({
@@ -54,7 +61,7 @@ const pool = process.env.DATABASE_URL
       database: process.env.DB_NAME  || "Pulse",
       password: process.env.DB_PASSWORD,
       port:     parseInt(process.env.DB_PORT || "5432"),
-      ...(isProduction && { ssl: sslConfig }),
+      ...(isProduction && !sslDisabled && { ssl: sslConfig }),
       ...POOL_OPTS,
     });
 

@@ -51,8 +51,15 @@ services:
       TRUST_PROXY_HOPS: "1"
       # Fail closed on unconfigured permissions — matches .env.production.
       PERMISSION_STRICT: "true"
+      # The compose db service speaks no SSL; without this the pg client's
+      # forced-SSL production default kills every connection at boot.
+      DB_SSL: "false"
       # Local backups only; set BACKUP_S3_BUCKET for anything you rely on.
       BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      # Server hard-requires BACKUP_S3_BUCKET in production unless this
+      # explicit opt-out is set. Correct for a self-contained demo stack;
+      # never set it on a real deploy.
+      ALLOW_LOCAL_BACKUPS_ONLY: ${ALLOW_LOCAL_BACKUPS_ONLY:-true}
     volumes:
       # Named volumes, not bind mounts: uploads and backups must survive
       # `docker compose down`. A backup that lives only in a container layer is
