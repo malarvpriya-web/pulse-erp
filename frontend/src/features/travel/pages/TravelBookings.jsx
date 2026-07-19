@@ -1,187 +1,163 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Plus, Search, X, Plane, Hotel, Car, Train } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import './TravelBookings.css';
+import { useToast } from '@/context/ToastContext';
+import { Plus, X, Search, Plane, Train, Bus } from 'lucide-react';
+import { fmt } from './travelUtils';
 
-const SAMPLE = [
-  { id: 1, bookingRef: 'BK-001', type: 'Flight', tripRef: 'TR-002', details: 'IndiGo 6E-241 PNQ→BLR', travelDate: '2026-03-25', amount: 5800, bookedBy: 'Self', status: 'Confirmed' },
-  { id: 2, bookingRef: 'BK-002', type: 'Hotel', tripRef: 'TR-002', details: 'Marriott Bengaluru, 2 nights', travelDate: '2026-03-25', amount: 9600, bookedBy: 'Admin', status: 'Confirmed' },
-  { id: 3, bookingRef: 'BK-003', type: 'Flight', tripRef: 'TR-001', details: 'Vande Bharat PNQ→CSTM', travelDate: '2026-03-20', amount: 1200, bookedBy: 'Self', status: 'Completed' },
-  { id: 4, bookingRef: 'BK-004', type: 'Cab', tripRef: 'TR-001', details: 'Airport transfer — Ola Corporate', travelDate: '2026-03-20', amount: 650, bookedBy: 'Self', status: 'Completed' },
-  { id: 5, bookingRef: 'BK-005', type: 'Flight', tripRef: 'TR-003', details: 'Air India AI-865 PNQ→DEL', travelDate: '2026-04-02', amount: 7200, bookedBy: 'Admin', status: 'Pending' },
-];
-
-const TABS = ['All', 'Flight', 'Hotel', 'Train', 'Cab'];
-const STATUS_COLORS = { Confirmed: '#dcfce7', Completed: '#e0e7ff', Pending: '#fef3c7', Cancelled: '#fee2e2' };
-const STATUS_TEXT   = { Confirmed: '#15803d', Completed: '#4338ca', Pending: '#92400e', Cancelled: '#991b1b' };
-const TYPE_ICONS    = { Flight: <Plane size={14} />, Hotel: <Hotel size={14} />, Train: <Train size={14} />, Cab: <Car size={14} /> };
-const TYPE_COLORS   = { Flight: '#eef2ff', Hotel: '#fef3c7', Train: '#dcfce7', Cab: '#ede9fe' };
-const TYPE_TEXT     = { Flight: '#4338ca', Hotel: '#92400e', Train: '#15803d', Cab: '#7c3aed' };
-const fmt = n => `₹${Number(n).toLocaleString('en-IN')}`;
-const BLANK = { type: 'Flight', tripRef: '', details: '', travelDate: '', amount: '', bookedBy: 'Self', notes: '' };
+const MODE_ICON = { Flight: Plane, Train, Bus, Car: Bus, Other: Plane };
+const BOOKING_STATUS = {
+  Confirmed:       { bg:'#d1fae5', color:'#065f46' },
+  Pending:         { bg:'#fef3c7', color:'#92400e' },
+  pending_booking: { bg:'#ede9fe', color:'#5b21b6' },
+  Cancelled:       { bg:'#fee2e2', color:'#991b1b' },
+};
+const STATUS_LABEL = { pending_booking: 'Pending Booking' };
+const EMPTY = { destination:'', from_date:'', to_date:'', mode:'Flight', airline_train:'', booking_ref:'', cost:'', notes:'' };
 
 export default function TravelBookings() {
-  const [bookings, setBookings] = useState(SAMPLE);
-  const [loading, setLoading]   = useState(false);
-  const [fTab, setFTab]         = useState('All');
-  const [search, setSearch]     = useState('');
-  const [drawer, setDrawer]     = useState(null);
-  const [form, setForm]         = useState(BLANK);
-  const [saving, setSaving]     = useState(false);
-  const [toast, setToast]       = useState(null);
+  const toast = useToast();
+  const [bookings, setBookings] = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form,     setForm]     = useState(EMPTY);
+  const [saving,   setSaving]   = useState(false);
+  const [search,   setSearch]   = useState('');
 
-  const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
-
-  const load = useCallback(async () => {
+  const load = () => {
     setLoading(true);
-    try {
-      const params = {};
-      if (fTab !== 'All') params.type = fTab;
-      const res = await api.get('/travel/bookings', { params });
-      const raw = res.data?.data ?? res.data;
-      setBookings(Array.isArray(raw) && raw.length ? raw : SAMPLE);
-    } catch { setBookings(SAMPLE); }
-    finally { setLoading(false); }
-  }, [fTab]);
+    api.get('/travel/bookings')
+      .then(r => setBookings(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setBookings([]))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
 
-  useEffect(() => { load(); }, [load]);
-
-  const filtered = bookings.filter(b =>
-    (fTab === 'All' || b.type === fTab) &&
-    (b.bookingRef?.toLowerCase().includes(search.toLowerCase()) ||
-     b.details?.toLowerCase().includes(search.toLowerCase()) ||
-     b.tripRef?.toLowerCase().includes(search.toLowerCase()))
-  );
-
-  const counts = TABS.reduce((acc, t) => ({
-    ...acc, [t]: t === 'All' ? bookings.length : bookings.filter(b => b.type === t).length
-  }), {});
-
-  const handleSubmit = async e => {
-    e.preventDefault();
+  const handleSave = async () => {
+    if (!form.destination || !form.from_date) return;
     setSaving(true);
     try {
-      await api.post('/travel/bookings', form);
-      showToast('Booking added!');
-      load();
-    } catch {
-      const nb = { id: Date.now(), bookingRef: `BK-${String(bookings.length + 1).padStart(3, '0')}`, ...form, status: 'Confirmed' };
-      setBookings(prev => [nb, ...prev]);
-      showToast('Booking saved (offline)');
-    }
-    setDrawer(null); setForm(BLANK); setSaving(false);
+      await api.post('/travel/bookings', { ...form, cost: Number(form.cost) || 0 });
+      setShowForm(false); setForm(EMPTY); load();
+      toast.success('Travel booking saved successfully');
+    } catch (err) {
+      toast.error(err.response?.data?.error || err.message || 'Save failed. Please try again.');
+    } finally { setSaving(false); }
   };
 
-  return (
-    <div className="tvb-root">
-      {toast && <div className={`tvb-toast tvb-toast-${toast.type}`}>{toast.msg}</div>}
+  const filtered = bookings.filter(b =>
+    !search || [b?.destination, b?.mode, b?.booking_ref, b?.employee_name, b?.request_number]
+      .some(v => (v ?? '').toLowerCase().includes(search.toLowerCase()))
+  );
 
-      <div className="tvb-header">
+  return (
+    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
         <div>
-          <h1 className="tvb-title">Travel Bookings</h1>
-          <p className="tvb-sub">Track flight, hotel, train &amp; cab bookings</p>
+          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Travel Bookings</h1>
+          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>{bookings.length} bookings</p>
         </div>
-        <button className="tvb-btn-primary" onClick={() => { setForm(BLANK); setDrawer('create'); }}>
-          <Plus size={15} /> Add Booking
+        <button onClick={() => setShowForm(true)}
+          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+          <Plus size={15}/> New Booking
         </button>
       </div>
 
-      <div className="tvb-filters">
-        <div className="tvb-search">
-          <Search size={15} color="#9ca3af" />
-          <input placeholder="Search bookings…" value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button onClick={() => setSearch('')}><X size={13} /></button>}
-        </div>
-        <div className="tvb-tabs">
-          {TABS.map(t => (
-            <button key={t} className={`tvb-tab ${fTab === t ? 'tvb-tab-active' : ''}`} onClick={() => setFTab(t)}>
-              {t} <span className="tvb-tab-count">{counts[t]}</span>
-            </button>
-          ))}
-        </div>
+      <div style={{ position:'relative', marginBottom:16, maxWidth:340 }}>
+        <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search destination, ref, request..."
+          style={{ width:'100%', paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8, border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
       </div>
 
-      {loading ? (
-        <div className="tvb-loading"><div className="tvb-spinner" /></div>
-      ) : filtered.length === 0 ? (
-        <div className="tvb-empty"><Plane size={32} color="#d1d5db" /><p>No bookings found</p></div>
-      ) : (
-        <div className="tvb-table-wrap">
-          <table className="tvb-table">
+      <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
+        {loading ? <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>Loading...</div> :
+         filtered.length === 0 ? (
+          <div style={{ padding:60, textAlign:'center', color:'#9ca3af' }}>
+            <Plane size={36} color="#d1d5db" style={{ display:'block', margin:'0 auto 12px' }}/>
+            <p style={{ margin:'0 0 4px', fontWeight:600 }}>No bookings yet</p>
+            <p style={{ margin:'0 0 16px', fontSize:12 }}>Approved travel requests automatically appear here as pending bookings.</p>
+            <button onClick={() => setShowForm(true)} style={{ padding:'9px 20px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>Add First Booking</button>
+          </div>
+        ) : (
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
             <thead>
-              <tr><th>Booking Ref</th><th>Type</th><th>Trip Ref</th><th>Details</th><th>Travel Date</th><th>Amount</th><th>Booked By</th><th>Status</th></tr>
+              <tr style={{ background:'#f9fafb' }}>
+                {['Request #','Mode','Employee','Destination','Travel Date','Return','Booking Ref','Vendor','Cost','Status'].map(h => (
+                  <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4', whiteSpace:'nowrap' }}>{h}</th>
+                ))}
+              </tr>
             </thead>
             <tbody>
-              {filtered.map(b => (
-                <tr key={b.id} className="tvb-row">
-                  <td><span className="tvb-num">{b.bookingRef}</span></td>
-                  <td>
-                    <span className="tvb-type-badge" style={{ background: TYPE_COLORS[b.type], color: TYPE_TEXT[b.type] }}>
-                      {TYPE_ICONS[b.type]} {b.type}
-                    </span>
-                  </td>
-                  <td><span className="tvb-ref">{b.tripRef || '—'}</span></td>
-                  <td>{b.details}</td>
-                  <td>{new Date(b.travelDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                  <td><span className="tvb-amount">{fmt(b.amount)}</span></td>
-                  <td>{b.bookedBy}</td>
-                  <td><span className="tvb-badge" style={{ background: STATUS_COLORS[b.status], color: STATUS_TEXT[b.status] }}>{b.status}</span></td>
-                </tr>
-              ))}
+              {filtered.map((b, i) => {
+                const sc = BOOKING_STATUS[b?.status] ?? BOOKING_STATUS.Pending;
+                const ModeIcon = MODE_ICON[b?.mode] ?? Plane;
+                return (
+                  <tr key={b?.id ?? i} style={{ borderBottom:'1px solid #f9fafb', background:i%2===0?'#fff':'#fafafa' }}>
+                    <td style={{ padding:'10px 16px', color:'#6b7280', fontFamily:'monospace', fontSize:12 }}>
+                      {b?.request_number ?? '—'}
+                    </td>
+                    <td style={{ padding:'10px 16px' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:6, color:'#6B3FDB' }}>
+                        <ModeIcon size={14}/><span style={{ fontSize:12 }}>{b?.mode ?? 'TBD'}</span>
+                      </div>
+                    </td>
+                    <td style={{ padding:'10px 16px', fontWeight:500, color:'#1f2937' }}>{b?.employee_name ?? '—'}</td>
+                    <td style={{ padding:'10px 16px', color:'#374151' }}>{b?.destination ?? '—'}</td>
+                    <td style={{ padding:'10px 16px', color:'#374151' }}>{(b?.from_date ?? '').toString().slice(0,10) || '—'}</td>
+                    <td style={{ padding:'10px 16px', color:'#374151' }}>{(b?.to_date ?? '').toString().slice(0,10) || '—'}</td>
+                    <td style={{ padding:'10px 16px', color:'#6b7280', fontFamily:'monospace', fontSize:12 }}>{b?.booking_ref ?? '—'}</td>
+                    <td style={{ padding:'10px 16px', color:'#6b7280', fontSize:12 }}>{b?.airline_train ?? '—'}</td>
+                    <td style={{ padding:'10px 16px', fontWeight:600, color:'#1f2937' }}>{fmt(b?.amount ?? 0)}</td>
+                    <td style={{ padding:'10px 16px' }}>
+                      <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600 }}>
+                        {STATUS_LABEL[b?.status] ?? b?.status ?? 'Pending'}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
 
-      {drawer && (
-        <div className="tvb-overlay" onClick={e => e.target === e.currentTarget && setDrawer(null)}>
-          <div className="tvb-drawer">
-            <div className="tvb-drawer-hd">
-              <h3>Add Booking</h3>
-              <button className="tvb-icon-btn" onClick={() => setDrawer(null)}><X size={16} /></button>
+      {showForm && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:32, width:500, maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+              <h2 style={{ fontSize:17, fontWeight:700, color:'#1f2937', margin:0 }}>New Booking</h2>
+              <button onClick={() => setShowForm(false)} style={{ background:'none', border:'none', cursor:'pointer', color:'#9ca3af' }}><X size={20}/></button>
             </div>
-            <form className="tvb-drawer-body" onSubmit={handleSubmit}>
-              <div className="tvb-row2">
-                <div className="tvb-field">
-                  <label>Booking Type <span className="tvb-req">*</span></label>
-                  <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
-                    {['Flight', 'Hotel', 'Train', 'Cab'].map(t => <option key={t}>{t}</option>)}
-                  </select>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
+              {[
+                { label:'Destination *', key:'destination', placeholder:'e.g. Mumbai', full:true },
+                { label:'Travel Date *', key:'from_date', type:'date' },
+                { label:'Return Date',   key:'to_date',   type:'date' },
+                { label:'Booking Ref',   key:'booking_ref', placeholder:'PNR / Confirmation #' },
+                { label:'Cost (₹)',      key:'cost', type:'number', placeholder:'0' },
+                { label:'Airline / Train / Vendor', key:'airline_train', placeholder:'IndiGo, Rajdhani...' },
+                { label:'Notes',         key:'notes', placeholder:'Seat preference, special requests...', full:true },
+              ].map(f => (
+                <div key={f.key} style={{ gridColumn:f.full?'1/-1':'auto' }}>
+                  <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>{f.label}</label>
+                  <input type={f.type||'text'} value={form[f.key]} onChange={e => setForm(p=>({...p,[f.key]:e.target.value}))} placeholder={f.placeholder}
+                    style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
                 </div>
-                <div className="tvb-field">
-                  <label>Trip Reference</label>
-                  <input value={form.tripRef} onChange={e => setForm(f => ({ ...f, tripRef: e.target.value }))} placeholder="e.g. TR-001" />
-                </div>
-              </div>
-              <div className="tvb-field">
-                <label>Booking Details <span className="tvb-req">*</span></label>
-                <input value={form.details} onChange={e => setForm(f => ({ ...f, details: e.target.value }))} placeholder="e.g. IndiGo 6E-241 PNQ→BLR" required />
-              </div>
-              <div className="tvb-row2">
-                <div className="tvb-field">
-                  <label>Travel Date <span className="tvb-req">*</span></label>
-                  <input type="date" value={form.travelDate} onChange={e => setForm(f => ({ ...f, travelDate: e.target.value }))} required />
-                </div>
-                <div className="tvb-field">
-                  <label>Amount (₹) <span className="tvb-req">*</span></label>
-                  <input type="number" min="0" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" required />
-                </div>
-              </div>
-              <div className="tvb-field">
-                <label>Booked By</label>
-                <select value={form.bookedBy} onChange={e => setForm(f => ({ ...f, bookedBy: e.target.value }))}>
-                  {['Self', 'Admin', 'Travel Desk'].map(x => <option key={x}>{x}</option>)}
+              ))}
+              <div>
+                <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Mode</label>
+                <select value={form.mode} onChange={e => setForm(p=>({...p,mode:e.target.value}))}
+                  style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none' }}>
+                  {['Flight','Train','Bus','Car','Other'].map(m => <option key={m}>{m}</option>)}
                 </select>
               </div>
-              <div className="tvb-field">
-                <label>Notes</label>
-                <textarea rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Additional notes…" />
-              </div>
-              <div className="tvb-drawer-ft">
-                <button type="button" className="tvb-btn-outline" onClick={() => setDrawer(null)}>Cancel</button>
-                <button type="submit" className="tvb-btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save Booking'}</button>
-              </div>
-            </form>
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:20 }}>
+              <button onClick={() => setShowForm(false)} style={{ padding:'9px 18px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:13 }}>Cancel</button>
+              <button onClick={handleSave} disabled={saving||!form.destination||!form.from_date}
+                style={{ padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600, opacity:(saving||!form.destination||!form.from_date)?0.6:1 }}>
+                {saving?'Saving...':'Save Booking'}
+              </button>
+            </div>
           </div>
         </div>
       )}

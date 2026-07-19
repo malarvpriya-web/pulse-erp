@@ -1,12 +1,13 @@
 import pool from '../db.js';
+import { nextPaymentNumber, nextReceiptNumber } from '../../../shared/docNumber.js';
 
 class PaymentRepository {
   async create(client, data) {
-    const { payment_number, payment_date, payment_type, party_id, amount, payment_method, reference_number, notes, created_by } = data;
+    const { payment_number, payment_date, payment_type, party_id, amount, payment_method, reference_number, notes, created_by, company_id } = data;
     const result = await client.query(
-      `INSERT INTO payments (payment_number, payment_date, payment_type, party_id, amount, payment_method, reference_number, notes, created_by) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [payment_number, payment_date, payment_type, party_id, amount, payment_method, reference_number, notes, created_by]
+      `INSERT INTO payments (payment_number, payment_date, payment_type, party_id, amount, payment_method, reference_number, notes, created_by, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [payment_number, payment_date, payment_type, party_id, amount, payment_method, reference_number, notes, created_by, company_id ?? null]
     );
     return result.rows[0];
   }
@@ -57,29 +58,18 @@ class PaymentRepository {
     return result.rows[0];
   }
 
-  async getNextNumber() {
-    const result = await pool.query(
-      `SELECT payment_number FROM payments 
-       WHERE payment_number LIKE 'PAY%' 
-       ORDER BY payment_number DESC LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
-      return 'PAY0001';
-    }
-    
-    const lastNum = parseInt(result.rows[0].payment_number.replace('PAY', '')) + 1;
-    return `PAY${lastNum.toString().padStart(4, '0')}`;
+  async getNextNumber(client) {
+    return nextPaymentNumber(client);
   }
 }
 
 class ReceiptRepository {
   async create(client, data) {
-    const { receipt_number, receipt_date, customer_id, amount, payment_method, reference_number, notes, created_by } = data;
+    const { receipt_number, receipt_date, customer_id, amount, payment_method, reference_number, notes, created_by, company_id } = data;
     const result = await client.query(
-      `INSERT INTO receipts (receipt_number, receipt_date, customer_id, amount, payment_method, reference_number, notes, created_by) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [receipt_number, receipt_date, customer_id, amount, payment_method, reference_number, notes, created_by]
+      `INSERT INTO receipts (receipt_number, receipt_date, customer_id, amount, payment_method, reference_number, notes, created_by, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [receipt_number, receipt_date, customer_id, amount, payment_method, reference_number, notes, created_by, company_id ?? null]
     );
     return result.rows[0];
   }
@@ -95,29 +85,34 @@ class ReceiptRepository {
   }
 
   async findAll(filters = {}) {
-    let query = `SELECT r.*, p.name as customer_name 
+    let query = `SELECT r.*, p.name as customer_name
                  FROM receipts r
                  JOIN parties p ON r.customer_id = p.id
                  WHERE r.deleted_at IS NULL`;
     const params = [];
-    
+
+    if (filters.company_id != null) {
+      params.push(filters.company_id);
+      query += ` AND r.company_id = $${params.length}`;
+    }
+
     if (filters.customer_id) {
       params.push(filters.customer_id);
       query += ` AND r.customer_id = $${params.length}`;
     }
-    
+
     if (filters.from_date) {
       params.push(filters.from_date);
       query += ` AND r.receipt_date >= $${params.length}`;
     }
-    
+
     if (filters.to_date) {
       params.push(filters.to_date);
       query += ` AND r.receipt_date <= $${params.length}`;
     }
-    
+
     query += ' ORDER BY r.receipt_date DESC';
-    
+
     const result = await pool.query(query, params);
     return result.rows;
   }
@@ -130,19 +125,8 @@ class ReceiptRepository {
     return result.rows[0];
   }
 
-  async getNextNumber() {
-    const result = await pool.query(
-      `SELECT receipt_number FROM receipts 
-       WHERE receipt_number LIKE 'REC%' 
-       ORDER BY receipt_number DESC LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
-      return 'REC0001';
-    }
-    
-    const lastNum = parseInt(result.rows[0].receipt_number.replace('REC', '')) + 1;
-    return `REC${lastNum.toString().padStart(4, '0')}`;
+  async getNextNumber(client) {
+    return nextReceiptNumber(client);
   }
 };
 

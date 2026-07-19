@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \":*)",
+      "Bash(node --input-type=module --eval \":*)",
+      "Bash(find /c/Users/malar/OneDrive/Desktop/Pulse/Pulse/frontend/src -name *.jsx)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d.get\\(''''scripts'''',{}\\)\\)\")",
+      "Bash(for f:*)",
+      "Bash(do)",
+      "Bash(echo \"=== $f ===\")",
+      "Read(//c/Users/malar/OneDrive/Desktop/Pulse/**)",
+      "Bash(done)",
+      "Bash(npm run:*)",
+      "Bash(find \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/frontend/src\" -type f \\\\\\( -name \"*.js\" -o -name \"*.jsx\" \\\\\\) -exec wc -l {} +)",
+      "Bash(xargs basename:*)",
+      "Bash(/tmp/analyze_routes.txt:*)",
+      "Read(//tmp/**)",
+      "Bash(node --check \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/backend/server.js\")",
+      "Bash(node --check \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/backend/src/employees/employee.service.js\")",
+      "Bash(node --check \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/backend/src/leaves/leave.service.js\")",
+      "Bash(node --check \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/backend/src/config/migrations.js\")",
+      "Bash(node --check \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/backend/src/auth/auth.controller.js\")",
+      "Bash(node --check \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/backend/src/auth/auth.routes.js\")",
+      "Bash(node --check \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/backend/src/modules/inventory/routes/inventory.routes.js\")",
+      "Bash(echo \"exit:$?\")",
+      "Bash(node --check \"c:/Users/malar/OneDrive/Desktop/Pulse/Pulse/backend/src/modules/travel/travel.routes.js\")"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}

@@ -1,0 +1,472 @@
+/* ============================================================
+   Pulse ERP — Global Design Token Overrides
+   Canonical standards for all components.
+   ============================================================ */
+
+:root {
+  --color-primary:        #6B3FDB;
+  --color-primary-hov:    #5B35D5;
+  --color-text:           #111827;
+  --color-text-primary:   #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-sec:       #6b7280;
+  --color-text-muted:     #9ca3af;
+  --color-bg-page:        #f8f9fc;
+  --color-bg-card:        #ffffff;
+  --color-border:         #e5e7eb;
+  --color-border-tertiary:#f3f4f6;
+  --radius-card:          12px;
+  --radius-badge:         20px;
+  --font-size-body:       14px;
+  --font-size-cell:       13px;
+  --page-padding:         24px;
+  --font-sans:            -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --color-background-primary:   #ffffff;
+  --color-background-secondary: #f9fafb;
+  --border-radius-lg:     12px;
+
+  /* Semantic status colors (salvaged from unused design-system.css) */
+  --color-success:        #15803d;
+  --color-success-bg:     #dcfce7;
+  --color-warning:        #d97706;
+  --color-warning-bg:     #fef3c7;
+  --color-danger:         #dc2626;
+  --color-danger-bg:      #fee2e2;
+  --color-info:           #1d4ed8;
+  --color-info-bg:        #dbeafe;
+}
+
+/* Base */
+body {
+  font-size: var(--font-size-body);
+  color: var(--color-text);
+  background: var(--color-bg-page);
+}
+
+/* Table cells */
+td, th {
+  font-size: var(--font-size-cell);
+}
+
+/* Primary buttons */
+.primary-btn {
+  background: var(--color-primary);
+  border-radius: 8px;
+  border: none;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.primary-btn:hover {
+  background: var(--color-primary-hov);
+}
+
+/* Clickable rows */
+.tr-clickable { cursor: pointer; }
+.tr-clickable:hover td { background: #f9fafb; }
+
+/* ── Global page content typography enforcement ── */
+.page-content,
+.page-content * {
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont,
+               'Segoe UI', Roboto, sans-serif);
+}
+
+.page-content h1 { font-size: 22px; font-weight: 600; color: var(--color-text-primary, #111827); }
+.page-content h2 { font-size: 18px; font-weight: 600; color: var(--color-text-primary, #111827); }
+.page-content h3 { font-size: 16px; font-weight: 600; color: var(--color-text-primary, #111827); }
+.page-content h4 { font-size: 14px; font-weight: 600; color: var(--color-text-primary, #111827); }
+
+.page-content p,
+.page-content td,
+.page-content th,
+.page-content li,
+.page-content span,
+.page-content div  { font-size: 13px; line-height: 1.6; }
+
+.page-content label  { font-size: 12px; font-weight: 500; }
+.page-content small,
+.page-content .text-xs { font-size: 11px; }
+
+.page-content table  { width: 100%; border-collapse: collapse; }
+.page-content th     { font-size: 11px; font-weight: 600;
+                        text-transform: uppercase; letter-spacing: 0.04em;
+                        color: var(--color-text-secondary, #6b7280); }
+
+/* Shared structural helpers used by generated CSS files */
+.page-header      { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.page-title       { font-size: 22px; font-weight: 600; color: var(--color-text-primary, #111827); margin: 0; }
+.page-subtitle    { font-size: 13px; color: var(--color-text-secondary, #6b7280); margin: 4px 0 0; }
+.kpi-grid         { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.kpi-card         { background: var(--color-background-primary, #fff); border: 1px solid var(--color-border-tertiary, #f3f4f6); border-radius: var(--border-radius-lg, 12px); padding: 16px; }
+.kpi-label        { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-secondary, #6b7280); margin-bottom: 6px; }
+.kpi-value        { font-size: 24px; font-weight: 700; color: var(--color-text-primary, #111827); }
+.kpi-sub          { font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 4px; }
+.data-table-wrap  { background: var(--color-background-primary, #fff); border: 1px solid var(--color-border, #e5e7eb); border-radius: var(--border-radius-lg, 12px); overflow: hidden; }
+.data-table       { width: 100%; border-collapse: collapse; }
+.data-table th    { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary, #6b7280); padding: 10px 14px; background: #f9fafb; border-bottom: 1px solid var(--color-border, #e5e7eb); text-align: left; }
+.data-table td    { font-size: 13px; color: var(--color-text-primary, #111827); padding: 11px 14px; border-bottom: 1px solid #f3f4f6; }
+.data-table tr:last-child td { border-bottom: none; }
+.data-table tr:hover td { background: var(--color-background-secondary, #f9fafb); }
+.badge            { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; }
+.action-btn-sm    { background: none; border: 1px solid var(--color-border, #e5e7eb); border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; color: var(--color-text-primary, #111827); transition: background 0.15s; }
+.action-btn-sm:hover { background: var(--color-background-secondary, #f9fafb); }
+.empty-state      { text-align: center; padding: 48px 0; color: var(--color-text-secondary, #6b7280); font-size: 13px; }
+
+/* ============================================================
+   FORMAT NORMALIZATION — Batch-applied to all .page-content children
+   Overrides inline styles on pages that use #7c3aed, #6366f1,
+   #f9fafb backgrounds and other off-brand values.
+   This keeps JSX untouched while enforcing visual consistency.
+   ============================================================ */
+
+/* ── Page root padding & background ─────────────────────────── */
+.page-content > div[style*="minHeight"] {
+  background: var(--color-bg-page, #f8f9fc) !important;
+  min-height: 100vh;
+}
+
+/* ── Page heading: h1 / h2 inside any feature page ──────────── */
+.page-content h1[style],
+.page-content h2[style*="fontWeight:700"],
+.page-content h2[style*="fontWeight:'700'"] {
+  font-size: 20px !important;
+  font-weight: 600 !important;
+  color: var(--color-text-primary, #111827) !important;
+  letter-spacing: -0.01em;
+}
+
+/* ── Subtitle / count paragraph under h1 ────────────────────── */
+.page-content p[style*="color:'#6b7280'"],
+.page-content p[style*="color: #6b7280"],
+.page-content p[style*="margin:'4px 0 0'"] {
+  font-size: 13px !important;
+  color: var(--color-text-secondary, #6b7280) !important;
+  margin: 3px 0 0 !important;
+}
+
+/* ── Primary / CTA buttons — normalize #7c3aed → brand purple ── */
+.page-content button[style*="#7c3aed"],
+.page-content button[style*="background:'#7c3aed'"],
+.page-content button[style*='background:"#7c3aed"'] {
+  background: var(--color-primary, #6B3FDB) !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: #fff !important;
+  border: none !important;
+  transition: background 0.15s !important;
+}
+.page-content button[style*="#7c3aed"]:hover {
+  background: var(--color-primary-hov, #5B35D5) !important;
+}
+.page-content button[style*="#7c3aed"]:disabled {
+  opacity: 0.55 !important;
+  cursor: not-allowed !important;
+}
+
+/* ── White card panels ───────────────────────────────────────── */
+.page-content div[style*="background:'#fff'"],
+.page-content div[style*='background:"#fff"'],
+.page-content div[style*="background: #fff"],
+.page-content div[style*="background: white"],
+.page-content div[style*="background:'white'"] {
+  border-radius: var(--border-radius-lg, 12px) !important;
+}
+
+/* ── Modals / overlays ───────────────────────────────────────── */
+.page-content div[style*="position:'fixed'"][style*="rgba(0,0,0,0.5)"],
+.page-content div[style*='position:"fixed"'][style*="rgba(0,0,0,0.5)"] {
+  backdrop-filter: blur(2px);
+}
+.page-content div[style*="borderRadius:16"],
+.page-content div[style*="border-radius: 16px"],
+.page-content div[style*="boxShadow:'0 20px"] {
+  border-radius: 14px !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,.13) !important;
+}
+
+/* ── Form inputs, selects, textareas ────────────────────────── */
+.page-content input[style*="border:'1px solid #e5e7eb'"],
+.page-content input[style*='border:"1px solid #e5e7eb"'],
+.page-content input[style*="border: 1px solid #e5e7eb"],
+.page-content select[style*="border:'1px solid #e5e7eb'"],
+.page-content textarea[style*="border:'1px solid #e5e7eb'"] {
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  padding: 8px 12px !important;
+  border: 1px solid var(--color-border, #e5e7eb) !important;
+  outline: none !important;
+  transition: border-color 0.15s !important;
+}
+.page-content input[style]:focus,
+.page-content select[style]:focus,
+.page-content textarea[style]:focus {
+  border-color: var(--color-primary, #6B3FDB) !important;
+  box-shadow: 0 0 0 3px rgba(107,63,219,.10) !important;
+}
+
+/* ── Table wrappers — add scroll on narrow screens ───────────── */
+.page-content div[style*="overflow:'hidden'"] > table,
+.page-content div[style*="overflowX:'hidden'"] > table,
+.page-content div[style*="overflow: hidden"] > table {
+  min-width: 640px;
+}
+.page-content div[style*="overflow:'hidden'"],
+.page-content div[style*="overflow: hidden"] {
+  overflow-x: auto !important;
+}
+
+/* ── Table header cells ──────────────────────────────────────── */
+.page-content th[style] {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  color: var(--color-text-secondary, #6b7280) !important;
+  background: #f9fafb !important;
+  white-space: nowrap;
+}
+
+/* ── Table data cells ────────────────────────────────────────── */
+.page-content td[style] {
+  font-size: 13px !important;
+  border-bottom: 1px solid #f3f4f6 !important;
+  vertical-align: middle;
+}
+
+/* ── Search input wrapper ────────────────────────────────────── */
+.page-content div[style*="position:'relative'"] > input[placeholder*="earch"],
+.page-content div[style*='position:"relative"'] > input[placeholder*="earch"] {
+  padding-left: 32px !important;
+}
+
+/* ── KPI / stat cards ────────────────────────────────────────── */
+.page-content div[style*="display:'grid'"][style*="repeat(4"] > div,
+.page-content div[style*="display:'grid'"][style*="repeat(3"] > div,
+.page-content div[style*="display:'grid'"][style*="repeat(6"] > div {
+  border-radius: 12px !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,.05) !important;
+}
+
+/* ── Badge / pill chips ──────────────────────────────────────── */
+.page-content span[style*="borderRadius:20"],
+.page-content span[style*="borderRadius:'20'"],
+.page-content span[style*="border-radius: 20px"] {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 2px 9px !important;
+  border-radius: 20px !important;
+}
+
+/* ── Loading / empty state text ─────────────────────────────── */
+.page-content div[style*="textAlign:'center'"][style*="padding:40"],
+.page-content div[style*="text-align: center"][style*="padding: 40"] {
+  color: var(--color-text-muted, #9ca3af) !important;
+  font-size: 13px !important;
+}
+
+/* ── Approve / reject action buttons (green/red) ─────────────── */
+.page-content button[style*="background:'#d1fae5'"] {
+  background: #d1fae5 !important;
+  color: #065f46 !important;
+  border: none !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+}
+.page-content button[style*="background:'#fee2e2'"] {
+  background: #fee2e2 !important;
+  color: #991b1b !important;
+  border: none !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+}
+
+/* ── Cancel / outline buttons ────────────────────────────────── */
+.page-content button[style*="border:'1px solid #e5e7eb'"],
+.page-content button[style*='border:"1px solid #e5e7eb"'],
+.page-content button[style*="background:'#fff'"][style*="border"],
+.page-content button[style*='background:"#fff"'][style*="border"] {
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  cursor: pointer !important;
+  transition: background 0.15s !important;
+}
+.page-content button[style*="border:'1px solid #e5e7eb'"]:hover {
+  background: #f9fafb !important;
+}
+
+/* ── Responsive: stack grids on small screens ─────────────────── */
+@media (max-width: 768px) {
+  .page-content div[style*="display:'grid'"][style*="repeat(4"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .page-content div[style*="display:'grid'"][style*="repeat(6"] {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+  .page-content div[style*="display:'grid'"][style*="repeat(3"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .page-content div[style*="minmax(300px"] {
+    grid-template-columns: 1fr !important;
+  }
+  .page-content div[style*="minmax(280px"] {
+    grid-template-columns: 1fr !important;
+  }
+  .page-content div[style*="width:500"] {
+    width: calc(100vw - 40px) !important;
+    max-width: 500px;
+  }
+}
+
+@media (max-width: 480px) {
+  .page-content div[style*="display:'grid'"][style*="repeat(2"] {
+    grid-template-columns: 1fr !important;
+  }
+  .page-content div[style*="display:'grid'"][style*="repeat(4"] {
+    grid-template-columns: 1fr !important;
+  }
+  .page-content div[style*="padding:24"],
+  .page-content > div[style*="padding: 24"] {
+    padding: 16px !important;
+  }
+  .page-content div[style*="width:440"],
+  .page-content div[style*="width:460"],
+  .page-content div[style*="width:500"] {
+    width: calc(100vw - 32px) !important;
+  }
+}
+
+/* ── SalesTargets specific: saveError display ────────────────── */
+.save-error-msg {
+  font-size: 12px;
+  color: var(--color-danger, #dc2626);
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--color-danger-bg, #fee2e2);
+  border-radius: 6px;
+}
+
+/* ── Topbar notification badge ───────────────────────────────── */
+.notif-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 99px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  border: 2px solid #fff;
+  pointer-events: none;
+}
+
+/* ── Scrollable table wrapper utility ────────────────────────── */
+.table-scroll-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--border-radius-lg, 12px);
+  border: 1px solid var(--color-border, #e5e7eb);
+  background: #fff;
+}
+.table-scroll-wrap table {
+  min-width: 600px;
+  width: 100%;
+}
+
+/* ── Loading skeleton ────────────────────────────────────────── */
+@keyframes pulse-skeleton {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+.skeleton {
+  background: #e5e7eb;
+  border-radius: 6px;
+  animation: pulse-skeleton 1.5s ease-in-out infinite;
+}
+.skeleton-row {
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f3f4f6;
+}
+.skeleton-row .skeleton { height: 14px; border-radius: 4px; }
+
+/* ============================================================
+   MOBILE HARDENING — Phase 44A
+   Applies to all drawers and tables across every module.
+   Uses attribute selectors so individual CSS files need no edits.
+   ============================================================ */
+
+/* ── Drawer max-width cap (all class names ending in -drawer or = drawer) ── */
+[class*="-drawer"],
+[class="drawer"],
+[class*=" drawer "],
+[class^="drawer"] {
+  max-width: 95vw !important;
+}
+
+/* ── Table wrapper overflow — all common wrapper class patterns ── */
+.data-table-wrap,
+[class*="-table-wrap"],
+[class*="-table-container"],
+[class*="-table-scroll"],
+[class*="table-wrap"],
+[class*="table-container"],
+[class*="table-scroll"],
+[class*="-list-table"],
+[class*="-grid-wrap"] {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── @media 768px — drawer full-width on mobile ── */
+@media (max-width: 768px) {
+  /* Any element whose class contains "-drawer" collapses to full width */
+  [class*="-drawer"],
+  [class="drawer"],
+  [class^="drawer"] {
+    width: 100% !important;
+    max-width: 100vw !important;
+    border-radius: 0 !important;
+  }
+
+  /* Ensure tables inside any card/panel scroll rather than overflow */
+  .data-table-wrap,
+  [class*="-table-wrap"],
+  [class*="-table-container"],
+  [class*="-table-scroll"],
+  [class*="table-wrap"] {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Tables inside generic overflow:hidden panels must scroll */
+  .page-content div[style*="borderRadius"] > table,
+  .page-content div[class*="card"] > table,
+  .page-content div[class*="panel"] > table {
+    min-width: 540px;
+  }
+
+  /* Page-level padding tightening on small screens */
+  .page-content {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+
+  /* KPI grid: collapse from 4-col to 2-col */
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}

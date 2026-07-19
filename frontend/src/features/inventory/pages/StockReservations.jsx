@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import api from '@/services/api/client';
+import { useAuth } from '@/context/AuthContext';
 import './AdvancedInventory.css';
+import { useToast } from '@/context/ToastContext';
+import ConfirmDialog from '@/components/core/ConfirmDialog';
 
-const StockReservations = () => {
-  const navigate = useNavigate();
+const StockReservations = ({ setPage }) => {
+  const toast = useToast();
+  const { user } = useAuth();
+  const uid = user?.employee_id ?? user?.userId ?? user?.id;
   const [reservations, setReservations] = useState([]);
+  const [pendingHandleCancel, setPendingHandleCancel] = useState(null);
   const [items, setItems] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [showForm, setShowForm] = useState(false);
@@ -23,20 +28,11 @@ const StockReservations = () => {
     notes: ''
   });
 
-  useEffect(() => {
-    fetchReservations();
-    fetchItems();
-    fetchWarehouses();
-  }, [filters]);
-
   const fetchReservations = async () => {
     try {
-      const token = localStorage.getItem('token');
       const params = new URLSearchParams(filters).toString();
-      const res = await axios.get(`http://localhost:5000/api/inventory/advanced/reservations?${params}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setReservations(res.data);
+      const res = await api.get(`/inventory/advanced/reservations?${params}`);
+      setReservations(Array.isArray(res.data) ? res.data : (res.data?.reservations || []));
     } catch (error) {
       console.error('Error:', error);
     }
@@ -44,11 +40,8 @@ const StockReservations = () => {
 
   const fetchItems = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const res = await axios.get('http://localhost:5000/api/inventory/items', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setItems(res.data);
+      const res = await api.get('/inventory/items');
+      setItems(Array.isArray(res.data) ? res.data : (res.data?.items || []));
     } catch (error) {
       console.error('Error:', error);
     }
@@ -56,45 +49,42 @@ const StockReservations = () => {
 
   const fetchWarehouses = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const res = await axios.get('http://localhost:5000/api/inventory/warehouses', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setWarehouses(res.data);
+      const res = await api.get('/inventory/warehouses');
+      setWarehouses(Array.isArray(res.data) ? res.data : (res.data?.warehouses || []));
     } catch (error) {
       console.error('Error:', error);
     }
   };
 
+  useEffect(() => {
+    fetchReservations();
+    fetchItems();
+    fetchWarehouses();
+  }, [filters]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const token = localStorage.getItem('token');
-      const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-      await axios.post('http://localhost:5000/api/inventory/advanced/reservations', 
-        { ...formData, reserved_by: currentUser.id },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      alert('Reservation created successfully');
+      await api.post('/inventory/advanced/reservations', { ...formData, reserved_by: uid });
+      toast.success('Reservation created successfully');
       setShowForm(false);
       resetForm();
       fetchReservations();
-    } catch (error) {
-      alert('Error creating reservation');
+    } catch (_error) {
+      toast.error('Error creating reservation');
     }
   };
 
-  const handleCancel = async (id) => {
-    if (!window.confirm('Cancel this reservation?')) return;
+  const handleCancel = async () => {
+    if (!pendingHandleCancel) return;
+    const id = pendingHandleCancel;
+    setPendingHandleCancel(null);
     try {
-      const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:5000/api/inventory/advanced/reservations/${id}/cancel`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      alert('Reservation cancelled');
+      await api.post(`/inventory/advanced/reservations/${id}/cancel`, {});
+      toast.error('Reservation cancelled');
       fetchReservations();
-    } catch (error) {
-      alert('Error cancelling reservation');
+    } catch (_error) {
+      toast.error('Error cancelling reservation');
     }
   };
 
@@ -126,9 +116,17 @@ const StockReservations = () => {
 
   return (
     <div className="adv-inv-page">
+      <ConfirmDialog
+        open={!!pendingHandleCancel}
+        title="Cancel Reservation"
+        message="Cancel this reservation?"
+        confirmLabel="Cancel"
+        variant="warning"
+        onConfirm={handleCancel}
+        onCancel={() => setPendingHandleCancel(null)}
+      />
       <div className="page-header">
         <div>
-          <button className="back-btn" onClick={() => navigate('/inventory/advanced')}>← Back</button>
           <h1>Stock Reservations</h1>
         </div>
         <button className="primary-btn" onClick={() => setShowForm(true)}>+ New Reservation</button>
@@ -230,7 +228,14 @@ const StockReservations = () => {
       </div>
 
       <div className="table-container">
-        <table className="data-table">
+        {reservations.length === 0 && (
+          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#9ca3af' }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>📦</div>
+            <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>No stock reservations found</p>
+            <p style={{ margin: '4px 0 0', fontSize: 12 }}>Create a reservation using the button above.</p>
+          </div>
+        )}
+        {reservations.length > 0 && <table className="data-table">
           <thead>
             <tr>
               <th>Item</th>
@@ -257,17 +262,17 @@ const StockReservations = () => {
                 <td>{parseFloat(res.quantity_reserved).toFixed(2)}</td>
                 <td>{parseFloat(res.quantity_consumed).toFixed(2)}</td>
                 <td>{parseFloat(res.quantity_remaining).toFixed(2)}</td>
-                <td>{new Date(res.reserved_date).toLocaleDateString()}</td>
+                <td>{new Date(res.reserved_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
                 <td><span className="status-badge" style={{ background: getStatusColor(res.status) }}>{res.status.replace('_', ' ')}</span></td>
                 <td>
                   {res.status === 'active' && (
-                    <button className="action-btn-sm danger" onClick={() => handleCancel(res.id)}>Cancel</button>
+                    <button className="action-btn-sm danger" onClick={() => setPendingHandleCancel(res.id)}>Cancel</button>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table>}
       </div>
     </div>
   );

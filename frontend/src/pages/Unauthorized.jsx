@@ -1,7 +1,12 @@
+import { ShieldOff } from 'lucide-react';
+
 export default function Unauthorized({ setPage }) {
   return (
     <div style={{ padding: "40px", textAlign: "center" }}>
-      <h1 style={{ fontSize: "32px", color: "#dc2626", marginBottom: "10px" }}>🚫 Access Denied</h1>
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+        <ShieldOff size={48} color="#dc2626" strokeWidth={1.5} />
+      </div>
+      <h1 style={{ fontSize: "32px", color: "#dc2626", marginBottom: "10px" }}>Access Denied</h1>
       <p style={{ fontSize: "16px", color: "#6b7280", marginBottom: "20px" }}>
         You do not have permission to access this page.
       </p>

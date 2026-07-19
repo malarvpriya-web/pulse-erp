@@ -1,4 +1,5 @@
 import pool from '../../shared/db.js';
+import { nextRmIssueNumber } from '../../../shared/docNumber.js';
 
 class RMIssueRepository {
   async create(client, data) {
@@ -60,19 +61,8 @@ class RMIssueRepository {
     return result.rows;
   }
 
-  async getNextNumber() {
-    const result = await pool.query(
-      `SELECT issue_number FROM rm_issues 
-       WHERE issue_number LIKE 'RMI%' 
-       ORDER BY issue_number DESC LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
-      return 'RMI0001';
-    }
-    
-    const lastNum = parseInt(result.rows[0].issue_number.replace('RMI', '')) + 1;
-    return `RMI${lastNum.toString().padStart(4, '0')}`;
+  async getNextNumber(client) {
+    return nextRmIssueNumber(client);
   }
 
   async getConsumptionTrends(startDate, endDate) {

@@ -96,23 +96,22 @@ CREATE INDEX idx_subs_renewal ON subscriptions(renewal_date);
 CREATE INDEX idx_subs_account ON subscriptions(account_id);
 
 -- =====================================================
--- 4. PARTNER / CHANNEL SALES
+-- 4. PARTNER / CHANNEL SALES  —  SUPERSEDED, DO NOT RUN
 -- =====================================================
-CREATE TABLE sales_partners (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    partner_name VARCHAR(255) NOT NULL,
-    partner_type VARCHAR(50), -- Reseller, Distributor, Referral, SI
-    status VARCHAR(50) DEFAULT 'active',
-    agreement_start_date DATE,
-    agreement_end_date DATE,
-    commission_rate DECIMAL(5,2) DEFAULT 0,
-    primary_contact_name VARCHAR(100),
-    primary_contact_email VARCHAR(100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Link Opportunities to Partners
--- ALTER TABLE opportunities ADD COLUMN partner_id UUID REFERENCES sales_partners(id);
+-- The sales_partners definition that used to sit here has been REMOVED because
+-- it never ran and never matched reality. It declared a UUID pk and the column
+-- names partner_name / partner_type / commission_rate / primary_contact_*; the
+-- live table is integer-keyed with name / association_type / commission_pct.
+-- Anyone reading this file for the partner schema was being misled.
+--
+-- The partner master (IPU) is owned by:
+--     src/database/migrations/20260717000004_sales_partners_ipu_master.js
+-- and the partner -> lead link that was only ever a comment here now exists as
+-- leads.partner_id (integer FK), created by that same migration.
+--
+-- Taxonomy note: "Reseller, Distributor, Referral, SI" was this file's guess.
+-- The confirmed association types are 'System Integrator' and 'Partner' —
+-- see src/shared/salesPartners.js.
 
 -- =====================================================
 -- 5. SALES ACTIVITIES & CALENDAR

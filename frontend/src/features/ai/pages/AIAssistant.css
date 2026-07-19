@@ -1,0 +1,288 @@
+/* AIAssistant.css — page-specific styles (.aia- prefix) */
+
+/* ── Outer container ──────────────────────────────────────────── */
+.aia-container {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 60px);
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 16px 16px;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+}
+
+/* ── Header ───────────────────────────────────────────────────── */
+.aia-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 0 14px;
+}
+
+.aia-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Gradient icon box — stays inline (static gradient, kept as-is per spec) */
+.aia-icon-box {
+  border-radius: 10px;
+  padding: 8px;
+  display: flex;
+}
+
+.aia-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.aia-tagline {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.aia-clear-btn {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.aia-clear-btn:hover {
+  background: var(--color-background-secondary);
+}
+
+/* ── Error banner ─────────────────────────────────────────────── */
+.aia-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+/* ── Messages scroll area ─────────────────────────────────────── */
+.aia-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-right: 4px;
+}
+
+/* ── Welcome / empty state ────────────────────────────────────── */
+.aia-welcome-wrap {
+  text-align: center;
+  padding-top: 60px;
+}
+
+/* Welcome box uses gradient bg — kept inline per spec (dynamic/state-driven) */
+.aia-welcome-box {
+  border-radius: 16px;
+  padding: 24px 20px;
+  display: inline-block;
+  max-width: 380px;
+}
+
+.aia-welcome-heading {
+  margin: 0 0 6px;
+  font-weight: 600;
+  font-size: 15px;
+  color: #4B2DCE;
+}
+
+.aia-welcome-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+/* ── Message row ──────────────────────────────────────────────── */
+/* justify-content stays inline (dynamic: isUser) */
+.aia-msg-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* Avatar circles use gradient bg — kept inline per spec */
+.aia-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.aia-avatar--user {
+  background: var(--color-border);
+}
+
+/* Bubble — background, border, color, and border-radius stay inline
+   (all dynamic: isUser changes gradient vs solid, border-radius corners) */
+.aia-bubble {
+  max-width: 72%;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Loading indicator ────────────────────────────────────────── */
+.aia-loading-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.aia-loading-bubble {
+  padding: 10px 16px;
+  border-radius: 16px 16px 16px 4px;
+  background: var(--color-background-primary);
+  border: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aia-thinking-text {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+/* ── Quick chips ──────────────────────────────────────────────── */
+.aia-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 0 10px;
+}
+
+.aia-chip {
+  background: var(--color-border-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.aia-chip:hover {
+  background: var(--color-border);
+}
+
+/* ── Input footer ─────────────────────────────────────────────── */
+.aia-input-row {
+  display: flex;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f4;
+  margin-top: 8px;
+}
+
+.aia-textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--color-text-primary);
+  outline: none;
+  line-height: 1.4;
+  font-family: inherit;
+}
+
+/* Send button — background stays inline (dynamic: disabled state changes gradient to grey) */
+.aia-send-btn {
+  border: none;
+  border-radius: 12px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+/* ── Rate limit badge in tagline ──────────────────────────────────── */
+.aia-rate-badge {
+  margin-left: 8px;
+  background: #ede9fe;
+  color: #6d28d9;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  vertical-align: middle;
+}
+
+/* ── Message group (bubble + feedback row) ───────────────────────── */
+.aia-msg-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ── Feedback thumbs row ─────────────────────────────────────────── */
+.aia-feedback-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 36px; /* align under AI bubble (avatar width + gap) */
+}
+
+.aia-feedback-btn {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 3px 7px;
+  cursor: pointer;
+  color: #9ca3af;
+  display: flex;
+  align-items: center;
+  transition: background 0.12s, color 0.12s;
+}
+
+.aia-feedback-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.aia-feedback-btn:disabled {
+  cursor: default;
+}
+
+.aia-feedback-btn--active {
+  background: #ede9fe;
+  border-color: #a78bfa;
+  color: #6d28d9;
+}
+
+.aia-feedback-btn--down.aia-feedback-btn--active {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+.aia-feedback-thanks {
+  font-size: 11px;
+  color: #6b7280;
+}

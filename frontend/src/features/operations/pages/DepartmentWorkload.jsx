@@ -1,141 +1,103 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Users, CheckSquare, Clock, TrendingUp } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, Cell } from 'recharts';
+import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import './DepartmentWorkload.css';
-
-const SAMPLE = [
-  { id: 1, department: 'Engineering', headcount: 28, activeTasks: 47, completedTasks: 112, overdueTask: 5, avgCompletion: 70, capacity: 85 },
-  { id: 2, department: 'Sales', headcount: 15, activeTasks: 32, completedTasks: 89, overdueTask: 3, avgCompletion: 85, capacity: 92 },
-  { id: 3, department: 'Finance', headcount: 10, activeTasks: 18, completedTasks: 64, overdueTask: 1, avgCompletion: 90, capacity: 72 },
-  { id: 4, department: 'HR', headcount: 8, activeTasks: 14, completedTasks: 43, overdueTask: 0, avgCompletion: 95, capacity: 65 },
-  { id: 5, department: 'Operations', headcount: 12, activeTasks: 25, completedTasks: 78, overdueTask: 4, avgCompletion: 75, capacity: 88 },
-  { id: 6, department: 'Marketing', headcount: 7, activeTasks: 11, completedTasks: 35, overdueTask: 2, avgCompletion: 80, capacity: 70 },
-];
-
-const SAMPLE_CHART = SAMPLE.map(d => ({
-  dept: d.department.slice(0, 4),
-  Active: d.activeTasks,
-  Completed: d.completedTasks,
-  Overdue: d.overdueTask,
-}));
-
-function getCapacityColor(c) {
-  if (c >= 90) return '#ef4444';
-  if (c >= 75) return '#f59e0b';
-  return '#22c55e';
-}
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { Users, AlertTriangle } from 'lucide-react';
 
 export default function DepartmentWorkload() {
-  const [depts, setDepts]     = useState(SAMPLE);
-  const [chart, setChart]     = useState(SAMPLE_CHART);
+  const [data,    setData]    = useState([]);
   const [loading, setLoading] = useState(false);
-  const [selected, setSelected] = useState(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const [d, c] = await Promise.allSettled([
-      api.get('/operations/department-workload'),
-      api.get('/operations/workload-chart'),
-    ]);
-    if (d.status === 'fulfilled') {
-      const raw = d.value.data?.data ?? d.value.data;
-      if (Array.isArray(raw) && raw.length) { setDepts(raw); setChart(raw.map(x => ({ dept: x.department.slice(0,4), Active: x.activeTasks, Completed: x.completedTasks, Overdue: x.overdueTask }))); }
-    }
-    if (c.status === 'fulfilled' && Array.isArray(c.value?.data) && c.value.data.length) setChart(c.value.data);
-    setLoading(false);
+  useEffect(() => {
+    api.get('/operations/department-workload')
+      .then(r => setData(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setData([]))
+      .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { load(); }, [load]);
-
-  const totalActive    = depts.reduce((s, d) => s + d.activeTasks, 0);
-  const totalCompleted = depts.reduce((s, d) => s + d.completedTasks, 0);
-  const totalOverdue   = depts.reduce((s, d) => s + d.overdueTask, 0);
-  const totalHeadcount = depts.reduce((s, d) => s + d.headcount, 0);
+  const barColor = pct => pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#10b981';
 
   return (
-    <div className="dw-root">
-      <div className="dw-header">
-        <div>
-          <h1 className="dw-title">Department Workload</h1>
-          <p className="dw-sub">Task distribution and capacity across departments</p>
-        </div>
+    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+      <div style={{ marginBottom:24 }}>
+        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Department Workload</h1>
+        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Workload distribution across all departments</p>
       </div>
 
-      <div className="dw-stats">
-        {[
-          { icon: <Users size={18} />, num: totalHeadcount, lbl: 'Total Headcount', bg: '#eef2ff', cl: '#4338ca' },
-          { icon: <CheckSquare size={18} />, num: totalActive, lbl: 'Active Tasks', bg: '#dbeafe', cl: '#1d4ed8' },
-          { icon: <TrendingUp size={18} />, num: totalCompleted, lbl: 'Completed Tasks', bg: '#dcfce7', cl: '#15803d' },
-          { icon: <Clock size={18} />, num: totalOverdue, lbl: 'Overdue Tasks', bg: '#fee2e2', cl: '#dc2626' },
-        ].map((s, i) => (
-          <div key={i} className="dw-stat">
-            <div className="dw-stat-icon" style={{ background: s.bg, color: s.cl }}>{s.icon}</div>
-            <div><div className="dw-stat-num">{s.num}</div><div className="dw-stat-lbl">{s.lbl}</div></div>
-          </div>
-        ))}
-      </div>
+      {loading ? <div style={{ textAlign:'center', padding:40, color:'#9ca3af' }}>Loading...</div> : (
+        <>
+          {/* Overload alerts */}
+          {(data?.filter(d => (d?.utilization_pct ?? 0) >= 90).length ?? 0) > 0 && (
+            <div style={{ background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:10, padding:'12px 16px', marginBottom:20, display:'flex', alignItems:'center', gap:10 }}>
+              <AlertTriangle size={16} color="#991b1b"/>
+              <span style={{ fontSize:13, color:'#991b1b', fontWeight:500 }}>
+                {data.filter(d => (d?.utilization_pct ?? 0) >= 90).length} departments are overloaded (&gt;90% capacity)
+              </span>
+            </div>
+          )}
 
-      <div className="dw-chart-card">
-        <div className="dw-card-title">Task Distribution by Department</div>
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={chart} margin={{ top: 5, right: 20, left: 0, bottom: 5 }} barGap={3}>
-            <XAxis dataKey="dept" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={30} />
-            <Tooltip />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
-            <Bar dataKey="Completed" stackId="a" fill="#86efac" radius={[0,0,0,0]} />
-            <Bar dataKey="Active"    stackId="a" fill="#6366f1" />
-            <Bar dataKey="Overdue"   stackId="a" fill="#ef4444" radius={[4,4,0,0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-
-      {loading ? (
-        <div className="dw-loading"><div className="dw-spinner" /></div>
-      ) : (
-        <div className="dw-grid">
-          {depts.map(d => {
-            const capColor = getCapacityColor(d.capacity);
-            return (
-              <div key={d.id} className={`dw-card ${selected === d.id ? 'dw-card-selected' : ''}`} onClick={() => setSelected(selected === d.id ? null : d.id)}>
-                <div className="dw-card-hd">
-                  <span className="dw-dept-name">{d.department}</span>
-                  <span className="dw-headcount"><Users size={12} /> {d.headcount}</span>
-                </div>
-
-                <div className="dw-card-nums">
-                  <div className="dw-num-item">
-                    <span className="dw-num-val dw-blue">{d.activeTasks}</span>
-                    <span className="dw-num-lbl">Active</span>
-                  </div>
-                  <div className="dw-num-item">
-                    <span className="dw-num-val dw-green">{d.completedTasks}</span>
-                    <span className="dw-num-lbl">Done</span>
-                  </div>
-                  <div className="dw-num-item">
-                    <span className="dw-num-val" style={{ color: d.overdueTask > 0 ? '#ef4444' : '#9ca3af' }}>{d.overdueTask}</span>
-                    <span className="dw-num-lbl">Overdue</span>
-                  </div>
-                  <div className="dw-num-item">
-                    <span className="dw-num-val">{d.avgCompletion}%</span>
-                    <span className="dw-num-lbl">Completion</span>
-                  </div>
-                </div>
-
-                <div className="dw-capacity-row">
-                  <span className="dw-cap-lbl">Capacity: {d.capacity}%</span>
-                  <span className="dw-cap-badge" style={{ background: capColor + '22', color: capColor }}>
-                    {d.capacity >= 90 ? 'Overloaded' : d.capacity >= 75 ? 'High' : 'Normal'}
-                  </span>
-                </div>
-                <div className="dw-cap-track">
-                  <div className="dw-cap-fill" style={{ width: `${Math.min(d.capacity, 100)}%`, background: capColor }} />
-                </div>
+          {data.length === 0 ? (
+            <div style={{ background:'#fff', borderRadius:12, padding:60, textAlign:'center', border:'1px solid #f0f0f4' }}>
+              <Users size={40} color="#d1d5db" style={{ marginBottom:12 }}/>
+              <p style={{ color:'#9ca3af' }}>No workload data available</p>
+            </div>
+          ) : (
+            <>
+              <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:24, marginBottom:20 }}>
+                <h2 style={{ fontSize:15, fontWeight:600, color:'#1f2937', margin:'0 0 20px' }}>Utilization by Department</h2>
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={data} margin={{ top:0, right:16, left:0, bottom:0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4"/>
+                    <XAxis dataKey="department" tick={{ fontSize:11 }}/>
+                    <YAxis domain={[0,100]} tickFormatter={v=>`${v}%`} tick={{ fontSize:11 }}/>
+                    <Tooltip formatter={v=>[`${v}%`,'Utilization']}/>
+                    <Bar dataKey="utilization_pct" radius={[4,4,0,0]} name="Utilization %">
+                      {data?.map((d,i) => <Cell key={d?.id ?? i} fill={barColor(d?.utilization_pct ?? 0)}/>)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
-            );
-          })}
-        </div>
+
+              <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                  <thead>
+                    <tr style={{ background:'#f9fafb' }}>
+                      {['Department','Headcount','Active Tasks','Utilization','Status'].map(h => (
+                        <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data?.map((d, i) => {
+                      const pct = d?.utilization_pct ?? 0;
+                      return (
+                        <tr key={d?.id ?? i} style={{ borderBottom:'1px solid #f9fafb' }}>
+                          <td style={{ padding:'10px 16px', fontWeight:500, color:'#1f2937' }}>{d?.department ?? '—'}</td>
+                          <td style={{ padding:'10px 16px', color:'#374151' }}>{d?.employee_count ?? d?.headcount ?? '—'}</td>
+                          <td style={{ padding:'10px 16px', color:'#374151' }}>{d?.active_tasks ?? d?.task_count ?? '—'}</td>
+                          <td style={{ padding:'10px 16px' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                              <div style={{ flex:1, background:'#f3f4f6', borderRadius:4, height:8 }}>
+                                <div style={{ width:`${Math.min(100,pct)}%`, height:'100%', background:barColor(pct), borderRadius:4 }}/>
+                              </div>
+                              <span style={{ fontSize:12, fontWeight:600, color:barColor(pct), minWidth:38 }}>{pct}%</span>
+                            </div>
+                          </td>
+                          <td style={{ padding:'10px 16px' }}>
+                            <span style={{
+                              background: pct>=90?'#fee2e2':pct>=70?'#fef3c7':'#d1fae5',
+                              color:      pct>=90?'#991b1b':pct>=70?'#92400e':'#065f46',
+                              padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600
+                            }}>{pct>=90?'Overloaded':pct>=70?'High':'Normal'}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </>
       )}
     </div>
   );

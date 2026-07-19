@@ -6,8 +6,8 @@
 .po-sub     { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
 .po-header-r{ display: flex; align-items: center; gap: 10px; }
 
-.po-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6366f1; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.po-btn-primary:hover { background: #4f46e5; }
+.po-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.po-btn-primary:hover { background: #5B35D5; }
 .po-btn-primary:disabled { opacity: .6; cursor: default; }
 .po-btn-outline { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; color: #374151; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; cursor: pointer; }
 .po-icon-btn    { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; color: #6b7280; }
@@ -26,13 +26,13 @@
 .po-table td   { padding: 11px 14px; border-bottom: 1px solid #f9fafb; color: #374151; vertical-align: middle; }
 .po-row        { cursor: pointer; }
 .po-row:hover td { background: #f9fafb; }
-.po-mono       { font-family: monospace; font-size: 12px; color: #6366f1; font-weight: 600; }
+.po-mono       { font-family: monospace; font-size: 12px; color: #6B3FDB; font-weight: 600; }
 .po-supplier   { font-weight: 500; }
 .po-amount     { font-weight: 600; }
 .po-badge      { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
 
 .po-loading { display: flex; justify-content: center; align-items: center; height: 200px; }
-.po-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: po-spin .7s linear infinite; }
+.po-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: po-spin .7s linear infinite; }
 @keyframes po-spin { to { transform: rotate(360deg); } }
 .po-empty   { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; gap: 12px; color: #9ca3af; background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; }
 
@@ -52,12 +52,12 @@
   font-size: 13px; color: #111827; outline: none; background: #fff;
   font-family: inherit; width: 100%; box-sizing: border-box;
 }
-.po-field input:focus, .po-field select:focus { border-color: #6366f1; }
+.po-field input:focus, .po-field select:focus { border-color: #6B3FDB; }
 .po-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 /* lines */
 .po-lines-hd  { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: #374151; }
-.po-add-line-btn{ display: flex; align-items: center; gap: 4px; background: #eef2ff; color: #6366f1; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.po-add-line-btn{ display: flex; align-items: center; gap: 4px; background: #E8E1FC; color: #6B3FDB; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
 .po-lines-wrap  { overflow-x: auto; }
 .po-lines-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .po-lines-table th { padding: 7px 8px; font-size: 10px; font-weight: 600; color: #6b7280; background: #f9fafb; border-bottom: 1px solid #f0f0f4; text-transform: uppercase; }

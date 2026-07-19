@@ -22,13 +22,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  border-left: 3px solid var(--c, #6366f1);
+  border-left: 3px solid var(--c, #6B3FDB);
 }
 .cp-stat-num   { font-size: 18px; font-weight: 800; color: #111827; }
 .cp-stat-label { font-size: 12px; color: #6b7280; }
 
 .cp-loading { display: flex; justify-content: center; padding: 80px; }
-.cp-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: cp-spin .6s linear infinite; }
+.cp-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: cp-spin .6s linear infinite; }
 @keyframes cp-spin { to { transform: rotate(360deg); } }
 
 /* Board */
@@ -68,7 +68,7 @@
 .cp-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
 
 .cp-card-hd  { display: flex; align-items: flex-start; gap: 8px; }
-.cp-avatar   { width: 34px; height: 34px; border-radius: 50%; background: #eef2ff; color: #4338ca; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.cp-avatar   { width: 34px; height: 34px; border-radius: 50%; background: #E8E1FC; color: #4B2DCE; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .cp-avatar-sm { width: 26px; height: 26px; font-size: 11px; }
 .cp-cname    { font-size: 13px; font-weight: 700; color: #111827; display: block; }
 .cp-role     { font-size: 11px; color: #6b7280; display: block; margin-top: 1px; }
@@ -113,10 +113,10 @@
 .cp-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
 .cp-field input:focus,
 .cp-field select:focus,
-.cp-field textarea:focus { outline: none; border-color: #6366f1; }
+.cp-field textarea:focus { outline: none; border-color: #6B3FDB; }
 
-.cp-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.cp-btn-primary:hover    { background: #4f46e5; }
+.cp-btn-primary { display: flex; align-items: center; gap: 6px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.cp-btn-primary:hover    { background: #5B35D5; }
 .cp-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 .cp-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
 .cp-btn-outline:hover { background: #f9fafb; }

@@ -1,0 +1,30 @@
+{
+  "name": "pulse-erp",
+  "version": "1.0.0",
+  "description": "Pulse ERP Desktop App by Manifest Technologies",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.manifest.pulse-erp",
+    "productName": "Pulse ERP",
+    "win": {
+      "icon": "icon.ico",
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Pulse ERP"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

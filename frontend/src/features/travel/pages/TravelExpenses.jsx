@@ -1,200 +1,301 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Plus, Search, X, Trash2, Receipt } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import './TravelExpenses.css';
+import { useToast } from '@/context/ToastContext';
+import { Plus, X, Search, Receipt, Link, Upload, CheckCircle, IndianRupee } from 'lucide-react';
+import { STATUS_COLOR, fmt } from './travelUtils';
 
-const SAMPLE = [
-  { id: 1, claimNo: 'EX-001', tripRef: 'TR-001', description: 'Mumbai Client Visit', totalAmount: 4850, submittedDate: '2026-03-22', status: 'Approved' },
-  { id: 2, claimNo: 'EX-002', tripRef: 'TR-004', description: 'Chennai Audit Trip', totalAmount: 16200, submittedDate: '2026-02-14', status: 'Settled' },
-  { id: 3, claimNo: 'EX-003', tripRef: 'TR-002', description: 'Bengaluru Conference', totalAmount: 19400, submittedDate: '2026-03-26', status: 'Pending' },
-  { id: 4, claimNo: 'EX-004', tripRef: 'TR-005', description: 'Hyderabad Sales', totalAmount: 11800, submittedDate: '2026-02-24', status: 'Rejected' },
-  { id: 5, claimNo: 'EX-005', tripRef: 'TR-008', description: 'Mumbai Board Meeting', totalAmount: 3200, submittedDate: '2026-03-20', status: 'Draft' },
+const EXPENSE_CATEGORIES = [
+  { group:'Travel', items:['Flight','Train','Bus','Taxi / Cab','Fuel'] },
+  { group:'Stay', items:['Hotel'] },
+  { group:'Food & Entertainment', items:['Food / Meals','Customer Meeting'] },
+  { group:'On-Site', items:['Site Expenses','Installation Materials','Tools'] },
+  { group:'Other', items:['Communication','Miscellaneous'] },
 ];
 
-const TABS = ['All', 'Draft', 'Pending', 'Approved', 'Settled', 'Rejected'];
-const STATUS_COLORS = { Draft: '#f3f4f6', Pending: '#fef3c7', Approved: '#dcfce7', Settled: '#e0e7ff', Rejected: '#fee2e2' };
-const STATUS_TEXT   = { Draft: '#374151', Pending: '#92400e', Approved: '#15803d', Settled: '#4338ca', Rejected: '#991b1b' };
-const CATEGORIES = ['Hotel', 'Flights', 'Train / Bus', 'Local Transport', 'Meals', 'Miscellaneous'];
-const BLANK_LINE = { category: 'Hotel', description: '', amount: '', date: '' };
-const fmt = n => `₹${Number(n).toLocaleString('en-IN')}`;
+const ALL_CATS = EXPENSE_CATEGORIES.flatMap(g => g.items);
+
+const EMPTY = {
+  category: 'Flight',
+  amount: '',
+  gst_amount: '',
+  expense_date: '',
+  description: '',
+  receipt_ref: '',
+  google_drive_link: '',
+  customer_name: '',
+  project_number: '',
+  site_name: '',
+  opportunity_ref: '',
+  po_number: '',
+};
+
+const fmtDate = d => d ? d.slice(0,10) : '—';
 
 export default function TravelExpenses() {
-  const [claims, setClaims]   = useState(SAMPLE);
-  const [loading, setLoading] = useState(false);
-  const [fTab, setFTab]       = useState('All');
-  const [search, setSearch]   = useState('');
-  const [drawer, setDrawer]   = useState(null);
-  const [form, setForm]       = useState({ tripRef: '', description: '', notes: '' });
-  const [lines, setLines]     = useState([{ ...BLANK_LINE }]);
-  const [saving, setSaving]   = useState(false);
-  const [toast, setToast]     = useState(null);
+  const toast = useToast();
+  const [expenses, setExpenses] = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form,     setForm]     = useState(EMPTY);
+  const [saving,   setSaving]   = useState(false);
+  const [search,   setSearch]   = useState('');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [catFilter, setCatFilter] = useState('All');
 
-  const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
-
-  const load = useCallback(async () => {
+  const load = () => {
     setLoading(true);
-    try {
-      const params = {};
-      if (fTab !== 'All') params.status = fTab;
-      const res = await api.get('/travel/expenses', { params });
-      const raw = res.data?.data ?? res.data;
-      setClaims(Array.isArray(raw) && raw.length ? raw : SAMPLE);
-    } catch { setClaims(SAMPLE); }
-    finally { setLoading(false); }
-  }, [fTab]);
+    api.get('/travel/expenses')
+      .then(r => setExpenses(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setExpenses([]))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const fld = (key, val) => setForm(p => {
+    const next = { ...p, [key]: val };
+    // Auto-compute total when amount or GST changes
+    if (key === 'amount' || key === 'gst_amount') {
+      next.total = (Number(next.amount)||0) + (Number(next.gst_amount)||0);
+    }
+    return next;
+  });
 
-  const filtered = claims.filter(c =>
-    (fTab === 'All' || c.status === fTab) &&
-    (c.claimNo?.toLowerCase().includes(search.toLowerCase()) ||
-     c.description?.toLowerCase().includes(search.toLowerCase()))
-  );
-
-  const counts = TABS.reduce((acc, t) => ({
-    ...acc, [t]: t === 'All' ? claims.length : claims.filter(c => c.status === t).length
-  }), {});
-
-  const total = lines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
-
-  const addLine = () => setLines(prev => [...prev, { ...BLANK_LINE }]);
-  const removeLine = i => setLines(prev => prev.filter((_, idx) => idx !== i));
-  const updateLine = (i, key, val) => setLines(prev => prev.map((l, idx) => idx === i ? { ...l, [key]: val } : l));
-
-  const handleSubmit = async e => {
-    e.preventDefault();
-    if (lines.every(l => !l.amount)) { showToast('Add at least one expense line', 'error'); return; }
+  const handleSave = async () => {
+    if (!form.amount || !form.expense_date || !form.category) {
+      toast.error('Category, Amount and Date are required.'); return;
+    }
     setSaving(true);
     try {
-      await api.post('/travel/expenses', { ...form, lines, totalAmount: total });
-      showToast('Expense claim submitted!');
-    } catch {
-      const nc = { id: Date.now(), claimNo: `EX-${String(claims.length + 1).padStart(3, '0')}`, ...form, totalAmount: total, submittedDate: new Date().toISOString().split('T')[0], status: 'Draft' };
-      setClaims(prev => [nc, ...prev]);
-      showToast('Claim saved (offline)');
-    }
-    setDrawer(null);
-    setForm({ tripRef: '', description: '', notes: '' });
-    setLines([{ ...BLANK_LINE }]);
-    setSaving(false);
+      const payload = {
+        ...form,
+        amount: Number(form.amount) || 0,
+        gst_amount: Number(form.gst_amount) || 0,
+        total_amount: (Number(form.amount)||0) + (Number(form.gst_amount)||0),
+      };
+      await api.post('/travel/expenses/v2', payload);
+      setShowForm(false); setForm(EMPTY); load();
+      toast.success('Expense submitted for reimbursement');
+    } catch (err) {
+      toast.error(err.response?.data?.error || err.message || 'Save failed. Please try again.');
+    } finally { setSaving(false); }
   };
 
-  return (
-    <div className="tve-root">
-      {toast && <div className={`tve-toast tve-toast-${toast.type}`}>{toast.msg}</div>}
+  const filtered = expenses.filter(e => {
+    const matchStatus = statusFilter === 'All' || e.status === statusFilter || e.reimbursement_status === statusFilter;
+    const matchCat = catFilter === 'All' || e.category === catFilter;
+    const matchSearch = !search || [e.category, e.description, e.customer_name, e.project_number, e.po_number]
+      .some(v => (v||'').toLowerCase().includes(search.toLowerCase()));
+    return matchStatus && matchCat && matchSearch;
+  });
 
-      <div className="tve-header">
+  const totalAmt = filtered.reduce((s,e) => s + Number(e.amount||0), 0);
+  const totalGST = filtered.reduce((s,e) => s + Number(e.gst_amount||0), 0);
+  const totalAll = filtered.reduce((s,e) => s + Number(e.total_amount||e.amount||0), 0);
+
+  const inputStyle = { width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' };
+  const labelStyle = { display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:5 };
+
+  return (
+    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
         <div>
-          <h1 className="tve-title">Travel Expenses</h1>
-          <p className="tve-sub">Submit and track travel expense claims</p>
+          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Expense Reimbursement</h1>
+          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
+            {filtered.length} entries · Base {fmt(totalAmt)} · GST {fmt(totalGST)} · Total {fmt(totalAll)}
+          </p>
         </div>
-        <button className="tve-btn-primary" onClick={() => { setForm({ tripRef: '', description: '', notes: '' }); setLines([{ ...BLANK_LINE }]); setDrawer('create'); }}>
-          <Plus size={15} /> New Claim
+        <button onClick={() => setShowForm(true)}
+          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+          <Plus size={15}/> Add Expense
         </button>
       </div>
 
-      <div className="tve-filters">
-        <div className="tve-search">
-          <Search size={15} color="#9ca3af" />
-          <input placeholder="Search claims…" value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button onClick={() => setSearch('')}><X size={13} /></button>}
-        </div>
-        <div className="tve-tabs">
-          {TABS.map(t => (
-            <button key={t} className={`tve-tab ${fTab === t ? 'tve-tab-active' : ''}`} onClick={() => setFTab(t)}>
-              {t} <span className="tve-tab-count">{counts[t]}</span>
-            </button>
-          ))}
-        </div>
+      {/* Summary cards */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20 }}>
+        {[
+          { label:'Base Amount', value: fmt(totalAmt), color:'#6366f1' },
+          { label:'GST Amount', value: fmt(totalGST), color:'#f59e0b' },
+          { label:'Total Claim', value: fmt(totalAll), color:'#10b981' },
+        ].map(k => (
+          <div key={k.label} style={{ background:'#fff', borderRadius:12, padding:'16px 20px', border:'1px solid #f0f0f4' }}>
+            <div style={{ fontSize:12, color:'#9ca3af', fontWeight:600, textTransform:'uppercase', marginBottom:6 }}>{k.label}</div>
+            <div style={{ fontSize:22, fontWeight:700, color:k.color }}>{k.value}</div>
+          </div>
+        ))}
       </div>
 
-      {loading ? (
-        <div className="tve-loading"><div className="tve-spinner" /></div>
-      ) : filtered.length === 0 ? (
-        <div className="tve-empty"><Receipt size={32} color="#d1d5db" /><p>No expense claims found</p></div>
-      ) : (
-        <div className="tve-table-wrap">
-          <table className="tve-table">
+      {/* Filters */}
+      <div style={{ display:'flex', gap:12, marginBottom:20, flexWrap:'wrap' }}>
+        <div style={{ position:'relative', flex:1, minWidth:200 }}>
+          <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search category, customer, project, PO..."
+            style={{ width:'100%', paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8, border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+        </div>
+        {['All','Pending','Approved','Rejected'].map(s => (
+          <button key={s} onClick={() => setStatusFilter(s)}
+            style={{ padding:'7px 14px', borderRadius:8, border:'1px solid', fontSize:12, fontWeight:500, cursor:'pointer',
+              borderColor: statusFilter===s ? '#6B3FDB' : '#e5e7eb',
+              background:  statusFilter===s ? '#6B3FDB' : '#fff',
+              color:       statusFilter===s ? '#fff'    : '#374151' }}>
+            {s}
+          </button>
+        ))}
+        <select value={catFilter} onChange={e => setCatFilter(e.target.value)}
+          style={{ padding:'7px 14px', borderRadius:8, border:'1px solid #e5e7eb', fontSize:12, outline:'none', background:'#fff' }}>
+          <option value="All">All Categories</option>
+          {ALL_CATS.map(c => <option key={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {/* Table */}
+      <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
+        {loading ? (
+          <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>Loading...</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding:60, textAlign:'center', color:'#9ca3af' }}>
+            <IndianRupee size={36} color="#d1d5db" style={{ display:'block', margin:'0 auto 12px' }}/>
+            <p style={{ margin:'0 0 16px' }}>{search || statusFilter !== 'All' || catFilter !== 'All' ? 'No expenses match your filters' : 'No expense claims yet'}</p>
+            {!search && statusFilter === 'All' && catFilter === 'All' && (
+              <button onClick={() => setShowForm(true)} style={{ padding:'9px 20px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>Add First Expense</button>
+            )}
+          </div>
+        ) : (
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
             <thead>
-              <tr><th>Claim #</th><th>Trip Ref</th><th>Description</th><th>Submitted</th><th>Total Amount</th><th>Status</th></tr>
+              <tr style={{ background:'#f9fafb' }}>
+                {['Date','Category','Customer / Project','Base Amt','GST','Total','Drive','Status'].map(h => (
+                  <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4', whiteSpace:'nowrap' }}>{h}</th>
+                ))}
+              </tr>
             </thead>
             <tbody>
-              {filtered.map(c => (
-                <tr key={c.id} className="tve-row">
-                  <td><span className="tve-num">{c.claimNo}</span></td>
-                  <td><span className="tve-ref">{c.tripRef || '—'}</span></td>
-                  <td>{c.description}</td>
-                  <td>{new Date(c.submittedDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                  <td><span className="tve-amount">{fmt(c.totalAmount)}</span></td>
-                  <td><span className="tve-badge" style={{ background: STATUS_COLORS[c.status], color: STATUS_TEXT[c.status] }}>{c.status}</span></td>
-                </tr>
-              ))}
+              {filtered.map((e, i) => {
+                const rs = e.reimbursement_status || e.status;
+                const sc = STATUS_COLOR[rs] || { bg:'#f3f4f6', color:'#374151' };
+                return (
+                  <tr key={e.id} style={{ borderBottom:'1px solid #f9fafb', background:i%2===0?'#fff':'#fafafa' }}>
+                    <td style={{ padding:'10px 16px', color:'#6b7280' }}>{fmtDate(e.expense_date)}</td>
+                    <td style={{ padding:'10px 16px' }}>
+                      <div style={{ fontWeight:600, color:'#1f2937' }}>{e.category}</div>
+                      {e.description && <div style={{ fontSize:11, color:'#9ca3af', marginTop:2 }}>{e.description}</div>}
+                    </td>
+                    <td style={{ padding:'10px 16px', color:'#6b7280', maxWidth:160 }}>
+                      {e.customer_name && <div style={{ fontWeight:500, color:'#374151' }}>{e.customer_name}</div>}
+                      {e.project_number && <div style={{ fontSize:11 }}>{e.project_number}</div>}
+                      {e.po_number && <div style={{ fontSize:11, color:'#9ca3af' }}>PO: {e.po_number}</div>}
+                    </td>
+                    <td style={{ padding:'10px 16px', color:'#374151', fontWeight:500 }}>{fmt(e.amount)}</td>
+                    <td style={{ padding:'10px 16px', color:'#f59e0b' }}>{fmt(e.gst_amount||0)}</td>
+                    <td style={{ padding:'10px 16px', color:'#10b981', fontWeight:600 }}>{fmt(e.total_amount||e.amount)}</td>
+                    <td style={{ padding:'10px 16px' }}>
+                      {e.google_drive_link
+                        ? <a href={e.google_drive_link} target="_blank" rel="noopener noreferrer" style={{ color:'#6366f1', textDecoration:'none', fontSize:11 }}>
+                            <Link size={12} style={{ verticalAlign:'middle', marginRight:3 }}/>View
+                          </a>
+                        : <span style={{ color:'#d1d5db', fontSize:11 }}>—</span>}
+                    </td>
+                    <td style={{ padding:'10px 16px' }}>
+                      <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600 }}>{rs}</span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
 
-      {drawer && (
-        <div className="tve-overlay" onClick={e => e.target === e.currentTarget && setDrawer(null)}>
-          <div className="tve-drawer">
-            <div className="tve-drawer-hd">
-              <h3>New Expense Claim</h3>
-              <button className="tve-icon-btn" onClick={() => setDrawer(null)}><X size={16} /></button>
+      {/* Add Expense Modal */}
+      {showForm && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:32, width:680, maxHeight:'92vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
+              <h2 style={{ fontSize:18, fontWeight:700, color:'#1f2937', margin:0 }}>Add Expense Claim</h2>
+              <button onClick={() => { setShowForm(false); setForm(EMPTY); }} style={{ background:'none', border:'none', cursor:'pointer', color:'#9ca3af' }}><X size={20}/></button>
             </div>
-            <form className="tve-drawer-body" onSubmit={handleSubmit}>
-              <div className="tve-row2">
-                <div className="tve-field">
-                  <label>Trip Reference</label>
-                  <input value={form.tripRef} onChange={e => setForm(f => ({ ...f, tripRef: e.target.value }))} placeholder="e.g. TR-001" />
+
+            {/* Commercial linkage */}
+            <div style={{ fontSize:12, fontWeight:700, color:'#6B3FDB', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:12 }}>Commercial Linkage</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
+              {[
+                ['Customer', 'customer_name', 'Customer name'],
+                ['Project Number', 'project_number', 'PRJ-2026-0001'],
+                ['Site Name', 'site_name', 'Site / location'],
+                ['Opportunity Ref', 'opportunity_ref', 'Opportunity reference'],
+                ['PO Number', 'po_number', 'Purchase order number'],
+              ].map(([lbl, key, ph]) => (
+                <div key={key}>
+                  <label style={labelStyle}>{lbl}</label>
+                  <input value={form[key]} onChange={e => fld(key, e.target.value)} placeholder={ph} style={inputStyle}/>
                 </div>
-                <div className="tve-field">
-                  <label>Description <span className="tve-req">*</span></label>
-                  <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Trip description" required />
-                </div>
+              ))}
+            </div>
+
+            {/* Expense details */}
+            <div style={{ fontSize:12, fontWeight:700, color:'#6B3FDB', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:12 }}>Expense Details</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+              <div>
+                <label style={labelStyle}>Category *</label>
+                <select value={form.category} onChange={e => fld('category', e.target.value)} style={inputStyle}>
+                  {EXPENSE_CATEGORIES.map(g => (
+                    <optgroup key={g.group} label={g.group}>
+                      {g.items.map(c => <option key={c} value={c}>{c}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle}>Expense Date *</label>
+                <input type="date" value={form.expense_date} onChange={e => fld('expense_date', e.target.value)} style={inputStyle}/>
+              </div>
+              <div>
+                <label style={labelStyle}>Base Amount (₹) *</label>
+                <input type="number" value={form.amount} onChange={e => fld('amount', e.target.value)} placeholder="0.00" style={inputStyle}/>
+              </div>
+              <div>
+                <label style={labelStyle}>GST Amount (₹)</label>
+                <input type="number" value={form.gst_amount} onChange={e => fld('gst_amount', e.target.value)} placeholder="0.00" style={inputStyle}/>
               </div>
 
-              <div className="tve-items-section">
-                <div className="tve-items-hd">
-                  <span>Expense Lines</span>
-                  <button type="button" className="tve-add-line-btn" onClick={addLine}><Plus size={12} /> Add Line</button>
+              {/* Total (computed) */}
+              {(form.amount || form.gst_amount) && (
+                <div style={{ gridColumn:'1/-1', background:'#f5f3ff', borderRadius:8, padding:'10px 14px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <span style={{ fontSize:13, color:'#6b7280' }}>Total Claim</span>
+                  <span style={{ fontSize:18, fontWeight:700, color:'#6B3FDB' }}>
+                    {fmt((Number(form.amount)||0) + (Number(form.gst_amount)||0))}
+                  </span>
                 </div>
-                {lines.map((line, i) => (
-                  <div key={i} className="tve-line-row">
-                    <div className="tve-line-cat">
-                      <select value={line.category} onChange={e => updateLine(i, 'category', e.target.value)}>
-                        {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                      </select>
-                    </div>
-                    <div className="tve-line-desc">
-                      <input placeholder="Description" value={line.description} onChange={e => updateLine(i, 'description', e.target.value)} />
-                    </div>
-                    <div className="tve-line-date">
-                      <input type="date" value={line.date} onChange={e => updateLine(i, 'date', e.target.value)} />
-                    </div>
-                    <div className="tve-line-amt">
-                      <input type="number" min="0" placeholder="Amount" value={line.amount} onChange={e => updateLine(i, 'amount', e.target.value)} />
-                    </div>
-                    {lines.length > 1 && (
-                      <button type="button" className="tve-remove-btn" onClick={() => removeLine(i)}><Trash2 size={13} /></button>
-                    )}
-                  </div>
-                ))}
-                <div className="tve-total">
-                  <span>Total</span>
-                  <strong>{fmt(total)}</strong>
-                </div>
+              )}
+
+              <div style={{ gridColumn:'1/-1' }}>
+                <label style={labelStyle}>Description</label>
+                <input value={form.description} onChange={e => fld('description', e.target.value)} placeholder="Brief description of expense" style={inputStyle}/>
               </div>
 
-              <div className="tve-field">
-                <label>Notes</label>
-                <textarea rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Additional notes…" />
+              <div>
+                <label style={labelStyle}>Bill / Receipt Ref</label>
+                <input value={form.receipt_ref} onChange={e => fld('receipt_ref', e.target.value)} placeholder="Receipt number or ref" style={inputStyle}/>
               </div>
 
-              <div className="tve-drawer-ft">
-                <button type="button" className="tve-btn-outline" onClick={() => setDrawer(null)}>Cancel</button>
-                <button type="submit" className="tve-btn-primary" disabled={saving}>{saving ? 'Submitting…' : 'Submit Claim'}</button>
+              <div>
+                <label style={labelStyle}>Google Drive Bill Link</label>
+                <div style={{ position:'relative' }}>
+                  <Link size={13} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
+                  <input value={form.google_drive_link} onChange={e => fld('google_drive_link', e.target.value)}
+                    placeholder="https://drive.google.com/..."
+                    style={{ ...inputStyle, paddingLeft:32 }}/>
+                </div>
               </div>
-            </form>
+            </div>
+
+            <div style={{ display:'flex', gap:12, justifyContent:'flex-end', marginTop:24 }}>
+              <button onClick={() => { setShowForm(false); setForm(EMPTY); }}
+                style={{ padding:'9px 20px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:13, color:'#374151' }}>Cancel</button>
+              <button onClick={handleSave} disabled={saving}
+                style={{ padding:'9px 20px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600, opacity:saving?0.6:1 }}>
+                {saving ? 'Submitting...' : 'Submit Claim'}
+              </button>
+            </div>
           </div>
         </div>
       )}

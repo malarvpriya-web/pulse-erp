@@ -12,8 +12,8 @@
 .inv-header-r{display:flex;gap:10px;}
 
 /* buttons */
-.inv-btn-primary{display:flex;align-items:center;gap:6px;padding:8px 16px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;}
-.inv-btn-primary:hover{background:#4f46e5;}
+.inv-btn-primary{display:flex;align-items:center;gap:6px;padding:8px 16px;background:#6B3FDB;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;}
+.inv-btn-primary:hover{background:#5B35D5;}
 .inv-btn-primary:disabled{opacity:.6;cursor:not-allowed;}
 .inv-btn-outline{display:flex;align-items:center;gap:6px;padding:8px 14px;background:#fff;color:#374151;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;cursor:pointer;}
 .inv-btn-outline:hover{background:#f9fafb;}
@@ -34,7 +34,7 @@
 .inv-search input{border:none;outline:none;font-size:13px;color:#374151;width:100%;background:transparent;}
 .inv-filter-tabs{display:flex;gap:4px;}
 .inv-filter-tab{padding:7px 14px;border-radius:20px;border:1px solid #e5e7eb;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;}
-.inv-filter-tab.active{background:#6366f1;color:#fff;border-color:#6366f1;}
+.inv-filter-tab.active{background:#6B3FDB;color:#fff;border-color:#6B3FDB;}
 
 /* table */
 .inv-table-wrap{background:#fff;border-radius:12px;border:1px solid #f0f0f4;overflow:hidden;}
@@ -49,18 +49,18 @@
 .inv-td-right{text-align:right;}
 .inv-td-bold{font-weight:600;}
 
-.inv-link{background:none;border:none;color:#6366f1;font-weight:500;cursor:pointer;font-size:13px;font-family:monospace;}
+.inv-link{background:none;border:none;color:#6B3FDB;font-weight:500;cursor:pointer;font-size:13px;font-family:monospace;}
 .inv-link:hover{text-decoration:underline;}
 .inv-overdue-date{color:#dc2626;font-weight:500;}
 .inv-status{font-size:11px;font-weight:500;padding:3px 9px;border-radius:20px;}
 .inv-status-lg{font-size:13px;padding:5px 14px;}
 .inv-actions{display:flex;gap:4px;}
 .inv-action-btn{background:none;border:1px solid #e5e7eb;border-radius:6px;padding:5px 7px;cursor:pointer;color:#9ca3af;display:flex;align-items:center;}
-.inv-action-btn:hover{color:#6366f1;border-color:#6366f1;}
+.inv-action-btn:hover{color:#6B3FDB;border-color:#6B3FDB;}
 
 /* loading / empty */
 .inv-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:60px;color:#9ca3af;}
-.inv-spinner{width:32px;height:32px;border:3px solid #e5e7eb;border-top-color:#6366f1;border-radius:50%;animation:invspin .8s linear infinite;}
+.inv-spinner{width:32px;height:32px;border:3px solid #e5e7eb;border-top-color:#6B3FDB;border-radius:50%;animation:invspin .8s linear infinite;}
 @keyframes invspin{to{transform:rotate(360deg);}}
 .inv-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:60px;color:#9ca3af;}
 
@@ -91,12 +91,12 @@
 .inv-field{display:flex;flex-direction:column;gap:5px;}
 .inv-field label{font-size:12px;font-weight:500;color:#374151;}
 .inv-field input,.inv-field select,.inv-field textarea{padding:8px 10px;border:1px solid #e5e7eb;border-radius:7px;font-size:13px;color:#374151;outline:none;background:#fff;}
-.inv-field input:focus,.inv-field select:focus,.inv-field textarea:focus{border-color:#6366f1;box-shadow:0 0 0 2px rgba(99,102,241,.1);}
+.inv-field input:focus,.inv-field select:focus,.inv-field textarea:focus{border-color:#6B3FDB;box-shadow:0 0 0 2px rgba(107,63,219,.1);}
 
 /* line items */
 .inv-items-section{background:#f9fafb;border-radius:10px;padding:14px;}
 .inv-items-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:13px;font-weight:600;color:#374151;}
-.inv-add-item{display:flex;align-items:center;gap:5px;padding:5px 12px;background:#6366f1;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;}
+.inv-add-item{display:flex;align-items:center;gap:5px;padding:5px 12px;background:#6B3FDB;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;}
 .inv-items-table{width:100%;border-collapse:collapse;font-size:12px;}
 .inv-items-table th{padding:7px 8px;text-align:left;color:#9ca3af;font-size:11px;border-bottom:1px solid #e5e7eb;}
 .inv-items-table td{padding:6px 4px;}

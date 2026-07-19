@@ -1,49 +1,54 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Plus, Search, Filter, Download, Eye, Send, CheckCircle,
-  AlertTriangle, Clock, X, ChevronDown, FileText, Printer
+  AlertTriangle, Clock, X, ChevronDown, FileText, Printer, Paperclip
 } from 'lucide-react';
+import { getInvoices, createInvoice, updateInvoice, getParties } from '../services/financeService';
+import { fmt, fmtFull, statusColor, GST_RATES, emptyItem, calcItem } from '../financeUtils';
+import { currentFY } from '@/utils/format';
+import { useFY } from '@/context/FYContext';
+import FYSelector from '@/components/core/FYSelector';
+import ConfirmDialog from '@/components/core/ConfirmDialog';
 import api from '@/services/api/client';
-import { getInvoices, createInvoice, getParties, getAccounts } from '../services/financeService';
 import './Invoices.css';
 
-const fmt = (n) => {
-  const num = parseFloat(n || 0);
-  if (num >= 100000) return `₹${(num/100000).toFixed(1)}L`;
-  if (num >= 1000)   return `₹${(num/1000).toFixed(0)}K`;
-  return `₹${num.toFixed(0)}`;
-};
+const _fy = currentFY();
 
-const fmtFull = (n) => `₹${parseFloat(n||0).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
-
-const statusColor = (s) => {
-  const m = (s||'').toLowerCase();
-  if (m==='paid')    return {bg:'#dcfce7',color:'#16a34a'};
-  if (m==='overdue') return {bg:'#fee2e2',color:'#dc2626'};
-  if (m==='pending'||m==='sent') return {bg:'#fef3c7',color:'#92400e'};
-  return {bg:'#f3f4f6',color:'#6b7280'};
-};
-
-const GST_RATES = [0, 5, 12, 18, 28];
-
-const emptyItem = () => ({ description:'', quantity:1, unit_price:0, gst_rate:18, amount:0 });
-
-const calcItem = (item) => {
-  const base = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
-  const gst  = base * (parseFloat(item.gst_rate)||0) / 100;
-  return { ...item, taxable_amount: base, gst_amount: gst, amount: base + gst };
+const _quickRanges = () => {
+  const now   = new Date();
+  const y     = now.getFullYear();
+  const m     = now.getMonth();
+  const monthStart = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+  const monthEnd   = new Date(y, m + 1, 0).toISOString().split('T')[0];
+  const lm    = m === 0 ? 11 : m - 1;
+  const ly    = m === 0 ? y - 1 : y;
+  const lmEnd = new Date(ly, lm + 1, 0).toISOString().split('T')[0];
+  const lmStart = `${ly}-${String(lm + 1).padStart(2, '0')}-01`;
+  const qStart = `${y}-${String(Math.floor(m / 3) * 3 + 1).padStart(2, '0')}-01`;
+  const qEnd   = new Date(y, Math.floor(m / 3) * 3 + 3, 0).toISOString().split('T')[0];
+  return [
+    { label: 'This Month',   from: monthStart,    to: monthEnd },
+    { label: 'Last Month',   from: lmStart,       to: lmEnd },
+    { label: 'This Quarter', from: qStart,         to: qEnd },
+    { label: 'This FY',      from: _fy.start,      to: _fy.end },
+    { label: 'All Time',     from: '',             to: '' },
+  ];
 };
 
 export default function Invoices() {
+  const { fyParams } = useFY();
   const [invoices,   setInvoices]   = useState([]);
   const [customers,  setCustomers]  = useState([]);
-  const [accounts,   setAccounts]   = useState([]);
-  const [loading,    setLoading]    = useState(true);
+  const [editMode,    setEditMode]   = useState(false);
+  const [loading,    setLoading]    = useState(false);
   const [drawer,     setDrawer]     = useState(null); // null | 'create' | invoice object
   const [search,     setSearch]     = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [dateFrom,   setDateFrom]   = useState(_fy.start);
+  const [dateTo,     setDateTo]     = useState(_fy.end);
   const [toast,      setToast]      = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   const [form, setForm] = useState({
     customer_id: '', invoice_date: new Date().toISOString().split('T')[0],
@@ -51,6 +56,10 @@ export default function Invoices() {
     accounts_receivable_id: '', revenue_account_id: '', tax_account_id: '',
     items: [emptyItem()],
   });
+  const [attachmentFile, setAttachmentFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [pendingMarkPaid, setPendingMarkPaid] = useState(null);
+  const fileInputRef = useRef(null);
 
   const showToast = (msg, type='success') => {
     setToast({ msg, type });
@@ -60,19 +69,26 @@ export default function Invoices() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [inv, cust, acc] = await Promise.all([
-        getInvoices({ status: statusFilter || undefined }),
+      const params = { status: statusFilter || undefined };
+      if (dateFrom) params.from_date = dateFrom;
+      if (dateTo)   params.to_date   = dateTo;
+      const [inv, cust] = await Promise.all([
+        getInvoices(params),
         getParties({ party_type: 'Customer' }),
-        getAccounts(),
       ]);
       setInvoices(Array.isArray(inv) ? inv : []);
       setCustomers(Array.isArray(cust) ? cust : []);
-      setAccounts(Array.isArray(acc) ? acc : []);
-    } catch(e) { console.error(e); }
+    } catch(e) { console.error(e); showToast('Failed to load invoices. Please refresh.', 'error'); }
     finally { setLoading(false); }
-  }, [statusFilter]);
+  }, [statusFilter, dateFrom, dateTo]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Sync the date range whenever the global Financial Year changes
+  useEffect(() => {
+    setDateFrom(fyParams.fyStart);
+    setDateTo(fyParams.fyEnd);
+  }, [fyParams.fyStart, fyParams.fyEnd]);
 
   // computed totals
   const calcTotals = () => {
@@ -90,29 +106,85 @@ export default function Invoices() {
   const addItem    = () => setForm(f => ({...f, items:[...f.items, emptyItem()]}));
   const removeItem = (idx) => setForm(f => ({...f, items: f.items.filter((_,i)=>i!==idx)}));
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (status = 'pending') => {
     if (!form.customer_id) { showToast('Select a customer', 'error'); return; }
     if (!form.due_date)    { showToast('Set a due date',    'error'); return; }
     setSubmitting(true);
     try {
       const totals = calcTotals();
-      await createInvoice({
-        ...form,
-        subtotal:     totals.taxable,
-        tax_amount:   totals.gst,
-        total_amount: totals.total,
-        items:        totals.items,
-      });
-      showToast('Invoice created successfully');
+      const payload = { ...form, status, subtotal: totals.taxable, tax_amount: totals.gst, total_amount: totals.total, items: totals.items };
+      let invoice;
+      if (editMode && drawer && drawer !== 'create') {
+        invoice = await updateInvoice(drawer.id, payload);
+        showToast('Invoice updated successfully');
+      } else {
+        invoice = await createInvoice(payload);
+        showToast('Invoice created successfully');
+      }
+      if (attachmentFile && invoice?.id) {
+        setUploading(true);
+        try {
+          const fd = new FormData();
+          fd.append('file', attachmentFile);
+          await api.patch(`/finance/invoices/${invoice.id}/attachment`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+        } catch { /* attachment upload failure is non-fatal */ }
+        setUploading(false);
+      }
       setDrawer(null);
+      setEditMode(false);
+      setAttachmentFile(null);
       setForm({ customer_id:'', invoice_date:new Date().toISOString().split('T')[0],
         due_date:'', notes:'', terms:'Net 30',
         accounts_receivable_id:'', revenue_account_id:'', tax_account_id:'',
         items:[emptyItem()] });
       load();
     } catch(e) {
-      showToast('Failed to create invoice: ' + (e.response?.data?.error||e.message), 'error');
-    } finally { setSubmitting(false); }
+      showToast((editMode ? 'Failed to update' : 'Failed to create') + ' invoice: ' + (e.response?.data?.error||e.message), 'error');
+    } finally { setSubmitting(false); setUploading(false); }
+  };
+
+  const handleSendToCustomer = async (inv) => {
+    setActionLoading(true);
+    try {
+      await api.patch(`/finance/invoices/${inv.id}/send`);
+      showToast('Invoice marked as sent');
+      setDrawer(null);
+      load();
+    } catch(e) { showToast(e.response?.data?.error || 'Failed to send invoice', 'error'); }
+    finally { setActionLoading(false); }
+  };
+
+  const handleMarkPaid = async () => {
+    if (!pendingMarkPaid) return;
+    const inv = pendingMarkPaid;
+    setPendingMarkPaid(null);
+    setActionLoading(true);
+    try {
+      await api.patch(`/finance/invoices/${inv.id}/mark-paid`);
+      showToast('Invoice marked as paid');
+      setDrawer(null);
+      load();
+    } catch(e) { showToast(e.response?.data?.error || 'Failed to mark paid', 'error'); }
+    finally { setActionLoading(false); }
+  };
+
+  const exportCSV = () => {
+    const rows = [
+      ['Invoice #', 'Customer', 'Invoice Date', 'Due Date', 'Amount', 'Status'],
+      ...filtered.map(inv => [
+        inv.invoice_number,
+        inv.party_name || inv.customer_name || '',
+        inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '',
+        inv.due_date    ? new Date(inv.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })    : '',
+        parseFloat(inv.total_amount || 0).toFixed(2),
+        inv.status || '',
+      ])
+    ];
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = `invoices-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
   };
 
   const filtered = invoices.filter(inv => {
@@ -134,6 +206,15 @@ export default function Invoices() {
 
   return (
     <div className="inv-root">
+      <ConfirmDialog
+        open={!!pendingMarkPaid}
+        title="Mark Invoice as Paid"
+        message={pendingMarkPaid ? `Mark invoice ${pendingMarkPaid.invoice_number} as fully paid (₹${fmtFull(pendingMarkPaid.balance ?? pendingMarkPaid.total_amount)})?` : ''}
+        confirmLabel="Mark Paid"
+        variant="warning"
+        onConfirm={handleMarkPaid}
+        onCancel={() => setPendingMarkPaid(null)}
+      />
 
       {/* Toast */}
       {toast && (
@@ -147,10 +228,11 @@ export default function Invoices() {
       <div className="inv-header">
         <div>
           <h2 className="inv-title">Invoices</h2>
-          <p className="inv-sub">{invoices.length} invoices · {new Date().toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</p>
+          <p className="inv-sub">{invoices.length} invoice{invoices.length !== 1 ? 's' : ''} · {dateFrom && dateTo ? `${dateFrom} – ${dateTo}` : 'All time'}</p>
         </div>
         <div className="inv-header-r">
-          <button className="inv-btn-outline"><Download size={14}/> Export</button>
+          <FYSelector />
+          <button className="inv-btn-outline" onClick={exportCSV}><Download size={14}/> Export</button>
           <button className="inv-btn-primary" onClick={()=>setDrawer('create')}>
             <Plus size={15}/> New Invoice
           </button>
@@ -175,6 +257,31 @@ export default function Invoices() {
           <span className="inv-stat-label">Pending</span>
           <span className="inv-stat-val">{stats.pending} invoices</span>
         </div>
+      </div>
+
+      {/* Quick date range filters */}
+      <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:8, alignItems:'center' }}>
+        {_quickRanges().map(qr => {
+          const active = qr.from === dateFrom && qr.to === dateTo;
+          return (
+            <button key={qr.label}
+              onClick={() => { setDateFrom(qr.from); setDateTo(qr.to); }}
+              style={{
+                padding:'4px 12px', borderRadius:20, border:'1px solid',
+                fontSize:12, fontWeight:500, cursor:'pointer',
+                background: active ? '#6366f1' : '#f3f4f6',
+                color:      active ? '#fff'    : '#374151',
+                borderColor:active ? '#6366f1' : '#e5e7eb',
+              }}>
+              {qr.label}
+            </button>
+          );
+        })}
+        <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+          style={{ padding:'4px 8px', border:'1px solid #e5e7eb', borderRadius:6, fontSize:12, color:'#374151' }}/>
+        <span style={{ fontSize:12, color:'#9ca3af' }}>to</span>
+        <input type="date" value={dateTo}   onChange={e => setDateTo(e.target.value)}
+          style={{ padding:'4px 8px', border:'1px solid #e5e7eb', borderRadius:6, fontSize:12, color:'#374151' }}/>
       </div>
 
       {/* Filters */}
@@ -233,10 +340,10 @@ export default function Invoices() {
                       </button>
                     </td>
                     <td>{inv.party_name||inv.customer_name||'—'}</td>
-                    <td>{inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString('en-IN') : '—'}</td>
+                    <td>{inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                     <td>
                       <span className={isOverdue?'inv-overdue-date':''}>
-                        {inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-IN') : '—'}
+                        {inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
                       </span>
                     </td>
                     <td className="inv-td-amt">{fmtFull(inv.total_amount)}</td>
@@ -249,10 +356,10 @@ export default function Invoices() {
                         <button className="inv-action-btn" title="View" onClick={()=>setDrawer(inv)}>
                           <Eye size={14}/>
                         </button>
-                        <button className="inv-action-btn" title="Send">
+                        <button className="inv-action-btn" title="Send" onClick={() => handleSendToCustomer(inv)}>
                           <Send size={14}/>
                         </button>
-                        <button className="inv-action-btn" title="Print">
+                        <button className="inv-action-btn" title="Print" onClick={() => { setDrawer(inv); setTimeout(() => window.print(), 400); }}>
                           <Printer size={14}/>
                         </button>
                       </div>
@@ -267,12 +374,12 @@ export default function Invoices() {
 
       {/* ── Create / View Drawer ──────────────────────────────────── */}
       {drawer && (
-        <div className="inv-drawer-overlay" onClick={()=>setDrawer(null)}>
+        <div className="inv-drawer-overlay" onClick={()=>{ setDrawer(null); setEditMode(false); }}>
           <div className="inv-drawer" onClick={e=>e.stopPropagation()}>
 
             <div className="inv-drawer-hd">
-              <h3>{drawer==='create' ? 'New Invoice' : `Invoice ${drawer.invoice_number}`}</h3>
-              <button className="inv-drawer-close" onClick={()=>setDrawer(null)}>
+              <h3>{drawer==='create' ? 'New Invoice' : editMode ? `Edit ${drawer.invoice_number}` : `Invoice ${drawer.invoice_number}`}</h3>
+              <button className="inv-drawer-close" onClick={()=>{ setDrawer(null); setEditMode(false); }}>
                 <X size={18}/>
               </button>
             </div>
@@ -280,7 +387,7 @@ export default function Invoices() {
             <div className="inv-drawer-body">
 
               {/* ── VIEW MODE ────────────────────────────────────── */}
-              {drawer !== 'create' && (
+              {drawer !== 'create' && !editMode && (
                 <div className="inv-view">
                   <div className="inv-view-header">
                     <div>
@@ -292,23 +399,53 @@ export default function Invoices() {
                     </span>
                   </div>
                   <div className="inv-view-grid">
-                    <div className="inv-view-field"><span>Invoice Date</span><strong>{drawer.invoice_date ? new Date(drawer.invoice_date).toLocaleDateString('en-IN') : '—'}</strong></div>
-                    <div className="inv-view-field"><span>Due Date</span><strong className={(drawer.status||'').toLowerCase()==='overdue'?'red':''}>{drawer.due_date ? new Date(drawer.due_date).toLocaleDateString('en-IN') : '—'}</strong></div>
+                    <div className="inv-view-field"><span>Invoice Date</span><strong>{drawer.invoice_date ? new Date(drawer.invoice_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</strong></div>
+                    <div className="inv-view-field"><span>Due Date</span><strong className={(drawer.status||'').toLowerCase()==='overdue'?'red':''}>{drawer.due_date ? new Date(drawer.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</strong></div>
                     <div className="inv-view-field"><span>Total Amount</span><strong>{fmtFull(drawer.total_amount)}</strong></div>
                     <div className="inv-view-field"><span>Balance Due</span><strong>{fmtFull(drawer.balance??drawer.total_amount)}</strong></div>
                   </div>
+                  {drawer.attachment_url && (
+                    <div style={{ margin: '12px 0', padding: '8px 12px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #bbf7d0', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                      <Paperclip size={14} color="#16a34a" />
+                      <a href={drawer.attachment_url} target="_blank" rel="noopener noreferrer" style={{ color: '#16a34a', fontWeight: 600 }}>View Attachment</a>
+                    </div>
+                  )}
                   <div className="inv-view-actions">
-                    <button className="inv-btn-primary"><Send size={14}/> Send to Customer</button>
-                    <button className="inv-btn-outline"><Printer size={14}/> Print / PDF</button>
+                    {['draft','pending'].includes((drawer.status||'').toLowerCase()) && (
+                      <button className="inv-btn-outline" onClick={() => {
+                        setForm({
+                          customer_id: drawer.customer_id || drawer.party_id || '',
+                          invoice_date: drawer.invoice_date?.split('T')[0] || new Date().toISOString().split('T')[0],
+                          due_date: drawer.due_date?.split('T')[0] || '',
+                          notes: drawer.notes || '',
+                          terms: drawer.terms || 'Net 30',
+                          accounts_receivable_id: drawer.accounts_receivable_id || '',
+                          revenue_account_id: drawer.revenue_account_id || '',
+                          tax_account_id: drawer.tax_account_id || '',
+                          items: drawer.items?.length ? drawer.items : [emptyItem()],
+                        });
+                        setEditMode(true);
+                      }}>
+                        Edit Invoice
+                      </button>
+                    )}
+                    <button className="inv-btn-primary" onClick={() => handleSendToCustomer(drawer)} disabled={actionLoading}>
+                      <Send size={14}/> Send to Customer
+                    </button>
+                    <button className="inv-btn-outline" onClick={() => window.print()}>
+                      <Printer size={14}/> Print / PDF
+                    </button>
                     {(drawer.status||'').toLowerCase()!=='paid' && (
-                      <button className="inv-btn-green"><CheckCircle size={14}/> Mark as Paid</button>
+                      <button className="inv-btn-green" onClick={() => setPendingMarkPaid(drawer)} disabled={actionLoading}>
+                        <CheckCircle size={14}/> Mark as Paid
+                      </button>
                     )}
                   </div>
                 </div>
               )}
 
-              {/* ── CREATE MODE ───────────────────────────────────── */}
-              {drawer === 'create' && (
+              {/* ── CREATE / EDIT MODE ───────────────────────────── */}
+              {(drawer === 'create' || editMode) && (
                 <div className="inv-form">
                   {/* Row 1 */}
                   <div className="inv-form-row">
@@ -428,12 +565,29 @@ export default function Invoices() {
                       placeholder="Thank you for your business…"/>
                   </div>
 
+                  {/* Attachment */}
+                  <div className="inv-field">
+                    <label><Paperclip size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />Attachment (optional)</label>
+                    <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.doc,.docx"
+                      onChange={e => setAttachmentFile(e.target.files[0] || null)}
+                      style={{ fontSize: 13, padding: '6px 0' }} />
+                    {attachmentFile && (
+                      <div style={{ marginTop: 4, fontSize: 12, color: '#6b7280', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Paperclip size={11} /> {attachmentFile.name}
+                        <button type="button" onClick={() => { setAttachmentFile(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 0 }}>
+                          <X size={11} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Submit */}
                   <div className="inv-form-footer">
-                    <button className="inv-btn-outline" onClick={()=>setDrawer(null)}>Cancel</button>
-                    <button className="inv-btn-outline">Save as Draft</button>
-                    <button className="inv-btn-primary" onClick={handleSubmit} disabled={submitting}>
-                      {submitting ? 'Creating…' : 'Create Invoice'}
+                    <button className="inv-btn-outline" onClick={()=>{ setDrawer(editMode ? drawer : null); setEditMode(false); }}>Cancel</button>
+                    <button className="inv-btn-outline" onClick={()=>handleSubmit('draft')} disabled={submitting||uploading}>Save as Draft</button>
+                    <button className="inv-btn-primary" onClick={()=>handleSubmit('pending')} disabled={submitting||uploading}>
+                      {uploading ? 'Uploading…' : submitting ? (editMode ? 'Saving…' : 'Creating…') : (editMode ? 'Update Invoice' : 'Create Invoice')}
                     </button>
                   </div>
                 </div>

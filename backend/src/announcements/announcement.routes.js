@@ -4,11 +4,13 @@ import { verifyToken } from "../middlewares/auth.middleware.js";
 
 const router = express.Router();
 
-router.post("/", verifyToken, announcementController.createAnnouncement);
-router.get("/", verifyToken, announcementController.getAllAnnouncements);
-router.get("/active", announcementController.getActiveAnnouncements);
-router.put("/:id", verifyToken, announcementController.updateAnnouncement);
-router.put("/:id/toggle", verifyToken, announcementController.toggleStatus);
-router.delete("/:id", verifyToken, announcementController.deleteAnnouncement);
+router.post("/",           verifyToken, announcementController.createAnnouncement);
+router.get("/",            verifyToken, announcementController.getAllAnnouncements);
+router.get("/active",                   announcementController.getActiveAnnouncements);
+router.put("/:id",         verifyToken, announcementController.updateAnnouncement);
+router.put("/:id/toggle",  verifyToken, announcementController.toggleStatus);
+router.put("/:id/pin",     verifyToken, announcementController.togglePin);
+router.post("/:id/read",   verifyToken, announcementController.markRead);
+router.delete("/:id",      verifyToken, announcementController.deleteAnnouncement);
 
 export default router;

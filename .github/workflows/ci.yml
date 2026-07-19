@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  # ── Backend: migrate + test ─────────────────────────────────────────────────
+  backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pulse
+          POSTGRES_PASSWORD: pulse_test_pw
+          POSTGRES_DB: pulse_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      NODE_ENV: test
+      JWT_SECRET: ci-jwt-secret-minimum-32-characters-long-abc
+      DATABASE_URL: postgresql://pulse:pulse_test_pw@localhost:5432/pulse_test
+      ENCRYPTION_KEY: ci-encryption-key-exactly-32-chars!
+      PORT: 5001
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run migrations
+        run: npm run migrate
+
+      - name: Run tests
+        run: npm test
+
+      # Ratchet, not a scan: fails only when the count RISES. Newly-added
+      # approve/reject/cancel/delete routes with no authorization break the
+      # build. Lower the number as routes get gated — never raise it to go green.
+      # See SECURITY_AUDIT_2026-07-18.md H-2.
+      - name: Authorization coverage gate
+        run: node scripts/security/authz-privileged.mjs --max 76
+
+      # Advisory: reports known CVEs without failing the build on transitive
+      # dev-dependency noise. Promote to `--audit-level=high` once the current
+      # backlog is triaged, otherwise it becomes noise everyone learns to ignore.
+      - name: Dependency audit (advisory)
+        run: npm audit --omit=dev || true
+        continue-on-error: true
+
+  # ── Frontend: lint + build ──────────────────────────────────────────────────
+  frontend:
+    name: Frontend Lint & Build
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint:ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  # ── Docker: build + boot the full compose stack ─────────────────────────────
+  # Nothing else exercises the Dockerfiles: Render builds from source
+  # (runtime: node) and Railway uses nixpacks. Without this job a broken image
+  # is only discovered when someone needs the pilot/restore-rehearsal stack.
+  # Booting (not just building) also validates the migration chain against a
+  # fresh Postgres from inside the production image, plus nginx→backend proxy.
+  docker:
+    name: Docker Build & Boot
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Throwaway values for this run only — compose refuses to start without
+      # them, and the server enforces JWT_SECRET length in production mode.
+      - name: Generate one-off secrets
+        run: |
+          {
+            echo "DB_PASSWORD=$(openssl rand -hex 16)"
+            echo "JWT_SECRET=$(openssl rand -base64 48)"
+            echo "ENCRYPTION_KEY=$(openssl rand -base64 32)"
+          } >> "$GITHUB_ENV"
+
+      - name: Build images
+        run: docker compose build
+
+      # --wait blocks on the HEALTHCHECKs baked into both images. Backend
+      # start_period is 60s because migrations run on boot; 240s leaves room
+      # for the full chain on a cold database.
+      - name: Boot stack
+        run: docker compose up -d --wait --wait-timeout 240
+
+      - name: Probe endpoints
+        run: |
+          curl -fsS http://localhost:5000/api/health
+          curl -fsS -o /dev/null http://localhost:8080/
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

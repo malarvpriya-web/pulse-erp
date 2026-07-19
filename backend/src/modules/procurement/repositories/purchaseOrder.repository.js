@@ -1,12 +1,13 @@
 import pool from '../../shared/db.js';
+import { nextPurchaseOrderNumber } from '../../../shared/docNumber.js';
 
 class PurchaseOrderRepository {
   async create(client, data) {
-    const { po_number, pr_id, supplier_id, order_date, expected_delivery_date, subtotal, tax_amount, total_amount, terms_conditions, notes, created_by } = data;
+    const { po_number, pr_id, supplier_id, order_date, expected_delivery_date, subtotal, tax_amount, total_amount, terms_conditions, notes, created_by, company_id } = data;
     const result = await client.query(
-      `INSERT INTO purchase_orders (po_number, pr_id, supplier_id, order_date, expected_delivery_date, subtotal, tax_amount, total_amount, terms_conditions, notes, created_by) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [po_number, pr_id, supplier_id, order_date, expected_delivery_date, subtotal, tax_amount, total_amount, terms_conditions, notes, created_by]
+      `INSERT INTO purchase_orders (po_number, pr_id, supplier_id, order_date, expected_delivery_date, subtotal, tax_amount, total_amount, terms_conditions, notes, created_by, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [po_number, pr_id ?? null, supplier_id, order_date, expected_delivery_date ?? null, subtotal ?? 0, tax_amount ?? 0, total_amount ?? 0, terms_conditions ?? null, notes ?? null, created_by, company_id ?? null]
     );
     return result.rows[0];
   }
@@ -22,32 +23,66 @@ class PurchaseOrderRepository {
   }
 
   async findAll(filters = {}) {
-    let query = `SELECT po.*, p.name as supplier_name 
+    let query = `SELECT po.*, COALESCE(v.vendor_name, '') as supplier_name
                  FROM purchase_orders po
-                 JOIN parties p ON po.supplier_id = p.id
+                 LEFT JOIN vendors v ON po.supplier_id = v.id
                  WHERE po.deleted_at IS NULL`;
     const params = [];
-    
+
+    if (filters.company_id) {
+      params.push(filters.company_id);
+      query += ` AND po.company_id = $${params.length}`;
+    }
+
     if (filters.status) {
       params.push(filters.status);
       query += ` AND po.status = $${params.length}`;
     }
-    
+
+    if (filters.reminder_queued === 'true' || filters.reminder_queued === true) {
+      query += ` AND po.status = 'sent' AND po.created_at < NOW() - INTERVAL '7 days'`;
+    }
+
     if (filters.supplier_id) {
       params.push(filters.supplier_id);
       query += ` AND po.supplier_id = $${params.length}`;
     }
-    
+
     query += ' ORDER BY po.order_date DESC';
     const result = await pool.query(query, params);
     return result.rows;
   }
 
+  async getStats(companyId) {
+    const params = companyId ? [companyId] : [];
+    const companyFilter = companyId ? 'AND company_id = $1' : '';
+    const { rows } = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'sent')                                                      AS pending,
+        COUNT(*) FILTER (WHERE status = 'approved')                                                  AS approved,
+        COUNT(*) FILTER (WHERE status = 'received')                                                  AS received,
+        COUNT(*) FILTER (WHERE status = 'sent' AND created_at < NOW() - INTERVAL '7 days')           AS follow_up,
+        COALESCE(SUM(total_amount) FILTER (WHERE status NOT IN ('cancelled')), 0)                    AS total_value,
+        COUNT(*)                                                                                      AS total
+      FROM purchase_orders
+      WHERE deleted_at IS NULL ${companyFilter}
+    `, params);
+    const s = rows[0];
+    return {
+      pending:     parseInt(s.pending),
+      approved:    parseInt(s.approved),
+      received:    parseInt(s.received),
+      follow_up:   parseInt(s.follow_up),
+      total_value: parseFloat(s.total_value),
+      total:       parseInt(s.total),
+    };
+  }
+
   async findById(id) {
     const result = await pool.query(
-      `SELECT po.*, p.name as supplier_name, p.email as supplier_email 
+      `SELECT po.*, COALESCE(v.vendor_name, '') as supplier_name, v.email as supplier_email
        FROM purchase_orders po
-       JOIN parties p ON po.supplier_id = p.id
+       LEFT JOIN vendors v ON po.supplier_id = v.id
        WHERE po.id = $1 AND po.deleted_at IS NULL`,
       [id]
     );
@@ -81,30 +116,23 @@ class PurchaseOrderRepository {
     return result.rows[0];
   }
 
-  async getNextNumber() {
-    const result = await pool.query(
-      `SELECT po_number FROM purchase_orders 
-       WHERE po_number LIKE 'PO%' 
-       ORDER BY po_number DESC LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
-      return 'PO0001';
-    }
-    
-    const lastNum = parseInt(result.rows[0].po_number.replace('PO', '')) + 1;
-    return `PO${lastNum.toString().padStart(4, '0')}`;
+  async getNextNumber(client) {
+    return nextPurchaseOrderNumber(client);
   }
 
-  async getLateDeliveries() {
+  async getLateDeliveries(companyId) {
+    const params = [];
+    let filter = '';
+    if (companyId) { params.push(companyId); filter = ` AND po.company_id = $${params.length}`; }
     const result = await pool.query(
-      `SELECT po.*, p.name as supplier_name 
+      `SELECT po.*, COALESCE(v.vendor_name, '') as supplier_name
        FROM purchase_orders po
-       JOIN parties p ON po.supplier_id = p.id
-       WHERE po.expected_delivery_date < CURRENT_DATE 
-       AND po.status NOT IN ('completed', 'cancelled')
-       AND po.deleted_at IS NULL
-       ORDER BY po.expected_delivery_date`
+       LEFT JOIN vendors v ON po.supplier_id = v.id
+       WHERE po.expected_delivery_date < CURRENT_DATE
+       AND po.status NOT IN ('received', 'completed', 'cancelled')
+       AND po.deleted_at IS NULL${filter}
+       ORDER BY po.expected_delivery_date`,
+      params
     );
     return result.rows;
   }

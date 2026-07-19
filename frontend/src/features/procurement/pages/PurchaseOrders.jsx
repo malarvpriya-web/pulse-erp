@@ -1,14 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, Plus, RefreshCw, X, ShoppingCart, ChevronDown } from 'lucide-react';
 import api from '@/services/api/client';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './PurchaseOrders.css';
 
-const fmt = n => {
-  const v = parseFloat(n || 0);
-  if (v >= 100000) return `₹${(v / 100000).toFixed(1)}L`;
-  if (v >= 1000)   return `₹${(v / 1000).toFixed(0)}K`;
-  return `₹${v.toFixed(0)}`;
-};
 const fmtFull = n =>
   `₹${parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -21,31 +17,13 @@ const calcLine = line => {
 const STATUS_COLOR = {
   draft:    { bg: '#f3f4f6', color: '#6b7280' },
   sent:     { bg: '#eef2ff', color: '#4338ca' },
+  approved: { bg: '#dbeafe', color: '#1d4ed8' },
   partial:  { bg: '#fef3c7', color: '#92400e' },
   received: { bg: '#f0fdf4', color: '#15803d' },
   cancelled:{ bg: '#fef2f2', color: '#dc2626' },
 };
 const sc = s => STATUS_COLOR[(s || '').toLowerCase()] || STATUS_COLOR.draft;
 
-const SAMPLE_POS = [
-  { id: 1, po_number: 'PO-2024-001', supplier_name: 'Tata Steel Ltd',       order_date: '2024-11-01', expected_date: '2024-11-15', total_amount: 185000, status: 'Received', items_count: 3 },
-  { id: 2, po_number: 'PO-2024-002', supplier_name: 'ABC Packaging Co',     order_date: '2024-11-10', expected_date: '2024-11-25', total_amount: 42000,  status: 'Sent',     items_count: 2 },
-  { id: 3, po_number: 'PO-2024-003', supplier_name: 'National Electricals', order_date: '2024-11-20', expected_date: '2024-12-05', total_amount: 96500,  status: 'Partial',  items_count: 5 },
-  { id: 4, po_number: 'PO-2024-004', supplier_name: 'Lubes & More Pvt Ltd', order_date: '2024-11-28', expected_date: '2024-12-10', total_amount: 18200,  status: 'Draft',    items_count: 1 },
-];
-
-const SAMPLE_SUPPLIERS = [
-  { id: 1, name: 'Tata Steel Ltd' },
-  { id: 2, name: 'ABC Packaging Co' },
-  { id: 3, name: 'National Electricals' },
-  { id: 4, name: 'Lubes & More Pvt Ltd' },
-];
-
-const SAMPLE_ITEMS = [
-  { id: 1, name: 'Steel Rods 12mm',   sku: 'SKU-005', unit: 'kg' },
-  { id: 2, name: 'Ball Bearings 20mm',sku: 'SKU-001', unit: 'pcs' },
-  { id: 3, name: 'Packing Tape 48mm', sku: 'SKU-003', unit: 'rolls' },
-];
 
 const emptyLine = () => ({ item_id: '', item_name: '', quantity: 1, unit_price: '', gst_rate: 18, taxable_amount: 0, gst_amount: 0, amount: 0 });
 const emptyForm = () => ({
@@ -54,10 +32,11 @@ const emptyForm = () => ({
 });
 
 export default function PurchaseOrders() {
+  const { readOnly } = usePageAccess();
   const [pos,       setPos]       = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [invItems,  setInvItems]  = useState([]);
-  const [loading,   setLoading]   = useState(true);
+  const [loading,   setLoading]   = useState(false);
   const [search,    setSearch]    = useState('');
   const [fStatus,   setFStatus]   = useState('');
   const [drawer,    setDrawer]    = useState(null);   // null | 'create' | po-obj
@@ -65,6 +44,12 @@ export default function PurchaseOrders() {
   const [form,      setForm]      = useState(emptyForm());
   const [submitting,setSubmitting]= useState(false);
   const [toast,     setToast]     = useState(null);
+
+  const isMounted = useRef(true);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -78,17 +63,18 @@ export default function PurchaseOrders() {
     if (search)  params.search = search;
     const [posRes, suppRes, itemsRes] = await Promise.allSettled([
       api.get('/procurement/purchase-orders', { params }),
-      api.get('/procurement/purchase-orders/suppliers').catch(() => api.get('/inventory/items')),
+      api.get('/procurement/vendors'),
       api.get('/inventory/items'),
     ]);
+    if (!isMounted.current) return;
     const rawPos  = posRes.status  === 'fulfilled' ? (posRes.value.data.orders || posRes.value.data) : [];
-    setPos(Array.isArray(rawPos) && rawPos.length ? rawPos : SAMPLE_POS);
+    setPos(Array.isArray(rawPos) ? rawPos : []);
 
-    const rawSupp = suppRes.status === 'fulfilled' ? (suppRes.value.data.suppliers || suppRes.value.data) : [];
-    setSuppliers(Array.isArray(rawSupp) && rawSupp.length ? rawSupp : SAMPLE_SUPPLIERS);
+    const rawSupp = suppRes.status === 'fulfilled' ? (suppRes.value.data.vendors || suppRes.value.data.suppliers || suppRes.value.data) : [];
+    setSuppliers(Array.isArray(rawSupp) ? rawSupp : []);
 
     const rawItems= itemsRes.status=== 'fulfilled' ? (itemsRes.value.data.items || itemsRes.value.data) : [];
-    setInvItems(Array.isArray(rawItems) && rawItems.length ? rawItems : SAMPLE_ITEMS);
+    setInvItems(Array.isArray(rawItems) ? rawItems : []);
 
     setLoading(false);
   }, [fStatus, search]);
@@ -98,8 +84,9 @@ export default function PurchaseOrders() {
   const openDetail = async po => {
     try {
       const r = await api.get(`/procurement/purchase-orders/${po.id}`);
+      if (!isMounted.current) return;
       setDetail(r.data.order || r.data);
-    } catch { setDetail(po); }
+    } catch { if (!isMounted.current) return; setDetail(po); }
     setDrawer('detail');
   };
 
@@ -124,22 +111,26 @@ export default function PurchaseOrders() {
     setSubmitting(true);
     try {
       await api.post('/procurement/purchase-orders', { ...form, total_amount: totals.total });
+      if (!isMounted.current) return;
       showToast('Purchase order created');
       setDrawer(null);
       setForm(emptyForm());
       load();
     } catch (e) {
+      if (!isMounted.current) return;
       showToast(e.response?.data?.error || 'Failed to create PO', 'error');
-    } finally { setSubmitting(false); }
+    } finally { if (isMounted.current) setSubmitting(false); }
   };
 
   const handleReceive = async po => {
     try {
-      await api.put(`/procurement/purchase-orders/${po.id}/status`, { status: 'Received' });
+      await api.put(`/procurement/purchase-orders/${po.id}/status`, { status: 'received' });
+      if (!isMounted.current) return;
       showToast('PO marked as Received');
       setDrawer(null);
       load();
     } catch (e) {
+      if (!isMounted.current) return;
       showToast(e.response?.data?.error || 'Failed to update', 'error');
     }
   };
@@ -155,6 +146,8 @@ export default function PurchaseOrders() {
 
       {toast && <div className={`po-toast po-toast-${toast.type}`}>{toast.msg}</div>}
 
+      {readOnly && <ReadOnlyBanner />}
+
       <div className="po-header">
         <div>
           <h2 className="po-title">Purchase Orders</h2>
@@ -162,9 +155,11 @@ export default function PurchaseOrders() {
         </div>
         <div className="po-header-r">
           <button className="po-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="po-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer('create'); }}>
-            <Plus size={14} /> New PO
-          </button>
+          {!readOnly && (
+            <button className="po-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer('create'); }}>
+              <Plus size={14} /> New PO
+            </button>
+          )}
         </div>
       </div>
 
@@ -209,12 +204,12 @@ export default function PurchaseOrders() {
                   <tr key={po.id} className="po-row" onClick={() => openDetail(po)}>
                     <td className="po-mono">{po.po_number}</td>
                     <td className="po-supplier">{po.supplier_name}</td>
-                    <td>{po.order_date ? new Date(po.order_date).toLocaleDateString('en-IN') : '—'}</td>
-                    <td>{po.expected_date ? new Date(po.expected_date).toLocaleDateString('en-IN') : '—'}</td>
+                    <td>{po.order_date ? new Date(po.order_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
+                    <td>{po.expected_date ? new Date(po.expected_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                     <td className="po-amount">{fmtFull(po.total_amount)}</td>
                     <td><span className="po-badge" style={{ background: c.bg, color: c.color }}>{po.status}</span></td>
                     <td onClick={e => e.stopPropagation()}>
-                      {(po.status === 'Sent' || po.status === 'Partial') && (
+                      {!readOnly && (po.status === 'sent' || po.status === 'partial' || po.status === 'approved') && (
                         <button className="po-recv-btn" onClick={() => handleReceive(po)}>Receive</button>
                       )}
                     </td>
@@ -344,8 +339,8 @@ export default function PurchaseOrders() {
             <div className="po-drawer-body">
               <div className="po-detail-meta-row">
                 <span className="po-badge" style={{ background: sc(detail.status).bg, color: sc(detail.status).color }}>{detail.status}</span>
-                <span className="po-meta-item">Order: {detail.order_date ? new Date(detail.order_date).toLocaleDateString('en-IN') : '—'}</span>
-                <span className="po-meta-item">Expected: {detail.expected_date ? new Date(detail.expected_date).toLocaleDateString('en-IN') : '—'}</span>
+                <span className="po-meta-item">Order: {detail.order_date ? new Date(detail.order_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</span>
+                <span className="po-meta-item">Expected: {detail.expected_date ? new Date(detail.expected_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</span>
               </div>
               {detail.notes && <p className="po-detail-notes">{detail.notes}</p>}
 
@@ -377,7 +372,7 @@ export default function PurchaseOrders() {
               </div>
             </div>
             <div className="po-drawer-ft">
-              {(detail.status === 'Sent' || detail.status === 'Partial') && (
+              {(detail.status === 'sent' || detail.status === 'partial' || detail.status === 'approved') && (
                 <button className="po-btn-primary" onClick={() => handleReceive(detail)}>
                   Mark as Received
                 </button>

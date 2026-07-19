@@ -76,11 +76,75 @@ export const deleteItem = async (id) => {
   return res.data;
 };
 
+// ── Categories (component category master) ──────────────────────────────────
+
+export const getCategories = async (params = {}) => {
+  try {
+    const res = await api.get('/inventory/catalog/categories', { params });
+    return res.data?.categories || res.data || [];
+  } catch (err) {
+    console.error('getCategories failed:', err.message);
+    return [];
+  }
+};
+
+export const createCategory = async (data) => {
+  const res = await api.post('/inventory/catalog/categories', data);
+  return res.data;
+};
+
+export const updateCategory = async (id, data) => {
+  const res = await api.put(`/inventory/catalog/categories/${id}`, data);
+  return res.data;
+};
+
+export const deleteCategory = async (id) => {
+  const res = await api.delete(`/inventory/catalog/categories/${id}`);
+  return res.data;
+};
+
+// ── Vendor prices (component × vendor × store) ──────────────────────────────
+
+export const getItemVendorPrices = async (itemId, params = {}) => {
+  try {
+    const res = await api.get(`/inventory/catalog/items/${itemId}/vendor-prices`, { params });
+    return res.data?.prices || res.data || [];
+  } catch (err) {
+    console.error('getItemVendorPrices failed:', err.message);
+    return [];
+  }
+};
+
+export const createItemVendorPrice = async (itemId, data) => {
+  const res = await api.post(`/inventory/catalog/items/${itemId}/vendor-prices`, data);
+  return res.data;
+};
+
+export const updateItemVendorPrice = async (id, data) => {
+  const res = await api.put(`/inventory/catalog/vendor-prices/${id}`, data);
+  return res.data;
+};
+
+export const deleteItemVendorPrice = async (id) => {
+  const res = await api.delete(`/inventory/catalog/vendor-prices/${id}`);
+  return res.data;
+};
+
+export const getVendorPriceComparison = async (params = {}) => {
+  try {
+    const res = await api.get('/inventory/catalog/vendor-price-comparison', { params });
+    return res.data || {};
+  } catch (err) {
+    console.error('getVendorPriceComparison failed:', err.message);
+    return {};
+  }
+};
+
 // ── Batch Tracking ────────────────────────────────────────────────────────
 
 export const getBatches = async (params = {}) => {
   try {
-    const res = await api.get('/inventory/batches', { params });
+    const res = await api.get('/inventory/advanced/batches', { params });
     return res.data?.batches || res.data || [];
   } catch (err) {
     console.error('getBatches failed:', err.message);
@@ -89,7 +153,7 @@ export const getBatches = async (params = {}) => {
 };
 
 export const createBatch = async (data) => {
-  const res = await api.post('/inventory/batches', data);
+  const res = await api.post('/inventory/advanced/batches', data);
   return res.data;
 };
 
@@ -97,7 +161,7 @@ export const createBatch = async (data) => {
 
 export const getReservations = async (params = {}) => {
   try {
-    const res = await api.get('/inventory/reservations', { params });
+    const res = await api.get('/inventory/advanced/reservations', { params });
     return res.data?.reservations || res.data || [];
   } catch (err) {
     console.error('getReservations failed:', err.message);
@@ -106,11 +170,6 @@ export const getReservations = async (params = {}) => {
 };
 
 export const createReservation = async (data) => {
-  const res = await api.post('/inventory/reservations', data);
-  return res.data;
-};
-
-export const updateReservation = async (id, data) => {
-  const res = await api.put(`/inventory/reservations/${id}`, data);
+  const res = await api.post('/inventory/advanced/reservations', data);
   return res.data;
 };

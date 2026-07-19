@@ -7,7 +7,7 @@ const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
 const ExpenseBreakdownChart = ({ title = 'Expense Breakdown', data, refreshKey }) => {
   const [chartData, setChartData] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
@@ -21,10 +21,10 @@ const ExpenseBreakdownChart = ({ title = 'Expense Breakdown', data, refreshKey }
 
   const fetchData = async () => {
     try {
-      setLoading(true);
+
       const response = await dashboardAPI.getExpenseBreakdown();
       setChartData(response || []);
-    } catch (err) {
+    } catch (_err) {
       setChartData([]);
     } finally {
       setLoading(false);
@@ -48,7 +48,7 @@ const ExpenseBreakdownChart = ({ title = 'Expense Breakdown', data, refreshKey }
           ))}
         </Pie>
         <Tooltip 
-          formatter={(value) => `₹${value.toLocaleString()}`}
+          formatter={(value) => `₹${value.toLocaleString('en-IN')}`}
           contentStyle={{ 
             backgroundColor: '#fff', 
             border: '1px solid #e5e7eb',

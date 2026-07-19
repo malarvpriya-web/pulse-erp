@@ -26,3 +26,13 @@ export const updateNotification = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+export const updateByEmployee = async (req, res) => {
+  try {
+    const notification = await service.updateByEmployee(req.params.employee_id, req.body);
+    if (!notification) return res.status(404).json({ error: 'No pending probation record found for this employee' });
+    res.json(notification);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};

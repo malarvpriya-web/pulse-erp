@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import './Tickets.css';
+import { useToast } from '@/context/ToastContext';
 
 export default function Tickets() {
+  const toast = useToast();
   const [tickets, setTickets] = useState([]);
   const [categories, setCategories] = useState([]);
   const [slaPolices, setSlaPolices] = useState([]);
@@ -12,6 +14,7 @@ export default function Tickets() {
   const [conversations, setConversations] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [filters, setFilters] = useState({ status: '', priority: '' });
+  const [actioningTicketId, setActioningTicketId] = useState(null);
   const [formData, setFormData] = useState({
     subject: '',
     description: '',
@@ -22,12 +25,6 @@ export default function Tickets() {
     requester_email: '',
     sla_policy_id: ''
   });
-
-  useEffect(() => {
-    fetchTickets();
-    fetchCategories();
-    fetchSLAPolicies();
-  }, [filters]);
 
   const fetchTickets = async () => {
     try {
@@ -56,6 +53,12 @@ export default function Tickets() {
     }
   };
 
+  useEffect(() => {
+    fetchTickets();
+    fetchCategories();
+    fetchSLAPolicies();
+  }, [filters]);
+
   const fetchTicketDetail = async (ticketId) => {
     try {
       const response = await api.get(`/finance/tickets/${ticketId}`);
@@ -71,7 +74,7 @@ export default function Tickets() {
     e.preventDefault();
     try {
       await api.post('/finance/tickets', formData);
-      alert('Ticket created successfully');
+      toast.success('Ticket created successfully');
       setShowForm(false);
       fetchTickets();
       setFormData({
@@ -85,20 +88,24 @@ export default function Tickets() {
         sla_policy_id: ''
       });
     } catch (error) {
-      alert('Error creating ticket: ' + error.message);
+      toast.error('Error creating ticket: ' + error.message);
     }
   };
 
   const handleStatusChange = async (ticketId, status) => {
+    if (actioningTicketId) return;
+    setActioningTicketId(ticketId);
     try {
       await api.put(`/finance/tickets/${ticketId}/status`, { status });
-      alert('Status updated');
+      toast.success('Status updated');
       fetchTickets();
       if (selectedTicket && selectedTicket.id === ticketId) {
         fetchTicketDetail(ticketId);
       }
     } catch (error) {
-      alert('Error updating status: ' + error.message);
+      toast.error('Error updating status: ' + error.message);
+    } finally {
+      setActioningTicketId(null);
     }
   };
 
@@ -114,7 +121,7 @@ export default function Tickets() {
       setNewMessage('');
       fetchTicketDetail(selectedTicket.id);
     } catch (error) {
-      alert('Error adding message: ' + error.message);
+      toast.error('Error adding message: ' + error.message);
     }
   };
 
@@ -247,14 +254,14 @@ export default function Tickets() {
                 <td><span className="priority-badge" style={{ background: getPriorityColor(ticket.priority) }}>{ticket.priority}</span></td>
                 <td><span className={`status-badge ${ticket.status.toLowerCase()}`}>{ticket.status.replace('_', ' ')}</span></td>
                 <td>{ticket.requester_name}</td>
-                <td className={isOverdue(ticket) ? 'overdue' : ''}>{new Date(ticket.resolution_due_at).toLocaleDateString()}</td>
+                <td className={isOverdue(ticket) ? 'overdue' : ''}>{new Date(ticket.resolution_due_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
                 <td>{ticket.is_sla_breached ? <span className="sla-breach">⚠️ Breached</span> : '✓'}</td>
                 <td onClick={(e) => e.stopPropagation()}>
                   {ticket.status === 'Open' && (
-                    <button className="action-btn" onClick={() => handleStatusChange(ticket.id, 'In_Progress')}>Start</button>
+                    <button className="action-btn" disabled={!!actioningTicketId} onClick={() => handleStatusChange(ticket.id, 'In_Progress')}>{actioningTicketId===ticket.id ? 'Starting…' : 'Start'}</button>
                   )}
                   {ticket.status === 'In_Progress' && (
-                    <button className="action-btn" onClick={() => handleStatusChange(ticket.id, 'Resolved')}>Resolve</button>
+                    <button className="action-btn" disabled={!!actioningTicketId} onClick={() => handleStatusChange(ticket.id, 'Resolved')}>{actioningTicketId===ticket.id ? 'Resolving…' : 'Resolve'}</button>
                   )}
                 </td>
               </tr>
@@ -284,7 +291,7 @@ export default function Tickets() {
                   <div key={conv.id} className="conversation-item">
                     <div className="conv-header">
                       <strong>{conv.created_by_name}</strong>
-                      <span>{new Date(conv.created_at).toLocaleString()}</span>
+                      <span>{new Date(conv.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
                     <p>{conv.message}</p>
                   </div>

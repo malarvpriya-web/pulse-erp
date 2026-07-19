@@ -1,48 +1,110 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import {
-  RadialBarChart, RadialBar, AreaChart, Area,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
-} from 'recharts';
-import {
-  TrendingUp, TrendingDown, CheckCircle, AlertTriangle,
-  XCircle, RefreshCw, Download, Info, ChevronDown, ChevronRight
+  CheckCircle, AlertTriangle,
+  XCircle, RefreshCw, ChevronDown, ChevronRight, MinusCircle
 } from 'lucide-react';
+import api from '@/services/api/client';
+import { useFY } from '@/context/FYContext';
 import './FinancialRatios.css';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const getRatingColor = (rating) => {
-  if (rating === 'good')    return { bg:'#dcfce7', color:'#16a34a', border:'#86efac' };
-  if (rating === 'warning') return { bg:'#fef3c7', color:'#d97706', border:'#fcd34d' };
-  return                           { bg:'#fee2e2', color:'#dc2626', border:'#fca5a5' };
-};
-
-const getRating = (value, good, warning, higherIsBetter=true) => {
-  if (higherIsBetter) {
-    if (value >= good)    return 'good';
-    if (value >= warning) return 'warning';
-    return 'danger';
-  } else {
-    if (value <= good)    return 'good';
-    if (value <= warning) return 'warning';
-    return 'danger';
-  }
+  if (rating === 'good')     return { bg:'#dcfce7', color:'#16a34a', border:'#86efac' };
+  if (rating === 'warning')  return { bg:'#fef3c7', color:'#d97706', border:'#fcd34d' };
+  if (rating === 'critical') return { bg:'#fee2e2', color:'#dc2626', border:'#fca5a5' };
+  return                            { bg:'#f3f4f6', color:'#9ca3af', border:'#e5e7eb' }; // neutral
 };
 
 const RatingIcon = ({ rating }) => {
-  if (rating==='good')    return <CheckCircle  size={14} color="#16a34a"/>;
-  if (rating==='warning') return <AlertTriangle size={14} color="#d97706"/>;
-  return                         <XCircle       size={14} color="#dc2626"/>;
+  if (rating==='good')     return <CheckCircle   size={14} color="#16a34a"/>;
+  if (rating==='warning')  return <AlertTriangle  size={14} color="#d97706"/>;
+  if (rating==='critical') return <XCircle        size={14} color="#dc2626"/>;
+  return                          <MinusCircle    size={14} color="#9ca3af"/>;
 };
+
+const fmtINR = (v) => {
+  const n = parseFloat(v) || 0;
+  if (n >= 10000000) return `₹${(n/10000000).toFixed(2)} Cr`;
+  if (n >= 100000)   return `₹${(n/100000).toFixed(2)} L`;
+  return `₹${n.toLocaleString('en-IN')}`;
+};
+
+// ── Static metadata: formulas, scale max, direction ──────────────────────────
+const RATIO_META = {
+  'Current Ratio':  { formula: 'Current Assets ÷ Current Liabilities',       max: 5,   higherIsBetter: true  },
+  'Quick Ratio':    { formula: '(Cash + AR) ÷ Current Liabilities',           max: 4,   higherIsBetter: true  },
+  'Cash Ratio':     { formula: 'Cash & Bank ÷ Current Liabilities',           max: 2,   higherIsBetter: true  },
+  'Gross Margin':   { formula: '(Revenue − COGS) ÷ Revenue × 100',            max: 60,  higherIsBetter: true  },
+  'Net Margin':     { formula: 'Net Profit ÷ Revenue × 100',                  max: 40,  higherIsBetter: true  },
+  'ROA':            { formula: 'Net Profit ÷ Total Assets × 100',             max: 25,  higherIsBetter: true  },
+  'ROE':            { formula: 'Net Profit ÷ Equity × 100',                   max: 40,  higherIsBetter: true  },
+  'AR Turnover':    { formula: 'Revenue ÷ Accounts Receivable',               max: 15,  higherIsBetter: true  },
+  'Asset Turnover': { formula: 'Revenue ÷ Total Assets',                      max: 3,   higherIsBetter: true  },
+  'Debt/Equity':    { formula: 'Total Debt ÷ Equity',                         max: 4,   higherIsBetter: false },
+  'Equity Ratio':   { formula: 'Equity ÷ Total Assets × 100',                 max: 100, higherIsBetter: true  },
+};
+
+const SECTION_META = {
+  liquidity:     { label: 'Liquidity Ratios',     desc: 'Ability to meet short-term obligations',                     color: '#3b82f6' },
+  profitability: { label: 'Profitability Ratios', desc: 'Ability to generate profit relative to revenue and assets', color: '#10b981' },
+  efficiency:    { label: 'Efficiency Ratios',    desc: 'How effectively assets and liabilities are managed',        color: '#f59e0b' },
+  leverage:      { label: 'Solvency Ratios',      desc: 'Ability to meet long-term financial obligations',           color: '#8b5cf6' },
+};
+
+function deriveRating(value, benchmark, higherIsBetter) {
+  if (value === null || value === undefined || benchmark === null) return 'neutral';
+  const v = parseFloat(value);
+  const b = parseFloat(benchmark);
+  if (isNaN(v) || isNaN(b)) return 'neutral';
+  if (higherIsBetter) {
+    if (v >= b)        return 'good';
+    if (v >= b * 0.70) return 'warning';
+    return 'critical';
+  } else {
+    if (v <= b)        return 'good';
+    if (v <= b * 1.30) return 'warning';
+    return 'critical';
+  }
+}
+
+function buildSections(apiRatios) {
+  return Object.entries(apiRatios).map(([key, items]) => {
+    const sm = SECTION_META[key] || { label: key, desc: '', color: '#6b7280' };
+    const ratios = items.map(item => {
+      const m = RATIO_META[item.name] || {
+        formula: item.description || '—',
+        max: Math.max(parseFloat(item.benchmark || 1) * 3, 1),
+        higherIsBetter: true,
+      };
+      const rating = deriveRating(item.value, item.benchmark, m.higherIsBetter);
+      return {
+        id:             item.name,
+        name:           item.name,
+        value:          item.value !== null && item.value !== undefined ? String(item.value) : null,
+        unit:           item.unit || '',
+        benchmark:      item.benchmark,
+        max:            m.max,
+        rating,
+        trend:          [],
+        formula:        m.formula,
+        description:    item.description || '',
+        higherIsBetter: m.higherIsBetter,
+        components:     item.components || null,
+      };
+    });
+    return [key, { ...sm, ratios }];
+  });
+}
 
 // ── Gauge component ───────────────────────────────────────────────────────────
 const Gauge = ({ value, max, rating, size=80 }) => {
-  const pct     = Math.min((value / max) * 100, 100);
+  const pct     = Math.min((value / Math.max(max, 1)) * 100, 100);
   const r       = (size/2) - 8;
   const cx      = size / 2;
   const cy      = size / 2;
   const circ    = Math.PI * r;
   const dash    = (pct / 100) * circ;
-  const colors  = { good:'#10b981', warning:'#f59e0b', danger:'#ef4444' };
+  const colors  = { good:'#10b981', warning:'#f59e0b', critical:'#ef4444', neutral:'#9ca3af' };
   const color   = colors[rating] || '#6366f1';
 
   return (
@@ -64,6 +126,12 @@ const Gauge = ({ value, max, rating, size=80 }) => {
 const RatioCard = ({ ratio }) => {
   const [expanded, setExpanded] = useState(false);
   const rc = getRatingColor(ratio.rating);
+  const isNA = ratio.value === null;
+  const numVal = isNA ? null : (parseFloat(ratio.value) || 0);
+  const hasTrend = ratio.trend && ratio.trend.length > 1;
+
+  const ratingLabel = isNA ? 'N/A'
+    : ratio.rating.charAt(0).toUpperCase() + ratio.rating.slice(1);
 
   return (
     <div className="fr-card" style={{borderTopColor: rc.color}}>
@@ -74,35 +142,42 @@ const RatioCard = ({ ratio }) => {
             <span className="fr-rating-badge"
               style={{background:rc.bg, color:rc.color, borderColor:rc.border}}>
               <RatingIcon rating={ratio.rating}/>
-              {ratio.rating.charAt(0).toUpperCase()+ratio.rating.slice(1)}
+              {ratingLabel}
             </span>
           </div>
         </div>
         <div className="fr-card-right">
-          <span className="fr-card-val" style={{color:rc.color}}>
-            {ratio.value}{ratio.unit||''}
+          <span className="fr-card-val" style={{color: isNA ? '#9ca3af' : rc.color}}>
+            {isNA ? 'N/A' : `${ratio.value}${ratio.unit}`}
           </span>
-          <span className="fr-card-bench">Bench: {ratio.benchmark}{ratio.unit||''}</span>
+          <span className="fr-card-bench">Bench: {ratio.benchmark}{ratio.unit}</span>
         </div>
       </div>
 
-      <Gauge
-        value={Math.min(parseFloat(ratio.value), parseFloat(ratio.max||ratio.value*1.5))}
-        max={parseFloat(ratio.max||ratio.value*1.5)}
-        rating={ratio.rating}/>
+      {!isNA && numVal !== null ? (
+        <Gauge value={numVal} max={ratio.max} rating={ratio.rating}/>
+      ) : (
+        <div style={{textAlign:'center', padding:'6px 0 4px', fontSize:11, color:'#9ca3af'}}>
+          No data — post transactions to calculate
+        </div>
+      )}
 
-      <div className="fr-card-trend">
-        {ratio.trend.map((v,i) => (
-          <div key={i} className="fr-trend-bar-wrap">
-            <div className="fr-trend-bar"
-              style={{
-                height:`${Math.max((v/Math.max(...ratio.trend))*40,4)}px`,
-                background: i===ratio.trend.length-1 ? rc.color : '#e5e7eb'
-              }}/>
+      {hasTrend && (
+        <>
+          <div className="fr-card-trend">
+            {ratio.trend.map((v,i) => (
+              <div key={i} className="fr-trend-bar-wrap">
+                <div className="fr-trend-bar"
+                  style={{
+                    height:`${Math.max((v/Math.max(...ratio.trend))*40,4)}px`,
+                    background: i===ratio.trend.length-1 ? rc.color : '#e5e7eb'
+                  }}/>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      <div className="fr-card-trend-label">6-month trend</div>
+          <div className="fr-card-trend-label">6-month trend</div>
+        </>
+      )}
 
       <button className="fr-expand-btn" onClick={()=>setExpanded(e=>!e)}>
         {expanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}
@@ -111,28 +186,20 @@ const RatioCard = ({ ratio }) => {
 
       {expanded && (
         <div className="fr-card-detail">
-          <p className="fr-detail-desc">{ratio.description}</p>
+          {ratio.description && <p className="fr-detail-desc">{ratio.description}</p>}
           <div className="fr-detail-formula">
             <span className="fr-formula-label">Formula:</span>
             <span className="fr-formula">{ratio.formula}</span>
           </div>
-          <div className="fr-detail-row">
-            <span>Industry Benchmark</span><strong>{ratio.benchmark}{ratio.unit||''}</strong>
-          </div>
-          <div className="fr-detail-row">
-            <span>Previous Period</span>
-            <strong>{ratio.trend[ratio.trend.length-2]}{ratio.unit||''}</strong>
-          </div>
-          <div className="fr-detail-row">
-            <span>Change</span>
-            <strong className={
-              parseFloat(ratio.value) > ratio.trend[ratio.trend.length-2]
-                ? (ratio.higherIsBetter !== false ? 'fr-pos' : 'fr-neg')
-                : (ratio.higherIsBetter !== false ? 'fr-neg' : 'fr-pos')
-            }>
-              {parseFloat(ratio.value) > ratio.trend[ratio.trend.length-2] ? '▲' : '▼'}
-              {' '}{Math.abs(parseFloat(ratio.value) - ratio.trend[ratio.trend.length-2]).toFixed(2)}{ratio.unit||''}
-            </strong>
+          {ratio.components && Object.entries(ratio.components).map(([k, v]) => (
+            <div key={k} className="fr-detail-row">
+              <span>{k}</span>
+              <strong>{typeof v === 'number' ? fmtINR(v) : v}</strong>
+            </div>
+          ))}
+          <div className="fr-detail-row" style={{borderTop:'1px solid #f0f0f4', paddingTop:6, marginTop:2}}>
+            <span>Industry Benchmark</span>
+            <strong style={{color: rc.color}}>{ratio.benchmark}{ratio.unit}</strong>
           </div>
         </div>
       )}
@@ -140,238 +207,129 @@ const RatioCard = ({ ratio }) => {
   );
 };
 
-// ── Data ──────────────────────────────────────────────────────────────────────
-const RATIO_DATA = {
-  liquidity: {
-    label: 'Liquidity Ratios',
-    desc: 'Ability to meet short-term obligations',
-    color: '#3b82f6',
-    ratios: [
-      {
-        id:'current', name:'Current Ratio', value:'2.4', unit:'x',
-        benchmark:'2.0', max:5, rating: getRating(2.4,2,1.5),
-        trend:[1.8,2.0,2.1,2.2,2.3,2.4],
-        formula:'Current Assets ÷ Current Liabilities',
-        description:'Measures ability to pay short-term liabilities with short-term assets. Above 2x is healthy.',
-        higherIsBetter:true,
-      },
-      {
-        id:'quick', name:'Quick Ratio', value:'1.8', unit:'x',
-        benchmark:'1.0', max:4, rating: getRating(1.8,1,0.75),
-        trend:[1.4,1.5,1.6,1.6,1.7,1.8],
-        formula:'(Current Assets - Inventory) ÷ Current Liabilities',
-        description:'Measures ability to meet short-term obligations without relying on inventory sales.',
-        higherIsBetter:true,
-      },
-      {
-        id:'cash', name:'Cash Ratio', value:'0.8', unit:'x',
-        benchmark:'0.5', max:2, rating: getRating(0.8,0.5,0.3),
-        trend:[0.5,0.6,0.6,0.7,0.7,0.8],
-        formula:'Cash & Cash Equivalents ÷ Current Liabilities',
-        description:'Most conservative liquidity measure — only cash against current liabilities.',
-        higherIsBetter:true,
-      },
-      {
-        id:'operating', name:'Operating Cash Flow Ratio', value:'1.3', unit:'x',
-        benchmark:'1.0', max:3, rating: getRating(1.3,1,0.8),
-        trend:[0.9,1.0,1.1,1.1,1.2,1.3],
-        formula:'Operating Cash Flow ÷ Current Liabilities',
-        description:'Indicates how well current liabilities are covered by cash generated from operations.',
-        higherIsBetter:true,
-      },
-    ]
-  },
-  profitability: {
-    label: 'Profitability Ratios',
-    desc: 'Ability to generate profit relative to revenue and assets',
-    color: '#10b981',
-    ratios: [
-      {
-        id:'gross_margin', name:'Gross Profit Margin', value:'28.0', unit:'%',
-        benchmark:'30.0', max:60, rating: getRating(28,30,20),
-        trend:[22,24,25,26,27,28],
-        formula:'(Revenue - COGS) ÷ Revenue × 100',
-        description:'Percentage of revenue retained after direct costs. Higher indicates better production efficiency.',
-        higherIsBetter:true,
-      },
-      {
-        id:'net_margin', name:'Net Profit Margin', value:'15.3', unit:'%',
-        benchmark:'15.0', max:40, rating: getRating(15.3,15,10),
-        trend:[10,11,12,13,14,15.3],
-        formula:'Net Profit ÷ Revenue × 100',
-        description:'Overall profitability after all expenses, taxes, and interest.',
-        higherIsBetter:true,
-      },
-      {
-        id:'ebitda_margin', name:'EBITDA Margin', value:'31.2', unit:'%',
-        benchmark:'20.0', max:60, rating: getRating(31.2,20,15),
-        trend:[24,26,27,28,30,31.2],
-        formula:'EBITDA ÷ Revenue × 100',
-        description:'Operational profitability before financing and accounting decisions.',
-        higherIsBetter:true,
-      },
-      {
-        id:'roe', name:'Return on Equity (ROE)', value:'18.2', unit:'%',
-        benchmark:'15.0', max:40, rating: getRating(18.2,15,10),
-        trend:[12,13,15,16,17,18.2],
-        formula:'Net Profit ÷ Shareholders Equity × 100',
-        description:'How efficiently the company uses equity to generate profits.',
-        higherIsBetter:true,
-      },
-      {
-        id:'roa', name:'Return on Assets (ROA)', value:'9.4', unit:'%',
-        benchmark:'8.0', max:25, rating: getRating(9.4,8,5),
-        trend:[6,7,7.5,8,8.8,9.4],
-        formula:'Net Profit ÷ Total Assets × 100',
-        description:'How efficiently assets are used to generate earnings.',
-        higherIsBetter:true,
-      },
-      {
-        id:'roce', name:'Return on Capital Employed', value:'14.8', unit:'%',
-        benchmark:'12.0', max:35, rating: getRating(14.8,12,8),
-        trend:[9,10,11,12,13,14.8],
-        formula:'EBIT ÷ (Total Assets - Current Liabilities) × 100',
-        description:'Efficiency of capital use in generating profits.',
-        higherIsBetter:true,
-      },
-    ]
-  },
-  solvency: {
-    label: 'Solvency Ratios',
-    desc: 'Ability to meet long-term financial obligations',
-    color: '#8b5cf6',
-    ratios: [
-      {
-        id:'debt_equity', name:'Debt-to-Equity', value:'0.42', unit:'',
-        benchmark:'1.0', max:2, rating: getRating(0.42,1,1.5,false),
-        trend:[0.8,0.75,0.65,0.6,0.5,0.42],
-        formula:'Total Debt ÷ Shareholders Equity',
-        description:'Financial leverage — lower means less reliance on debt financing.',
-        higherIsBetter:false,
-      },
-      {
-        id:'debt_assets', name:'Debt-to-Assets', value:'0.29', unit:'',
-        benchmark:'0.5', max:1, rating: getRating(0.29,0.5,0.7,false),
-        trend:[0.5,0.47,0.42,0.38,0.33,0.29],
-        formula:'Total Debt ÷ Total Assets',
-        description:'Proportion of assets financed by debt. Below 0.5 is generally healthy.',
-        higherIsBetter:false,
-      },
-      {
-        id:'interest_cov', name:'Interest Coverage', value:'8.4', unit:'x',
-        benchmark:'3.0', max:15, rating: getRating(8.4,3,2),
-        trend:[4,5,6,6.5,7.2,8.4],
-        formula:'EBIT ÷ Interest Expense',
-        description:'How many times interest expense is covered by earnings. Above 3x is safe.',
-        higherIsBetter:true,
-      },
-      {
-        id:'equity_ratio', name:'Equity Ratio', value:'58.3', unit:'%',
-        benchmark:'50.0', max:100, rating: getRating(58.3,50,30),
-        trend:[42,45,48,50,55,58.3],
-        formula:'Shareholders Equity ÷ Total Assets × 100',
-        description:'Proportion of assets financed by equity. Higher means more financial stability.',
-        higherIsBetter:true,
-      },
-    ]
-  },
-  efficiency: {
-    label: 'Efficiency Ratios',
-    desc: 'How effectively assets and liabilities are managed',
-    color: '#f59e0b',
-    ratios: [
-      {
-        id:'asset_turn', name:'Asset Turnover', value:'1.2', unit:'x',
-        benchmark:'1.0', max:3, rating: getRating(1.2,1,0.7),
-        trend:[0.8,0.9,0.9,1.0,1.1,1.2],
-        formula:'Revenue ÷ Total Assets',
-        description:'How efficiently assets generate revenue. Higher is better.',
-        higherIsBetter:true,
-      },
-      {
-        id:'inv_turn', name:'Inventory Turnover', value:'4.2', unit:'x',
-        benchmark:'4.0', max:10, rating: getRating(4.2,4,2.5),
-        trend:[3.0,3.2,3.5,3.7,4.0,4.2],
-        formula:'COGS ÷ Average Inventory',
-        description:'How quickly inventory is sold. Higher means faster-moving stock.',
-        higherIsBetter:true,
-      },
-      {
-        id:'ar_days', name:'Debtor Days (DSO)', value:'38', unit:' days',
-        benchmark:'45', max:90, rating: getRating(38,45,60,false),
-        trend:[55,52,48,45,42,38],
-        formula:'(Accounts Receivable ÷ Revenue) × 365',
-        description:'Average days to collect payment. Lower means faster collection.',
-        higherIsBetter:false,
-      },
-      {
-        id:'ap_days', name:'Creditor Days (DPO)', value:'52', unit:' days',
-        benchmark:'60', max:120, rating: getRating(52,60,90,false),
-        trend:[45,46,48,50,51,52],
-        formula:'(Accounts Payable ÷ COGS) × 365',
-        description:'Average days to pay suppliers. Higher means better cash management.',
-        higherIsBetter:true,
-      },
-      {
-        id:'cash_cycle', name:'Cash Conversion Cycle', value:'24', unit:' days',
-        benchmark:'30', max:90, rating: getRating(24,30,50,false),
-        trend:[45,40,36,32,28,24],
-        formula:'Inventory Days + Debtor Days - Creditor Days',
-        description:'Days to convert investments into cash. Lower means better efficiency.',
-        higherIsBetter:false,
-      },
-      {
-        id:'wc_turn', name:'Working Capital Turnover', value:'3.8', unit:'x',
-        benchmark:'3.0', max:8, rating: getRating(3.8,3,2),
-        trend:[2.4,2.8,3.0,3.2,3.5,3.8],
-        formula:'Revenue ÷ Working Capital',
-        description:'How efficiently working capital generates revenue.',
-        higherIsBetter:true,
-      },
-    ]
-  },
-};
-
-const TREND_DATA = [
-  {month:'Oct', currentRatio:1.8, grossMargin:22, netMargin:10, debtEquity:0.8},
-  {month:'Nov', currentRatio:2.0, grossMargin:24, netMargin:11, debtEquity:0.75},
-  {month:'Dec', currentRatio:2.1, grossMargin:25, netMargin:12, debtEquity:0.65},
-  {month:'Jan', currentRatio:2.2, grossMargin:26, netMargin:13, debtEquity:0.60},
-  {month:'Feb', currentRatio:2.3, grossMargin:27, netMargin:14, debtEquity:0.50},
-  {month:'Mar', currentRatio:2.4, grossMargin:28, netMargin:15.3, debtEquity:0.42},
-];
-
+// ── Main component ────────────────────────────────────────────────────────────
 export default function FinancialRatios() {
+  const { fyParams, fyLabel } = useFY();
+  const [apiData,   setApiData]   = useState(null);
+  const [loading,   setLoading]   = useState(true);
   const [activeSection, setActiveSection] = useState('all');
-  const [expanded,      setExpanded]      = useState({liquidity:true,profitability:true,solvency:true,efficiency:true});
+  const [expanded, setExpanded]   = useState({ liquidity:true, profitability:true, leverage:true, efficiency:true });
 
-  const toggleSection = (key) =>
-    setExpanded(p=>({...p,[key]:!p[key]}));
+  const fetchRatios = () => {
+    setLoading(true);
+    const params = `?fy=${fyParams.fy}&fyStart=${fyParams.fyStart}&fyEnd=${fyParams.fyEnd}`;
+    api.get(`/statements/ratios${params}`)
+      .then(r => setApiData(r.data))
+      .catch(() => {
+        // Graceful degradation: show N/A ratios instead of a blank error page.
+        // The backend may fail if no transactions exist yet for the selected FY.
+        setApiData({
+          ratios: {
+            liquidity:     [
+              { name: 'Current Ratio', value: null, benchmark: 2.0, unit: 'x', description: 'Measures short-term obligation coverage.' },
+              { name: 'Quick Ratio',   value: null, benchmark: 1.0, unit: 'x', description: 'Liquidity excluding inventory.' },
+              { name: 'Cash Ratio',    value: null, benchmark: 0.5, unit: 'x', description: 'Strictest liquidity — cash only vs. liabilities.' },
+            ],
+            profitability: [
+              { name: 'Gross Margin', value: null, benchmark: 40,  unit: '%', description: 'Profit after cost of goods sold.' },
+              { name: 'Net Margin',   value: null, benchmark: 10,  unit: '%', description: 'Bottom-line profit percentage.' },
+              { name: 'ROA',          value: null, benchmark: 5,   unit: '%', description: 'Return generated on total assets.' },
+              { name: 'ROE',          value: null, benchmark: 15,  unit: '%', description: "Return generated on shareholders' equity." },
+            ],
+            efficiency: [
+              { name: 'AR Turnover',    value: null, benchmark: 8, unit: 'x', description: 'How fast receivables are collected.' },
+              { name: 'Asset Turnover', value: null, benchmark: 1, unit: 'x', description: 'Revenue generated per rupee of assets.' },
+            ],
+            leverage: [
+              { name: 'Debt/Equity',  value: null, benchmark: 2.0, unit: 'x',  description: 'Financial leverage — debt vs. shareholder equity.' },
+              { name: 'Equity Ratio', value: null, benchmark: 50,  unit: '%', description: 'Proportion of assets financed by equity.' },
+            ],
+          },
+          _noData: true,
+        });
+      })
+      .finally(() => setLoading(false));
+  };
 
-  const allRatios = Object.values(RATIO_DATA).flatMap(s=>s.ratios);
-  const goodCount = allRatios.filter(r=>r.rating==='good').length;
-  const warnCount = allRatios.filter(r=>r.rating==='warning').length;
-  const badCount  = allRatios.filter(r=>r.rating==='danger').length;
+  useEffect(() => { fetchRatios(); }, [fyParams.fy]);
 
-  const sections = activeSection==='all'
-    ? Object.entries(RATIO_DATA)
-    : Object.entries(RATIO_DATA).filter(([k])=>k===activeSection);
+  const toggleSection = (key) => setExpanded(p=>({...p,[key]:!p[key]}));
+
+  const sections = apiData ? buildSections(apiData.ratios) : [];
+  const allRatios   = sections.flatMap(([, s]) => s.ratios);
+  const goodCount   = allRatios.filter(r => r.rating === 'good').length;
+  const warnCount   = allRatios.filter(r => r.rating === 'warning').length;
+  const badCount    = allRatios.filter(r => r.rating === 'critical').length;
+
+  // Weighted health score: Good=100%, Warning=50%, Critical=0%
+  const ratedCount    = allRatios.filter(r => r.rating !== 'neutral').length;
+  const weightedScore = ratedCount > 0
+    ? Math.round((goodCount * 100 + warnCount * 50) / (ratedCount * 100) * 100)
+    : 0;
+
+  const visibleSections = activeSection === 'all'
+    ? sections
+    : sections.filter(([k]) => k === activeSection);
+
+  const sectionKeys = sections.map(([k]) => k);
+
+  // Chart shows ratios for the active category (or first 6 when All)
+  const chartRatios = activeSection === 'all'
+    ? allRatios.slice(0, 6)
+    : (sections.find(([k]) => k === activeSection)?.[1]?.ratios || []);
+
+  if (loading) {
+    return (
+      <div className="fr-root">
+        <div style={{ textAlign:'center', padding:'80px 24px', color:'#9ca3af' }}>
+          <div style={{ fontSize:15, fontWeight:600 }}>Loading financial ratios…</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!apiData) {
+    return (
+      <div className="fr-root">
+        <div style={{ textAlign:'center', padding:'80px 24px', color:'#9ca3af' }}>
+          <XCircle size={40} color="#d1d5db" style={{ margin:'0 auto 12px' }} />
+          <div style={{ fontSize:15, fontWeight:600, color:'#6b7280' }}>No ratio data available</div>
+          <div style={{ fontSize:13, marginTop:4 }}>
+            Ensure balance sheet and income data are posted for {fyLabel}.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fr-root">
+
+      {/* No-data banner */}
+      {apiData._noData && (
+        <div style={{
+          background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8,
+          padding: '10px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          fontSize: 13, color: '#92400e',
+        }}>
+          <AlertTriangle size={15} color="#d97706" style={{ flexShrink: 0 }} />
+          Ratios show N/A — post balance sheet and income transactions for {fyLabel} to calculate live values.
+        </div>
+      )}
 
       {/* Header */}
       <div className="fr-header">
         <div>
           <h2 className="fr-title">Financial Ratios</h2>
           <p className="fr-sub">
-            {allRatios.length} ratios across 4 categories ·
-            As of {new Date().toLocaleDateString('en-IN',{month:'long',year:'numeric'})}
+            {allRatios.length} ratios across {sections.length} categories ·
+            {fyLabel}
           </p>
         </div>
         <div className="fr-header-r">
-          <button className="fr-btn-outline"><Download size={14}/> Export Report</button>
-          <button className="fr-btn-outline"><RefreshCw size={14}/> Recalculate</button>
+          <button className="fr-btn-outline" onClick={fetchRatios}>
+            <RefreshCw size={14}/> Recalculate
+          </button>
         </div>
       </div>
 
@@ -382,17 +340,17 @@ export default function FinancialRatios() {
             <svg viewBox="0 0 100 100" width="90" height="90">
               <circle cx="50" cy="50" r="40" fill="none" stroke="#f3f4f6" strokeWidth="10"/>
               <circle cx="50" cy="50" r="40" fill="none" stroke="#10b981" strokeWidth="10"
-                strokeDasharray={`${(goodCount/allRatios.length)*251} 251`}
+                strokeDasharray={`${(weightedScore / 100) * 251} 251`}
                 strokeLinecap="round" transform="rotate(-90 50 50)"/>
               <text x="50" y="46" textAnchor="middle" fontSize="18" fontWeight="700" fill="#111827">
-                {Math.round((goodCount/allRatios.length)*100)}%
+                {weightedScore}%
               </text>
               <text x="50" y="60" textAnchor="middle" fontSize="9" fill="#9ca3af">health</text>
             </svg>
           </div>
           <div>
             <h3 className="fr-health-title">Overall Financial Health</h3>
-            <p className="fr-health-sub">Based on {allRatios.length} key ratios</p>
+            <p className="fr-health-sub">Weighted score across {ratedCount} rated ratios</p>
             <div className="fr-health-chips">
               <span className="fr-chip fr-chip-good">
                 <CheckCircle size={11}/> {goodCount} Good
@@ -407,55 +365,58 @@ export default function FinancialRatios() {
           </div>
         </div>
 
-        {/* Trend chart */}
-        <div className="fr-health-chart">
-          <p className="fr-chart-title">Key Ratios Trend — Last 6 Months</p>
-          <ResponsiveContainer width="100%" height={120}>
-            <AreaChart data={TREND_DATA} margin={{top:5,right:10,left:0,bottom:0}}>
-              <defs>
-                <linearGradient id="crG" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.2}/>
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                </linearGradient>
-                <linearGradient id="nmG" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#10b981" stopOpacity={0.2}/>
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
-              <XAxis dataKey="month" tick={{fontSize:11}}/>
-              <YAxis tick={{fontSize:10}}/>
-              <Tooltip/>
-              <Legend wrapperStyle={{fontSize:11}}/>
-              <Area type="monotone" dataKey="currentRatio" stroke="#3b82f6"
-                fill="url(#crG)" strokeWidth={2} name="Current Ratio" dot={false}/>
-              <Area type="monotone" dataKey="netMargin" stroke="#10b981"
-                fill="url(#nmG)" strokeWidth={2} name="Net Margin %" dot={false}/>
-            </AreaChart>
-          </ResponsiveContainer>
+        {/* Ratio vs benchmark comparison bars */}
+        <div className="fr-health-chart" style={{ flex: 1 }}>
+          <p className="fr-chart-title">
+            Value vs Benchmark — {activeSection === 'all' ? fyLabel : SECTION_META[activeSection]?.label || activeSection}
+          </p>
+          <div style={{ display:'flex', flexDirection:'column', gap:8, padding:'8px 0' }}>
+            {chartRatios.map(r => {
+              const val   = parseFloat(r.value) || 0;
+              const bench = parseFloat(r.benchmark) || 1;
+              const max   = Math.max(r.max, val * 1.2, bench * 1.5);
+              const rc    = getRatingColor(r.rating);
+              return (
+                <div key={r.id} style={{ display:'flex', alignItems:'center', gap:8, fontSize:11 }}>
+                  <div style={{ width:110, color:'#6b7280', textAlign:'right', flexShrink:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.name}</div>
+                  <div style={{ flex:1, background:'#f3f4f6', borderRadius:4, height:10, position:'relative' }}>
+                    <div style={{ width:`${Math.min((val/max)*100, 100)}%`, background:rc.color, height:'100%', borderRadius:4, transition:'width 0.4s' }}/>
+                    <div style={{ position:'absolute', top:0, left:`${Math.min((bench/max)*100, 100)}%`, width:2, height:'100%', background:'#374151', borderRadius:2 }}/>
+                  </div>
+                  <div style={{ width:44, fontWeight:600, color: r.value === null ? '#9ca3af' : rc.color }}>
+                    {r.value === null ? 'N/A' : `${r.value}${r.unit}`}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
       {/* Filter tabs */}
       <div className="fr-filter-tabs">
-        {[
-          {value:'all',          label:'All Ratios',      count:allRatios.length},
-          {value:'liquidity',    label:'Liquidity',       count:RATIO_DATA.liquidity.ratios.length},
-          {value:'profitability',label:'Profitability',   count:RATIO_DATA.profitability.ratios.length},
-          {value:'solvency',     label:'Solvency',        count:RATIO_DATA.solvency.ratios.length},
-          {value:'efficiency',   label:'Efficiency',      count:RATIO_DATA.efficiency.ratios.length},
-        ].map(t=>(
-          <button key={t.value}
-            className={`fr-filter-tab${activeSection===t.value?' active':''}`}
-            onClick={()=>setActiveSection(t.value)}>
-            {t.label}
-            <span className="fr-tab-count">{t.count}</span>
-          </button>
-        ))}
+        <button
+          className={`fr-filter-tab${activeSection==='all'?' active':''}`}
+          onClick={()=>setActiveSection('all')}>
+          All Ratios
+          <span className="fr-tab-count">{allRatios.length}</span>
+        </button>
+        {sectionKeys.map(k => {
+          const sm = SECTION_META[k] || { label: k };
+          const count = sections.find(([sk])=>sk===k)?.[1]?.ratios?.length || 0;
+          return (
+            <button key={k}
+              className={`fr-filter-tab${activeSection===k?' active':''}`}
+              onClick={()=>setActiveSection(k)}>
+              {sm.label.replace(' Ratios','')}
+              <span className="fr-tab-count">{count}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Ratio sections */}
-      {sections.map(([key, section]) => (
+      {visibleSections.map(([key, section]) => (
         <div key={key} className="fr-section">
           <div className="fr-section-hd" onClick={()=>toggleSection(key)}
             style={{borderLeftColor:section.color}}>
@@ -474,7 +435,7 @@ export default function FinancialRatios() {
                 {section.ratios.filter(r=>r.rating==='warning').length} warn
               </span>
               <span className="fr-chip fr-chip-bad">
-                {section.ratios.filter(r=>r.rating==='danger').length} critical
+                {section.ratios.filter(r=>r.rating==='critical').length} critical
               </span>
             </div>
           </div>
@@ -493,7 +454,7 @@ export default function FinancialRatios() {
       <div className="fr-legend">
         <span className="fr-legend-title">Rating Guide:</span>
         <span className="fr-chip fr-chip-good"><CheckCircle size={11}/> Good — meets or exceeds benchmark</span>
-        <span className="fr-chip fr-chip-warn"><AlertTriangle size={11}/> Warning — approaching threshold</span>
+        <span className="fr-chip fr-chip-warn"><AlertTriangle size={11}/> Warning — within 30% of threshold</span>
         <span className="fr-chip fr-chip-bad"><XCircle size={11}/> Critical — below safe level</span>
       </div>
     </div>

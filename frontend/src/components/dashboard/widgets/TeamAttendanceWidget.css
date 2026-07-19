@@ -1,0 +1,67 @@
+.team-attendance-widget {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.team-attendance-widget .widget-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 20px 0;
+}
+
+.attendance-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 0;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 20px;
+}
+
+.attendance-percentage {
+  font-size: 48px;
+  font-weight: 700;
+  color: #10b981;
+  line-height: 1;
+  margin: 12px 0;
+}
+
+.attendance-label {
+  font-size: 14px;
+  color: #6b7280;
+  margin: 0;
+}
+
+.attendance-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.legend-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.legend-label {
+  flex: 1;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.legend-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+}

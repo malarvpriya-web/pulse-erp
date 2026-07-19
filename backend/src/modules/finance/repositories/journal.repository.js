@@ -1,4 +1,5 @@
 import pool from '../db.js';
+import { nextJournalEntryNumber } from '../../../shared/docNumber.js';
 
 class JournalRepository {
   async createEntry(client, data) {
@@ -12,20 +13,34 @@ class JournalRepository {
   }
 
   async createLine(client, data) {
-    const { journal_entry_id, account_id, description, debit, credit } = data;
+    const { journal_entry_id, account_id, account_code, description, debit, credit } = data;
+
+    // Resolve account_id from the chart-of-accounts code if only the code is
+    // provided. chart_of_accounts stores the code in `code` (aliased account_code
+    // elsewhere); journal_entry_lines only persists account_id, not the code.
+    let resolvedAccountId = account_id || null;
+    if (!resolvedAccountId && account_code) {
+      const { rows } = await client.query(
+        'SELECT id FROM chart_of_accounts WHERE code = $1 LIMIT 1',
+        [account_code]
+      );
+      resolvedAccountId = rows[0]?.id || null;
+    }
+
     const result = await client.query(
-      `INSERT INTO journal_entry_lines (journal_entry_id, account_id, description, debit, credit) 
+      `INSERT INTO journal_entry_lines
+         (journal_entry_id, account_id, description, debit, credit)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [journal_entry_id, account_id, description, debit, credit]
+      [journal_entry_id, resolvedAccountId, description, debit, credit]
     );
     return result.rows[0];
   }
 
   async postEntry(client, entryId) {
     const result = await client.query(
-      `UPDATE journal_entries 
-       SET is_posted = true, posted_at = CURRENT_TIMESTAMP,
-           total_debit = (SELECT COALESCE(SUM(debit), 0) FROM journal_entry_lines WHERE journal_entry_id = $1),
+      `UPDATE journal_entries
+       SET is_posted = true, status = 'posted', posted_at = CURRENT_TIMESTAMP,
+           total_debit  = (SELECT COALESCE(SUM(debit),  0) FROM journal_entry_lines WHERE journal_entry_id = $1),
            total_credit = (SELECT COALESCE(SUM(credit), 0) FROM journal_entry_lines WHERE journal_entry_id = $1)
        WHERE id = $1 RETURNING *`,
       [entryId]
@@ -46,9 +61,9 @@ class JournalRepository {
         je.reference_id
        FROM journal_entry_lines jel
        JOIN journal_entries je ON jel.journal_entry_id = je.id
-       WHERE jel.account_id = $1 
+       WHERE jel.account_id = $1
        AND je.entry_date BETWEEN $2 AND $3
-       AND je.is_posted = true
+       AND (je.is_posted = true OR je.status = 'posted')
        AND je.deleted_at IS NULL
        ORDER BY je.entry_date, je.entry_number`,
       [accountId, startDate, endDate]
@@ -68,9 +83,8 @@ class JournalRepository {
        LEFT JOIN journal_entry_lines jel ON coa.id = jel.account_id
        LEFT JOIN journal_entries je ON jel.journal_entry_id = je.id
        WHERE (je.entry_date BETWEEN $1 AND $2 OR je.entry_date IS NULL)
-       AND (je.is_posted = true OR je.is_posted IS NULL)
-       AND coa.deleted_at IS NULL
-       AND (je.deleted_at IS NULL OR je.deleted_at IS NULL)
+       AND (je.is_posted = true OR je.status = 'posted' OR je.id IS NULL)
+       AND je.deleted_at IS NULL
        GROUP BY coa.id, coa.code, coa.name, coa.account_type
        HAVING COALESCE(SUM(jel.debit), 0) != 0 OR COALESCE(SUM(jel.credit), 0) != 0
        ORDER BY coa.code`,
@@ -79,19 +93,8 @@ class JournalRepository {
     return result.rows;
   }
 
-  async getNextEntryNumber() {
-    const result = await pool.query(
-      `SELECT entry_number FROM journal_entries 
-       WHERE entry_number LIKE 'JE%' 
-       ORDER BY entry_number DESC LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
-      return 'JE0001';
-    }
-    
-    const lastNum = parseInt(result.rows[0].entry_number.replace('JE', '')) + 1;
-    return `JE${lastNum.toString().padStart(4, '0')}`;
+  async getNextEntryNumber(client) {
+    return nextJournalEntryNumber(client);
   }
 }
 

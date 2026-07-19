@@ -1,0 +1,184 @@
+/* ServiceEngineers — page-specific styles only.
+   Shared: .page-header, .page-title, .page-subtitle, .badge,
+           .action-btn-sm, .empty-state  (global-overrides.css) */
+
+.se-root {
+  padding: 24px;
+}
+
+.se-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.se-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #374151;
+}
+
+.se-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.se-filter-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.se-search-input {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  width: 280px;
+  outline: none;
+}
+
+.se-select {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+.se-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.se-skeleton-row {
+  height: 72px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: se-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes se-pulse {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Engineer card list */
+.se-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.se-card {
+  background: var(--color-background-primary);
+  border: 1px solid #f0f0f4;
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* Avatar circle */
+.se-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #f0f0ff;
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+/* Main info block */
+.se-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.se-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.se-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--color-text-primary);
+}
+
+.se-emp-id {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.se-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.se-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.se-skills-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.se-skill-tag {
+  background: #f0f0ff;
+  color: var(--color-primary);
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* Certifications block (right column) */
+.se-certs {
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.se-cert-item {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin-bottom: 2px;
+}
+
+@media (max-width: 640px) {
+  .se-certs { display: none; }
+  .se-search-input { width: 100%; }
+}

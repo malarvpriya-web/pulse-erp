@@ -3,7 +3,8 @@ import rmIssueRepo from '../repositories/rmIssue.repository.js';
 import stockLedgerRepo from '../repositories/stockLedger.repository.js';
 
 class RMIssueService {
-  async createIssue(data, userId) {
+  // employeeId feeds stock_ledger.created_by, which FKs to employees(id) — not users(id).
+  async createIssue(data, employeeId) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -15,8 +16,12 @@ class RMIssueService {
       });
 
       for (const item of data.items) {
-        // Check stock availability
-        const balance = await stockLedgerRepo.getStockBalance(item.item_id, data.warehouse_id);
+        // Check stock availability within the transaction to prevent race conditions
+        const balRes = await client.query(
+          `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
+          [item.item_id, data.warehouse_id]
+        );
+        const balance = parseFloat(balRes.rows[0].balance);
         if (balance < item.quantity) {
           throw new Error(`Insufficient stock for item ${item.item_id}. Available: ${balance}, Required: ${item.quantity}`);
         }
@@ -38,7 +43,7 @@ class RMIssueService {
           reference_id: issue.id,
           transaction_date: data.issue_date,
           remarks: `RM Issue ${issueNumber}`,
-          created_by: userId
+          created_by: employeeId
         });
       }
 

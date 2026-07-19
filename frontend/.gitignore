@@ -1,3 +1,9 @@
+# Environment files — belt-and-suspenders alongside the root .gitignore
+# Root .gitignore already covers .env* globally; these are explicit safety nets.
+.env
+.env.*
+!.env.example
+
 # Logs
 logs
 *.log

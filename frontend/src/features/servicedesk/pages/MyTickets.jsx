@@ -1,26 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, Ticket, RefreshCw, X } from 'lucide-react';
 import api from '@/services/api/client';
-
-const priorityColor = p => {
-  const m = (p || '').toLowerCase();
-  if (m === 'critical') return { bg: '#fef2f2', color: '#7f1d1d' };
-  if (m === 'high')     return { bg: '#fee2e2', color: '#dc2626' };
-  if (m === 'medium')   return { bg: '#fef3c7', color: '#92400e' };
-  return { bg: '#f0fdf4', color: '#15803d' };
-};
-
-const statusColor = s => {
-  const m = (s || '').toLowerCase();
-  if (m === 'open')        return { bg: '#eef2ff', color: '#4338ca' };
-  if (m === 'in progress') return { bg: '#fef3c7', color: '#92400e' };
-  if (m === 'resolved')    return { bg: '#f0fdf4', color: '#15803d' };
-  return { bg: '#f3f4f6', color: '#6b7280' };
-};
+import { priorityColor, statusColor } from './ticketUtils';
 
 export default function MyTickets() {
   const [tickets,    setTickets]    = useState([]);
-  const [loading,    setLoading]    = useState(true);
+  const [loading,    setLoading]    = useState(false);
   const [drawer,     setDrawer]     = useState(false);
   const [form,       setForm]       = useState({ title: '', description: '', category: '', priority: 'Medium' });
   const [submitting, setSubmitting] = useState(false);
@@ -108,7 +93,7 @@ export default function MyTickets() {
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {t.category && <span style={{ fontSize: 11, color: '#6b7280' }}>{t.category}</span>}
                     {t.team && <span style={{ fontSize: 11, color: '#6b7280' }}>· {t.team}</span>}
-                    <span style={{ fontSize: 11, color: '#9ca3af' }}>· {t.created_at ? new Date(t.created_at).toLocaleDateString('en-IN') : '—'}</span>
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>· {t.created_at ? new Date(t.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</span>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>

@@ -1,42 +1,38 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  AreaChart, Area, BarChart, Bar, LineChart, Line, ComposedChart,
+  AreaChart, Area, BarChart, Bar, ComposedChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   Legend, Cell, PieChart, Pie, ReferenceLine
 } from 'recharts';
 import {
-  TrendingUp, TrendingDown, DollarSign, Target, AlertTriangle,
+  TrendingUp, TrendingDown, IndianRupee, AlertTriangle,
   CheckCircle, RefreshCw, Maximize2, X, ArrowUpRight,
-  ArrowDownRight, Briefcase, CreditCard, BarChart2, Activity
+  ArrowDownRight, Briefcase, CreditCard, BarChart2, Activity,
+  Info
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { fmt } from '../financeUtils';
+import { useFY } from '@/context/FYContext';
+import FYSelector from '@/components/core/FYSelector';
 import './CFODashboard.css';
 
-// ── helpers ─────────────────────────────────────────────────────────────────
-const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6'];
-
-const fmt = (n) => {
-  const v = parseFloat(n||0);
-  if (v >= 10000000) return `₹${(v/10000000).toFixed(2)}Cr`;
-  if (v >= 100000)   return `₹${(v/100000).toFixed(1)}L`;
-  if (v >= 1000)     return `₹${(v/1000).toFixed(0)}K`;
-  return `₹${v.toFixed(0)}`;
-};
+// ── helpers ──────────────────────────────────────────────────────────────────
+const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899','#14b8a6'];
 
 const fmtCr = (n) => {
-  const v = parseFloat(n||0);
-  return v >= 10000000 ? `₹${(v/10000000).toFixed(2)} Cr`
-       : v >= 100000   ? `₹${(v/100000).toFixed(2)} L`
+  const v = parseFloat(n || 0);
+  return v >= 10000000 ? `₹${(v / 10000000).toFixed(2)} Cr`
+       : v >= 100000   ? `₹${(v / 100000).toFixed(2)} L`
        : `₹${v.toLocaleString('en-IN')}`;
 };
 
-const pct = (a, b) => b ? ((a/b)*100).toFixed(1) : '0.0';
+const pct = (a, b) => b ? ((a / b) * 100).toFixed(1) : '0.0';
 
-const Trend = ({ value, suffix='%', invert=false }) => {
+const Trend = ({ value, suffix = '%', invert = false }) => {
   const positive = invert ? value <= 0 : value >= 0;
   return (
-    <span className={`cfo-trend ${positive?'up':'down'}`}>
-      {positive ? <TrendingUp size={11}/> : <TrendingDown size={11}/>}
+    <span className={`cfo-trend ${positive ? 'up' : 'down'}`}>
+      {positive ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
       {Math.abs(value).toFixed(1)}{suffix}
     </span>
   );
@@ -44,17 +40,17 @@ const Trend = ({ value, suffix='%', invert=false }) => {
 
 const Modal = ({ title, onClose, children }) => (
   <div className="cfo-overlay" onClick={onClose}>
-    <div className="cfo-modal" onClick={e=>e.stopPropagation()}>
+    <div className="cfo-modal" onClick={e => e.stopPropagation()}>
       <div className="cfo-modal-hd">
         <h3>{title}</h3>
-        <button className="cfo-icon-btn" onClick={onClose}><X size={16}/></button>
+        <button className="cfo-icon-btn" onClick={onClose}><X size={16} /></button>
       </div>
       <div className="cfo-modal-body">{children}</div>
     </div>
   </div>
 );
 
-const Card = ({ title, sub, children, expand, className='' }) => (
+const Card = ({ title, sub, children, expand, className = '' }) => (
   <div className={`cfo-card ${className}`}>
     <div className="cfo-card-hd">
       <div>
@@ -62,60 +58,64 @@ const Card = ({ title, sub, children, expand, className='' }) => (
         {sub && <span className="cfo-card-sub"> · {sub}</span>}
       </div>
       {expand && (
-        <button className="cfo-icon-btn" onClick={expand}><Maximize2 size={13}/></button>
+        <button className="cfo-icon-btn" onClick={expand}><Maximize2 size={13} /></button>
       )}
     </div>
     {children}
   </div>
 );
 
-// ── Gauge component ──────────────────────────────────────────────────────────
-const Gauge = ({ value, max, label, color }) => {
-  const pctVal = Math.min((value/max)*100, 100);
+// ── Gauge component ───────────────────────────────────────────────────────────
+const Gauge = ({ value, label, color }) => {
+  const pctVal = Math.min(Math.max(value, 0), 100);
   const r = 54, cx = 70, cy = 70;
-  const circumference = Math.PI * r; // half circle
-  const dash = (pctVal/100) * circumference;
+  const circumference = Math.PI * r;
+  const dash = (pctVal / 100) * circumference;
   return (
     <div className="cfo-gauge">
       <svg width="140" height="80" viewBox="0 0 140 80">
-        <path d={`M ${cx-r} ${cy} A ${r} ${r} 0 0 1 ${cx+r} ${cy}`}
-          fill="none" stroke="#f3f4f6" strokeWidth="12" strokeLinecap="round"/>
-        <path d={`M ${cx-r} ${cy} A ${r} ${r} 0 0 1 ${cx+r} ${cy}`}
+        <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+          fill="none" stroke="#f3f4f6" strokeWidth="12" strokeLinecap="round" />
+        <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
           fill="none" stroke={color} strokeWidth="12" strokeLinecap="round"
-          strokeDasharray={`${dash} ${circumference}`}/>
-        <text x={cx} y={cy-8} textAnchor="middle" fontSize="18" fontWeight="700" fill="#111827">
+          strokeDasharray={`${dash} ${circumference}`} />
+        <text x={cx} y={cy - 8} textAnchor="middle" fontSize="18" fontWeight="700" fill="#111827">
           {pctVal.toFixed(0)}%
         </text>
-        <text x={cx} y={cy+8} textAnchor="middle" fontSize="10" fill="#9ca3af">{label}</text>
+        <text x={cx} y={cy + 8} textAnchor="middle" fontSize="10" fill="#9ca3af">{label}</text>
       </svg>
     </div>
   );
 };
 
-// ── Waterfall chart ──────────────────────────────────────────────────────────
-const WaterfallChart = ({ data }) => {
+// ── Waterfall chart ───────────────────────────────────────────────────────────
+const buildWaterfallBars = (data) => {
   let running = 0;
-  const bars = data.map(d => {
+  return data.map(d => {
     const base = d.type === 'total' ? 0 : running;
     if (d.type !== 'total') running += d.value;
     return { ...d, base, display: Math.abs(d.value) };
   });
-  const maxVal = Math.max(...bars.map(b => b.base + b.display));
+};
+
+const WaterfallChart = ({ data }) => {
+  const bars = buildWaterfallBars(data);
+  const maxVal = Math.max(...bars.map(b => b.base + b.display), 1);
   return (
     <div className="cfo-waterfall">
       {bars.map((b, i) => {
         const heightPct = (b.display / maxVal) * 100;
         const bottomPct = (b.base / maxVal) * 100;
-        const color = b.type==='total' ? '#6366f1'
-                    : b.value >= 0 ? '#10b981' : '#ef4444';
+        const color = b.type === 'total' ? '#6366f1'
+                    : b.value >= 0       ? '#10b981' : '#ef4444';
         return (
           <div key={i} className="cfo-wf-col">
             <div className="cfo-wf-bar-wrap">
-              <div className="cfo-wf-spacer" style={{height:`${100-bottomPct-heightPct}%`}}/>
-              <div className="cfo-wf-bar" style={{height:`${heightPct}%`,background:color}}/>
-              <div className="cfo-wf-base" style={{height:`${bottomPct}%`}}/>
+              <div className="cfo-wf-spacer" style={{ height: `${100 - bottomPct - heightPct}%` }} />
+              <div className="cfo-wf-bar" style={{ height: `${heightPct}%`, background: color }} />
+              <div className="cfo-wf-base" style={{ height: `${bottomPct}%` }} />
             </div>
-            <div className="cfo-wf-val" style={{color}}>
+            <div className="cfo-wf-val" style={{ color }}>
               {b.value >= 0 ? '+' : ''}{fmt(b.value)}
             </div>
             <div className="cfo-wf-label">{b.label}</div>
@@ -126,199 +126,240 @@ const WaterfallChart = ({ data }) => {
   );
 };
 
-// ── Main component ───────────────────────────────────────────────────────────
+// ── Main component ────────────────────────────────────────────────────────────
+const ALERT_ACTION_PAGE = {
+  'View Invoices': 'Invoices',
+  'View Bills': 'SupplierBills',
+  'Reconcile': 'BankReconciliation',
+  'Process Payments': 'PaymentBatch',
+  'Review Budget': 'BudgetManagement',
+  'View Reports': 'FinanceReports',
+  'Manage Expenses': 'Expenses',
+};
+
 export default function CFODashboard({ setPage }) {
-  const [loading,  setLoading]  = useState(true);
+  const { fyParams } = useFY();
+  const [loading,  setLoading]  = useState(false);
   const [data,     setData]     = useState({});
   const [lastSync, setLastSync] = useState(new Date());
   const [expand,   setExpand]   = useState(null);
-  const [period,   setPeriod]   = useState('YTD'); // YTD | Q1 | Q2 | Q3 | Q4
+  const [period,   setPeriod]   = useState('YTD');
 
+  // Re-fetches whenever the period or selected Financial Year changes
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [dash, rev, exp, cash, ratios] = await Promise.allSettled([
-        api.get('/dashboard/data'),
-        api.get('/dashboard/revenue'),
-        api.get('/dashboard/expenses'),
-        api.get('/dashboard/cash'),
-        api.get('/finance/reports/profit-loss').catch(() => ({ data: null })),
+      const fyYear = parseInt(fyParams.fy.replace(/\D/g, '').slice(0, 4), 10);
+      const [cfoRes, revRes] = await Promise.allSettled([
+        api.get(`/dashboard/cfo?period=${period}&fyStart=${fyParams.fyStart}`),
+        api.get(`/dashboard/revenue?period=fy&year=${fyYear + 1}`),
       ]);
       setData({
-        dash   : dash.status   === 'fulfilled' ? dash.value.data   : {},
-        rev    : rev.status    === 'fulfilled' ? rev.value.data    : null,
-        exp    : exp.status    === 'fulfilled' ? exp.value.data    : null,
-        cash   : cash.status   === 'fulfilled' ? cash.value.data   : {},
-        ratios : ratios.status === 'fulfilled' ? ratios.value.data : null,
+        cfo : cfoRes.status === 'fulfilled' ? cfoRes.value.data : null,
+        rev : revRes.status === 'fulfilled' ? revRes.value.data : null,
       });
       setLastSync(new Date());
-    } catch(e) { console.error(e); }
+    } catch (e) { console.error(e); }
     finally { setLoading(false); }
-  }, []);
+  }, [period, fyParams.fy, fyParams.fyStart]);
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return (
-    <div className="cfo-loading">
-      <div className="cfo-spinner"/>
-      <p>Loading CFO Dashboard…</p>
-    </div>
-  );
-
-  // ── Derived data ────────────────────────────────────────────────────────
+  // ── Derived data ─────────────────────────────────────────────────────────
+  const cfo  = data.cfo  || {};
   const rev  = data.rev;
-  const exp  = data.exp;
-  const cash = data.cash || {};
+  const kpis = cfo.kpis  || {};
+  const ratiosApi = cfo.ratios  || {};
+  const gaugesApi = cfo.gauges  || {};
 
-  const ytd        = rev?.ytd       || 378000;
-  const thisMonth  = rev?.thisMonth || 84000;
-  const lastMonth  = rev?.lastMonth || 71000;
-  const totalExp   = 272000;
-  const grossProfit = ytd - totalExp;
-  const netProfit   = grossProfit - 48000; // after tax & interest
-  const ebitda      = grossProfit + 12000;
-  const revTrend    = lastMonth ? ((thisMonth - lastMonth)/lastMonth*100) : 0;
+  const revenue     = kpis.revenue     || rev?.ytd || 0;
+  const opex        = kpis.opex        || 0;
+  const grossProfit = kpis.grossProfit || 0;
+  const netProfit   = kpis.netProfit   || 0;
+  const ebitda      = kpis.ebitda      || 0;
+  const cashBalance = kpis.cashBalance || 0;
+  const ar          = kpis.ar          || 0;
+  const ap          = kpis.ap          || 0;
+  const dso         = kpis.dso         || 0;
+  const dpo         = kpis.dpo         || 0;
+  const monthlyBurn = kpis.monthlyBurn || 0;
+  const runway      = kpis.runway;
 
-  const revenueChart = rev
-    ? rev.months.map((m,i) => ({ month:m, revenue:rev.values[i], target: rev.values[i]*1.1, profit: rev.values[i]*0.28 }))
-    : [
-        {month:'Oct',revenue:48000,target:52000,profit:13440},
-        {month:'Nov',revenue:55000,target:58000,profit:15400},
-        {month:'Dec',revenue:62000,target:65000,profit:17360},
-        {month:'Jan',revenue:58000,target:65000,profit:16240},
-        {month:'Feb',revenue:71000,target:72000,profit:19880},
-        {month:'Mar',revenue:84000,target:80000,profit:23520},
-      ];
+  const thisMonth = rev?.thisMonth || 0;
+  const lastMonth = rev?.lastMonth || 0;
+  const revTrend  = lastMonth > 0 ? ((thisMonth - lastMonth) / lastMonth * 100) : 0;
 
-  const expChart = exp
-    ? exp.labels.map((l,i) => ({ name:l, value:exp.values[i] }))
-    : [
-        {name:'Salaries',value:155000},{name:'Operations',value:42000},
-        {name:'Marketing',value:28000},{name:'Travel',value:14000},
-        {name:'IT',value:18000},{name:'Other',value:15000},
-      ];
+  // Revenue vs Target chart: prefer /dashboard/revenue (more months), fall back to historical
+  const revenueChart = (() => {
+    if (rev && (rev.months || []).length > 0) {
+      return (rev.months).map((m, i) => {
+        const v = rev.values?.[i] || 0;
+        return { month: m, revenue: v, target: Math.round(v * 1.1), profit: Math.round(v * 0.28) };
+      });
+    }
+    return (cfo.historicalRevenue || []).map(r => ({
+      month: r.month,
+      revenue: r.revenue,
+      target: Math.round(r.revenue * 1.1),
+      profit: Math.round(r.revenue * 0.28),
+    }));
+  })();
 
-  const cashFlowMonthly = [
-    {month:'Oct',operating:14000,investing:-8000,financing:-2000,net:4000},
-    {month:'Nov',operating:18000,investing:-5000,financing:-2000,net:11000},
-    {month:'Dec',operating:22000,investing:-12000,financing:5000,net:15000},
-    {month:'Jan',operating:16000,investing:-6000,financing:-2000,net:8000},
-    {month:'Feb',operating:24000,investing:-8000,financing:-3000,net:13000},
-    {month:'Mar',operating:28000,investing:-10000,financing:-2000,net:16000},
-  ];
+  const cashFlowMonthly = cfo.cashFlowMonthly || [];
+  const forecastData    = cfo.forecastData    || [];
+  const expChart        = cfo.expByCategory   || [];
+  const alertsData      = cfo.alerts          || [];
 
+  // P&L waterfall uses real API values
   const plWaterfall = [
-    {label:'Revenue',   value:ytd,        type:'positive'},
-    {label:'COGS',      value:-98000,      type:'negative'},
-    {label:'Gross P',   value:grossProfit, type:'total'},
-    {label:'OpEx',      value:-174000,     type:'negative'},
-    {label:'EBITDA',    value:ebitda,      type:'total'},
-    {label:'Depr.',     value:-8000,       type:'negative'},
-    {label:'Interest',  value:-4000,       type:'negative'},
-    {label:'Tax',       value:-36000,      type:'negative'},
-    {label:'Net Profit',value:netProfit,   type:'total'},
+    { label: 'Revenue',    value: revenue,                    type: 'positive' },
+    { label: 'OpEx',       value: -(revenue - grossProfit),   type: 'negative' },
+    { label: 'Gross P',    value: grossProfit,                type: 'total'    },
+    { label: 'EBITDA',     value: ebitda,                     type: 'total'    },
+    { label: 'Net Profit', value: netProfit,                  type: 'total'    },
   ];
 
+  // Financial ratios: use real API values where possible
   const ratiosData = [
-    { label:'Current Ratio',    value:'2.4x',  bench:'2.0x', status:'good',    desc:'Liquidity health' },
-    { label:'Quick Ratio',      value:'1.8x',  bench:'1.0x', status:'good',    desc:'Acid-test ratio' },
-    { label:'Debt-to-Equity',   value:'0.42',  bench:'<1.0', status:'good',    desc:'Leverage ratio' },
-    { label:'ROE',              value:'18.2%', bench:'15%',  status:'good',    desc:'Return on equity' },
-    { label:'ROA',              value:'9.4%',  bench:'8%',   status:'good',    desc:'Return on assets' },
-    { label:'Gross Margin',     value:`${pct(grossProfit,ytd)}%`, bench:'30%', status: parseFloat(pct(grossProfit,ytd)) >= 30 ? 'good' : 'warn', desc:'Gross profit margin' },
-    { label:'Net Margin',       value:`${pct(netProfit,ytd)}%`,   bench:'15%', status: parseFloat(pct(netProfit,ytd))   >= 15 ? 'good' : 'warn', desc:'Net profit margin' },
-    { label:'EBITDA Margin',    value:`${pct(ebitda,ytd)}%`,      bench:'20%', status: parseFloat(pct(ebitda,ytd))      >= 20 ? 'good' : 'warn', desc:'Operational efficiency' },
-    { label:'A/R Days',         value:'38 days', bench:'<45d', status:'good',  desc:'Collection efficiency' },
-    { label:'A/P Days',         value:'52 days', bench:'<60d', status:'good',  desc:'Payment cycle' },
-    { label:'Inventory Turns',  value:'4.2x',    bench:'4.0x', status:'good',  desc:'Stock efficiency' },
-    { label:'Interest Coverage',value:'8.4x',    bench:'>3x',  status:'good',  desc:'Debt service ability' },
+    {
+      label: 'Current Ratio',
+      value: ratiosApi.currentRatio != null ? `${ratiosApi.currentRatio}x` : 'N/A',
+      bench: '2.0x',
+      status: ratiosApi.currentRatio != null ? (ratiosApi.currentRatio >= 2 ? 'good' : ratiosApi.currentRatio >= 1 ? 'warn' : 'bad') : 'good',
+      desc: 'AR / AP',
+    },
+    {
+      label: 'Quick Ratio',
+      value: ratiosApi.quickRatio != null ? `${ratiosApi.quickRatio}x` : 'N/A',
+      bench: '1.0x',
+      status: ratiosApi.quickRatio != null ? (ratiosApi.quickRatio >= 1 ? 'good' : 'warn') : 'good',
+      desc: '(Cash + AR) / AP',
+    },
+    {
+      label: 'Gross Margin',
+      value: `${ratiosApi.grossMargin ?? 0}%`,
+      bench: '30%',
+      status: (ratiosApi.grossMargin ?? 0) >= 30 ? 'good' : 'warn',
+      desc: 'Gross profit margin',
+    },
+    {
+      label: 'Net Margin',
+      value: `${ratiosApi.netMargin ?? 0}%`,
+      bench: '15%',
+      status: (ratiosApi.netMargin ?? 0) >= 15 ? 'good' : 'warn',
+      desc: 'Net profit margin',
+    },
+    {
+      label: 'EBITDA Margin',
+      value: `${ratiosApi.ebitdaMargin ?? 0}%`,
+      bench: '20%',
+      status: (ratiosApi.ebitdaMargin ?? 0) >= 20 ? 'good' : 'warn',
+      desc: 'Operational efficiency',
+    },
+    {
+      label: 'A/R Days',
+      value: dso > 0 ? `${dso}d` : 'N/A',
+      bench: '<45d',
+      status: dso > 0 && dso <= 45 ? 'good' : dso > 45 ? 'warn' : 'good',
+      desc: 'Collection cycle',
+    },
+    {
+      label: 'A/P Days',
+      value: dpo > 0 && dpo <= 365 ? `${dpo}d` : 'N/A',
+      bench: '<60d',
+      status: dpo > 0 && dpo <= 60 ? 'good' : (dpo > 60 && dpo <= 365) ? 'warn' : 'good',
+      desc: 'Payment cycle',
+    },
+    { label: 'Debt/Equity',      value: '—', bench: '<1.0', status: 'good', desc: 'No balance sheet' },
+    { label: 'ROE',              value: '—', bench: '15%',  status: 'good', desc: 'No equity data'   },
+    { label: 'ROA',              value: '—', bench: '8%',   status: 'good', desc: 'No assets table'  },
+    { label: 'Inventory Turns',  value: '—', bench: '4.0x', status: 'good', desc: 'No COGS tracked'  },
+    { label: 'Interest Coverage',value: '—', bench: '>3x',  status: 'good', desc: 'No debt table'    },
   ];
 
-  const forecastData = [
-    {month:'Apr',conservative:82000,base:91000,optimistic:98000},
-    {month:'May',conservative:85000,base:95000,optimistic:105000},
-    {month:'Jun',conservative:88000,base:98000,optimistic:112000},
-    {month:'Jul',conservative:90000,base:102000,optimistic:118000},
-    {month:'Aug',conservative:92000,base:105000,optimistic:122000},
-    {month:'Sep',conservative:95000,base:110000,optimistic:128000},
-  ];
+  // Gauge values from API (computed as meaningful %)
+  const collectionsPct = gaugesApi.collectionsPct ?? 0;
+  const cashRatioPct   = gaugesApi.cashRatioPct   ?? 0;
+  const liquidityPct   = gaugesApi.liquidityPct   ?? 0;
 
-  const departmentROI = [
-    {dept:'Engineering', revenue:180000, cost:98000,  roi:84},
-    {dept:'Sales',       revenue:320000, cost:82000,  roi:290},
-    {dept:'Marketing',   revenue:120000, cost:48000,  roi:150},
-    {dept:'Operations',  revenue:95000,  cost:62000,  roi:53},
-    {dept:'HR',          revenue:0,      cost:38000,  roi:-100},
-  ];
-
-  const RevenueVsTargetChart = ({height=240}) => (
+  const RevenueVsTargetChart = ({ height = 240 }) => (
     <ResponsiveContainer width="100%" height={height}>
-      <ComposedChart data={revenueChart} margin={{top:10,right:10,left:0,bottom:0}}>
+      <ComposedChart data={revenueChart} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="cfoRevGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.25}/>
-            <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+            <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.25} />
+            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
-        <XAxis dataKey="month" tick={{fontSize:12}}/>
-        <YAxis tickFormatter={v=>`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:11}}/>
-        <Tooltip formatter={(v,n)=>[fmt(v), n==='revenue'?'Revenue':n==='target'?'Target':'Profit']}/>
-        <Legend wrapperStyle={{fontSize:12}}/>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+        <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+        <YAxis tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
+        <Tooltip formatter={(v, n) => [fmt(v), n === 'revenue' ? 'Revenue' : n === 'target' ? 'Target' : 'Profit']} />
+        <Legend wrapperStyle={{ fontSize: 12 }} />
         <Area type="monotone" dataKey="revenue" stroke="#6366f1" strokeWidth={2.5}
-          fill="url(#cfoRevGrad)" name="revenue"/>
+          fill="url(#cfoRevGrad)" name="revenue" />
         <Line type="monotone" dataKey="target" stroke="#f59e0b" strokeWidth={2}
-          strokeDasharray="6 3" dot={false} name="target"/>
-        <Bar dataKey="profit" fill="#10b981" opacity={0.7} radius={[3,3,0,0]} name="profit"/>
+          strokeDasharray="6 3" dot={false} name="target" />
+        <ReferenceLine y={0} stroke="#e5e7eb" />
+        <Bar dataKey="profit" fill="#10b981" opacity={0.7} radius={[3, 3, 0, 0]} name="profit" />
       </ComposedChart>
     </ResponsiveContainer>
   );
 
-  const CashFlowChart = ({height=220}) => (
-    <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={cashFlowMonthly} margin={{top:10,right:10,left:0,bottom:0}}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
-        <XAxis dataKey="month" tick={{fontSize:12}}/>
-        <YAxis tickFormatter={v=>`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:11}}/>
-        <Tooltip formatter={(v,n)=>[fmt(v),n]}/>
-        <Legend wrapperStyle={{fontSize:12}}/>
-        <ReferenceLine y={0} stroke="#e5e7eb"/>
-        <Bar dataKey="operating"  stackId="a" fill="#10b981" name="Operating" radius={[0,0,0,0]}/>
-        <Bar dataKey="investing"  stackId="a" fill="#ef4444" name="Investing"/>
-        <Bar dataKey="financing"  stackId="a" fill="#f59e0b" name="Financing"/>
-      </BarChart>
-    </ResponsiveContainer>
-  );
+  const CashFlowChart = ({ height = 220 }) => {
+    if (!cashFlowMonthly.length) {
+      return <div className="cfo-empty">No cash flow data for this period</div>;
+    }
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={cashFlowMonthly} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+          <YAxis tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
+          <Tooltip formatter={(v, n) => [fmt(v), n]} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <ReferenceLine y={0} stroke="#e5e7eb" />
+          <Bar dataKey="operating" fill="#10b981" name="Operating CF" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="net"       fill="#6366f1" name="Net CF"       radius={[3, 3, 0, 0]} opacity={0.5} />
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  };
+
+  const alertLevelIcon = (level) => {
+    if (level === 'high' || level === 'medium') return <AlertTriangle size={13} />;
+    if (level === 'info') return <Info size={13} />;
+    return <CheckCircle size={13} />;
+  };
 
   return (
     <div className="cfo-root">
 
-      {/* Expand modal */}
       {expand && (
         <Modal title={
-          expand==='revenue'  ? 'Revenue vs Target — Full View' :
-          expand==='cashflow' ? 'Cash Flow Analysis — Full View' :
-          expand==='forecast' ? 'Revenue Forecast — Next 6 Months' : ''
-        } onClose={()=>setExpand(null)}>
-          {expand==='revenue'  && <RevenueVsTargetChart height={420}/>}
-          {expand==='cashflow' && <CashFlowChart height={420}/>}
-          {expand==='forecast' && (
+          expand === 'revenue'  ? 'Revenue vs Target — Full View' :
+          expand === 'cashflow' ? 'Cash Flow Analysis — Full View' :
+          expand === 'forecast' ? 'Revenue Forecast — Next 6 Months' : ''
+        } onClose={() => setExpand(null)}>
+          {expand === 'revenue'  && <RevenueVsTargetChart height={420} />}
+          {expand === 'cashflow' && <CashFlowChart height={420} />}
+          {expand === 'forecast' && forecastData.length > 0 && (
             <ResponsiveContainer width="100%" height={420}>
-              <AreaChart data={forecastData} margin={{top:10,right:10,left:0,bottom:0}}>
+              <AreaChart data={forecastData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="optGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.15}/>
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                    <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.15} />
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
-                <XAxis dataKey="month" tick={{fontSize:12}}/>
-                <YAxis tickFormatter={v=>`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:11}}/>
-                <Tooltip formatter={(v,n)=>[fmt(v),n]}/>
-                <Legend wrapperStyle={{fontSize:12}}/>
-                <Area type="monotone" dataKey="optimistic"    stroke="#6366f1" fill="url(#optGrad)" strokeWidth={1.5} name="Optimistic"/>
-                <Area type="monotone" dataKey="base"          stroke="#10b981" fill="none"          strokeWidth={2.5} name="Base Case"/>
-                <Area type="monotone" dataKey="conservative"  stroke="#f59e0b" fill="none"          strokeWidth={1.5} strokeDasharray="5 3" name="Conservative"/>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                <YAxis tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v, n) => [fmt(v), n]} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Area type="monotone" dataKey="optimistic"   stroke="#6366f1" fill="url(#optGrad)" strokeWidth={1.5} name="Optimistic" />
+                <Area type="monotone" dataKey="base"         stroke="#10b981" fill="none"           strokeWidth={2.5} name="Base Case" />
+                <Area type="monotone" dataKey="conservative" stroke="#f59e0b" fill="none"           strokeWidth={1.5} strokeDasharray="5 3" name="Conservative" />
               </AreaChart>
             </ResponsiveContainer>
           )}
@@ -333,46 +374,50 @@ export default function CFODashboard({ setPage }) {
             <span className="cfo-badge">Executive View</span>
           </div>
           <p className="cfo-sub">
-            {new Date().toLocaleDateString('en-IN',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}
-            · Last updated: {lastSync.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}
+            {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
+            · Last updated: {lastSync.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+            {loading && <span style={{ marginLeft: 8, color: '#6366f1' }}>· Refreshing…</span>}
           </p>
         </div>
         <div className="cfo-header-r">
+          <FYSelector />
           <div className="cfo-period">
-            {['YTD','Q1','Q2','Q3','Q4'].map(p=>(
-              <button key={p} className={`cfo-period-tab${period===p?' active':''}`}
-                onClick={()=>setPeriod(p)}>{p}</button>
+            {['YTD', 'Q1', 'Q2', 'Q3', 'Q4'].map(p => (
+              <button key={p}
+                className={`cfo-period-tab${period === p ? ' active' : ''}`}
+                onClick={() => setPeriod(p)}
+                disabled={loading}>{p}</button>
             ))}
           </div>
-          <button className="cfo-refresh" onClick={load}>
-            <RefreshCw size={14}/> Refresh
+          <button className="cfo-refresh" onClick={load} disabled={loading}>
+            <RefreshCw size={14} /> Refresh
           </button>
         </div>
       </div>
 
-      {/* ── Tier 1: Executive KPIs ──────────────────────────────── */}
+      {/* ── Tier 1: Executive KPIs ─────────────────────────────── */}
       <div className="cfo-exec-kpis">
 
         <div className="cfo-exec-kpi cfo-kpi-rev">
           <div className="cfo-exec-kpi-body">
-            <p className="cfo-exec-label">Revenue (YTD)</p>
-            <h2 className="cfo-exec-val">{fmtCr(ytd)}</h2>
+            <p className="cfo-exec-label">Revenue ({period})</p>
+            <h2 className="cfo-exec-val">{fmtCr(revenue)}</h2>
             <div className="cfo-exec-meta">
-              <Trend value={revTrend}/>
+              {lastMonth > 0 && <Trend value={revTrend} />}
               <span className="cfo-exec-vs">vs last month</span>
             </div>
           </div>
           <div className="cfo-exec-kpi-chart">
             <ResponsiveContainer width="100%" height={60}>
-              <AreaChart data={revenueChart} margin={{top:5,right:0,left:0,bottom:0}}>
+              <AreaChart data={revenueChart} margin={{ top: 5, right: 0, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="sparkRev" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#fff" stopOpacity={0.4}/>
-                    <stop offset="95%" stopColor="#fff" stopOpacity={0}/>
+                    <stop offset="5%"  stopColor="#fff" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="#fff" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <Area type="monotone" dataKey="revenue" stroke="#fff" strokeWidth={2}
-                  fill="url(#sparkRev)" dot={false}/>
+                  fill="url(#sparkRev)" dot={false} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -383,10 +428,10 @@ export default function CFODashboard({ setPage }) {
             <p className="cfo-exec-label">Net Profit</p>
             <h2 className="cfo-exec-val">{fmtCr(netProfit)}</h2>
             <div className="cfo-exec-meta">
-              <span className="cfo-margin-badge">{pct(netProfit,ytd)}% margin</span>
+              <span className="cfo-margin-badge">{pct(netProfit, revenue)}% margin</span>
             </div>
           </div>
-          <div className="cfo-exec-icon"><DollarSign size={32} opacity={0.3}/></div>
+          <div className="cfo-exec-icon"><IndianRupee size={32} opacity={0.3} /></div>
         </div>
 
         <div className="cfo-exec-kpi cfo-kpi-ebitda">
@@ -394,196 +439,207 @@ export default function CFODashboard({ setPage }) {
             <p className="cfo-exec-label">EBITDA</p>
             <h2 className="cfo-exec-val">{fmtCr(ebitda)}</h2>
             <div className="cfo-exec-meta">
-              <span className="cfo-margin-badge">{pct(ebitda,ytd)}% margin</span>
+              <span className="cfo-margin-badge">{pct(ebitda, revenue)}% margin</span>
             </div>
           </div>
-          <div className="cfo-exec-icon"><BarChart2 size={32} opacity={0.3}/></div>
+          <div className="cfo-exec-icon"><BarChart2 size={32} opacity={0.3} /></div>
         </div>
 
         <div className="cfo-exec-kpi cfo-kpi-cash">
           <div className="cfo-exec-kpi-body">
             <p className="cfo-exec-label">Cash & Equivalents</p>
-            <h2 className="cfo-exec-val">{fmtCr(cash.balance||250000)}</h2>
+            <h2 className="cfo-exec-val">{fmtCr(cashBalance)}</h2>
             <div className="cfo-exec-meta">
-              <ArrowUpRight size={13}/>
-              <span className="cfo-exec-vs">Inflow: {fmt(cash.inflow||12000)}</span>
+              <ArrowUpRight size={13} />
+              <span className="cfo-exec-vs">AP: {fmtCr(ap)}</span>
             </div>
           </div>
-          <div className="cfo-exec-icon"><CreditCard size={32} opacity={0.3}/></div>
+          <div className="cfo-exec-icon"><CreditCard size={32} opacity={0.3} /></div>
         </div>
 
         <div className="cfo-exec-kpi cfo-kpi-ar">
           <div className="cfo-exec-kpi-body">
             <p className="cfo-exec-label">Accounts Receivable</p>
-            <h2 className="cfo-exec-val">{fmtCr(cash.accountsReceivable||185000)}</h2>
+            <h2 className="cfo-exec-val">{fmtCr(ar)}</h2>
             <div className="cfo-exec-meta">
-              <span className="cfo-exec-vs">38 days DSO</span>
+              <span className="cfo-exec-vs">{dso > 0 ? `${dso} days DSO` : 'DSO: N/A'}</span>
             </div>
           </div>
-          <div className="cfo-exec-icon"><Activity size={32} opacity={0.3}/></div>
+          <div className="cfo-exec-icon"><Activity size={32} opacity={0.3} /></div>
         </div>
 
         <div className="cfo-exec-kpi cfo-kpi-burn">
           <div className="cfo-exec-kpi-body">
             <p className="cfo-exec-label">Monthly Burn Rate</p>
-            <h2 className="cfo-exec-val">{fmtCr(totalExp/6)}</h2>
+            <h2 className="cfo-exec-val">{monthlyBurn > 0 ? fmtCr(monthlyBurn) : '—'}</h2>
             <div className="cfo-exec-meta">
-              <span className="cfo-exec-vs">Runway: 18 months</span>
+              <span className="cfo-exec-vs">
+                {runway != null ? `Runway: ${runway} mo` : 'Runway: N/A'}
+              </span>
             </div>
           </div>
-          <div className="cfo-exec-icon"><Briefcase size={32} opacity={0.3}/></div>
+          <div className="cfo-exec-icon"><Briefcase size={32} opacity={0.3} /></div>
         </div>
 
       </div>
 
-      {/* ── Tier 2: Charts Row ───────────────────────────────────── */}
+      {/* ── Tier 2: Charts Row ─────────────────────────────────── */}
       <div className="cfo-grid">
 
         {/* Revenue vs Target */}
         <div className="cg8">
-          <Card title="Revenue vs Target" sub="Last 6 months"
-            expand={()=>setExpand('revenue')}>
+          <Card title="Revenue vs Target" sub="Paid invoices by month"
+            expand={() => setExpand('revenue')}>
             <div className="cfo-chart-meta">
               <div className="cfo-cm-chip cfo-cm-rev">
-                <span>Revenue</span><strong>{fmtCr(ytd)}</strong>
-                <Trend value={revTrend}/>
+                <span>Revenue</span><strong>{fmtCr(revenue)}</strong>
+                {lastMonth > 0 && <Trend value={revTrend} />}
               </div>
               <div className="cfo-cm-chip cfo-cm-target">
-                <span>Target</span><strong>{fmtCr(ytd*1.08)}</strong>
-                <span className="cfo-cm-gap">Gap: {fmtCr(ytd*1.08-ytd)}</span>
+                <span>Target (+10%)</span><strong>{fmtCr(revenue * 1.1)}</strong>
+                <span className="cfo-cm-gap">Gap: {fmtCr(revenue * 0.1)}</span>
               </div>
               <div className="cfo-cm-chip cfo-cm-profit">
                 <span>Gross Profit</span><strong>{fmtCr(grossProfit)}</strong>
-                <Trend value={5.2}/>
               </div>
             </div>
-            <RevenueVsTargetChart height={220}/>
+            {revenueChart.length > 0
+              ? <RevenueVsTargetChart height={220} />
+              : <div className="cfo-empty">No revenue data for this period</div>}
           </Card>
         </div>
 
-        {/* P&L Waterfall */}
+        {/* P&L Bridge */}
         <div className="cg4">
-          <Card title="P&L Bridge" sub="YTD">
+          <Card title="P&L Bridge" sub={period}>
             <div className="cfo-pl-summary">
               <div className="cfo-pl-row">
                 <span>Gross Margin</span>
-                <strong className="green">{pct(grossProfit,ytd)}%</strong>
+                <strong className={grossProfit >= 0 ? 'green' : 'red'}>{pct(grossProfit, revenue)}%</strong>
               </div>
               <div className="cfo-pl-row">
                 <span>EBITDA Margin</span>
-                <strong className="green">{pct(ebitda,ytd)}%</strong>
+                <strong className={ebitda >= 0 ? 'green' : 'red'}>{pct(ebitda, revenue)}%</strong>
               </div>
               <div className="cfo-pl-row">
                 <span>Net Margin</span>
-                <strong className="green">{pct(netProfit,ytd)}%</strong>
+                <strong className={netProfit >= 0 ? 'green' : 'red'}>{pct(netProfit, revenue)}%</strong>
               </div>
             </div>
-            <WaterfallChart data={plWaterfall}/>
+            {revenue > 0
+              ? <WaterfallChart data={plWaterfall} />
+              : <div className="cfo-empty">No data for this period</div>}
           </Card>
         </div>
 
         {/* Cash Flow */}
         <div className="cg6">
-          <Card title="Cash Flow Breakdown" sub="Operating · Investing · Financing"
-            expand={()=>setExpand('cashflow')}>
+          <Card title="Cash Flow Breakdown" sub="Inflow vs Outflow by month"
+            expand={() => setExpand('cashflow')}>
             <div className="cfo-cf-kpis">
               <div className="cfo-cf-kpi green">
-                <ArrowUpRight size={14}/><span>Operating</span>
-                <strong>{fmt(cashFlowMonthly.reduce((s,r)=>s+r.operating,0))}</strong>
+                <ArrowUpRight size={14} /><span>Total Inflow</span>
+                <strong>{fmt(cashFlowMonthly.reduce((s, r) => s + Math.max(r.operating, 0), 0))}</strong>
               </div>
               <div className="cfo-cf-kpi red">
-                <ArrowDownRight size={14}/><span>Investing</span>
-                <strong>{fmt(cashFlowMonthly.reduce((s,r)=>s+r.investing,0))}</strong>
+                <ArrowDownRight size={14} /><span>Total Outflow</span>
+                <strong>{fmt(cashFlowMonthly.reduce((s, r) => s + Math.min(r.operating, 0), 0))}</strong>
               </div>
               <div className="cfo-cf-kpi amber">
                 <span>Net</span>
-                <strong>{fmt(cashFlowMonthly.reduce((s,r)=>s+r.net,0))}</strong>
+                <strong>{fmt(cashFlowMonthly.reduce((s, r) => s + r.net, 0))}</strong>
               </div>
             </div>
-            <CashFlowChart height={190}/>
+            <CashFlowChart height={190} />
           </Card>
         </div>
 
         {/* Revenue Forecast */}
         <div className="cg6">
-          <Card title="Revenue Forecast" sub="Next 6 months · 3 scenarios"
-            expand={()=>setExpand('forecast')}>
+          <Card title="Revenue Forecast" sub="Next 6 months · 3 scenarios (trend-based)"
+            expand={() => setExpand('forecast')}>
             <div className="cfo-forecast-legend">
-              <span className="cfo-fl-item" style={{color:'#6366f1'}}>● Optimistic</span>
-              <span className="cfo-fl-item" style={{color:'#10b981'}}>● Base Case</span>
-              <span className="cfo-fl-item" style={{color:'#f59e0b'}}>● Conservative</span>
+              <span className="cfo-fl-item" style={{ color: '#6366f1' }}>● Optimistic</span>
+              <span className="cfo-fl-item" style={{ color: '#10b981' }}>● Base Case</span>
+              <span className="cfo-fl-item" style={{ color: '#f59e0b' }}>● Conservative</span>
             </div>
-            <ResponsiveContainer width="100%" height={210}>
-              <AreaChart data={forecastData} margin={{top:5,right:10,left:0,bottom:0}}>
-                <defs>
-                  <linearGradient id="optG" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.12}/>
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
-                <XAxis dataKey="month" tick={{fontSize:12}}/>
-                <YAxis tickFormatter={v=>`₹${(v/1000).toFixed(0)}K`} tick={{fontSize:11}}/>
-                <Tooltip formatter={(v,n)=>[fmt(v),n]}/>
-                <Area type="monotone" dataKey="optimistic"   stroke="#6366f1" fill="url(#optG)" strokeWidth={1.5}/>
-                <Area type="monotone" dataKey="base"         stroke="#10b981" fill="none"        strokeWidth={2.5}/>
-                <Area type="monotone" dataKey="conservative" stroke="#f59e0b" fill="none"        strokeWidth={1.5} strokeDasharray="5 3"/>
-              </AreaChart>
-            </ResponsiveContainer>
+            {forecastData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={210}>
+                <AreaChart data={forecastData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="optG" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.12} />
+                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                  <YAxis tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={(v, n) => [fmt(v), n]} />
+                  <Area type="monotone" dataKey="optimistic"   stroke="#6366f1" fill="url(#optG)" strokeWidth={1.5} />
+                  <Area type="monotone" dataKey="base"         stroke="#10b981" fill="none"        strokeWidth={2.5} />
+                  <Area type="monotone" dataKey="conservative" stroke="#f59e0b" fill="none"        strokeWidth={1.5} strokeDasharray="5 3" />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : <div className="cfo-empty">Insufficient historical data for forecast</div>}
           </Card>
         </div>
 
         {/* Financial Ratios */}
         <div className="cg6">
-          <Card title="Key Financial Ratios" sub="vs Industry Benchmark">
+          <Card title="Key Financial Ratios" sub="Computed from live data">
             <div className="cfo-ratios-grid">
-              {ratiosData.map((r,i)=>(
+              {ratiosData.map((r, i) => (
                 <div key={i} className={`cfo-ratio-item cfo-ratio-${r.status}`}>
                   <div className="cfo-ratio-label">{r.label}</div>
                   <div className="cfo-ratio-val">{r.value}</div>
                   <div className="cfo-ratio-bench">Bench: {r.bench}</div>
-                  {r.status==='good'
-                    ? <CheckCircle size={12} className="cfo-ratio-icon green"/>
-                    : <AlertTriangle size={12} className="cfo-ratio-icon amber"/>}
+                  {r.status === 'good'
+                    ? <CheckCircle size={12} className="cfo-ratio-icon green" />
+                    : <AlertTriangle size={12} className="cfo-ratio-icon amber" />}
                 </div>
               ))}
             </div>
           </Card>
         </div>
 
-        {/* Department ROI */}
+        {/* Department Expenses — estimated split of total opex across departments */}
         <div className="cg6">
-          <Card title="Department ROI Analysis" sub="Cost vs Revenue contribution">
-            <div className="cfo-roi-list">
-              {departmentROI.map((d,i)=>{
-                const roiPos = d.roi >= 0;
-                const maxCost = Math.max(...departmentROI.map(x=>x.cost));
-                return (
-                  <div key={i} className="cfo-roi-row">
-                    <div className="cfo-roi-dept">{d.dept}</div>
-                    <div className="cfo-roi-bars">
-                      <div className="cfo-roi-bar-wrap">
-                        <div className="cfo-roi-cost-bar"
-                          style={{width:`${(d.cost/maxCost)*100}%`}}/>
-                      </div>
-                      {d.revenue > 0 && (
-                        <div className="cfo-roi-bar-wrap">
-                          <div className="cfo-roi-rev-bar"
-                            style={{width:`${(d.revenue/(Math.max(...departmentROI.map(x=>x.revenue))||1))*100}%`}}/>
-                        </div>
-                      )}
-                    </div>
-                    <div className="cfo-roi-nums">
-                      <span className="cfo-roi-cost">Cost: {fmt(d.cost)}</span>
-                      {d.revenue > 0 && <span className="cfo-roi-rev">Rev: {fmt(d.revenue)}</span>}
-                    </div>
-                    <div className={`cfo-roi-badge ${roiPos?'good':'neg'}`}>
-                      {d.roi > 0 ? '+' : ''}{d.roi}%
-                    </div>
-                  </div>
-                );
-              })}
+          <Card title="Department Expenses" sub="Estimated split from total OpEx">
+            <div style={{ padding: '8px 0 4px', fontSize: 11, color: '#9ca3af' }}>
+              Revenue attribution requires project tagging — showing expense data only
             </div>
+            {opex > 0 ? (
+              <div className="cfo-roi-list">
+                {[
+                  { dept: 'Engineering', share: 0.36 },
+                  { dept: 'Sales',       share: 0.30 },
+                  { dept: 'Operations',  share: 0.23 },
+                  { dept: 'Marketing',   share: 0.18 },
+                  { dept: 'HR',          share: 0.14 },
+                ].map((d, i) => {
+                  const cost = Math.round(opex * d.share);
+                  const maxCost = Math.round(opex * 0.36);
+                  return (
+                    <div key={i} className="cfo-roi-row">
+                      <div className="cfo-roi-dept">{d.dept}</div>
+                      <div className="cfo-roi-bars">
+                        <div className="cfo-roi-bar-wrap">
+                          <div className="cfo-roi-cost-bar"
+                            style={{ width: `${(cost / maxCost) * 100}%`, background: '#f59e0b' }} />
+                        </div>
+                      </div>
+                      <div className="cfo-roi-nums">
+                        <span className="cfo-roi-cost">~{fmt(cost)}</span>
+                        <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 4 }}>est.</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="cfo-empty">No expense data for {period}</div>
+            )}
           </Card>
         </div>
 
@@ -591,22 +647,26 @@ export default function CFODashboard({ setPage }) {
         <div className="cg4">
           <Card title="Working Capital Health">
             <div className="cfo-gauges">
-              <Gauge value={74} max={100} label="Collection" color="#10b981"/>
-              <Gauge value={62} max={100} label="Cash Ratio"  color="#6366f1"/>
-              <Gauge value={88} max={100} label="Liquidity"   color="#f59e0b"/>
+              <Gauge value={collectionsPct} label="Collections" color="#10b981" />
+              <Gauge value={cashRatioPct}   label="Cash/AP"     color="#6366f1" />
+              <Gauge value={liquidityPct}   label="Liquidity"   color="#f59e0b" />
             </div>
             <div className="cfo-wc-stats">
               <div className="cfo-wc-stat">
                 <span>Working Capital</span>
-                <strong className="green">{fmtCr(cash.accountsReceivable - (cash.accountsPayable||94000)||91000)}</strong>
+                <strong className={ar - ap >= 0 ? 'green' : 'red'}>{fmtCr(ar - ap)}</strong>
               </div>
               <div className="cfo-wc-stat">
-                <span>Current Ratio</span>
-                <strong className="green">2.4x</strong>
+                <span>AR / AP Ratio</span>
+                <strong className="green">
+                  {ap > 0 ? `${(ar / ap).toFixed(1)}x` : 'N/A'}
+                </strong>
               </div>
               <div className="cfo-wc-stat">
                 <span>Quick Ratio</span>
-                <strong className="green">1.8x</strong>
+                <strong className="green">
+                  {ap > 0 ? `${((cashBalance + ar) / ap).toFixed(1)}x` : 'N/A'}
+                </strong>
               </div>
             </div>
           </Card>
@@ -614,52 +674,60 @@ export default function CFODashboard({ setPage }) {
 
         {/* Expense by Category */}
         <div className="cg4">
-          <Card title="Expense Structure" sub="YTD breakdown">
-            <div className="cfo-exp-total">
-              <span>Total Opex</span>
-              <strong>{fmtCr(expChart.reduce((s,e)=>s+e.value,0))}</strong>
-            </div>
-            <ResponsiveContainer width="100%" height={160}>
-              <PieChart>
-                <Pie data={expChart} cx="50%" cy="50%" innerRadius={48} outerRadius={72}
-                  dataKey="value" paddingAngle={3}>
-                  {expChart.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]}/>)}
-                </Pie>
-                <Tooltip formatter={v=>[fmt(v),'']}/>
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="cfo-exp-legend">
-              {expChart.map((e,i)=>(
-                <div key={i} className="cfo-exp-row">
-                  <span className="cfo-exp-dot" style={{background:COLORS[i%COLORS.length]}}/>
-                  <span className="cfo-exp-name">{e.name}</span>
-                  <span className="cfo-exp-pct">{pct(e.value,expChart.reduce((s,x)=>s+x.value,0))}%</span>
+          <Card title="Expense Structure" sub={`${period} breakdown`}>
+            {expChart.length > 0 ? (
+              <>
+                <div className="cfo-exp-total">
+                  <span>Total OpEx</span>
+                  <strong>{fmtCr(expChart.reduce((s, e) => s + e.value, 0))}</strong>
                 </div>
-              ))}
-            </div>
+                <ResponsiveContainer width="100%" height={160}>
+                  <PieChart>
+                    <Pie data={expChart} cx="50%" cy="50%" innerRadius={48} outerRadius={72}
+                      dataKey="value" paddingAngle={3}>
+                      {expChart.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={v => [fmt(v), '']} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="cfo-exp-legend">
+                  {expChart.map((e, i) => {
+                    const total = expChart.reduce((s, x) => s + x.value, 0) || 1;
+                    return (
+                      <div key={i} className="cfo-exp-row">
+                        <span className="cfo-exp-dot" style={{ background: COLORS[i % COLORS.length] }} />
+                        <span className="cfo-exp-name">{e.name}</span>
+                        <span className="cfo-exp-pct">{pct(e.value, total)}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <div className="cfo-empty">No expense claim data for {period}</div>
+            )}
           </Card>
         </div>
 
         {/* Executive Alerts */}
         <div className="cg4">
           <Card title="Executive Alerts">
-            {[
-              {level:'high',   msg:'Marketing dept 4% over budget',      action:'Review'},
-              {level:'medium', msg:'GSTR-3B filing due in 5 days',       action:'File Now'},
-              {level:'medium', msg:'3 overdue invoices — ₹48K at risk',  action:'Follow Up'},
-              {level:'low',    msg:'Q1 audit report ready for review',   action:'View'},
-              {level:'low',    msg:'2 vendor contracts expiring Apr 1',  action:'Renew'},
-            ].map((a,i)=>(
+            {alertsData.length > 0 ? alertsData.map((a, i) => (
               <div key={i} className={`cfo-alert cfo-alert-${a.level}`}>
                 <div className="cfo-alert-body">
-                  {a.level==='high'
-                    ? <AlertTriangle size={13}/>
-                    : <CheckCircle size={13}/>}
+                  {alertLevelIcon(a.level)}
                   <span>{a.msg}</span>
                 </div>
-                <button className="cfo-alert-action">{a.action}</button>
+                {a.action && (
+                  <button className="cfo-alert-action" onClick={() => {
+                    const page = ALERT_ACTION_PAGE[a.action];
+                    if (page && setPage) setPage(page);
+                  }}>{a.action}</button>
+                )}
               </div>
-            ))}
+            )) : (
+              <div className="cfo-empty">No alerts</div>
+            )}
           </Card>
         </div>
 

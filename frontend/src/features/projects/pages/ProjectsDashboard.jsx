@@ -7,7 +7,9 @@ import {
   FolderKanban, CheckSquare, AlertTriangle, TrendingUp,
   RefreshCw, Plus, Calendar, Users, ChevronRight, Clock
 } from 'lucide-react';
-import { getProjects, getTasks } from '../services/projectsService';
+import api from '@/services/api/client';
+import { getProjects } from '../services/projectsService';
+import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import './ProjectsDashboard.css';
 
 const fmt = n => {
@@ -33,20 +35,22 @@ const HEALTH_COLORS = {
   'Delayed':  '#ef4444',
 };
 
-const SAMPLE_PROJECTS = [
-  { id: 1, project_code: 'PROJ-001', project_name: 'ERP Implementation - TechCorp',   customer_name: 'TechCorp Solutions',  manager_name: 'Rajesh K', status: 'active',    budget_amount: 2500000, actual_cost: 1200000, total_tasks: 24, completed_tasks: 14, end_date: '2025-03-31', team_size: 6 },
-  { id: 2, project_code: 'PROJ-002', project_name: 'Cloud Migration - Alpha Mfg',      customer_name: 'Alpha Manufacturing', manager_name: 'Priya S',  status: 'active',    budget_amount: 1800000, actual_cost: 950000,  total_tasks: 18, completed_tasks: 8,  end_date: '2025-02-28', team_size: 4 },
-  { id: 3, project_code: 'PROJ-003', project_name: 'Mobile App - BrightFin',           customer_name: 'BrightFin Ltd',       manager_name: 'Anand M',  status: 'planning',  budget_amount: 800000,  actual_cost: 45000,   total_tasks: 32, completed_tasks: 2,  end_date: '2025-06-30', team_size: 3 },
-  { id: 4, project_code: 'PROJ-004', project_name: 'Security Audit - Global Trade',    customer_name: 'Global Trade Partners',manager_name: 'Ravi K', status: 'on_hold',   budget_amount: 450000,  actual_cost: 280000,  total_tasks: 12, completed_tasks: 8,  end_date: '2024-12-31', team_size: 2 },
-  { id: 5, project_code: 'PROJ-005', project_name: 'Data Analytics - MediTech',        customer_name: 'MediTech Services',   manager_name: 'Rajesh K', status: 'active',    budget_amount: 1200000, actual_cost: 980000,  total_tasks: 20, completed_tasks: 16, end_date: '2025-01-15', team_size: 5 },
-  { id: 6, project_code: 'PROJ-006', project_name: 'CRM Integration - RetailCo',       customer_name: 'RetailCo Ltd',        manager_name: 'Priya S',  status: 'completed', budget_amount: 600000,  actual_cost: 590000,  total_tasks: 15, completed_tasks: 15, end_date: '2024-11-30', team_size: 3 },
-];
-
-const SAMPLE_TASKS_TODAY = [
-  { id: 1, task_title: 'Review API integration docs',    project_name: 'ERP Implementation', priority: 'High',   status: 'in_progress' },
-  { id: 2, task_title: 'Update deployment checklist',    project_name: 'Cloud Migration',     priority: 'Medium', status: 'todo' },
-  { id: 3, task_title: 'UAT sign-off meeting',          project_name: 'Data Analytics',      priority: 'High',   status: 'todo' },
-];
+function EmptyState({ icon: Icon, title, sub, action }) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+      padding: '48px 24px', textAlign: 'center', gap: 8,
+      background: 'var(--color-background-secondary)',
+      borderRadius: 'var(--border-radius-lg)',
+      border: '0.5px solid var(--color-border-tertiary)',
+    }}>
+      {Icon && <Icon size={36} style={{ color: 'var(--color-text-secondary)', marginBottom: 4 }} />}
+      <p style={{ fontSize: 15, fontWeight: 500, color: 'var(--color-text-primary)', margin: 0 }}>{title}</p>
+      {sub && <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: 0 }}>{sub}</p>}
+      {action}
+    </div>
+  );
+}
 
 const healthOf = p => {
   const today = new Date();
@@ -73,23 +77,31 @@ const KPI = ({ icon: Icon, label, value, sub, color, alert }) => (
 export default function ProjectsDashboard({ setPage }) {
   const [projects,   setProjects]   = useState([]);
   const [tasksToday, setTasksToday] = useState([]);
-  const [loading,    setLoading]    = useState(true);
+  const [loading,    setLoading]    = useState(false);
   const [toast,      setToast]      = useState(null);
 
-  const showToast = (msg, type = 'success') => {
+  const _showToast = (msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
   };
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [rawProj, rawTasks] = await Promise.all([
-      getProjects(),
-      getTasks({ due_today: true }),
-    ]);
-    setProjects(Array.isArray(rawProj) && rawProj.length ? rawProj : SAMPLE_PROJECTS);
-    setTasksToday(Array.isArray(rawTasks) && rawTasks.length ? rawTasks : SAMPLE_TASKS_TODAY);
-    setLoading(false);
+    try {
+      const [projRes, tasksRes] = await Promise.allSettled([
+        getProjects(),
+        api.get('/tasks/today'),
+      ]);
+      const rawProj  = projRes.status === 'fulfilled'  ? projRes.value  : null;
+      const rawTasks = tasksRes.status === 'fulfilled' ? (tasksRes.value.data?.data || tasksRes.value.data || []) : [];
+      setProjects(Array.isArray(rawProj) ? rawProj : []);
+      setTasksToday(Array.isArray(rawTasks) ? rawTasks : []);
+    } catch {
+      setProjects([]);
+      setTasksToday([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -100,7 +112,6 @@ export default function ProjectsDashboard({ setPage }) {
     if (setPage) setPage('ProjectDetail');
   };
 
-  if (loading) return <div className="pd-loading"><div className="pd-spinner" /><p>Loading…</p></div>;
 
   const active     = projects.filter(p => p.status === 'active');
   const totalTasks = projects.reduce((s, p) => s + (parseInt(p.total_tasks) || 0), 0);
@@ -116,6 +127,20 @@ export default function ProjectsDashboard({ setPage }) {
   const healthCounts = { 'On Track': 0, 'At Risk': 0, 'Delayed': 0 };
   projects.filter(p => p.status === 'active').forEach(p => { healthCounts[healthOf(p)]++; });
   const healthData = Object.entries(healthCounts).map(([name, count]) => ({ name, count }));
+
+  const healthChart = (h) => (
+    <ResponsiveContainer width="100%" height={h}>
+      <BarChart data={healthData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+        <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+        <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+        <Tooltip />
+        <Bar dataKey="count" name="Projects" radius={[4, 4, 0, 0]}>
+          {healthData.map((d, i) => <Cell key={i} fill={HEALTH_COLORS[d.name]} />)}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
 
   return (
     <div className="pd-root">
@@ -136,6 +161,13 @@ export default function ProjectsDashboard({ setPage }) {
             <Plus size={14} /> New Project
           </button>
           <button className="pd-icon-btn" onClick={load}><RefreshCw size={14} /></button>
+          <button
+            onClick={() => setPage && setPage('ProjectSettings')}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: '1px solid #e5e7eb', borderRadius: 7, padding: '6px 12px', cursor: 'pointer', color: '#6b7280', fontSize: 13, fontWeight: 500 }}
+            title="Project Settings"
+          >
+            ⚙ Settings
+          </button>
         </div>
       </div>
 
@@ -159,6 +191,9 @@ export default function ProjectsDashboard({ setPage }) {
             </button>
           </div>
           <div className="pd-cards-grid">
+            {projects.filter(p => p.status !== 'completed' && p.status !== 'cancelled').length === 0 && !loading ? (
+              <EmptyState icon={FolderKanban} title="No projects yet" sub="Create your first project to get started" />
+            ) : null}
             {projects.filter(p => p.status !== 'completed' && p.status !== 'cancelled').map(p => {
               const s = sm(p.status);
               const pct = p.total_tasks ? Math.round((p.completed_tasks / p.total_tasks) * 100) : 0;
@@ -176,7 +211,7 @@ export default function ProjectsDashboard({ setPage }) {
                   <div className="pd-card-meta">
                     {p.customer_name && <span><FolderKanban size={11} />{p.customer_name}</span>}
                     {p.manager_name  && <span><Users size={11} />{p.manager_name}</span>}
-                    {p.end_date      && <span><Calendar size={11} />{new Date(p.end_date).toLocaleDateString('en-IN')}</span>}
+                    {p.end_date      && <span><Calendar size={11} />{new Date(p.end_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</span>}
                   </div>
                   {/* task progress */}
                   <div className="pd-card-progress">
@@ -214,19 +249,14 @@ export default function ProjectsDashboard({ setPage }) {
 
           {/* project health */}
           <div className="pd-card-box">
-            <div className="pd-box-hd"><span className="pd-section-title">Project Health</span></div>
+            <div className="pd-box-hd">
+              <span className="pd-section-title">Project Health</span>
+              <ChartExpandButton title="Project Health" subtitle="Active projects by health status">
+                {healthChart(420)}
+              </ChartExpandButton>
+            </div>
             <div className="pd-box-body">
-              <ResponsiveContainer width="100%" height={140}>
-                <BarChart data={healthData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                  <Tooltip />
-                  <Bar dataKey="count" name="Projects" radius={[4, 4, 0, 0]}>
-                    {healthData.map((d, i) => <Cell key={i} fill={HEALTH_COLORS[d.name]} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              {healthChart(130)}
               <div className="pd-health-legend">
                 {healthData.map(d => (
                   <div key={d.name} className="pd-health-row">

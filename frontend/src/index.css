@@ -1,22 +1,34 @@
-/* Global font and styles */
+/* Global base styles.
+   Typography is owned by the design system:
+   styles/theme.css (brand vars) → styles/global-overrides.css (tokens + page
+   typography) → components/Layout.css (body font, tables, headings).
+   Do not add font-family/font-size element rules here — they fight the
+   design system outside .page-content (portals, Login, public pages). */
 * {
-  font-family: Arial, Helvetica, sans-serif;
   box-sizing: border-box;
 }
+
+/* ── Global scrollbar — purple theme ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #F2EFFE; border-radius: 10px; }
+::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active,
+::-webkit-scrollbar-thumb:window-inactive { background: #BAA8F8 !important; border-radius: 10px; }
+* { scrollbar-width: thin; scrollbar-color: #BAA8F8 #F2EFFE; }
 
 body {
   margin: 0;
   padding: 0;
-  font-size: 18px;
+  font-size: 14px;
   line-height: 1.6;
 }
 
-/* Global button styles matching logout button */
-button, .btn, .primary-btn, .add-page-back-btn {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 18px;
+/* Global button styles — only for legacy class-based buttons, not bare button elements */
+.btn, .add-page-back-btn {
+  font-size: 14px;
   font-weight: 600;
-  padding: 10px 18px;
+  padding: 8px 16px;
   border-radius: 8px;
   border: none;
   background: #ffffff;
@@ -25,40 +37,40 @@ button, .btn, .primary-btn, .add-page-back-btn {
   transition: 0.2s;
 }
 
-button:hover, .btn:hover, .primary-btn:hover, .add-page-back-btn:hover {
-  background: #0284c7;
+.btn:hover, .primary-btn:hover, .add-page-back-btn:hover {
+  background: var(--color-primary, #6B3FDB);
   color: white;
 }
 
 .filter {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 18px;
-  font-weight: 600;
-  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 14px;
   border-radius: 8px;
   border: 1px solid #e5e7eb;
   background: #ffffff;
-  color: black;
+  color: #374151;
   cursor: pointer;
   transition: 0.2s;
 }
 
 .filter:hover {
-  background: #0284c7;
+  background: var(--color-primary, #6B3FDB);
   color: white;
 }
 
 input, select, textarea {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 18px;
+  font-family: inherit;
+  font-size: 14px;
 }
 
 select {
   background: white;
-  color: black;
-  padding: 10px 14px;
+  color: #374151;
+  padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid #e5e7eb;
+  font-size: 14px;
 }
 
 select:focus {
@@ -71,49 +83,4 @@ select option {
   background: white;
   color: black;
   padding: 10px;
-}
-
-h1 {
-  font-size: 28px;
-  font-weight: 600;
-  margin: 0 0 20px 0;
-}
-
-h2 {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 15px 0;
-}
-
-h3 {
-  font-size: 22px;
-  font-weight: 600;
-  margin: 0 0 10px 0;
-}
-
-p {
-  font-size: 18px;
-  margin: 8px 0;
-}
-
-table {
-  font-size: 18px;
-  width: 100%;
-}
-
-td, th {
-  font-size: 18px;
-  padding: 14px;
-}
-
-label {
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.search-box {
-  font-size: 18px;
-  padding: 10px 14px;
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
 }

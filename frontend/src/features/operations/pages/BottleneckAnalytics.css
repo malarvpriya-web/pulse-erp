@@ -1,0 +1,218 @@
+/* BottleneckAnalytics.css — page-specific styles (.ba- prefix) */
+
+/* ── Page wrapper ─────────────────────────────────────────────── */
+.ba-page {
+  padding: 24px;
+}
+
+/* ── Header row ───────────────────────────────────────────────── */
+.ba-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.ba-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.ba-subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.ba-refresh-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #374151;
+}
+
+.ba-refresh-btn:hover {
+  background: var(--color-background-secondary);
+}
+
+/* ── Error banner ─────────────────────────────────────────────── */
+.ba-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+/* ── KPI grid ─────────────────────────────────────────────────── */
+.ba-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.ba-kpi-card {
+  background: var(--color-background-primary);
+  border: 1px solid #f0f0f4;
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+/* Icon circle — background and color stay inline (dynamic per card) */
+.ba-kpi-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ba-kpi-label {
+  margin: 0;
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.ba-kpi-value {
+  margin: 2px 0 0;
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--color-text-primary);
+}
+
+/* ── Filters row ──────────────────────────────────────────────── */
+.ba-filters {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.ba-filter-input,
+.ba-filter-select {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+}
+
+.ba-filter-input {
+  width: 280px;
+}
+
+.ba-filter-select {
+  cursor: pointer;
+}
+
+/* ── Loading skeleton ─────────────────────────────────────────── */
+.ba-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ba-skeleton-row {
+  height: 64px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Empty state ──────────────────────────────────────────────── */
+.ba-empty {
+  color: #9ca3af;
+  font-size: 13px;
+  padding: 32px;
+  text-align: center;
+  background: var(--color-background-secondary);
+  border-radius: 8px;
+}
+
+/* ── Table card ───────────────────────────────────────────────── */
+.ba-table-card {
+  background: var(--color-background-primary);
+  border: 1px solid #f0f0f4;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.ba-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ba-table thead tr {
+  background: var(--color-background-secondary);
+  border-bottom: 1px solid #f0f0f4;
+}
+
+.ba-table th {
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.ba-table td {
+  padding: 10px 14px;
+}
+
+.ba-td-process {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.ba-td-dept {
+  color: var(--color-text-secondary);
+}
+
+.ba-td-stage {
+  color: #374151;
+  font-size: 13px;
+}
+
+.ba-td-plain {
+  color: #374151;
+}
+
+/* Trend cell */
+.ba-trend-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Severity badge — background and text color stay inline (dynamic) */
+.ba-badge {
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}

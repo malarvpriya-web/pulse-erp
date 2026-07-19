@@ -1,0 +1,652 @@
+# Query: loading
+# ContextLines: 1
+
+221 results - 46 files
+
+SUPER_ADMIN_DASHBOARD_IMPLEMENTATION.md:
+   79  ✅ Responsive grid layout
+   80: ✅ Loading and error states
+   81  ✅ Auto-refresh every 5 minutes
+
+  191  ✅ Recharts integration
+  192: ✅ Loading states
+  193  ✅ Error handling
+
+frontend\src\components\dashboard\WidgetContainer.css:
+  21  
+  22: .widget-loading,
+  23  .widget-error {
+
+frontend\src\components\dashboard\widgets\ActivityTimelineWidget.jsx:
+  25    const [data, setData] = useState([]);
+  26:   const [loading, setLoading] = useState(true);
+  27    const [error, setError] = useState(null);
+
+  34      try {
+  35:       setLoading(true);
+  36        setError(null);
+
+  42      } finally {
+  43:       setLoading(false);
+  44      }
+
+  61  
+  62:  
+
+frontend\src\components\dashboard\widgets\ApprovalsQueueWidget.jsx:
+   7    const [data, setData] = useState(null);
+   8:   const [loading, setLoading] = useState(true);
+   9    const [error, setError] = useState(null);
+
+  16      try {
+  17:       setLoading(true);
+  18        setError(null);
+
+  24      } finally {
+  25:       setLoading(false);
+  26      }
+
+  43  
+  44:   
+
+frontend\src\components\dashboard\widgets\CashPositionCard.jsx:
+   7    const [data, setData] = useState(null);
+   8:   const [loading, setLoading] = useState(true);
+   9    const [error, setError] = useState(null);
+
+  16      try {
+  17:       setLoading(true);
+  18        setError(null);
+
+  24      } finally {
+  25:       setLoading(false);
+  26      }
+
+  28  
+  29:  
+
+frontend\src\components\dashboard\widgets\ChartWidget.css:
+  13  
+  14: .chart-widget .widget-loading,
+  15  .chart-widget .widget-error {
+
+frontend\src\components\dashboard\widgets\ExpenseBreakdownChart.jsx:
+   9    const [data, setData] = useState([]);
+  10:   const [loading, setLoading] = useState(true);
+  11    const [error, setError] = useState(null);
+
+  18      try {
+  19:       setLoading(true);
+  20        setError(null);
+
+  26      } finally {
+  27:       setLoading(false);
+  28      }
+
+  30  
+frontend\src\components\dashboard\widgets\KPICard.css:
+  54  
+  55: .kpi-loading,
+  56  .kpi-error {
+
+frontend\src\components\dashboard\widgets\KPICard.jsx:
+   8    const [data, setData] = useState(null);
+   9:   const [loading, setLoading] = useState(true);
+  10    const [error, setError] = useState(null);
+
+  19      try {
+  20:       setLoading(true);
+  21        setError(null);
+
+  27      } finally {
+  28:       setLoading(false);
+  29      }
+
+  31  
+  32:  
+
+frontend\src\components\dashboard\widgets\OperationsAlertsWidget.jsx:
+   7    const [data, setData] = useState(null);
+   8:   const [loading, setLoading] = useState(true);
+   9    const [error, setError] = useState(null);
+
+  16      try {
+  17:       setLoading(true);
+  18        setError(null);
+
+  24      } finally {
+  25:       setLoading(false);
+  26      }
+
+  28  
+  29:  
+
+frontend\src\components\dashboard\widgets\ProjectHealthWidget.jsx:
+   7    const [data, setData] = useState(null);
+   8:   const [loading, setLoading] = useState(true);
+   9    const [error, setError] = useState(null);
+
+  16      try {
+  17:       setLoading(true);
+  18        setError(null);
+
+  24      } finally {
+  25:       setLoading(false);
+  26      }
+
+  28  
+  29:   
+
+frontend\src\components\dashboard\widgets\RevenueTrendChart.jsx:
+   7    const [data, setData] = useState([]);
+   8:   const [loading, setLoading] = useState(true);
+   9    const [error, setError] = useState(null);
+
+  16      try {
+  17:       setLoading(true);
+  18        setError(null);
+
+  24      } finally {
+  25:       setLoading(false);
+  26      }
+
+  28  
+  29:  
+
+frontend\src\components\dashboard\widgets\SystemAlertsWidget.jsx:
+  25    const [data, setData] = useState(null);
+  26:   const [loading, setLoading] = useState(true);
+  27    const [error, setError] = useState(null);
+
+  34      try {
+  35:       setLoading(true);
+  36        setError(null);
+
+  42      } finally {
+  43:       setLoading(false);
+  44      }
+
+  46  
+  47:   
+
+frontend\src\components\dashboard\widgets\TeamAttendanceWidget.jsx:
+  14    const [data, setData] = useState(null);
+  15:   const [loading, setLoading] = useState(true);
+  16    const [error, setError] = useState(null);
+
+  23      try {
+  24:       setLoading(true);
+  25        setError(null);
+
+  31      } finally {
+  32:       setLoading(false);
+  33      }
+
+  35  
+  36:   
+
+frontend\src\pages\ERPDashboard.jsx:
+   10    const [dashboardData, setDashboardData] = useState({});
+   11:   const [loading, setLoading] = useState(true);
+   12  
+
+  102      } finally {
+  103:       setLoading(false);
+  104      }
+
+  127  
+  128:  
+Pulse\AUTH_TESTING_GUIDE.md:
+  32  **Expected Results:**
+  33: - ✅ Loading state shows "Logging in..."
+  34  - ✅ POST request to `/api/auth/login` succeeds
+
+Pulse\CELEBRATIONS_TESTING_GUIDE.md:
+  189  const loadAllData = async () => {
+  190:   setLoading(true);
+  191    try {
+
+  200    } catch (err) {
+  201:     console.error("Error loading home data:", err);
+  202    } finally {
+  203:     setLoading(false);
+  204    }
+
+  335  ✅ Data fetches with Promise.all()
+  336: ✅ Loading state works
+  337  ✅ Error handling works
+
+Pulse\ERP-DASHBOARD-README.md:
+  254  
+  255: ### Data not loading
+  256  - Verify backend is running on port 5000
+
+  285  - Consider caching strategies for performance
+  286: - Implement proper loading states
+  287  - Add empty states for widgets with no data
+
+Pulse\HOME_PORTAL_IMPLEMENTATION.md:
+   80  - Proper API integration with `/api/home` endpoints
+   81: - Loading states
+   82  - Error handling
+
+  271  ✅ Current date display
+  272: ✅ Loading states
+  273  ✅ Error handling
+
+  355  - Error handling
+  356: - Loading states
+  357  - Empty states
+
+Pulse\SIDEBAR_VISIBILITY_RULES.md:
+  353  
+  354: 1. **Dynamic Module Loading:** Load modules based on company configuration
+  355  2. **Custom Role Creation:** Allow admins to create custom roles with specific module access
+
+Pulse\frontend\src\App.jsx:
+  33    if (initializing) {
+  34:     return <div style={{ padding: "50px", textAlign: "center" }}>Loading...</div>;
+  35    }
+
+Pulse\frontend\src\features\employees\pages\AddEmployee.jsx:
+   87   // 🆔 Employee Code from backend
+   88: const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "Loading..."); 
+   89    // BASIC
+
+  308        <div className="form-grid">
+  309:         <div><label>Employee ID</label><input value={employeeCode === "Loading..." ? "" : employeeCode} disabled /></div>
+  310          <div><label>First Name *</label><input value={firstName} onChange={e=>setFirstName(e.target.value)} /></div>
+
+Pulse\frontend\src\features\employees\pages\EmployeesDashboard.jsx:
+   8    const [employees, setEmployees] = useState([]);
+   9:   const [loading, setLoading] = useState(false);
+  10    const [searchTerm, setSearchTerm] = useState("");
+
+  20      try {
+  21:       setLoading(true);
+  22        console.log("📥 Fetching employees from API...");
+
+  30      } finally {
+  31:       setLoading(false);
+  32      }
+
+Pulse\frontend\src\features\employees\pages\EmployeesData.jsx:
+    6    const [employees, setEmployees] = useState([]);
+    7:   const [loading, setLoading] = useState(false);
+    8    const [searchTerm, setSearchTerm] = useState("");
+
+   47      try {
+   48:       setLoading(true);
+   49        const response = await api.get("/employees?t=" + Date.now());
+
+   57      } finally {
+   58:       setLoading(false);
+   59      }
+
+  203        <div className="widget" style={{ overflowX: "auto" }}>
+  204:         {loading ? (
+  205            <div style={{ textAlign: "center", padding: "40px", color: "#94a3b8" }}>
+  206:             ⏳ Loading employees...
+  207            </div>
+
+Pulse\frontend\src\features\employees\pages\ExEmployees.jsx:
+    6    const [employees, setEmployees] = useState([]);
+    7:   const [loading, setLoading] = useState(false);
+    8    const [searchTerm, setSearchTerm] = useState("");
+
+   26      try {
+   27:       setLoading(true);
+   28        const response = await api.get("/employees");
+
+   32      } finally {
+   33:       setLoading(false);
+   34      }
+
+  114        <div className="widget">
+  115:         {loading ? (
+  116            <div style={{ textAlign: "center", padding: "40px", color: "#94a3b8" }}>
+  117:             ⏳ Loading employees...
+  118            </div>
+
+Pulse\frontend\src\features\finance\pages\FinanceDashboard.css:
+  102  
+  103: .loading, .error {
+  104    text-align: center;
+
+Pulse\frontend\src\features\finance\pages\FinanceDashboard.jsx:
+   6    const [dashboard, setDashboard] = useState(null);
+   7:   const [loading, setLoading] = useState(true);
+   8  
+
+  19      } finally {
+  20:       setLoading(false);
+  21      }
+
+  23  
+  24:  
+  25    if (!dashboard) return <div className="error">Failed to load dashboard</div>;
+
+Pulse\frontend\src\features\finance\pages\FinancialRatios.jsx:
+   6    const [ratios, setRatios] = useState(null);
+   7:   const [loading, setLoading] = useState(false);
+   8    const [asOfDate, setAsOfDate] = useState(new Date().toISOString().split('T')[0]);
+
+  14    const fetchRatios = async () => {
+  15:     setLoading(true);
+  16      try {
+
+  21      } finally {
+  22:       setLoading(false);
+  23      }
+
+  45  
+  46:   
+  47    if (!ratios) return <div className="error">Failed to load ratios</div>;
+
+Pulse\frontend\src\features\finance\pages\Reports.jsx:
+   7    const [reportData, setReportData] = useState(null);
+   8:   const [loading, setLoading] = useState(false);
+   9    const [filters, setFilters] = useState({
+
+  15    const fetchReport = async () => {
+  16:     setLoading(true);
+  17      try {
+
+  38      } finally {
+  39:       setLoading(false);
+  40      }
+
+  78  
+  79:           <button className="primary-btn" onClick={fetchReport} disabled={loading}>
+  80:             {loading ? 'Loading...' : 'Generate Report'}
+  81            </button>
+
+Pulse\frontend\src\features\hr\pages\Downloads.jsx:
+   6    const [downloads, setDownloads] = useState([]);
+   7:   const [loading, setLoading] = useState(false);
+   8  
+
+  14      try {
+  15:       setLoading(true);
+  16        const response = await api.get("/downloads");
+
+  20      } finally {
+  21:       setLoading(false);
+  22      }
+
+  27        <h1>Downloads</h1>
+  28:       {loading ? (
+  29:         <p>Loading...</p>
+  30        ) : (
+
+Pulse\frontend\src\features\hr\pages\Policies.jsx:
+  53      } catch (err) {
+  54:       alert("Error uploading policy");
+  55      }
+
+Pulse\frontend\src\features\hr\pages\Probation.jsx:
+   7    const [allEmployees, setAllEmployees] = useState([]);
+   8:   const [loading, setLoading] = useState(false);
+   9    const [showModal, setShowModal] = useState(false);
+
+  19      try {
+  20:       setLoading(true);
+  21        const response = await api.get("/employees");
+
+  27      } finally {
+  28:       setLoading(false);
+  29      }
+
+  73        <div className="widget">
+  74:         {loading ? (
+  75            <div style={{ textAlign: "center", padding: "40px", color: "#94a3b8" }}>
+  76:             ⏳ Loading...
+  77            </div>
+
+Pulse\frontend\src\features\inventory\pages\AdvancedInventoryDashboard.jsx:
+  67  
+  68:   if (!metrics) return <div>Loading...</div>;
+  69  
+
+Pulse\frontend\src\features\leaves\pages\AllLeaves.jsx:
+   7    const [leaves, setLeaves] = useState([]);
+   8:   const [loading, setLoading] = useState(true);
+   9    const [filterStatus, setFilterStatus] = useState("all");
+
+  17      try {
+  18:       setLoading(true);
+  19        const response = await api.get("/leaves");
+
+  23      } finally {
+  24:       setLoading(false);
+  25      }
+
+  54  
+  55:   if (loading) {
+  56      return (
+
+  58          <h1>All Leaves</h1>
+  59:         <div style={{ textAlign: "center", padding: "50px" }}>Loading...</div>
+  60        </div>
+
+Pulse\frontend\src\features\leaves\pages\ApplyLeave.jsx:
+   10    const [reason, setReason] = useState("");
+   11:   const [loading, setLoading] = useState(false);
+   12    const [message, setMessage] = useState("");
+
+   61  
+   62:     setLoading(true);
+   63      setMessage("");
+
+   84      } finally {
+   85:       setLoading(false);
+   86      }
+
+  172                className="primary-btn"
+  173:               disabled={loading}
+  174                style={{ width: "200px", fontSize: "14px" }}
+  175              >
+  176:               {loading ? "Submitting..." : "Submit Leave Request"}
+  177              </button>
+
+Pulse\frontend\src\features\leaves\pages\MyLeaves.jsx:
+   7    const [leaves, setLeaves] = useState([]);
+   8:   const [loading, setLoading] = useState(true);
+   9  
+
+  15      try {
+  16:       setLoading(true);
+  17        const response = await api.get("/leaves/my");
+
+  21      } finally {
+  22:       setLoading(false);
+  23      }
+
+  34  
+  35:   if (loading) {
+  36      return (
+
+  38          <h1>My Leaves</h1>
+  39:         <div style={{ textAlign: "center", padding: "50px" }}>Loading...</div>
+  40        </div>
+
+Pulse\frontend\src\features\leaves\pages\TeamLeaves.jsx:
+    7    const [leaves, setLeaves] = useState([]);
+    8:   const [loading, setLoading] = useState(true);
+    9    const [selectedLeave, setSelectedLeave] = useState(null);
+   10    const [managerComment, setManagerComment] = useState("");
+   11:   const [actionLoading, setActionLoading] = useState(false);
+   12  
+
+   18      try {
+   19:       setLoading(true);
+   20        const response = await api.get("/leaves/team");
+
+   24      } finally {
+   25:       setLoading(false);
+   26      }
+
+   31      
+   32:     setActionLoading(true);
+   33      try {
+
+   42      } finally {
+   43:       setActionLoading(false);
+   44      }
+
+   54      
+   55:     setActionLoading(true);
+   56      try {
+
+   65      } finally {
+   66:       setActionLoading(false);
+   67      }
+
+   78  
+   79:   if (loading) {
+   80      return (
+
+   82          <h1>Team Leaves</h1>
+   83:         <div style={{ textAlign: "center", padding: "50px" }}>Loading...</div>
+   84        </div>
+
+  197                  style={{ background: "#6b7280" }}
+  198:                 disabled={actionLoading}
+  199                >
+
+  205                  style={{ background: "#dc2626" }}
+  206:                 disabled={actionLoading}
+  207                >
+  208:                 {actionLoading ? "Processing..." : "Reject"}
+  209                </button>
+
+  213                  style={{ background: "#16a34a" }}
+  214:                 disabled={actionLoading}
+  215                >
+  216:                 {actionLoading ? "Processing..." : "Approve"}
+  217                </button>
+
+Pulse\frontend\src\features\orgchart\pages\OrgChart.jsx:
+    7    const [orgData, setOrgData] = useState([]);
+    8:   const [loading, setLoading] = useState(true);
+    9    
+
+   25      } finally {
+   26:       setLoading(false);
+   27      }
+
+  126        <div className="org-display widget" style={{ padding: '40px', overflowX: 'auto' }}>
+  127:         {loading ? <p>Loading...</p> : (
+  128            orgData.length > 0 ? renderTree(orgData) : <p>No hierarchy data found. Assign managers to build the tree.</p>
+
+Pulse\frontend\src\features\procurement\pages\PurchaseOrderManagement.jsx:
+   6    const [orders, setOrders] = useState([]);
+   7:   const [loading, setLoading] = useState(true);
+   8  
+
+  16        setOrders(res.data);
+  17:       setLoading(false);
+  18      } catch (error) {
+
+  25        ]);
+  26:       setLoading(false);
+  27      }
+
+  71              ))}
+  72:             {orders.length === 0 && !loading && (
+  73                <tr>
+
+Pulse\frontend\src\features\recruitment\pages\CandidateDetail.jsx:
+  119  
+  120:   if (!candidate) return <div>Loading...</div>;
+  121  
+
+Pulse\frontend\src\features\recruitment\pages\RecruitmentDashboard.jsx:
+  81  
+  82:   if (!dashboard) return <div>Loading...</div>;
+  83  
+
+Pulse\frontend\src\features\sales\pages\Quotations.jsx:
+  128      } catch (error) {
+  129:       alert('Error downloading PDF');
+  130      }
+
+Pulse\frontend\src\pages\ERPDashboard.css:
+  515  
+  516: .dashboard-loading {
+  517    display: flex;
+
+Pulse\frontend\src\pages\ERPDashboard.jsx:
+  11    const [dashboardData, setDashboardData] = useState({});
+  12:   const [loading, setLoading] = useState(true);
+  13  
+
+  62        setDashboardData(dataRes.data);
+  63:       setLoading(false);
+  64      } catch (err) {
+  65        console.error("Dashboard fetch error:", err);
+  66:       setLoading(false);
+  67      }
+
+  85  
+  86:   if (loading) {
+  87:     return <div className="dashboard-loading">Loading dashboard...</div>;
+  88    }
+
+Pulse\frontend\src\pages\Home.jsx:
+   19    });
+   20:   const [loading, setLoading] = useState(true);
+   21  
+
+   27    const loadAllData = async () => {
+   28:     setLoading(true);
+   29      try {
+
+   38      } catch (err) {
+   39:       console.error("Error loading home data:", err);
+   40      } finally {
+   41:       setLoading(false);
+   42      }
+
+  131  
+  132:   if (loading) {
+  133      return (
+  134        <div style={{ padding: "50px", textAlign: "center" }}>
+  135:         <p>Loading...</p>
+  136        </div>
+
+Pulse\frontend\src\pages\Login.jsx:
+   9    const [error, setError] = useState("");
+  10:   const [loading, setLoading] = useState(false);
+  11  
+
+  14      setError("");
+  15:     setLoading(true);
+  16  
+
+  45      } finally {
+  46:       setLoading(false);
+  47      }
+
+  62              required
+  63:             disabled={loading}
+  64            />
+
+  71              required
+  72:             disabled={loading}
+  73            />
+
+  76              type="submit" 
+  77:             disabled={loading}
+  78              style={{
+  79:               background: loading ? "#9ca3af" : "#b5b5b5",
+  80                color: "white",
+  81:               cursor: loading ? "not-allowed" : "pointer",
+  82                padding: "12px",
+
+  88              }}
+  89:             onMouseEnter={(e) => !loading && (e.target.style.background = "#0284c7")}
+  90:             onMouseLeave={(e) => !loading && (e.target.style.background = "#b5b5b5")}
+  91            >
+  92:             {loading ? "Logging in..." : "Login"}
+  93            </button>

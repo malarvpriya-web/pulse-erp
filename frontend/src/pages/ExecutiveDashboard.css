@@ -1,0 +1,109 @@
+/* ── Executive Dashboard — viewport-fit cockpit layout (prefix: exd-) ──────
+ * Fit contract: on desktop (≥1100×700) the page locks to the visible area
+ * (100vh − 64px topbar − 2×20px .page-content padding = calc(100vh - 104px))
+ * and never scrolls; charts flex-fill their grid cell and lists scroll
+ * inside their own card. Below that breakpoint it degrades to a normal
+ * scrolling layout. Pairs with dashkit.css / DashCard.css. */
+
+/* Quick-nav chips (replaces the old Quick Navigation card) */
+.exd-quicknav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.exd-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border: 1px solid #eef0f4; border-radius: 20px;
+  background: #fff; color: #374151; font-size: 11.5px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; transition: all 0.15s ease;
+}
+.exd-chip:hover { border-color: #d8d3f0; color: #6B3FDB; background: #f9f8ff; }
+.exd-chip-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+/* Main card grid — scroll-mode default: 2-up, natural heights */
+.exd-main { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.exd-span2 { grid-column: span 2; }
+
+/* Chart wrapper — fixed height when scrolling, flex-fill under the fit contract */
+.exd-chartfill { height: 190px; min-width: 0; }
+
+/* Card-internal list (pipeline stages, top customers/vendors, alerts) */
+.exd-list { min-width: 0; }
+
+@media (max-width: 680px) {
+  .exd-main { grid-template-columns: 1fr; }
+  .exd-span2 { grid-column: span 1; }
+}
+
+/* ── Fit contract: single viewport, no page scroll ─────────────────────── */
+@media (min-width: 1100px) and (min-height: 700px) {
+  .exd-fit {
+    height: calc(100vh - 104px);
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 14px 14px;
+  }
+
+  /* Compact header */
+  .exd-fit .dk-head { margin-bottom: 10px; flex-wrap: nowrap; align-items: center; }
+  .exd-fit .dk-title { font-size: 18px; }
+  .exd-fit .dk-subtitle { margin-top: 1px; font-size: 12px; }
+
+  /* KPI strip: all 7 on one row, tightened */
+  .exd-fit .dk-kpis {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 9px; margin-bottom: 10px;
+  }
+  .exd-fit .dk-kpi { padding: 9px 11px; border-radius: 10px; }
+  .exd-fit .dk-kpi-top { margin-bottom: 5px; }
+  .exd-fit .dk-kpi-val { font-size: 19px; }
+  .exd-fit .dk-kpi-sk { height: 22px; }
+  .exd-fit .dk-kpi-sub span:first-child {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Insights: one slim 4-across band, text clamped to two lines */
+  .exd-fit .dk-insights { padding: 9px 12px; margin-bottom: 10px; flex-shrink: 0; }
+  .exd-fit .dk-insights-hd { margin-bottom: 7px; }
+  .exd-fit .dk-insights-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .exd-fit .dk-insight { padding: 7px 10px; font-size: 11.5px; line-height: 1.35; }
+  .exd-fit .dk-insight span:last-child {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* Main grid: 4 columns × 2 equal rows, fills the remaining height */
+  .exd-fit .exd-main {
+    flex: 1; min-height: 0;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  /* Cards become internal flex columns that never overflow the cell */
+  .exd-fit .dc-card { min-height: 0; padding: 11px 13px; }
+  .exd-fit .dc-hd { margin-bottom: 7px; flex-shrink: 0; }
+  .exd-fit .dc-body {
+    display: flex; flex-direction: column;
+    min-height: 0; overflow: hidden;
+  }
+
+  /* Charts absorb the free space in their card */
+  .exd-fit .exd-chartfill { height: auto; flex: 1; min-height: 70px; }
+
+  /* Lists scroll inside the card, never the page */
+  .exd-fit .exd-list { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
+  .exd-fit .exd-list::-webkit-scrollbar { width: 5px; }
+  .exd-fit .exd-list::-webkit-scrollbar-thumb { background: #e4e0f5; border-radius: 3px; }
+
+  /* Fixed footers (mini stats, legends) stay pinned below the flexing area */
+  .exd-fit .dk-stats { margin-top: 6px; flex-shrink: 0; }
+  .exd-fit .dk-stat { padding: 4px 4px; }
+  .exd-fit .dk-stat-val { font-size: 14px; }
+  .exd-fit .dk-stat-lbl { font-size: 10px; margin-top: 1px; }
+
+  .exd-fit .dk-empty { flex: 1; padding: 12px; }
+}
+
+/* Hide quick-nav chips only when the header genuinely runs out of room */
+@media (max-width: 1279px) {
+  .exd-quicknav { display: none; }
+}

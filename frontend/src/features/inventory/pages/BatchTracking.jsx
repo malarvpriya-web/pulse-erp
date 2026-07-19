@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import api from '@/services/api/client';
 import './AdvancedInventory.css';
+import { useToast } from '@/context/ToastContext';
 
-const BatchTracking = () => {
-  const navigate = useNavigate();
+const BatchTracking = ({ setPage }) => {
+  const toast = useToast();
   const [batches, setBatches] = useState([]);
   const [items, setItems] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
@@ -21,20 +21,11 @@ const BatchTracking = () => {
     rate: ''
   });
 
-  useEffect(() => {
-    fetchBatches();
-    fetchItems();
-    fetchWarehouses();
-  }, [filters]);
-
   const fetchBatches = async () => {
     try {
-      const token = localStorage.getItem('token');
       const params = new URLSearchParams(filters).toString();
-      const res = await axios.get(`http://localhost:5000/api/inventory/advanced/batches?${params}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setBatches(res.data);
+      const res = await api.get(`/inventory/advanced/batches?${params}`);
+      setBatches(Array.isArray(res.data) ? res.data : (res.data?.batches || []));
     } catch (error) {
       console.error('Error:', error);
     }
@@ -42,11 +33,8 @@ const BatchTracking = () => {
 
   const fetchItems = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const res = await axios.get('http://localhost:5000/api/inventory/items', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setItems(res.data);
+      const res = await api.get('/inventory/items');
+      setItems(Array.isArray(res.data) ? res.data : (res.data?.items || []));
     } catch (error) {
       console.error('Error:', error);
     }
@@ -54,29 +42,29 @@ const BatchTracking = () => {
 
   const fetchWarehouses = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const res = await axios.get('http://localhost:5000/api/inventory/warehouses', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setWarehouses(res.data);
+      const res = await api.get('/inventory/warehouses');
+      setWarehouses(Array.isArray(res.data) ? res.data : (res.data?.warehouses || []));
     } catch (error) {
       console.error('Error:', error);
     }
   };
 
+  useEffect(() => {
+    fetchBatches();
+    fetchItems();
+    fetchWarehouses();
+  }, [filters]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const token = localStorage.getItem('token');
-      await axios.post('http://localhost:5000/api/inventory/advanced/batches', formData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      alert('Batch created successfully');
+      await api.post('/inventory/advanced/batches', formData);
+      toast.success('Batch created successfully');
       setShowForm(false);
       resetForm();
       fetchBatches();
-    } catch (error) {
-      alert('Error creating batch');
+    } catch (_error) {
+      toast.error('Error creating batch');
     }
   };
 
@@ -110,7 +98,6 @@ const BatchTracking = () => {
     <div className="adv-inv-page">
       <div className="page-header">
         <div>
-          <button className="back-btn" onClick={() => navigate('/inventory/advanced')}>← Back</button>
           <h1>Batch Tracking</h1>
         </div>
         <button className="primary-btn" onClick={() => setShowForm(true)}>+ New Batch</button>
@@ -216,16 +203,16 @@ const BatchTracking = () => {
                 <td><strong>{batch.batch_number}</strong></td>
                 <td>{batch.item_name} ({batch.item_code})</td>
                 <td>{batch.warehouse_name}</td>
-                <td>{new Date(batch.received_date).toLocaleDateString()}</td>
+                <td>{new Date(batch.received_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
                 <td>{batch.age_days}</td>
-                <td>{batch.expiry_date ? new Date(batch.expiry_date).toLocaleDateString() : 'N/A'}<br/>{getExpiryStatus(batch.expiry_date)}</td>
+                <td>{batch.expiry_date ? new Date(batch.expiry_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'N/A'}<br/>{getExpiryStatus(batch.expiry_date)}</td>
                 <td>{batch.supplier_name || 'N/A'}</td>
                 <td>{parseFloat(batch.quantity_received).toFixed(2)}</td>
                 <td>{parseFloat(batch.quantity_available).toFixed(2)}</td>
                 <td>{parseFloat(batch.quantity_reserved).toFixed(2)}</td>
                 <td>{parseFloat(batch.quantity_consumed).toFixed(2)}</td>
-                <td>${parseFloat(batch.rate).toFixed(2)}</td>
-                <td>${parseFloat(batch.stock_value).toFixed(2)}</td>
+                <td>₹{parseFloat(batch.rate).toFixed(2)}</td>
+                <td>₹{parseFloat(batch.stock_value).toFixed(2)}</td>
                 <td><span className="status-badge" style={{ background: getStatusColor(batch.status) }}>{batch.status}</span></td>
               </tr>
             ))}

@@ -1,20 +1,22 @@
 import pool from '../../shared/db.js';
+import { pickUpdatable } from '../../../shared/safeUpdate.js';
 
 const timesheetRepository = {
   async create(data) {
-    const { employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status } = data;
+    const { employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status, company_id } = data;
     const result = await pool.query(
-      `INSERT INTO timesheet_entries (employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status]
+      `INSERT INTO timesheet_entries (employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status, company_id ?? null]
     );
     return result.rows[0];
   },
 
   async findAll(filters = {}) {
     let query = `
-      SELECT te.*, 
+      SELECT te.*,
         e.name as employee_name,
+        e.department,
         p.project_name,
         t.task_title
       FROM timesheet_entries te
@@ -25,6 +27,12 @@ const timesheetRepository = {
     `;
     const params = [];
     let paramCount = 1;
+
+    if (filters.company_id) {
+      query += ` AND te.company_id = $${paramCount}`;
+      params.push(filters.company_id);
+      paramCount++;
+    }
 
     if (filters.employee_id) {
       query += ` AND te.employee_id = $${paramCount}`;
@@ -58,8 +66,9 @@ const timesheetRepository = {
 
   async findById(id) {
     const result = await pool.query(
-      `SELECT te.*, 
+      `SELECT te.*,
         e.name as employee_name,
+        e.department,
         p.project_name,
         t.task_title
        FROM timesheet_entries te
@@ -77,13 +86,22 @@ const timesheetRepository = {
     const values = [];
     let paramCount = 1;
 
-    Object.keys(data).forEach(key => {
-      if (data[key] !== undefined) {
-        fields.push(`${key} = $${paramCount}`);
-        values.push(data[key]);
-        paramCount++;
-      }
+    // The route calls update(req.params.id, req.body), and `key` is interpolated
+    // into the SET clause below rather than bound — so unfiltered it allows both
+    // mass assignment (company_id, created_by, deleted_at) and injection of extra
+    // assignments. pickUpdatable validates every key against the live
+    // `timesheet_entries` columns minus the protected set.
+    const safe = await pickUpdatable('timesheet_entries', data);
+
+    Object.keys(safe).forEach(key => {
+      fields.push(`${key} = $${paramCount}`);
+      values.push(safe[key]);
+      paramCount++;
     });
+
+    // Every key was rejected — don't emit `SET updated_at=…` alone, which would
+    // report success for a write that changed nothing.
+    if (!fields.length) return this.findById(id);
 
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);

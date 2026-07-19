@@ -7,8 +7,8 @@
 .at-sub      { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
 
 /* buttons */
-.at-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6366f1; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.at-btn-primary:hover { background: #4f46e5; }
+.at-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.at-btn-primary:hover { background: #5B35D5; }
 .at-btn-primary:disabled { opacity: .6; cursor: default; }
 .at-btn-outline { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; color: #374151; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; }
 .at-icon-btn    { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; color: #6b7280; }
@@ -19,7 +19,7 @@
 .at-search   { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 7px 12px; flex: 1; min-width: 200px; color: #6b7280; }
 .at-search input { border: none; outline: none; flex: 1; font-size: 13px; background: transparent; }
 .at-select   { padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; background: #fff; color: #374151; cursor: pointer; outline: none; }
-.at-select:focus { border-color: #6366f1; }
+.at-select:focus { border-color: #6B3FDB; }
 
 /* table */
 .at-table-wrap { background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; overflow: hidden; }
@@ -28,7 +28,7 @@
 .at-table td   { padding: 12px 14px; border-bottom: 1px solid #f9fafb; color: #374151; vertical-align: middle; }
 .at-row        { cursor: pointer; transition: background .1s; }
 .at-row:hover td { background: #f9fafb; }
-.at-td-mono    { font-family: monospace; font-size: 12px; color: #6366f1; font-weight: 600; }
+.at-td-mono    { font-family: monospace; font-size: 12px; color: #6B3FDB; font-weight: 600; }
 .at-td-title   { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .at-email      { font-size: 11px; color: #9ca3af; }
 .at-badge      { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
@@ -36,7 +36,7 @@
 
 /* loading / empty */
 .at-loading { display: flex; justify-content: center; align-items: center; height: 200px; }
-.at-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: at-spin .7s linear infinite; }
+.at-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: at-spin .7s linear infinite; }
 @keyframes at-spin { to { transform: rotate(360deg); } }
 .at-empty   { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; gap: 12px; color: #9ca3af; background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; }
 
@@ -57,7 +57,7 @@
   font-size: 13px; color: #111827; outline: none; background: #fff;
   font-family: inherit; width: 100%; box-sizing: border-box;
 }
-.at-field input:focus, .at-field textarea:focus, .at-field select:focus { border-color: #6366f1; }
+.at-field input:focus, .at-field textarea:focus, .at-field select:focus { border-color: #6B3FDB; }
 .at-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 /* detail */
@@ -75,7 +75,7 @@
 .at-comment-body   { font-size: 13px; color: #374151; margin: 0; line-height: 1.5; }
 .at-comment-input  { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .at-comment-input textarea { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 12px; font-size: 13px; resize: none; outline: none; font-family: inherit; }
-.at-comment-input textarea:focus { border-color: #6366f1; }
+.at-comment-input textarea:focus { border-color: #6B3FDB; }
 .at-comment-input .at-btn-primary { align-self: flex-end; }
 
 /* toast */

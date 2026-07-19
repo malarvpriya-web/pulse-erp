@@ -39,14 +39,28 @@ const advancedInventoryRepository = {
   },
 
   async updateBatchQuantity(batch_id, quantity_change, operation) {
+    const qty = Math.abs(parseFloat(quantity_change));
+    if (!Number.isFinite(qty) || qty <= 0) throw Object.assign(new Error('quantity_change must be a positive number'), { status: 422 });
+
+    if (operation === 'consume') {
+      const check = await pool.query(`SELECT quantity_available FROM inventory_batches WHERE id = $1`, [batch_id]);
+      if (!check.rows[0]) throw Object.assign(new Error('Batch not found'), { status: 404 });
+      if (parseFloat(check.rows[0].quantity_available) < qty) {
+        throw Object.assign(
+          new Error(`Insufficient batch quantity. Available: ${check.rows[0].quantity_available}, Requested: ${qty}`),
+          { status: 422 }
+        );
+      }
+    }
+
     const field = operation === 'consume' ? 'quantity_consumed' : 'quantity_available';
     const result = await pool.query(
-      `UPDATE inventory_batches 
-       SET ${field} = ${field} + $1, 
+      `UPDATE inventory_batches
+       SET ${field} = ${field} + $1,
            quantity_available = quantity_available ${operation === 'consume' ? '-' : '+'} $1,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $2 RETURNING *`,
-      [Math.abs(quantity_change), batch_id]
+      [qty, batch_id]
     );
     return result.rows[0];
   },
@@ -101,17 +115,29 @@ const advancedInventoryRepository = {
   },
 
   async consumeReservation(reservation_id, quantity_consumed) {
+    const qty = parseFloat(quantity_consumed);
+    if (!Number.isFinite(qty) || qty <= 0) throw Object.assign(new Error('quantity_consumed must be a positive number'), { status: 422 });
+
+    const check = await pool.query(`SELECT quantity_remaining FROM inventory_reservations WHERE id = $1`, [reservation_id]);
+    if (!check.rows[0]) throw Object.assign(new Error('Reservation not found'), { status: 404 });
+    if (parseFloat(check.rows[0].quantity_remaining) < qty) {
+      throw Object.assign(
+        new Error(`Cannot consume more than remaining. Remaining: ${check.rows[0].quantity_remaining}, Requested: ${qty}`),
+        { status: 422 }
+      );
+    }
+
     const result = await pool.query(
       `UPDATE inventory_reservations
        SET quantity_consumed = quantity_consumed + $1,
            quantity_remaining = quantity_remaining - $1,
-           status = CASE 
+           status = CASE
              WHEN quantity_remaining - $1 <= 0 THEN 'fully_consumed'
              ELSE 'partially_consumed'
            END,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $2 RETURNING *`,
-      [quantity_consumed, reservation_id]
+      [qty, reservation_id]
     );
     return result.rows[0];
   },
@@ -223,6 +249,11 @@ const advancedInventoryRepository = {
     const params = [];
     let paramCount = 1;
 
+    if (filters.id) {
+      query += ` AND ps.id = $${paramCount}`;
+      params.push(filters.id);
+      paramCount++;
+    }
     if (filters.status) {
       query += ` AND ps.status = $${paramCount}`;
       params.push(filters.status);
@@ -336,6 +367,11 @@ const advancedInventoryRepository = {
   },
 
   async getDashboardMetrics() {
+    const holdingRate = (() => {
+      const parsed = Number.parseFloat(process.env.INVENTORY_HOLDING_COST_RATE ?? '0.18');
+      if (!Number.isFinite(parsed) || parsed < 0) return 0.18;
+      return parsed;
+    })();
     const lowStockCount = await pool.query(`SELECT COUNT(*) as count FROM stock_alerts WHERE status = 'active' AND alert_type = 'low_stock'`);
     const activeReservations = await pool.query(`SELECT COUNT(*) as count FROM inventory_reservations WHERE status = 'active'`);
     const pendingSuggestions = await pool.query(`SELECT COUNT(*) as count FROM purchase_suggestions WHERE status = 'pending'`);
@@ -351,13 +387,17 @@ const advancedInventoryRepository = {
       FROM inventory_batches ib WHERE status = 'active'
     `);
 
+    const totalAvailableValueNum = parseFloat(totalAvailableValue.rows[0].value);
     return {
       low_stock_alerts: parseInt(lowStockCount.rows[0].count),
       active_reservations: parseInt(activeReservations.rows[0].count),
       pending_suggestions: parseInt(pendingSuggestions.rows[0].count),
       expiring_batches: parseInt(expiringBatches.rows[0].count),
       total_reserved_value: parseFloat(totalReservedValue.rows[0].value),
-      total_available_value: parseFloat(totalAvailableValue.rows[0].value)
+      total_available_value: totalAvailableValueNum,
+      holding_cost_rate_annual: holdingRate,
+      total_holding_cost_annual: totalAvailableValueNum * holdingRate,
+      total_holding_cost_monthly: (totalAvailableValueNum * holdingRate) / 12
     };
   },
 

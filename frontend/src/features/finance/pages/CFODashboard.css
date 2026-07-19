@@ -1,32 +1,41 @@
-.cfo-root{padding:24px;background:#f8f9fc;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+.cfo-root{padding:16px 18px 20px;background:#f8f9fc;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+
+@keyframes cfo-rise{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+@media(prefers-reduced-motion:reduce){.cfo-exec-kpi,.cfo-card{animation:none !important;opacity:1 !important;}}
 .cfo-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px;color:#6b7280;}
-.cfo-spinner{width:36px;height:36px;border:3px solid #e5e7eb;border-top-color:#6366f1;border-radius:50%;animation:cfospin .8s linear infinite;}
+.cfo-spinner{width:36px;height:36px;border:3px solid #e5e7eb;border-top-color:#6B3FDB;border-radius:50%;animation:cfospin .8s linear infinite;}
 @keyframes cfospin{to{transform:rotate(360deg);}}
 
 /* header */
-.cfo-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;}
+.cfo-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;}
 .cfo-title-row{display:flex;align-items:center;gap:10px;}
 .cfo-title{font-size:20px;font-weight:600;color:#111827;margin:0;}
-.cfo-badge{background:#6366f1;color:#fff;font-size:10px;font-weight:600;padding:3px 9px;border-radius:20px;}
+.cfo-badge{background:#6B3FDB;color:#fff;font-size:10px;font-weight:600;padding:3px 9px;border-radius:20px;}
 .cfo-sub{font-size:12px;color:#9ca3af;margin:4px 0 0;}
 .cfo-header-r{display:flex;align-items:center;gap:10px;}
 .cfo-period{display:flex;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;}
 .cfo-period-tab{padding:6px 12px;border:none;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;}
-.cfo-period-tab.active{background:#6366f1;color:#fff;}
-.cfo-refresh{display:flex;align-items:center;gap:6px;padding:8px 14px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;}
-.cfo-refresh:hover{background:#4f46e5;}
+.cfo-period-tab.active{background:#6B3FDB;color:#fff;}
+.cfo-refresh{display:flex;align-items:center;gap:6px;padding:8px 14px;background:#6B3FDB;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;}
+.cfo-refresh:hover{background:#5B35D5;}
 
 /* executive KPI strip */
-.cfo-exec-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px;}
+.cfo-exec-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:12px;}
 @media(max-width:1400px){.cfo-exec-kpis{grid-template-columns:repeat(3,1fr);}}
 @media(max-width:768px){.cfo-exec-kpis{grid-template-columns:repeat(2,1fr);}}
 
-.cfo-exec-kpi{border-radius:12px;padding:16px;color:#fff;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;min-height:110px;}
-.cfo-kpi-rev   {background:linear-gradient(135deg,#6366f1,#8b5cf6);}
+.cfo-exec-kpi{border-radius:12px;padding:13px 14px;color:#fff;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;min-height:96px;opacity:0;animation:cfo-rise .45s cubic-bezier(.22,1,.36,1) forwards;transition:box-shadow .2s,transform .2s;}
+.cfo-exec-kpis .cfo-exec-kpi:nth-child(2){animation-delay:45ms;}
+.cfo-exec-kpis .cfo-exec-kpi:nth-child(3){animation-delay:90ms;}
+.cfo-exec-kpis .cfo-exec-kpi:nth-child(4){animation-delay:135ms;}
+.cfo-exec-kpis .cfo-exec-kpi:nth-child(5){animation-delay:180ms;}
+.cfo-exec-kpis .cfo-exec-kpi:nth-child(6){animation-delay:225ms;}
+.cfo-exec-kpi:hover{box-shadow:0 8px 20px rgba(16,24,40,.18);transform:translateY(-2px);}
+.cfo-kpi-rev   {background:linear-gradient(135deg,#6B3FDB,#7B3FE4);}
 .cfo-kpi-profit{background:linear-gradient(135deg,#10b981,#059669);}
 .cfo-kpi-ebitda{background:linear-gradient(135deg,#3b82f6,#1d4ed8);}
 .cfo-kpi-cash  {background:linear-gradient(135deg,#f59e0b,#d97706);}
-.cfo-kpi-ar    {background:linear-gradient(135deg,#8b5cf6,#7c3aed);}
+.cfo-kpi-ar    {background:linear-gradient(135deg,#7B3FE4,#7B3FE4);}
 .cfo-kpi-burn  {background:linear-gradient(135deg,#ef4444,#dc2626);}
 
 .cfo-exec-kpi-body{position:relative;z-index:1;}
@@ -39,7 +48,7 @@
 .cfo-exec-icon{position:absolute;right:12px;top:12px;opacity:.2;color:#fff;}
 
 /* grid */
-.cfo-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px;}
+.cfo-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;}
 .cg12{grid-column:span 12;}
 .cg8{grid-column:span 8;}
 .cg6{grid-column:span 6;}
@@ -49,8 +58,9 @@
 @media(max-width:768px){.cg8,.cg6,.cg4,.cg3{grid-column:span 12;}}
 
 /* card */
-.cfo-card{background:#fff;border-radius:12px;border:1px solid #f0f0f4;padding:16px;height:100%;box-sizing:border-box;}
-.cfo-card-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.cfo-card{background:#fff;border-radius:12px;border:1px solid #f0f0f4;padding:14px;height:100%;box-sizing:border-box;opacity:0;animation:cfo-rise .5s cubic-bezier(.22,1,.36,1) .08s forwards;transition:box-shadow .2s;}
+.cfo-card:hover{box-shadow:0 6px 18px rgba(16,24,40,.07);}
+.cfo-card-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
 .cfo-card-title{font-size:13px;font-weight:600;color:#374151;}
 .cfo-card-sub{font-size:12px;color:#9ca3af;}
 .cfo-icon-btn{background:none;border:1px solid #e5e7eb;border-radius:6px;padding:4px 7px;cursor:pointer;color:#6b7280;display:flex;align-items:center;}
@@ -71,7 +81,7 @@
 /* chart meta */
 .cfo-chart-meta{display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap;}
 .cfo-cm-chip{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;font-size:12px;}
-.cfo-cm-rev{background:#ede9fe;}
+.cfo-cm-rev{background:#E8E1FC;}
 .cfo-cm-target{background:#fef3c7;}
 .cfo-cm-profit{background:#dcfce7;}
 .cfo-cm-chip strong{font-size:14px;font-weight:700;color:#111827;}
@@ -157,7 +167,14 @@
 .cfo-alert-body{display:flex;align-items:center;gap:7px;font-size:12px;color:#374151;flex:1;}
 .cfo-alert-high .cfo-alert-body{color:#991b1b;}
 .cfo-alert-medium .cfo-alert-body{color:#92400e;}
-.cfo-alert-action{font-size:11px;font-weight:600;color:#6366f1;background:none;border:1px solid #c7d2fe;border-radius:6px;padding:3px 9px;cursor:pointer;white-space:nowrap;}
+.cfo-alert-action{font-size:11px;font-weight:600;color:#6B3FDB;background:none;border:1px solid #D4CAFE;border-radius:6px;padding:3px 9px;cursor:pointer;white-space:nowrap;}
+
+/* empty state */
+.cfo-empty{display:flex;align-items:center;justify-content:center;padding:32px 16px;font-size:13px;color:#9ca3af;text-align:center;}
+
+/* alert info level */
+.cfo-alert-info{background:#eff6ff;}
+.cfo-alert-info .cfo-alert-body{color:#1d4ed8;}
 
 /* colours */
 .green{color:#10b981;}.red{color:#ef4444;}.amber{color:#f59e0b;}

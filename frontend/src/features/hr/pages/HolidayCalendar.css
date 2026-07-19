@@ -1,0 +1,105 @@
+.holiday-page { padding: 20px; }
+.holiday-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+.holiday-header h1 { margin: 0; font-size: 24px; font-weight: 700; color: #111827; }
+.holiday-header p { margin: 4px 0 0; font-size: 13px; color: #6b7280; }
+.holiday-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.holiday-year-select,
+.holiday-view-btn,
+.holiday-primary-btn,
+.holiday-import-btn {
+  border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 12px;
+  font-size: 13px; font-weight: 600; background: #fff; color: #111827;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.holiday-primary-btn { background: #2563eb; color: #fff; border-color: #2563eb; }
+.holiday-import-btn.disabled { opacity: .6; cursor: not-allowed; }
+
+/* ── Card / table ─────────────────────────────────────────────────────────── */
+.holiday-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+.holiday-form-grid { display: grid; grid-template-columns: repeat(4, minmax(160px,1fr)); gap: 12px; }
+.holiday-form-grid label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 5px; font-weight: 600; }
+.holiday-form-grid input, .holiday-form-grid select { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 10px; font-size: 13px; box-sizing: border-box; }
+.holiday-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.holiday-note { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; font-size: 12px; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
+.holiday-table { width: 100%; border-collapse: collapse; }
+.holiday-table th, .holiday-table td { border-bottom: 1px solid #f1f5f9; padding: 10px 8px; text-align: left; font-size: 13px; }
+.holiday-table th { color: #6b7280; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .02em; }
+.holiday-type-pill { display: inline-flex; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+.holiday-empty { text-align: center; color: #9ca3af; padding: 28px; font-size: 13px; }
+
+/* ── Action cell — Edit + Delete side by side ─────────────────────────────── */
+.holiday-action-cell { display: flex; gap: 6px; align-items: center; }
+.holiday-edit-btn {
+  background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe;
+  border-radius: 7px; padding: 6px 10px; font-size: 12px; font-weight: 600;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+}
+.holiday-edit-btn:hover { background: #dbeafe; }
+.holiday-delete-btn {
+  background: #fee2e2; color: #991b1b; border: 1px solid #fecaca;
+  border-radius: 7px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.holiday-delete-btn:hover { background: #fecaca; }
+.holiday-cancel-btn {
+  background: #fff; color: #374151; border: 1px solid #d1d5db;
+  border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+
+/* ── Zone badges ──────────────────────────────────────────────────────────── */
+.holiday-zone-pill { display: inline-flex; border-radius: 999px; padding: 2px 7px; font-size: 11px; font-weight: 600; background: #e0f2fe; color: #0369a1; }
+.holiday-zone-all { font-size: 12px; color: #9ca3af; }
+
+/* ── Edit modal ───────────────────────────────────────────────────────────── */
+.holiday-edit-modal {
+  width: min(96vw, 820px); background: #fff; border-radius: 14px;
+  padding: 20px; border: 1px solid #e5e7eb; box-shadow: 0 20px 48px rgba(0,0,0,.14);
+  max-height: 90vh; overflow-y: auto;
+}
+.holiday-edit-modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.holiday-edit-modal-header h3 { margin: 0; font-size: 16px; font-weight: 700; color: #111827; }
+.holiday-modal-close {
+  background: none; border: none; font-size: 22px; color: #6b7280;
+  cursor: pointer; line-height: 1; padding: 2px 6px; border-radius: 6px;
+}
+.holiday-modal-close:hover { background: #f3f4f6; color: #111827; }
+
+/* ── Confirm dialog (delete) ──────────────────────────────────────────────── */
+.holiday-confirm-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: grid; place-items: center; z-index: 1200; }
+.holiday-confirm-box { width: min(92vw, 360px); background: #fff; border-radius: 12px; padding: 16px; border: 1px solid #e5e7eb; }
+.holiday-confirm-box h3 { margin: 0 0 8px; font-size: 16px; color: #111827; }
+.holiday-confirm-box p { margin: 0; font-size: 13px; color: #6b7280; }
+.holiday-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.holiday-confirm-actions button { border-radius: 8px; border: 1px solid #d1d5db; background: #fff; padding: 7px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.holiday-confirm-actions .danger { background: #dc2626; border-color: #dc2626; color: #fff; }
+
+/* ── Calendar grid view ───────────────────────────────────────────────────── */
+.holiday-calendar-grid { display: grid; grid-template-columns: repeat(3, minmax(220px,1fr)); gap: 12px; }
+.holiday-month-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; min-height: 180px; }
+.holiday-month-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.holiday-month-head h3 { margin: 0; font-size: 14px; color: #111827; }
+.holiday-month-head span { font-size: 11px; color: #6b7280; background: #f3f4f6; border-radius: 999px; padding: 2px 6px; }
+.holiday-month-empty { font-size: 12px; color: #9ca3af; padding: 14px 4px; }
+.holiday-month-list { display: flex; flex-direction: column; gap: 8px; }
+.holiday-month-item { display: flex; gap: 8px; align-items: flex-start; border-top: 1px dashed #f1f5f9; padding-top: 8px; }
+.holiday-dot { width: 8px; height: 8px; border-radius: 999px; margin-top: 5px; flex-shrink: 0; }
+.holiday-month-date { font-size: 11px; color: #6b7280; }
+.holiday-month-name { font-size: 12px; color: #111827; font-weight: 600; margin: 1px 0 4px; }
+
+/* Small edit button in calendar cards */
+.holiday-cal-edit-btn {
+  background: none; border: none; color: #9ca3af; cursor: pointer;
+  padding: 3px; border-radius: 5px; display: flex; align-items: center; flex-shrink: 0;
+}
+.holiday-cal-edit-btn:hover { background: #f3f4f6; color: #2563eb; }
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .holiday-form-grid { grid-template-columns: repeat(2, minmax(140px,1fr)); }
+  .holiday-calendar-grid { grid-template-columns: repeat(2, minmax(200px,1fr)); }
+}
+@media (max-width: 700px) {
+  .holiday-header { flex-direction: column; }
+  .holiday-calendar-grid { grid-template-columns: 1fr; }
+  .holiday-form-grid { grid-template-columns: 1fr; }
+  .holiday-action-cell { flex-direction: column; gap: 4px; }
+}

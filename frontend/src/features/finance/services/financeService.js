@@ -2,9 +2,9 @@ import api from '@/services/api/client';
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
 
-export const getFinanceDashboard = async () => {
+export const getFinanceDashboard = async (params = {}) => {
   try {
-    const res = await api.get('/finance/dashboard');
+    const res = await api.get('/finance/dashboard', { params });
     return res.data || {};
   } catch (err) {
     console.error('getFinanceDashboard failed:', err.message);
@@ -25,18 +25,33 @@ export const getInvoices = async (params = {}) => {
 };
 
 export const createInvoice = async (data) => {
-  const res = await api.post('/finance/invoices', data);
-  return res.data;
+  try {
+    const res = await api.post('/finance/invoices', data);
+    return res.data;
+  } catch (err) {
+    console.error('createInvoice failed:', err.message);
+    throw err;
+  }
 };
 
 export const updateInvoice = async (id, data) => {
-  const res = await api.put(`/finance/invoices/${id}`, data);
-  return res.data;
+  try {
+    const res = await api.put(`/finance/invoices/${id}`, data);
+    return res.data;
+  } catch (err) {
+    console.error('updateInvoice failed:', err.message);
+    throw err;
+  }
 };
 
 export const deleteInvoice = async (id) => {
-  const res = await api.delete(`/finance/invoices/${id}`);
-  return res.data;
+  try {
+    const res = await api.delete(`/finance/invoices/${id}`);
+    return res.data;
+  } catch (err) {
+    console.error('deleteInvoice failed:', err.message);
+    throw err;
+  }
 };
 
 // ── Parties ────────────────────────────────────────────────────────────────
@@ -52,18 +67,61 @@ export const getParties = async (params = {}) => {
 };
 
 export const createParty = async (data) => {
-  const res = await api.post('/finance/parties', data);
-  return res.data;
+  try {
+    const res = await api.post('/finance/parties', data);
+    return res.data;
+  } catch (err) {
+    console.error('createParty failed:', err.message);
+    throw err;
+  }
 };
 
 export const updateParty = async (id, data) => {
-  const res = await api.put(`/finance/parties/${id}`, data);
-  return res.data;
+  try {
+    const res = await api.put(`/finance/parties/${id}`, data);
+    return res.data;
+  } catch (err) {
+    console.error('updateParty failed:', err.message);
+    throw err;
+  }
 };
 
 export const togglePartyStatus = async (id, isActive) => {
-  const res = await api.patch(`/finance/parties/${id}/status`, { is_active: isActive });
-  return res.data;
+  try {
+    const res = await api.patch(`/finance/parties/${id}/status`, { is_active: isActive });
+    return res.data;
+  } catch (err) {
+    console.error('togglePartyStatus failed:', err.message);
+    throw err;
+  }
+};
+
+export const getPartyTransactions = async (id) => {
+  try {
+    const res = await api.get(`/finance/parties/${id}/transactions`);
+    return res.data || [];
+  } catch {
+    return [];
+  }
+};
+
+export const getPartyAgeing = async (id) => {
+  try {
+    const res = await api.get(`/finance/parties/${id}/ageing`);
+    return res.data || {};
+  } catch {
+    return {};
+  }
+};
+
+export const importParties = async (rows) => {
+  try {
+    const res = await api.post('/finance/parties/import', { rows });
+    return res.data;
+  } catch (err) {
+    console.error('importParties failed:', err.message);
+    throw err;
+  }
 };
 
 // ── Accounts ───────────────────────────────────────────────────────────────
@@ -91,8 +149,13 @@ export const getBills = async (params = {}) => {
 };
 
 export const createBill = async (data) => {
-  const res = await api.post('/finance/bills', data);
-  return res.data;
+  try {
+    const res = await api.post('/finance/bills', data);
+    return res.data;
+  } catch (err) {
+    console.error('createBill failed:', err.message);
+    throw err;
+  }
 };
 
 // ── Payments ──────────────────────────────────────────────────────────────
@@ -108,6 +171,11 @@ export const getPayments = async (params = {}) => {
 };
 
 export const createPayment = async (data) => {
-  const res = await api.post('/finance/payments', data);
-  return res.data;
+  try {
+    const res = await api.post('/finance/payments', data);
+    return res.data;
+  } catch (err) {
+    console.error('createPayment failed:', err.message);
+    throw err;
+  }
 };

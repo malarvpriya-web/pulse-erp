@@ -1,18 +1,18 @@
 :root {
-  /* 🎯 PRIMARY COLORS */
-  --primary-color: #2563eb;       /* Blue-600 */
-  --primary-hover: #1d4ed8;       /* Blue-700 */
-  --primary-light: #eff6ff;       /* Blue-50 */
-  
-  /* 🎨 NEUTRALS */
-  --bg-color: #f8fafc;            /* Slate-50 - Lighter, cleaner background */
-  --card-bg: #ffffff;             /* White */
-  --text-primary: #111827;        /* Gray-900 */
-  --text-secondary: #6b7280;      /* Gray-500 */
-  --border-color: #e5e7eb;        /* Gray-200 */
+  /* Legacy token names — aliased to the canonical --color-* tokens in
+     styles/global-overrides.css. Re-theme there, not here. */
+  --primary-color: var(--color-primary, #6B3FDB);
+  --primary-hover: var(--color-primary-hov, #5B35D5);
+  --primary-light: var(--brand-50, #F2EFFE);
+
+  --bg-color: var(--color-bg-page, #f8f9fc);
+  --card-bg: var(--color-bg-card, #ffffff);
+  --text-primary: var(--color-text-primary, #111827);
+  --text-secondary: var(--color-text-secondary, #6b7280);
+  --border-color: var(--color-border, #e5e7eb);
   
   /* 📏 DIMENSIONS */
-  --header-height: 100px;
+  --header-height: 64px;    /* matches Topbar.css .tb-root height */
   --sidebar-width: 260px;
   --sidebar-collapsed-width: 70px;
   
@@ -29,21 +29,30 @@
   
   /* 🔤 TYPOGRAPHY */
   --font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-size-base: 18px;
-  --font-size-lg: 20px;
-  --font-size-xl: 22px;
+  --font-size-base: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: #BAA8F8 #F2EFFE;
 }
+
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: #F2EFFE; border-radius: 10px; }
+*::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:active,
+*::-webkit-scrollbar-thumb:window-inactive { background: #BAA8F8 !important; border-radius: 10px; }
 
 body {
   margin: 0;
   font-family: var(--font-family);
   background-color: var(--bg-color);
   color: var(--text-primary);
-  font-size: var(--font-size-base);
+  font-size: var(--font-size-base); /* 14px */
 }
 
 /* 📏 LAYOUT STRUCTURE */
@@ -58,6 +67,7 @@ body {
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-width: 0;
   height: 100%;
   overflow: hidden;
 }
@@ -67,50 +77,53 @@ body {
   overflow-y: auto;
   padding: var(--spacing-md);
   background-color: var(--bg-color);
+  /* Do NOT set min-height here — .pulse-page handles that per-page */
 }
 
 /* 🎨 GLOBAL BUTTON STYLES */
 .primary-btn {
-  background-color: #b5b5b5;
+  background-color: var(--primary-color, #6B3FDB);
   color: white;
   border: none;
   padding: 10px 20px;
   border-radius: var(--border-radius);
-  font-weight: 500;
-  font-size: 18px;
+  font-weight: 600;
+  font-size: 14px;
   cursor: pointer;
-  transition: background-color 0.2s, transform 0.1s;
+  transition: background-color 0.2s, transform 0.1s, box-shadow 0.2s;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: none;
+  box-shadow: 0 2px 8px rgba(107,63,219,.25);
 }
 
 .primary-btn:hover {
-  background-color: #0284c7;
+  background-color: var(--primary-hover, #5B35D5);
+  box-shadow: 0 4px 14px rgba(107,63,219,.35);
   color: white;
 }
 
 .primary-btn:active {
   transform: translateY(1px);
+  box-shadow: none;
 }
 
 .secondary-btn, .cancel-btn {
-  background-color: #b5b5b5;
-  color: white;
-  border: none;
+  background-color: #f3f4f6;
+  color: #374151;
+  border: 1px solid #e5e7eb;
   padding: 10px 20px;
   border-radius: var(--border-radius);
   font-weight: 500;
-  font-size: 18px;
+  font-size: 14px;
   cursor: pointer;
   transition: background-color 0.2s;
 }
 
 .secondary-btn:hover, .cancel-btn:hover {
-  background-color: #0284c7;
-  color: white;
+  background-color: #e5e7eb;
+  color: #111827;
 }
 
 /* 🧱 GLOBAL CARD STYLES */
@@ -150,8 +163,9 @@ th {
   background-color: #f9fafb;
   color: var(--text-secondary);
   font-weight: 600;
-  font-size: 18px;
+  font-size: 12px;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -159,9 +173,231 @@ td {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border-color);
   color: var(--text-primary);
-  font-size: 18px;
+  font-size: 14px;
 }
 
 tr:last-child td {
   border-bottom: none;
+}
+/* ══════════════════════════════════════════════════════════════
+   PULSE ERP — PAGE-LEVEL LAYOUT UTILITIES
+   Use .pulse-page as the root div of any feature page
+   ══════════════════════════════════════════════════════════════ */
+
+/* Standard page wrapper — consistent padding across all modules */
+.pulse-page {
+  padding: 24px;
+  background: var(--color-bg-page, #f8f9fc);
+  min-height: calc(100vh - 64px);   /* subtract topbar height */
+  box-sizing: border-box;
+}
+
+/* Page header row — title + action button */
+.pulse-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pulse-page-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1f2937;
+  margin: 0;
+}
+
+.pulse-page-subtitle {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 4px 0 0;
+}
+
+/* Search bar — standard width and style */
+.pulse-search-wrap {
+  position: relative;
+  max-width: 320px;
+  margin-bottom: 16px;
+}
+.pulse-search-wrap svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #9ca3af;
+  pointer-events: none;
+}
+.pulse-search-wrap input {
+  width: 100%;
+  padding: 8px 12px 8px 32px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color .15s, box-shadow .15s;
+}
+.pulse-search-wrap input:focus {
+  border-color: var(--color-primary, #6B3FDB);
+  box-shadow: 0 0 0 3px rgba(107,63,219,.1);
+}
+
+/* Standard card */
+.pulse-card {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #f0f0f4;
+  box-shadow: 0 1px 4px rgba(0,0,0,.05);
+  overflow: hidden;
+}
+
+/* Primary action button — brand purple */
+.pulse-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  background: var(--color-primary, #6B3FDB);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, box-shadow .15s;
+  box-shadow: 0 2px 8px rgba(107,63,219,.25);
+  white-space: nowrap;
+}
+.pulse-btn-primary:hover {
+  background: var(--color-primary-hov, #5B35D5);
+  box-shadow: 0 4px 14px rgba(107,63,219,.35);
+}
+.pulse-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Secondary/cancel button */
+.pulse-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  background: #fff;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .15s;
+}
+.pulse-btn-secondary:hover { background: #f9fafb; }
+
+/* Status badges */
+.pulse-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* Modal overlay */
+.pulse-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.pulse-modal {
+  background: #fff;
+  border-radius: 16px;
+  padding: 28px 32px;
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,.18);
+}
+
+.pulse-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.pulse-modal-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #1f2937;
+  margin: 0;
+}
+
+/* Form field */
+.pulse-field { margin-bottom: 14px; }
+.pulse-field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 5px;
+}
+.pulse-field input,
+.pulse-field select,
+.pulse-field textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color .15s, box-shadow .15s;
+  background: #fff;
+  color: #1f2937;
+}
+.pulse-field input:focus,
+.pulse-field select:focus,
+.pulse-field textarea:focus {
+  border-color: var(--color-primary, #6B3FDB);
+  box-shadow: 0 0 0 3px rgba(107,63,219,.1);
+}
+
+/* Empty state */
+.pulse-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  color: #9ca3af;
+}
+.pulse-empty p {
+  margin: 8px 0 16px;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+/* Loading skeleton */
+.pulse-skeleton {
+  background: linear-gradient(90deg, #f3f4f6 25%, #e9ebef 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  animation: pulse-shimmer 1.4s infinite;
+  border-radius: 6px;
+}
+@keyframes pulse-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }

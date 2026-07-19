@@ -8,7 +8,7 @@
 .lc-type-pills { display: flex; flex-wrap: wrap; gap: 5px; }
 .lc-pill { background: none; border: 1px solid #e5e7eb; border-radius: 20px; padding: 4px 12px; font-size: 11px; font-weight: 500; color: #6b7280; cursor: pointer; transition: all .15s; }
 .lc-pill:hover { background: #f9fafb; }
-.lc-pill-active { background: #eef2ff; border-color: #6366f1; color: #4338ca; font-weight: 600; }
+.lc-pill-active { background: #E8E1FC; border-color: #6B3FDB; color: #4B2DCE; font-weight: 600; }
 
 .lc-layout { display: grid; grid-template-columns: 1fr 260px; gap: 20px; align-items: start; }
 @media (max-width: 860px) { .lc-layout { grid-template-columns: 1fr; } }
@@ -30,9 +30,9 @@
 .lc-cell:hover { background: #f9fafb; }
 .lc-cell-empty { cursor: default; }
 .lc-cell-empty:hover { background: transparent; }
-.lc-cell-today .lc-day-num { background: #6366f1; color: #fff; border-radius: 50%; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; }
-.lc-cell-sel   { background: #eef2ff !important; }
-.lc-cell-has   { background: #fafafe; }
+.lc-cell-today .lc-day-num { background: #6B3FDB; color: #fff; border-radius: 50%; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; }
+.lc-cell-sel   { background: #E8E1FC !important; }
+.lc-cell-has   { background: #F2EFFE; }
 .lc-day-num    { font-size: 12px; font-weight: 600; color: #111827; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 
 .lc-dots { display: flex; flex-wrap: wrap; gap: 2px; }
@@ -52,7 +52,7 @@
 
 .lc-side-item   { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f9fafb; }
 .lc-side-item:last-child { border-bottom: none; }
-.lc-side-avatar { width: 28px; height: 28px; border-radius: 50%; background: #eef2ff; color: #4338ca; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.lc-side-avatar { width: 28px; height: 28px; border-radius: 50%; background: #E8E1FC; color: #4B2DCE; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .lc-side-name   { font-size: 12px; font-weight: 600; color: #111827; }
 .lc-side-meta   { display: flex; align-items: center; gap: 5px; margin-top: 2px; }
 .lc-side-badge  { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; }

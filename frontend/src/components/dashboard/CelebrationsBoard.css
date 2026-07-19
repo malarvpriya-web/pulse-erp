@@ -1,0 +1,203 @@
+/* CelebrationsBoard — festive wishes wall (prefix: cb-) */
+
+.cb-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 14px;
+  width: 100%;
+}
+
+/* ── Card ── */
+.cb-card {
+  border-radius: 16px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #ECE9F8;
+  box-shadow: 0 1px 3px rgba(21, 15, 61, .06);
+  display: flex;
+  flex-direction: column;
+  animation: cb-pop .5s cubic-bezier(.22, .8, .35, 1) both;
+}
+@keyframes cb-pop {
+  from { opacity: 0; transform: scale(.96) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* ── Hero banner (type-specific gradient) ── */
+.cb-hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 16px;
+  overflow: hidden;
+  color: #fff;
+}
+.cb-type-birthday .cb-hero { background: linear-gradient(135deg, #7B3FE4 0%, #A855F7 55%, #EC4899 100%); }
+.cb-type-work     .cb-hero { background: linear-gradient(135deg, #B45309 0%, #F59E0B 55%, #FBBF24 100%); }
+.cb-type-wedding  .cb-hero { background: linear-gradient(135deg, #9F1239 0%, #E11D48 55%, #FB7185 100%); }
+
+/* ── Confetti (pure CSS, respects reduced motion) ── */
+.cb-confetti {
+  position: absolute;
+  top: -10px;
+  width: 6px; height: 10px;
+  border-radius: 2px;
+  opacity: .85;
+  animation: cb-fall 3.2s linear infinite;
+  pointer-events: none;
+}
+@keyframes cb-fall {
+  0%   { transform: translateY(-12px) rotate(0deg); }
+  100% { transform: translateY(120px) rotate(320deg); opacity: 0; }
+}
+.cb-cf-0  { left: 6%;  background: #fde68a; animation-delay: 0s;    }
+.cb-cf-1  { left: 14%; background: #ffffff; animation-delay: 1.1s;  width: 5px; height: 5px; border-radius: 50%; }
+.cb-cf-2  { left: 24%; background: #6ee7b7; animation-delay: .5s;   }
+.cb-cf-3  { left: 33%; background: #fca5a5; animation-delay: 1.7s;  }
+.cb-cf-4  { left: 42%; background: #93c5fd; animation-delay: .9s;   width: 5px; height: 5px; border-radius: 50%; }
+.cb-cf-5  { left: 52%; background: #fde68a; animation-delay: 2.2s;  }
+.cb-cf-6  { left: 60%; background: #ffffff; animation-delay: .3s;   }
+.cb-cf-7  { left: 68%; background: #f9a8d4; animation-delay: 1.4s;  width: 5px; height: 5px; border-radius: 50%; }
+.cb-cf-8  { left: 76%; background: #6ee7b7; animation-delay: 2.6s;  }
+.cb-cf-9  { left: 84%; background: #93c5fd; animation-delay: .7s;   }
+.cb-cf-10 { left: 91%; background: #fca5a5; animation-delay: 1.9s;  }
+.cb-cf-11 { left: 97%; background: #fde68a; animation-delay: 2.9s;  width: 5px; height: 5px; border-radius: 50%; }
+
+/* ── Avatar ── */
+.cb-avatar {
+  position: relative;
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .22);
+  border: 2px solid rgba(255, 255, 255, .65);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; font-weight: 900; letter-spacing: .02em;
+  flex-shrink: 0;
+  backdrop-filter: blur(4px);
+  z-index: 1;
+}
+.cb-avatar-badge {
+  position: absolute;
+  bottom: -6px; right: -8px;
+  font-size: 18px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .3));
+  animation: cb-wiggle 2.4s ease-in-out infinite;
+}
+@keyframes cb-wiggle {
+  0%, 100% { transform: rotate(-8deg); }
+  50%      { transform: rotate(10deg) scale(1.12); }
+}
+
+.cb-who { min-width: 0; z-index: 1; }
+.cb-greeting {
+  font-size: 10px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .08em;
+  opacity: .9;
+}
+.cb-name {
+  font-size: 17px; font-weight: 900; letter-spacing: -.3px;
+  line-height: 1.25;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cb-dept { font-size: 11px; opacity: .8; margin-top: 1px; }
+
+/* ── Reaction chips ── */
+.cb-reactions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 12px 14px 4px;
+}
+.cb-emoji-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 9px;
+  border-radius: 20px;
+  border: 1px solid #ECE9F8;
+  background: #FAF9FE;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: transform .12s, background .15s, border-color .15s;
+}
+.cb-emoji-chip:hover:not(:disabled) { transform: scale(1.14); background: #F2EFFE; border-color: #D4CAFE; }
+.cb-emoji-chip:active:not(:disabled) { transform: scale(.95); }
+.cb-emoji-chip:disabled { opacity: .55; cursor: wait; }
+.cb-emoji-mine {
+  background: #F2EFFE;
+  border-color: var(--color-primary, #6B3FDB);
+  box-shadow: 0 0 0 1px var(--color-primary, #6B3FDB) inset;
+}
+.cb-emoji-count {
+  font-size: 10.5px; font-weight: 800;
+  color: #5B35D5;
+}
+
+/* ── Wish feed ── */
+.cb-wish-feed {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 8px 14px 2px;
+  max-height: 110px;
+  overflow-y: auto;
+}
+.cb-wish-row { font-size: 12px; line-height: 1.4; display: flex; gap: 6px; min-width: 0; }
+.cb-wish-sender { font-weight: 800; color: #5B35D5; flex-shrink: 0; }
+.cb-wish-msg { color: #374151; overflow-wrap: anywhere; }
+.cb-wish-more { font-size: 10.5px; color: #8b8fa3; font-weight: 600; }
+
+/* ── Composer ── */
+.cb-composer {
+  display: flex; gap: 6px;
+  padding: 10px 14px 14px;
+  margin-top: auto;
+}
+.cb-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #ECE9F8;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  background: #FAF9FE;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.cb-input:focus {
+  border-color: var(--color-primary, #6B3FDB);
+  box-shadow: 0 0 0 3px rgba(107, 63, 219, .12);
+  background: #fff;
+}
+.cb-send {
+  width: 34px; height: 34px;
+  border: none; border-radius: 10px;
+  background: var(--color-primary, #6B3FDB);
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background .15s, transform .12s;
+}
+.cb-send:hover:not(:disabled) { background: #5B35D5; transform: translateY(-1px); }
+.cb-send:disabled { opacity: .45; cursor: default; }
+
+/* ── Loading / empty ── */
+.cb-shimmer {
+  height: 150px; width: 100%; border-radius: 12px;
+  background: linear-gradient(90deg, #f3f1fc 25%, #e9e5fa 50%, #f3f1fc 75%);
+  background-size: 200% 100%;
+  animation: cb-shimmer 1.4s infinite;
+}
+@keyframes cb-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.cb-empty {
+  width: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 26px 0;
+  color: #a3a7ba; font-size: 12.5px;
+}
+.cb-empty p { margin: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-confetti, .cb-avatar-badge { animation: none; }
+  .cb-card { animation: none; }
+}

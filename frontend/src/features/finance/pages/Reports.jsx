@@ -1,15 +1,92 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
 import {
   Download, RefreshCw, Calendar, TrendingUp, TrendingDown,
-  FileText, BarChart2, DollarSign, Scale, Activity,
+  FileText, BarChart2, IndianRupee, Scale, Activity,
   ChevronRight, ChevronDown, Printer, Filter
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { useFY } from '@/context/FYContext';
+import FYSelector from '@/components/core/FYSelector';
 import './Reports.css';
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+function exportCSV(rows, filename) {
+  if (!rows?.length) return;
+  const cols = Object.keys(rows[0]);
+  const lines = [cols.join(','), ...rows.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))];
+  const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: `${filename}-${Date.now()}.csv` });
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function buildExportData(tab, pl, bs, cf, trialBalance, arAging, apAging) {
+  switch (tab) {
+    case 'pl': return {
+      rows: [
+        ...pl.revenue.items.map(i => ({ Section: 'Revenue', Item: i.name, Amount: i.amount })),
+        { Section: 'Total Revenue', Item: '', Amount: pl.revenue.total },
+        ...pl.cogs.items.map(i => ({ Section: 'COGS', Item: i.name, Amount: i.amount })),
+        { Section: 'Total COGS', Item: '', Amount: pl.cogs.total },
+        { Section: 'Gross Profit', Item: '', Amount: pl.grossProfit },
+        ...pl.opex.items.map(i => ({ Section: 'Operating Expenses', Item: i.name, Amount: i.amount })),
+        { Section: 'Total OpEx', Item: '', Amount: pl.opex.total },
+        { Section: 'EBITDA', Item: '', Amount: pl.ebitda },
+        { Section: 'Interest Expense', Item: '', Amount: pl.interest },
+        { Section: 'Tax Provision', Item: '', Amount: pl.tax },
+        { Section: 'Net Profit', Item: '', Amount: pl.netProfit },
+      ],
+      name: 'profit-loss',
+    };
+    case 'bs': return {
+      rows: [
+        ...bs.assets.current.items.map(i => ({ Section: 'Current Assets', Item: i.name, Amount: i.amount })),
+        { Section: 'Total Current Assets', Item: '', Amount: bs.assets.current.total },
+        ...bs.assets.fixed.items.map(i => ({ Section: 'Fixed Assets', Item: i.name, Amount: i.amount })),
+        { Section: 'Total Fixed Assets', Item: '', Amount: bs.assets.fixed.total },
+        { Section: 'TOTAL ASSETS', Item: '', Amount: bs.assets.total },
+        ...bs.liabilities.current.items.map(i => ({ Section: 'Current Liabilities', Item: i.name, Amount: i.amount })),
+        { Section: 'Total Current Liabilities', Item: '', Amount: bs.liabilities.current.total },
+        ...bs.liabilities.longterm.items.map(i => ({ Section: 'Long-term Liabilities', Item: i.name, Amount: i.amount })),
+        { Section: 'Total Long-term Liabilities', Item: '', Amount: bs.liabilities.longterm.total },
+        ...bs.equity.items.map(i => ({ Section: 'Equity', Item: i.name, Amount: i.amount })),
+        { Section: 'Total Equity', Item: '', Amount: bs.equity.total },
+        { Section: 'TOTAL LIABILITIES & EQUITY', Item: '', Amount: bs.liabilities.total + bs.equity.total },
+      ],
+      name: 'balance-sheet',
+    };
+    case 'cf': return {
+      rows: [
+        { Section: 'Opening Balance', Item: '', Amount: cf.openingBalance },
+        ...cf.operating.items.map(i => ({ Section: 'Operating Activities', Item: i.name, Amount: i.amount })),
+        { Section: 'Net Operating CF', Item: '', Amount: cf.operating.total },
+        ...cf.investing.items.map(i => ({ Section: 'Investing Activities', Item: i.name, Amount: i.amount })),
+        { Section: 'Net Investing CF', Item: '', Amount: cf.investing.total },
+        ...cf.financing.items.map(i => ({ Section: 'Financing Activities', Item: i.name, Amount: i.amount })),
+        { Section: 'Net Financing CF', Item: '', Amount: cf.financing.total },
+        { Section: 'Net Change in Cash', Item: '', Amount: cf.netChange },
+        { Section: 'Closing Balance', Item: '', Amount: cf.closingBalance },
+      ],
+      name: 'cash-flow',
+    };
+    case 'tb': return {
+      rows: trialBalance.map(r => ({ Account_Code: r.code, Account: r.account, Debit: r.debit || 0, Credit: r.credit || 0 })),
+      name: 'trial-balance',
+    };
+    case 'ar': return {
+      rows: arAging.map(r => ({ Customer: r.party, Current: r.current, '31_60_days': r.d30, '61_90_days': r.d60, '91_180_days': r.d90, Over_180_days: r.over90, Total: r.current + r.d30 + r.d60 + r.d90 + r.over90 })),
+      name: 'ar-aging',
+    };
+    case 'ap': return {
+      rows: apAging.map(r => ({ Supplier: r.party, Current: r.current, '31_60_days': r.d30, '61_90_days': r.d60, '91_180_days': r.d90, Over_180_days: r.over90, Total: r.current + r.d30 + r.d60 + r.d90 + r.over90 })),
+      name: 'ap-aging',
+    };
+    default: return null;
+  }
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const fmt = (n, showSign=false) => {
@@ -35,7 +112,7 @@ const REPORT_TABS = [
   { id:'cf',      label:'Cash Flow',       icon: Activity     },
   { id:'tb',      label:'Trial Balance',   icon: BarChart2    },
   { id:'ar',      label:'AR Aging',        icon: FileText     },
-  { id:'ap',      label:'AP Aging',        icon: DollarSign   },
+  { id:'ap',      label:'AP Aging',        icon: IndianRupee   },
 ];
 
 // ── Collapsible section ───────────────────────────────────────────────────────
@@ -69,16 +146,26 @@ const LineRow = ({ label, value, indent=0, bold=false, total=false, negative=fal
 );
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-export default function Reports() {
+export default function FinancialReports() {
+  const { fyParams } = useFY();
+  const fyMountRef = useRef(true);
   const [activeTab,  setActiveTab]  = useState('pl');
   const [loading,    setLoading]    = useState(false);
   const [data,       setData]       = useState({});
   const [period,     setPeriod]     = useState('month'); // month|quarter|year|custom
-  const [dateRange,  setDateRange]  = useState({
-    start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
-    end:   new Date().toISOString().split('T')[0],
+  const [dateRange,  setDateRange]  = useState(() => {
+    // Default to prior complete month
+    const now = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const last  = new Date(now.getFullYear(), now.getMonth(), 0);
+    return {
+      start: first.toISOString().split('T')[0],
+      end:   last.toISOString().split('T')[0],
+    };
   });
   const [compareMode, setCompareMode] = useState(false);
+  const [apAgingLive, setApAgingLive] = useState(null);
+  const [arAgingLive, setArAgingLive] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -99,23 +186,80 @@ export default function Reports() {
 
   useEffect(() => { load(); }, [load]);
 
+  // When the global Financial Year changes, snap the report period to that FY.
+  // Skip the very first render so the default "prior month" view is preserved.
+  useEffect(() => {
+    if (fyMountRef.current) { fyMountRef.current = false; return; }
+    setPeriod('year');
+    setDateRange({ start: fyParams.fyStart, end: fyParams.fyEnd });
+  }, [fyParams.fyStart, fyParams.fyEnd]);
+
+  useEffect(() => {
+    if (activeTab === 'ap' && !apAgingLive) {
+      api.get('/finance/supplier-outstanding', { params: { as_of_date: dateRange.end } })
+        .then(r => {
+          const rows = r.data?.rows ?? [];
+          setApAgingLive(rows.map(row => ({
+            party:  row.supplier_name ?? 'Unknown',
+            current: +row.not_yet_due || 0,
+            d30:     +row.due_1_30    || 0,
+            d60:     +row.due_31_60   || 0,
+            d90:     +row.due_61_90   || 0,
+            over90:  +row.due_90plus  || 0,
+          })));
+        })
+        .catch(() => {});
+    }
+    if (activeTab === 'ar' && !arAgingLive) {
+      api.get('/finance/customer-outstanding', { params: { as_of_date: dateRange.end } })
+        .then(r => {
+          const rows = r.data?.rows ?? [];
+          const map = {};
+          rows.forEach(row => {
+            const k = row.customer_name ?? 'Unknown';
+            if (!map[k]) map[k] = { party: k, current: 0, d30: 0, d60: 0, d90: 0, over90: 0 };
+            const b   = +row.balance || 0;
+            const bkt = row.ageing_bucket;
+            if (bkt === 'current') map[k].current += b;
+            else if (bkt === '1-30')  map[k].d30    += b;
+            else if (bkt === '31-60') map[k].d60    += b;
+            else if (bkt === '61-90') map[k].d90    += b;
+            else                      map[k].over90 += b;
+          });
+          setArAgingLive(Object.values(map));
+        })
+        .catch(() => {});
+    }
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handlePeriodChange = (p) => {
     setPeriod(p);
     const now = new Date();
-    let start, end = now.toISOString().split('T')[0];
+    let start, end;
     if (p === 'month') {
-      start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+      // Prior complete month
+      const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const last  = new Date(now.getFullYear(), now.getMonth(), 0);
+      start = first.toISOString().split('T')[0];
+      end   = last.toISOString().split('T')[0];
     } else if (p === 'quarter') {
-      const q = Math.floor(now.getMonth()/3);
-      start = new Date(now.getFullYear(), q*3, 1).toISOString().split('T')[0];
+      // Current India FY quarter (FY starts April)
+      const fyOffset = now.getMonth() >= 3 ? now.getMonth() - 3 : now.getMonth() + 9;
+      const qtr      = Math.floor(fyOffset / 3);
+      const fyYear   = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+      start = new Date(fyYear, 3 + qtr * 3, 1).toISOString().split('T')[0];
+      end   = now.toISOString().split('T')[0];
     } else if (p === 'year') {
-      start = `${now.getFullYear()}-01-01`;
+      // India FY: April 1 – March 31
+      const fyYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+      start = `${fyYear}-04-01`;
+      end   = now.toISOString().split('T')[0];
     } else { return; }
     setDateRange({ start, end });
   };
 
   // ── Static sample data (used when API returns nothing) ──────────────────
-  const pl = data.pl || {
+  const pl = data.pl?.revenue ? data.pl : {
     revenue: { total: 378000, items: [
       { name:'Product Sales',    amount: 295000 },
       { name:'Service Revenue',  amount:  62000 },
@@ -141,7 +285,7 @@ export default function Reports() {
     netProfit: 66000,
   };
 
-  const bs = data.bs || {
+  const bs = data.bs?.assets ? data.bs : {
     assets: {
       current: { total: 285000, items: [
         { name:'Cash & Bank',          amount: 125000 },
@@ -178,7 +322,7 @@ export default function Reports() {
     },
   };
 
-  const cf = data.cf || {
+  const cf = data.cf?.operating ? data.cf : {
     operating: { total: 122000, items: [
       { name:'Net Income',                amount:  66000 },
       { name:'Add: Depreciation',         amount:   6000 },
@@ -227,7 +371,7 @@ export default function Reports() {
   const tbDebitTotal  = trialBalance.reduce((s,r)=>s+r.debit,0);
   const tbCreditTotal = trialBalance.reduce((s,r)=>s+r.credit,0);
 
-  const arAging = [
+  const arAging = arAgingLive ?? [
     { party:'TechCorp Ltd',      current:45000, d30:28000, d60:12000, d90:0,    over90:0     },
     { party:'Alpha Solutions',   current:32000, d30:0,     d60:0,     d90:8000, over90:0     },
     { party:'Gamma Corp',        current:0,     d30:18000, d60:0,     d90:0,    over90:15000 },
@@ -235,7 +379,7 @@ export default function Reports() {
     { party:'Epsilon Tech',      current:18000, d30:0,     d60:0,     d90:0,    over90:0     },
   ];
 
-  const apAging = [
+  const apAging = apAgingLive ?? [
     { party:'Office Supplies Co', current:12000, d30:0,    d60:5000, d90:0,    over90:0 },
     { party:'Cloud Services Ltd', current:28000, d30:8000, d60:0,    d90:0,    over90:0 },
     { party:'Marketing Agency',   current:0,     d30:0,    d60:0,    d90:12000,over90:8000 },
@@ -267,12 +411,13 @@ export default function Reports() {
         <div>
           <h2 className="rpt-title">Financial Reports</h2>
           <p className="rpt-sub">
-            {new Date(dateRange.start).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}
+            {new Date(dateRange.start).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
             {' — '}
-            {new Date(dateRange.end).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}
+            {new Date(dateRange.end).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
           </p>
         </div>
         <div className="rpt-header-r">
+          <FYSelector />
           {/* Period picker */}
           <div className="rpt-period">
             {['month','quarter','year','custom'].map(p=>(
@@ -292,16 +437,23 @@ export default function Reports() {
             </div>
           )}
           <button className={`rpt-compare-btn${compareMode?' active':''}`}
-            onClick={()=>setCompareMode(c=>!c)}>
+            onClick={()=>setCompareMode(c=>!c)}
+            title="Period comparison — coming in next release">
             <Filter size={13}/> Compare
           </button>
-          <button className="rpt-btn-outline"><Printer size={14}/> Print</button>
-          <button className="rpt-btn-outline"><Download size={14}/> Export</button>
+          <button className="rpt-btn-outline" onClick={() => window.print()}><Printer size={14}/> Print</button>
+          <button className="rpt-btn-outline" onClick={() => { const d = buildExportData(activeTab, pl, bs, cf, trialBalance, arAging, apAging); if (d) exportCSV(d.rows, d.name); }}><Download size={14}/> Export CSV</button>
           <button className="rpt-refresh" onClick={load}>
             <RefreshCw size={14}/> Refresh
           </button>
         </div>
       </div>
+
+      {compareMode && (
+        <div className="rpt-compare-notice">
+          Period comparison is coming soon. Use Custom date range to manually compare two periods.
+        </div>
+      )}
 
       {/* Summary KPIs */}
       <div className="rpt-kpis">
@@ -320,7 +472,7 @@ export default function Reports() {
           </div>
         </div>
         <div className="rpt-kpi green">
-          <DollarSign size={16} color="#10b981"/>
+          <IndianRupee size={16} color="#10b981"/>
           <div>
             <p className="rpt-kpi-label">Net Profit</p>
             <p className="rpt-kpi-val">{fmt(pl.netProfit)}</p>
@@ -348,17 +500,19 @@ export default function Reports() {
           </div>
         </div>
         <div className="rpt-kpi">
-          <DollarSign size={16} color="#ef4444"/>
+          <IndianRupee size={16} color="#ef4444"/>
           <div>
             <p className="rpt-kpi-label">Debt / Equity</p>
             <p className="rpt-kpi-val">{debtToEquity}</p>
           </div>
         </div>
-        <div className="rpt-kpi">
+        <div className="rpt-kpi" title={!data.cf ? 'Add bank accounts to track real cash position' : undefined}>
           <Activity size={16} color="#10b981"/>
           <div>
             <p className="rpt-kpi-label">Cash Position</p>
-            <p className="rpt-kpi-val">{fmt(cf.closingBalance)}</p>
+            <p className="rpt-kpi-val">
+              {data.cf ? fmt(cf.closingBalance) : <span className="rpt-kpi-na">N/A</span>}
+            </p>
           </div>
         </div>
       </div>
@@ -459,15 +613,21 @@ export default function Reports() {
                 </div>
                 <div className="rpt-ratios-card">
                   <h4>Key Metrics</h4>
-                  {[
-                    {label:'Gross Margin',    value:`${grossMargin}%`,  good: parseFloat(grossMargin) > 30 },
-                    {label:'Net Margin',      value:`${profitMargin}%`, good: parseFloat(profitMargin) > 15 },
-                    {label:'EBITDA Margin',   value:`${((pl.ebitda/pl.revenue.total)*100).toFixed(1)}%`, good:true},
-                    {label:'Revenue Growth',  value:'+18%',  good:true },
-                    {label:'Expense Ratio',   value:`${(((pl.cogs.total+pl.opex.total)/pl.revenue.total)*100).toFixed(0)}%`, good:false },
-                    {label:'Tax Rate',        value:`${((pl.tax/pl.netProfit)*100).toFixed(0)}%`, good:true},
-                  ].map((m,i)=>(
-                    <div key={i} className="rpt-metric-row">
+                  {(() => {
+                    const ebt = pl.ebitda - pl.interest;
+                    const taxRateVal = ebt > 0 ? ((pl.tax / ebt) * 100).toFixed(1) : null;
+                    return [
+                      {label:'Gross Margin',    value:`${grossMargin}%`,  good: parseFloat(grossMargin) > 30 },
+                      {label:'Net Margin',      value:`${profitMargin}%`, good: parseFloat(profitMargin) > 15 },
+                      {label:'EBITDA Margin',   value:`${((pl.ebitda/pl.revenue.total)*100).toFixed(1)}%`, good:true},
+                      {label:'Revenue Growth (MoM)', value:'+18%', good:true },
+                      {label:'Expense Ratio',   value:`${(((pl.cogs.total+pl.opex.total)/pl.revenue.total)*100).toFixed(0)}%`, good:false,
+                        tooltip:'Total Expenses (COGS + OpEx) as % of Revenue' },
+                      {label:'Tax Rate',        value: taxRateVal !== null ? `${taxRateVal}%` : 'N/A', good:true,
+                        tooltip:'Effective Tax Rate = Tax Provision ÷ EBT (EBITDA − Interest)' },
+                    ];
+                  })().map((m,i)=>(
+                    <div key={i} className="rpt-metric-row" title={m.tooltip}>
                       <span>{m.label}</span>
                       <span className={m.good ? 'rpt-metric-good' : 'rpt-metric-warn'}>{m.value}</span>
                     </div>
@@ -484,7 +644,7 @@ export default function Reports() {
                 <div className="rpt-report-hd">
                   <h3>Balance Sheet</h3>
                   <span className="rpt-report-period">
-                    As of {new Date(dateRange.end).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})}
+                    As of {new Date(dateRange.end).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
                   </span>
                 </div>
 
@@ -671,7 +831,7 @@ export default function Reports() {
               <div className="rpt-report-hd">
                 <h3>Trial Balance</h3>
                 <span className="rpt-report-period">
-                  As of {new Date(dateRange.end).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})}
+                  As of {new Date(dateRange.end).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
                 </span>
               </div>
               <table className="rpt-tb-table">
@@ -717,7 +877,7 @@ export default function Reports() {
               <div className="rpt-report-hd">
                 <h3>Accounts Receivable — Aging Report</h3>
                 <span className="rpt-report-period">
-                  As of {new Date(dateRange.end).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})}
+                  As of {new Date(dateRange.end).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
                 </span>
               </div>
               <div className="rpt-aging-summary">
@@ -784,7 +944,7 @@ export default function Reports() {
               <div className="rpt-report-hd">
                 <h3>Accounts Payable — Aging Report</h3>
                 <span className="rpt-report-period">
-                  As of {new Date(dateRange.end).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})}
+                  As of {new Date(dateRange.end).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
                 </span>
               </div>
               <div className="rpt-aging-summary">

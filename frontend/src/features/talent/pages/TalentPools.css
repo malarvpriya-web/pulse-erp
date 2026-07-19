@@ -1,0 +1,223 @@
+/* TalentPools — page-specific styles (prefix: .tp-) */
+
+@keyframes tp-pulse {
+  0%, 100% { background-position: 200% 0; }
+  50%       { background-position: -200% 0; }
+}
+
+.tp-root {
+  padding: 24px;
+}
+
+/* ── header row ── */
+.tp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+/* ── refresh button ── */
+.tp-btn-outline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #374151;
+}
+
+/* ── error banner ── */
+.tp-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+/* ── filter bar ── */
+.tp-filter-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.tp-input {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  width: 240px;
+  outline: none;
+}
+
+.tp-select {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+}
+
+/* ── skeleton loader ── */
+.tp-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tp-skeleton-row {
+  height: 64px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: tp-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── card grid ── */
+.tp-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+/* ── pool card ── */
+.tp-card {
+  background: var(--color-background-primary);
+  border: 1px solid #f0f0f4;
+  border-radius: var(--border-radius-lg);
+  padding: 18px 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── card top row ── */
+.tp-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.tp-card-top-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tp-pool-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--color-text-primary);
+  margin-bottom: 3px;
+}
+
+.tp-pool-desc {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+/* bg & color set via inline style (dynamic) */
+.tp-status-badge {
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 10px;
+  flex-shrink: 0;
+}
+
+/* ── tag list ── */
+.tp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tp-tag {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  background: #f0f0ff;
+  color: var(--color-primary);
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ── card footer ── */
+.tp-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-background-secondary);
+}
+
+.tp-count-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tp-count-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: #f0f0ff;
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tp-count-value {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  line-height: 1;
+}
+
+.tp-count-label {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.tp-footer-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.tp-updated {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.tp-btn-add {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #f0f0ff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--color-primary);
+  font-weight: 600;
+}

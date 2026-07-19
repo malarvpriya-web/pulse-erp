@@ -1,4 +1,5 @@
 import pool from '../../shared/db.js';
+import { pickUpdatable } from '../../../shared/safeUpdate.js';
 
 const documentsRepository = {
   async createTemplate(data) {
@@ -47,18 +48,22 @@ const documentsRepository = {
     const values = [];
     let paramCount = 1;
 
-    Object.keys(data).forEach(key => {
-      if (data[key] !== undefined) {
-        if (key === 'variables_json') {
-          fields.push(`${key} = $${paramCount}`);
-          values.push(JSON.stringify(data[key]));
-        } else {
-          fields.push(`${key} = $${paramCount}`);
-          values.push(data[key]);
-        }
-        paramCount++;
-      }
+    // The route calls updateTemplate(req.params.id, req.body), and `key` is
+    // interpolated into the SET clause below rather than bound — so unfiltered it
+    // allows both mass assignment (company_id, created_by, deleted_at) and
+    // injection of extra assignments. pickUpdatable validates every key against
+    // the live `document_templates` columns minus the protected set.
+    const safe = await pickUpdatable('document_templates', data);
+
+    Object.keys(safe).forEach(key => {
+      fields.push(`${key} = $${paramCount}`);
+      values.push(key === 'variables_json' ? JSON.stringify(safe[key]) : safe[key]);
+      paramCount++;
     });
+
+    // Every key was rejected — don't emit `SET updated_at=…` alone, which would
+    // report success for a write that changed nothing.
+    if (!fields.length) return this.findTemplateById(id);
 
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
@@ -101,7 +106,7 @@ const documentsRepository = {
       paramCount++;
     }
 
-    query += ` ORDER BY generated_at DESC`;
+    query += ` ORDER BY created_at DESC`;
 
     const result = await pool.query(query, params);
     return result.rows;

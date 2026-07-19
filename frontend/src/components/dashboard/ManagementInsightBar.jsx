@@ -1,44 +1,48 @@
 import React from 'react';
 import './ManagementInsightBar.css';
 
+const fmt = (value, format) => {
+  const v = parseFloat(value) || 0;
+  if (format === 'currency') {
+    if (v >= 10_000_000) return `₹${(v / 10_000_000).toFixed(1)}Cr`;
+    if (v >= 100_000)    return `₹${(v / 100_000).toFixed(1)}L`;
+    if (v >= 1_000)      return `₹${(v / 1_000).toFixed(0)}K`;
+    return `₹${v.toFixed(0)}`;
+  }
+  return v.toLocaleString();
+};
+
 const ManagementInsightBar = ({ data }) => {
   const insights = [
     {
       label: 'Revenue Today',
-      value: data?.revenueToday || 240000,
+      value: data?.revenueToday || 0,
       format: 'currency',
       icon: '💰',
       color: '#10b981'
     },
     {
       label: 'Invoices Due',
-      value: data?.invoicesDue || 14,
+      value: data?.invoicesDue || 0,
       format: 'number',
       icon: '📄',
       color: '#f59e0b'
     },
     {
       label: 'Open Tickets',
-      value: data?.openTickets || 6,
+      value: data?.openTickets || 0,
       format: 'number',
       icon: '🎫',
       color: '#3b82f6'
     },
     {
       label: 'Stock Alerts',
-      value: data?.stockAlerts || 3,
+      value: data?.stockAlerts || 0,
       format: 'number',
       icon: '📦',
       color: '#ef4444'
     }
   ];
-
-  const formatValue = (value, format) => {
-    if (format === 'currency') {
-      return `₹${(value / 100000).toFixed(1)}L`;
-    }
-    return value.toLocaleString();
-  };
 
   return (
     <div className="management-insight-bar">
@@ -48,7 +52,7 @@ const ManagementInsightBar = ({ data }) => {
           <div className="insight-content">
             <div className="insight-label">{insight.label}</div>
             <div className="insight-value" style={{ color: insight.color }}>
-              {formatValue(insight.value, insight.format)}
+              {fmt(insight.value, insight.format)}
             </div>
           </div>
         </div>

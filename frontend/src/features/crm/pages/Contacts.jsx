@@ -1,27 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Search, Plus, RefreshCw, X, Users, Edit2, Mail, Phone } from 'lucide-react';
 import api from '@/services/api/client';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './Contacts.css';
 
 const TITLES = ['Mr', 'Ms', 'Mrs', 'Dr', 'Prof'];
 const DEPARTMENTS = ['Sales', 'Marketing', 'Finance', 'IT', 'Operations', 'HR', 'Executive', 'Other'];
 
-const SAMPLE_CONTACTS = [
-  { id: 1, first_name: 'Rajesh',  last_name: 'Kumar',  title: 'Mr',  designation: 'CEO',               department: 'Executive', email: 'rajesh@techcorp.com',   phone: '+91 98765 43210', account_name: 'TechCorp Solutions',    linkedin: '', is_primary: true,  created_at: '2024-01-15' },
-  { id: 2, first_name: 'Priya',   last_name: 'Sharma', title: 'Ms',  designation: 'Procurement Head',  department: 'Operations', email: 'priya@alphamfg.com',    phone: '+91 87654 32109', account_name: 'Alpha Manufacturing Co', linkedin: '', is_primary: true,  created_at: '2024-03-20' },
-  { id: 3, first_name: 'Vijay',   last_name: 'Nair',   title: 'Mr',  designation: 'MD',                department: 'Executive', email: 'vijay@globaltrade.com', phone: '+91 76543 21098', account_name: 'Global Trade Partners', linkedin: '', is_primary: true,  created_at: '2024-02-10' },
-  { id: 4, first_name: 'Anita',   last_name: 'Reddy',  title: 'Ms',  designation: 'CFO',               department: 'Finance',   email: 'anita@brightfin.com',   phone: '+91 65432 10987', account_name: 'BrightFin Ltd',         linkedin: '', is_primary: true,  created_at: '2024-04-05' },
-  { id: 5, first_name: 'Suresh',  last_name: 'Pillai', title: 'Mr',  designation: 'IT Manager',        department: 'IT',        email: 'suresh@meditech.in',    phone: '+91 54321 09876', account_name: 'MediTech Services',     linkedin: '', is_primary: false, created_at: '2024-05-01' },
-  { id: 6, first_name: 'Kavitha', last_name: 'Menon',  title: 'Mrs', designation: 'Sales Director',    department: 'Sales',     email: 'kavitha@techcorp.com',  phone: '+91 43210 98765', account_name: 'TechCorp Solutions',    linkedin: '', is_primary: false, created_at: '2024-06-12' },
-];
-
-const SAMPLE_ACCOUNTS = [
-  { id: 1, name: 'TechCorp Solutions' },
-  { id: 2, name: 'Alpha Manufacturing Co' },
-  { id: 3, name: 'Global Trade Partners' },
-  { id: 4, name: 'BrightFin Ltd' },
-  { id: 5, name: 'MediTech Services' },
-];
 
 const emptyForm = () => ({
   first_name: '', last_name: '', title: 'Mr', designation: '',
@@ -35,9 +21,10 @@ const initials = c => `${(c.first_name || '?').charAt(0)}${(c.last_name || '').c
 const AVATAR_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#3b82f6', '#8b5cf6'];
 
 export default function Contacts() {
+  const { readOnly } = usePageAccess();
   const [contacts,  setContacts]  = useState([]);
   const [accounts,  setAccounts]  = useState([]);
-  const [loading,   setLoading]   = useState(true);
+  const [loading,   setLoading]   = useState(false);
   const [search,    setSearch]    = useState('');
   const [fAccount,  setFAccount]  = useState('');
   const [drawer,    setDrawer]    = useState(null);
@@ -57,10 +44,10 @@ export default function Contacts() {
       api.get('/crm/accounts'),
     ]);
     const rawC = cRes.status === 'fulfilled' ? (cRes.value.data.contacts || cRes.value.data) : [];
-    setContacts(Array.isArray(rawC) && rawC.length ? rawC : SAMPLE_CONTACTS);
+    setContacts(Array.isArray(rawC) ? rawC : []);
 
     const rawA = aRes.status === 'fulfilled' ? (aRes.value.data.accounts || aRes.value.data) : [];
-    setAccounts(Array.isArray(rawA) && rawA.length ? rawA : SAMPLE_ACCOUNTS);
+    setAccounts(Array.isArray(rawA) ? rawA : []);
 
     setLoading(false);
   }, []);
@@ -84,11 +71,7 @@ export default function Contacts() {
       setDrawer(null);
       load();
     } catch {
-      if (drawer === 'create') {
-        setContacts(cs => [{ ...form, id: Date.now(), created_at: new Date().toISOString() }, ...cs]);
-      }
-      showToast(drawer === 'create' ? 'Contact created' : 'Contact updated');
-      setDrawer(null);
+      showToast(drawer === 'create' ? 'Failed to create contact' : 'Failed to update contact', 'error');
     } finally { setSubmitting(false); }
   };
 
@@ -106,6 +89,8 @@ export default function Contacts() {
 
       {toast && <div className={`ct-toast ct-toast-${toast.type}`}>{toast.msg}</div>}
 
+      {readOnly && <ReadOnlyBanner />}
+
       <div className="ct-header">
         <div>
           <h2 className="ct-title">Contacts</h2>
@@ -113,7 +98,7 @@ export default function Contacts() {
         </div>
         <div className="ct-header-r">
           <button className="ct-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="ct-btn-primary" onClick={openCreate}><Plus size={14} /> Add Contact</button>
+          {!readOnly && <button className="ct-btn-primary" onClick={openCreate}><Plus size={14} /> Add Contact</button>}
         </div>
       </div>
 
@@ -142,7 +127,7 @@ export default function Contacts() {
         <div className="ct-empty">
           <Users size={40} color="#d1d5db" />
           <p>No contacts found</p>
-          <button className="ct-btn-primary" onClick={openCreate}><Plus size={14} /> Add Contact</button>
+          {!readOnly && <button className="ct-btn-primary" onClick={openCreate}><Plus size={14} /> Add Contact</button>}
         </div>
       ) : (
         <div className="ct-table-wrap">
@@ -155,7 +140,7 @@ export default function Contacts() {
             </thead>
             <tbody>
               {displayed.map((c, i) => (
-                <tr key={c.id} className="ct-row">
+                <tr key={c.id} className="ct-row" onClick={() => { if (!readOnly) openEdit(c); }} style={{ cursor: readOnly ? 'default' : 'pointer' }}>
                   <td>
                     <div className="ct-name-cell">
                       <div className="ct-avatar" style={{ background: AVATAR_COLORS[i % AVATAR_COLORS.length] + '20', color: AVATAR_COLORS[i % AVATAR_COLORS.length] }}>
@@ -175,7 +160,8 @@ export default function Contacts() {
                   </td>
                   <td>
                     {c.email ? (
-                      <a href={`mailto:${c.email}`} className="ct-link" onClick={e => e.stopPropagation()}>
+                      <a href={`mailto:${c.email}`} className="ct-link"
+                         onClick={e => e.stopPropagation()}>
                         <Mail size={11} /> {c.email}
                       </a>
                     ) : '—'}
@@ -189,7 +175,7 @@ export default function Contacts() {
                     {c.is_primary && <span className="ct-primary-badge">Primary</span>}
                   </td>
                   <td>
-                    <button className="ct-edit-btn" onClick={() => openEdit(c)}><Edit2 size={13} /></button>
+                    {!readOnly && <button className="ct-edit-btn" onClick={e => { e.stopPropagation(); openEdit(c); }}><Edit2 size={13} /></button>}
                   </td>
                 </tr>
               ))}
@@ -226,7 +212,10 @@ export default function Contacts() {
               <div className="ct-row2">
                 <div className="ct-field">
                   <label>Designation</label>
-                  <input value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))} placeholder="e.g. CEO, Manager…" />
+                  <select value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))}>
+                    <option value="">-- Select Designation --</option>
+                    {['CEO','CTO','CFO','COO','CMO','Director','VP','General Manager','Manager','Senior Manager','Deputy Manager','Assistant Manager','Team Lead','Senior Engineer','Engineer','Analyst','Consultant','Executive','Officer','Supervisor','Other'].map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
                 </div>
                 <div className="ct-field">
                   <label>Department</label>

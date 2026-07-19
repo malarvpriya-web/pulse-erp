@@ -1,19 +1,13 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import api from '@/services/api/client';
 import {
   Lock, Unlock, CheckCircle, AlertTriangle, Clock, RefreshCw,
   ChevronRight, ChevronDown, X, Calendar, FileText, Shield,
-  TrendingUp, DollarSign, Users, BarChart2, AlertCircle,
+  TrendingUp, IndianRupee, Users, BarChart2, AlertCircle,
   Play, RotateCcw, Download, Eye
 } from 'lucide-react';
 import './PeriodClosing.css';
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-const fmt = (n) => {
-  const v = parseFloat(n||0);
-  if (v >= 100000) return `₹${(v/100000).toFixed(1)}L`;
-  if (v >= 1000)   return `₹${(v/1000).toFixed(0)}K`;
-  return `₹${v.toFixed(0)}`;
-};
+import { fmt } from '../financeUtils';
 
 const MONTHS = [
   'January','February','March','April','May','June',
@@ -28,7 +22,7 @@ const MONTH_CHECKLIST = [
     id:'rec_bank',    category:'Reconciliation',
     title:'Bank Reconciliation',
     desc:'All bank accounts reconciled with statements',
-    icon: DollarSign, critical:true,
+    icon: IndianRupee, critical:true,
   },
   {
     id:'rec_ar',      category:'Reconciliation',
@@ -82,7 +76,7 @@ const MONTH_CHECKLIST = [
     id:'rev_expenses',category:'Review',
     title:'Expense Claims',
     desc:'All approved expense claims reimbursed',
-    icon: DollarSign, critical:false,
+    icon: IndianRupee, critical:false,
   },
   {
     id:'rev_tb',      category:'Review',
@@ -161,10 +155,17 @@ export default function PeriodClosing() {
   const [checkedItems,  setCheckedItems]  = useState({});
   const [expandedCats,  setExpandedCats]  = useState({ Reconciliation:true, Accruals:true, Tax:true, Review:true, 'Year-End':true });
   const [confirmModal,  setConfirmModal]  = useState(false);
-  const [reopenModal,   setReopenModal]   = useState(null);
+  const [reopenModal,   setReopenModal]   = useState(null); // { id, label }
   const [toast,         setToast]         = useState(null);
   const [closing,       setClosing]       = useState(false);
   const [activeTab,     setActiveTab]     = useState('checklist'); // checklist | history | locked
+  const [periods,       setPeriods]       = useState([]);
+
+  const refreshPeriods = useCallback(() => {
+    api.get('/finance/periods').then(r => setPeriods(Array.isArray(r.data) ? r.data : [])).catch(() => {});
+  }, []);
+
+  useEffect(() => { refreshPeriods(); }, [refreshPeriods]);
 
   const showToast = (msg, type='success') => {
     setToast({ msg, type });
@@ -205,20 +206,58 @@ export default function PeriodClosing() {
 
   const uncheckAll = () => setCheckedItems({});
 
-  const handleClose = useCallback(async () => {
-    setClosing(true);
-    await new Promise(r => setTimeout(r, 1800)); // simulate API call
-    setClosing(false);
-    setConfirmModal(false);
-    showToast(`${periodLabel} closed successfully and locked`);
-    setActiveTab('history');
-  }, [periodLabel]);
+  const findPeriodId = useCallback(() => {
+    return periods.find(p => {
+      const d = new Date(p.start_date);
+      return d.getFullYear() === selectedYear && d.getMonth() === selectedMonth;
+    });
+  }, [periods, selectedYear, selectedMonth]);
 
-  const handleReopen = useCallback(async (period) => {
-    await new Promise(r => setTimeout(r, 800));
-    setReopenModal(null);
-    showToast(`${period} reopened — entries now editable`, 'warning');
-  }, []);
+  const handleClose = useCallback(async () => {
+    const period = findPeriodId();
+    if (!period) {
+      showToast(`No accounting period found for ${periodLabel}. Create one in Accounting Settings first.`, 'error');
+      return;
+    }
+    setClosing(true);
+    try {
+      await api.post(`/finance/periods/${period.id}/close`);
+      setClosing(false);
+      setConfirmModal(false);
+      showToast(`${periodLabel} closed and locked`);
+      setActiveTab('history');
+      refreshPeriods();
+    } catch (e) {
+      setClosing(false);
+      showToast(e.response?.data?.error || 'Failed to close period', 'error');
+    }
+  }, [periodLabel, findPeriodId, refreshPeriods]);
+
+  const handleReopen = useCallback(async ({ id, label }) => {
+    try {
+      await api.post(`/finance/periods/${id}/reopen`);
+      setReopenModal(null);
+      showToast(`${label} reopened — entries now editable`, 'warning');
+      refreshPeriods();
+    } catch (e) {
+      showToast(e.response?.data?.error || 'Failed to reopen period', 'error');
+    }
+  }, [refreshPeriods]);
+
+  const exportChecklist = useCallback(() => {
+    const rows = [['Task', 'Category', 'Critical', 'Status']];
+    checklist.forEach(item => {
+      rows.push([item.title, item.category, item.critical ? 'Yes' : 'No', checkedItems[item.id] ? 'Done' : 'Pending']);
+    });
+    const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `period-close-checklist-${periodLabel.replace(' ', '-')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [checklist, checkedItems, periodLabel]);
 
   const getCategoryStatus = (cat) => {
     const items = checklist.filter(i => i.category === cat);
@@ -248,7 +287,7 @@ export default function PeriodClosing() {
           <p className="pc-sub">Month-end and year-end financial close process</p>
         </div>
         <div className="pc-header-r">
-          <button className="pc-btn-outline"><Download size={14}/> Export Checklist</button>
+          <button className="pc-btn-outline" onClick={exportChecklist}><Download size={14}/> Export Checklist</button>
         </div>
       </div>
 
@@ -494,38 +533,47 @@ export default function PeriodClosing() {
               </tr>
             </thead>
             <tbody>
-              {PERIOD_HISTORY.map((p,i) => (
-                <tr key={i} className="pc-tr">
-                  <td className="pc-td-period">{p.period}</td>
-                  <td>
-                    <span className={`pc-type-badge pc-type-${p.type}`}>
-                      {p.type === 'year' ? 'Year-End' : 'Monthly'}
-                    </span>
-                  </td>
-                  <td className="pc-td-profit green">{fmt(p.netProfit)}</td>
-                  <td>{p.closedBy}</td>
-                  <td className="pc-td-date">
-                    {new Date(p.closedAt).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}
-                  </td>
-                  <td>
-                    <span className="pc-status-closed">
-                      <Lock size={11}/> Closed
-                    </span>
-                  </td>
-                  <td>
-                    <div className="pc-hist-actions">
-                      <button className="pc-action-btn" title="View Report">
-                        <Eye size={13}/>
-                      </button>
-                      <button className="pc-action-btn pc-reopen-btn"
-                        title="Reopen Period"
-                        onClick={() => setReopenModal(p.period)}>
-                        <Unlock size={13}/>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {(periods.filter(p => p.status === 'closed').length
+                ? periods.filter(p => p.status === 'closed').map(p => {
+                    const sd = new Date(p.start_date);
+                    const label = `${MONTHS[sd.getMonth()]} ${sd.getFullYear()}`;
+                    return (
+                      <tr key={p.id} className="pc-tr">
+                        <td className="pc-td-period">{label}</td>
+                        <td><span className="pc-type-badge pc-type-month">Monthly</span></td>
+                        <td className="pc-td-profit">—</td>
+                        <td>{p.closed_by || '—'}</td>
+                        <td className="pc-td-date">
+                          {p.closed_at ? new Date(p.closed_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
+                        </td>
+                        <td><span className="pc-status-closed"><Lock size={11}/> Closed</span></td>
+                        <td>
+                          <div className="pc-hist-actions">
+                            <button className="pc-action-btn pc-reopen-btn" title="Reopen Period"
+                              onClick={() => setReopenModal({ id: p.id, label })}>
+                              <Unlock size={13}/>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                : PERIOD_HISTORY.map((p,i) => (
+                  <tr key={i} className="pc-tr">
+                    <td className="pc-td-period">{p.period}</td>
+                    <td><span className={`pc-type-badge pc-type-${p.type}`}>{p.type === 'year' ? 'Year-End' : 'Monthly'}</span></td>
+                    <td className="pc-td-profit green">{fmt(p.netProfit)}</td>
+                    <td>{p.closedBy}</td>
+                    <td className="pc-td-date">{new Date(p.closedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
+                    <td><span className="pc-status-closed"><Lock size={11}/> Closed</span></td>
+                    <td>
+                      <div className="pc-hist-actions">
+                        <button className="pc-action-btn" title="View Report"><Eye size={13}/></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -561,12 +609,18 @@ export default function PeriodClosing() {
                       <><Clock size={14} color="#9ca3af"/> <span className="gray">Future</span></>
                     )}
                   </div>
-                  {isClosed && (
-                    <button className="pc-unlock-btn"
-                      onClick={() => setReopenModal(`${month} ${selectedYear}`)}>
-                      <Unlock size={11}/> Reopen
-                    </button>
-                  )}
+                  {isClosed && (() => {
+                    const lbl = `${month} ${selectedYear}`;
+                    const p = periods.find(pr => {
+                      const d = new Date(pr.start_date);
+                      return d.getMonth() === idx && d.getFullYear() === selectedYear && pr.status === 'closed';
+                    });
+                    return p ? (
+                      <button className="pc-unlock-btn" onClick={() => setReopenModal({ id: p.id, label: lbl })}>
+                        <Unlock size={11}/> Reopen
+                      </button>
+                    ) : null;
+                  })()}
                   {isCurrent && (
                     <button className="pc-close-mini"
                       onClick={() => { setActiveTab('checklist'); }}>
@@ -646,7 +700,7 @@ export default function PeriodClosing() {
             <div className="pc-confirm-icon pc-confirm-icon-warn">
               <Unlock size={28} color="#f59e0b"/>
             </div>
-            <h3>Reopen {reopenModal}?</h3>
+            <h3>Reopen {reopenModal?.label}?</h3>
             <p className="pc-confirm-desc">
               Reopening this period will allow backdated journal entries and modifications.
               All changes will be logged in the audit trail.

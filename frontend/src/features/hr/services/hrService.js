@@ -63,7 +63,7 @@ export const updatePolicy = async (id, data) => {
 
 export const getAnnouncements = async (params = {}) => {
   try {
-    const res = await api.get('/hr/announcements', { params });
+    const res = await api.get('/announcements', { params });
     return res.data?.announcements || res.data || [];
   } catch (err) {
     console.error('getAnnouncements failed:', err.message);
@@ -72,7 +72,7 @@ export const getAnnouncements = async (params = {}) => {
 };
 
 export const createAnnouncement = async (data) => {
-  const res = await api.post('/hr/announcements', data);
+  const res = await api.post('/announcements', data);
   return res.data;
 };
 
@@ -80,7 +80,7 @@ export const createAnnouncement = async (data) => {
 
 export const getHolidays = async (params = {}) => {
   try {
-    const res = await api.get('/hr/holidays', { params });
+    const res = await api.get('/holidays', { params });
     return res.data?.holidays || res.data || [];
   } catch (err) {
     console.error('getHolidays failed:', err.message);
@@ -92,7 +92,7 @@ export const getHolidays = async (params = {}) => {
 
 export const getProbationEmployees = async (params = {}) => {
   try {
-    const res = await api.get('/hr/probation', { params });
+    const res = await api.get('/probation', { params });
     return res.data?.employees || res.data || [];
   } catch (err) {
     console.error('getProbationEmployees failed:', err.message);
@@ -101,6 +101,6 @@ export const getProbationEmployees = async (params = {}) => {
 };
 
 export const updateProbationStatus = async (id, data) => {
-  const res = await api.put(`/hr/probation/${id}`, data);
+  const res = await api.put(`/probation/${id}`, data);
   return res.data;
 };

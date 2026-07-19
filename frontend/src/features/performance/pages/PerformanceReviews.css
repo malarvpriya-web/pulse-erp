@@ -40,7 +40,7 @@
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  background: #6366f1;
+  background: #6B3FDB;
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -49,7 +49,7 @@
   cursor: pointer;
   transition: background 0.2s;
 }
-.prf-btn-primary:hover { background: #4f46e5; }
+.prf-btn-primary:hover { background: #5B35D5; }
 .prf-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 .prf-btn-ghost {
   display: flex;
@@ -103,7 +103,7 @@
 .prf-kpi-icon {
   width: 40px; height: 40px;
   border-radius: 10px;
-  background: #f5f3ff;
+  background: #F2EFFE;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -136,7 +136,7 @@
   transition: color 0.15s;
 }
 .prf-tab:hover { color: #374151; }
-.prf-tab-active { color: #6366f1; border-bottom-color: #6366f1; }
+.prf-tab-active { color: #6B3FDB; border-bottom-color: #6B3FDB; }
 
 /* Cards grid */
 .prf-grid {
@@ -357,8 +357,8 @@
 .prf-hist-badge {
   font-size: 12px;
   font-weight: 600;
-  color: #6366f1;
-  background: #eef2ff;
+  color: #6B3FDB;
+  background: #E8E1FC;
   padding: 4px 10px;
   border-radius: 20px;
 }
@@ -458,7 +458,7 @@
   color: #374151;
   box-sizing: border-box;
 }
-.prf-textarea:focus { outline: none; border-color: #6366f1; }
+.prf-textarea:focus { outline: none; border-color: #6B3FDB; }
 
 /* Toast */
 .prf-toast {
@@ -482,10 +482,40 @@
 .prf-spin { animation: prf-rotate 1s linear infinite; }
 @keyframes prf-rotate { to { transform: rotate(360deg); } }
 
+/* input field in forms */
+.prf-input {
+  width: 100%; padding: 9px 12px; border: 1.5px solid #e5e7eb; border-radius: 8px;
+  font-size: 13px; color: #111827; font-family: inherit; outline: none;
+  transition: border-color .15s; box-sizing: border-box;
+}
+.prf-input:focus { border-color: #6366f1; }
+
+/* Manager review modal */
+.prf-mgr-modal {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  z-index: 101;
+  background: #fff; border-radius: 16px; width: 540px; max-width: 95vw;
+  max-height: 90vh; overflow: hidden; display: flex; flex-direction: column;
+  box-shadow: 0 24px 60px rgba(0,0,0,.25);
+}
+.prf-mgr-modal-hd {
+  background: linear-gradient(135deg, #312e81, #6366f1);
+  padding: 16px 20px; display: flex; justify-content: space-between; align-items: flex-start;
+  color: #fff;
+}
+.prf-mgr-modal-hd h3 { margin: 0 0 3px; font-size: 16px; font-weight: 800; }
+.prf-mgr-modal-body {
+  flex: 1; overflow-y: auto; padding: 20px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.prf-mgr-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
 /* Responsive */
 @media (max-width: 900px) {
   .prf-kpi-row { grid-template-columns: repeat(2, 1fr); }
   .prf-grid { grid-template-columns: 1fr; }
   .prf-card-full { grid-column: span 1; }
   .prf-drawer { width: 100%; }
+  .prf-mgr-modal { width: 95vw; }
+  .prf-mgr-row { grid-template-columns: 1fr; }
 }

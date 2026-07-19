@@ -1,0 +1,149 @@
+/* AgentWorkload — page-specific styles only.
+   Shared: .page-header, .page-title, .page-subtitle, .kpi-grid, .kpi-card,
+           .kpi-label, .kpi-value, .kpi-sub, .data-table-wrap, .data-table,
+           .badge, .action-btn-sm, .empty-state  (global-overrides.css) */
+
+.aw-root {
+  padding: 24px;
+}
+
+.aw-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.aw-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.aw-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #374151;
+}
+
+.aw-btn:disabled {
+  cursor: not-allowed;
+  color: #d1d5db;
+  opacity: 0.6;
+}
+
+.aw-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.aw-kpi-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.aw-search-bar {
+  margin-bottom: 14px;
+}
+
+.aw-search-input {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  width: 260px;
+  outline: none;
+}
+
+.aw-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aw-skeleton-row {
+  height: 48px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: aw-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes aw-pulse {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.aw-util-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aw-util-track {
+  flex: 1;
+  height: 6px;
+  background: var(--color-border-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 60px;
+}
+
+.aw-util-fill {
+  height: 100%;
+  border-radius: 3px;
+  /* width and background set via inline style (dynamic per-row data) */
+}
+
+.aw-util-label {
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 32px;
+  /* color set via inline style (dynamic utilization color) */
+}
+
+/* Table cell helpers */
+.aw-cell-name {
+  padding: 10px 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.aw-cell-muted {
+  padding: 10px 14px;
+  color: var(--color-text-secondary);
+}
+
+.aw-cell-resolved {
+  padding: 10px 14px;
+  color: #10b981;
+  font-weight: 600;
+}
+
+.aw-cell-default {
+  padding: 10px 14px;
+  color: #374151;
+}
+
+.aw-cell-util {
+  padding: 10px 14px;
+}
+
+@media (max-width: 768px) {
+  .aw-search-input { width: 100%; }
+}

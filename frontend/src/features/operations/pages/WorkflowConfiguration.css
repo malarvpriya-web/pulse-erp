@@ -10,7 +10,7 @@
 .wfc-toast-error   { background: #fee2e2; color: #dc2626; }
 
 .wfc-loading { display: flex; justify-content: center; padding: 80px; }
-.wfc-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: wfc-spin .6s linear infinite; }
+.wfc-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: wfc-spin .6s linear infinite; }
 @keyframes wfc-spin { to { transform: rotate(360deg); } }
 
 .wfc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
@@ -21,7 +21,7 @@
 
 .wfc-card-hd      { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .wfc-card-info    { display: flex; align-items: flex-start; gap: 10px; }
-.wfc-card-icon    { width: 34px; height: 34px; border-radius: 8px; background: #eef2ff; color: #4338ca; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.wfc-card-icon    { width: 34px; height: 34px; border-radius: 8px; background: #E8E1FC; color: #4B2DCE; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .wfc-wf-name      { font-size: 14px; font-weight: 700; color: #111827; margin-bottom: 4px; }
 .wfc-module-badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 600; }
 
@@ -38,7 +38,7 @@
 
 .wfc-stages { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .wfc-stage-row  { display: flex; align-items: center; gap: 4px; }
-.wfc-stage-num  { width: 20px; height: 20px; border-radius: 50%; background: #6366f1; color: #fff; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.wfc-stage-num  { width: 20px; height: 20px; border-radius: 50%; background: #6B3FDB; color: #fff; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .wfc-stage-name { font-size: 12px; font-weight: 500; color: #374151; background: #f3f4f6; border-radius: 4px; padding: 3px 8px; }
 .wfc-stage-arrow { color: #9ca3af; }
 
@@ -61,23 +61,23 @@
 .wfc-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
 .wfc-field input:focus,
 .wfc-field select:focus,
-.wfc-field textarea:focus { outline: none; border-color: #6366f1; }
+.wfc-field textarea:focus { outline: none; border-color: #6B3FDB; }
 
 .wfc-stages-section { display: flex; flex-direction: column; gap: 8px; }
 .wfc-stages-hd { display: flex; align-items: center; justify-content: space-between; }
 .wfc-stages-hd span { font-size: 12px; font-weight: 600; color: #374151; }
-.wfc-add-stage-btn { display: flex; align-items: center; gap: 4px; background: #eef2ff; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #4338ca; cursor: pointer; font-weight: 600; }
-.wfc-add-stage-btn:hover { background: #e0e7ff; }
+.wfc-add-stage-btn { display: flex; align-items: center; gap: 4px; background: #E8E1FC; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #4B2DCE; cursor: pointer; font-weight: 600; }
+.wfc-add-stage-btn:hover { background: #E8E1FC; }
 
 .wfc-stage-input-row { display: flex; align-items: center; gap: 8px; }
-.wfc-stage-num-input { width: 24px; height: 24px; border-radius: 50%; background: #6366f1; color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.wfc-stage-num-input { width: 24px; height: 24px; border-radius: 50%; background: #6B3FDB; color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .wfc-stage-input { flex: 1; border: 1px solid #d1d5db; border-radius: 7px; padding: 7px 12px; font-size: 13px; font-family: inherit; color: #111827; }
-.wfc-stage-input:focus { outline: none; border-color: #6366f1; }
+.wfc-stage-input:focus { outline: none; border-color: #6B3FDB; }
 .wfc-remove-stage-btn { background: #fee2e2; border: none; border-radius: 6px; padding: 6px; cursor: pointer; color: #dc2626; display: flex; align-items: center; flex-shrink: 0; }
 .wfc-remove-stage-btn:hover { background: #fecaca; }
 
-.wfc-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.wfc-btn-primary:hover    { background: #4f46e5; }
+.wfc-btn-primary { display: flex; align-items: center; gap: 6px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.wfc-btn-primary:hover    { background: #5B35D5; }
 .wfc-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 .wfc-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
 .wfc-btn-outline:hover { background: #f9fafb; }

@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Search, Plus, RefreshCw, X, Building2, Edit2 } from 'lucide-react';
 import api from '@/services/api/client';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './Accounts.css';
 
 const fmt = n => {
@@ -8,12 +11,13 @@ const fmt = n => {
   if (v >= 10000000) return `₹${(v / 10000000).toFixed(1)}Cr`;
   if (v >= 100000)   return `₹${(v / 100000).toFixed(1)}L`;
   if (v >= 1000)     return `₹${(v / 1000).toFixed(0)}K`;
-  return `₹${v.toFixed(0)}`;
+  if (v > 0)         return `₹${v.toFixed(0)}`;
+  return '—';
 };
 
-const INDUSTRIES = ['Technology', 'Manufacturing', 'Retail', 'Healthcare', 'Finance', 'Construction', 'Education', 'Logistics', 'Media', 'Consulting', 'Other'];
+const INDUSTRIES  = ['Technology', 'Manufacturing', 'Retail', 'Healthcare', 'Finance', 'Construction', 'Education', 'Logistics', 'Media', 'Consulting', 'Other'];
 const ACCOUNT_TYPES = ['Customer', 'Prospect', 'Partner', 'Competitor', 'Other'];
-const STATUSES = ['Active', 'Inactive', 'Prospect'];
+const STATUSES    = ['Active', 'Inactive', 'Prospect'];
 
 const TYPE_META = {
   customer:   { bg: '#dbeafe', color: '#1d4ed8' },
@@ -24,29 +28,31 @@ const TYPE_META = {
 };
 const tm = t => TYPE_META[(t || '').toLowerCase()] || TYPE_META.other;
 
-const SAMPLE_ACCOUNTS = [
-  { id: 1, name: 'TechCorp Solutions',    industry: 'Technology',    account_type: 'Customer',   annual_revenue: 5000000,  employee_count: 250, website: 'techcorp.com',    phone: '+91 98765 43210', status: 'Active',   contacts_count: 4, created_at: '2024-01-15' },
-  { id: 2, name: 'Alpha Manufacturing Co',industry: 'Manufacturing', account_type: 'Customer',   annual_revenue: 12000000, employee_count: 800, website: 'alphamfg.com',    phone: '+91 87654 32109', status: 'Active',   contacts_count: 6, created_at: '2024-03-20' },
-  { id: 3, name: 'Global Trade Partners', industry: 'Logistics',     account_type: 'Partner',    annual_revenue: 8000000,  employee_count: 120, website: 'globaltrade.com', phone: '+91 76543 21098', status: 'Active',   contacts_count: 3, created_at: '2024-02-10' },
-  { id: 4, name: 'BrightFin Ltd',         industry: 'Finance',       account_type: 'Prospect',   annual_revenue: 3000000,  employee_count: 80,  website: 'brightfin.in',    phone: '+91 65432 10987', status: 'Prospect', contacts_count: 2, created_at: '2024-04-05' },
-  { id: 5, name: 'MediTech Services',     industry: 'Healthcare',    account_type: 'Prospect',   annual_revenue: 6500000,  employee_count: 340, website: 'meditech.in',     phone: '+91 54321 09876', status: 'Prospect', contacts_count: 1, created_at: '2024-05-01' },
-];
+const AVATAR_COLORS = ['#6B3FDB', '#2563EB', '#059669', '#D97706', '#DC2626'];
+const avatarColor = name => AVATAR_COLORS[((name || '').charCodeAt(0) || 0) % AVATAR_COLORS.length];
+const getInitials = name => {
+  if (!name) return '?';
+  return name.split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+};
 
 const emptyForm = () => ({
   name: '', industry: '', account_type: 'Customer',
   annual_revenue: '', employee_count: '', website: '',
-  phone: '', email: '', address: '', status: 'Active', notes: '',
+  phone: '', email: '', city: '', status: 'Active', notes: '',
 });
 
 export default function Accounts() {
-  const [accounts,  setAccounts]  = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [search,    setSearch]    = useState('');
-  const [fType,     setFType]     = useState('');
-  const [drawer,    setDrawer]    = useState(null);
-  const [form,      setForm]      = useState(emptyForm());
-  const [submitting,setSubmitting]= useState(false);
-  const [toast,     setToast]     = useState(null);
+  const navigate = useNavigate();
+  const { readOnly } = usePageAccess();
+  const [accounts,   setAccounts]   = useState([]);
+  const [stats,      setStats]      = useState(null);
+  const [loading,    setLoading]    = useState(false);
+  const [search,     setSearch]     = useState('');
+  const [fType,      setFType]      = useState('');
+  const [drawer,     setDrawer]     = useState(null);
+  const [form,       setForm]       = useState(emptyForm());
+  const [submitting, setSubmitting] = useState(false);
+  const [toast,      setToast]      = useState(null);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -56,21 +62,27 @@ export default function Accounts() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.get('/crm/accounts');
-      const raw = r.data.accounts || r.data;
-      setAccounts(Array.isArray(raw) && raw.length ? raw : SAMPLE_ACCOUNTS);
+      const [accRes, statsRes] = await Promise.allSettled([
+        api.get('/crm/accounts'),
+        api.get('/crm/accounts/stats'),
+      ]);
+      if (accRes.status === 'fulfilled') {
+        const raw = accRes.value.data?.accounts ?? accRes.value.data;
+        setAccounts(Array.isArray(raw) ? raw : []);
+      }
+      if (statsRes.status === 'fulfilled') setStats(statsRes.value.data);
     } catch {
-      setAccounts(SAMPLE_ACCOUNTS);
+      setAccounts([]);
     } finally { setLoading(false); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
   const openCreate = () => { setForm(emptyForm()); setDrawer('create'); };
-  const openEdit   = acc => { setForm({ ...emptyForm(), ...acc }); setDrawer(acc); };
+  const openEdit   = (acc, e) => { e?.stopPropagation(); setForm({ ...emptyForm(), ...acc }); setDrawer(acc); };
 
   const handleSubmit = async () => {
-    if (!form.name) return showToast('Account name is required', 'error');
+    if (!form.name?.trim()) return showToast('Account name is required', 'error');
     setSubmitting(true);
     try {
       if (drawer === 'create') {
@@ -82,25 +94,33 @@ export default function Accounts() {
       }
       setDrawer(null);
       load();
-    } catch {
-      if (drawer === 'create') {
-        setAccounts(a => [{ ...form, id: Date.now(), contacts_count: 0, created_at: new Date().toISOString() }, ...a]);
-      }
-      showToast(drawer === 'create' ? 'Account created' : 'Account updated');
-      setDrawer(null);
+    } catch (err) {
+      const msg = err?.response?.data?.error || (drawer === 'create' ? 'Failed to create account' : 'Failed to update account');
+      showToast(msg, 'error');
     } finally { setSubmitting(false); }
   };
 
   const displayed = accounts.filter(a => {
     const q = search.toLowerCase();
     return (!q || a.name?.toLowerCase().includes(q) || a.industry?.toLowerCase().includes(q))
-        && (!fType || a.account_type?.toLowerCase() === fType.toLowerCase());
+        && (!fType || (a.account_type || '').toLowerCase() === fType.toLowerCase());
   });
+
+  const PILLS = [
+    { label: 'All',        key: '',           count: stats?.total },
+    { label: 'Customer',   key: 'customer',   count: stats?.customers },
+    { label: 'Prospect',   key: 'prospect',   count: stats?.prospects },
+    { label: 'Partner',    key: 'partner',    count: stats?.partners },
+    { label: 'Competitor', key: 'competitor', count: stats?.competitors },
+    { label: 'Other',      key: 'other',      count: stats?.other },
+  ];
 
   return (
     <div className="ac-root">
 
       {toast && <div className={`ac-toast ac-toast-${toast.type}`}>{toast.msg}</div>}
+
+      {readOnly && <ReadOnlyBanner />}
 
       <div className="ac-header">
         <div>
@@ -109,7 +129,7 @@ export default function Accounts() {
         </div>
         <div className="ac-header-r">
           <button className="ac-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="ac-btn-primary" onClick={openCreate}><Plus size={14} /> Add Account</button>
+          {!readOnly && <button className="ac-btn-primary" onClick={openCreate}><Plus size={14} /> Add Account</button>}
         </div>
       </div>
 
@@ -121,10 +141,14 @@ export default function Accounts() {
           {search && <button onClick={() => setSearch('')}><X size={12} /></button>}
         </div>
         <div className="ac-tabs">
-          <button className={`ac-tab${!fType ? ' ac-tab-active' : ''}`} onClick={() => setFType('')}>All</button>
-          {ACCOUNT_TYPES.map(t => (
-            <button key={t} className={`ac-tab${fType.toLowerCase() === t.toLowerCase() ? ' ac-tab-active' : ''}`}
-              onClick={() => setFType(t.toLowerCase())}>{t}</button>
+          {PILLS.map(p => (
+            <button
+              key={p.key}
+              className={`ac-tab${fType === p.key ? ' ac-tab-active' : ''}`}
+              onClick={() => setFType(p.key)}
+            >
+              {p.label}{p.count != null ? ` (${p.count})` : ''}
+            </button>
           ))}
         </div>
       </div>
@@ -136,21 +160,32 @@ export default function Accounts() {
         <div className="ac-empty">
           <Building2 size={40} color="#d1d5db" />
           <p>No accounts found</p>
-          <button className="ac-btn-primary" onClick={openCreate}><Plus size={14} /> Add Account</button>
+          {!readOnly && <button className="ac-btn-primary" onClick={openCreate}><Plus size={14} /> Add Account</button>}
         </div>
       ) : (
         <div className="ac-grid">
           {displayed.map(acc => {
-            const t = tm(acc.account_type);
+            const t   = tm(acc.account_type);
+            const bg  = avatarColor(acc.name);
+            const pipeline = parseFloat(acc.open_pipeline_value || 0);
             return (
-              <div key={acc.id} className="ac-card" onClick={() => openEdit(acc)}>
+              <div
+                key={acc.id}
+                className="ac-card"
+                onClick={() => navigate(`/AccountDetail?id=${acc.id}`)}
+              >
                 <div className="ac-card-hd">
-                  <div className="ac-avatar">{(acc.name || '?').charAt(0)}</div>
-                  <div className="ac-card-info">
-                    <span className="ac-card-name">{acc.name}</span>
-                    <span className="ac-card-industry">{acc.industry || '—'}</span>
+                  <div className="ac-avatar" style={{ background: bg, color: '#fff' }}>
+                    {acc.logo_url
+                      ? <img src={acc.logo_url} alt={acc.name} style={{ width: '100%', height: '100%', borderRadius: 10, objectFit: 'cover' }} />
+                      : getInitials(acc.name)
+                    }
                   </div>
-                  <span className="ac-badge" style={{ background: t.bg, color: t.color }}>{acc.account_type}</span>
+                  <div className="ac-card-info">
+                    <span className="ac-card-name">{acc.name ?? '—'}</span>
+                    <span className="ac-card-industry">{acc.industry || ''}</span>
+                  </div>
+                  <span className="ac-badge" style={{ background: t.bg, color: t.color }}>{acc.account_type || 'Other'}</span>
                 </div>
                 <div className="ac-card-stats">
                   <div className="ac-stat">
@@ -163,13 +198,24 @@ export default function Accounts() {
                   </div>
                   <div className="ac-stat">
                     <span className="ac-stat-label">Contacts</span>
-                    <span className="ac-stat-val">{acc.contacts_count || 0}</span>
+                    <span className="ac-stat-val">{acc.contacts_count ?? 0}</span>
                   </div>
                 </div>
+                {pipeline > 0 && (
+                  <div className="ac-pipeline">Pipeline: {fmt(pipeline)}</div>
+                )}
                 {acc.phone && <div className="ac-card-phone">{acc.phone}</div>}
                 <div className="ac-card-footer">
                   <span className={`ac-status ${(acc.status || 'active').toLowerCase()}`}>{acc.status || 'Active'}</span>
-                  <button className="ac-edit-btn" onClick={e => { e.stopPropagation(); openEdit(acc); }}><Edit2 size={13} /></button>
+                  {!readOnly && (
+                    <button
+                      className="ac-edit-btn"
+                      title="Edit account"
+                      onClick={e => openEdit(acc, e)}
+                    >
+                      <Edit2 size={13} />
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -225,25 +271,21 @@ export default function Accounts() {
                   <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="info@…" />
                 </div>
               </div>
-              <div className="ac-field">
-                <label>Website</label>
-                <input value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))} placeholder="https://…" />
-              </div>
-              <div className="ac-field">
-                <label>Address</label>
-                <input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Street, City, State…" />
-              </div>
               <div className="ac-row2">
                 <div className="ac-field">
-                  <label>Status</label>
-                  <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
-                    {STATUSES.map(s => <option key={s}>{s}</option>)}
-                  </select>
+                  <label>Website</label>
+                  <input value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))} placeholder="https://…" />
+                </div>
+                <div className="ac-field">
+                  <label>City</label>
+                  <input value={form.city} onChange={e => setForm(f => ({ ...f, city: e.target.value }))} placeholder="Chennai…" />
                 </div>
               </div>
               <div className="ac-field">
-                <label>Notes</label>
-                <textarea rows={3} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Any notes…" />
+                <label>Status</label>
+                <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
+                  {STATUSES.map(s => <option key={s}>{s}</option>)}
+                </select>
               </div>
             </div>
             <div className="ac-drawer-ft">

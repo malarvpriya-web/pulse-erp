@@ -1,259 +1,409 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Search, X, Target, CheckCircle, Clock, AlertCircle, Edit2 } from 'lucide-react';
 import api from '@/services/api/client';
+import { Plus, Target, X, TrendingUp, CheckCircle, AlertTriangle, Clock, Zap, Edit2, Trash2 } from 'lucide-react';
 import './Goals.css';
+import ConfirmDialog from '@/components/core/ConfirmDialog';
 
-const SAMPLE = [
-  { id: 1, title: 'Increase Sales Pipeline by 30%',      description: 'Expand outreach and qualify 50+ leads per quarter', targetDate: '2026-03-31', weightage: 25, progress: 72, status: 'Active',    category: 'Sales' },
-  { id: 2, title: 'Complete PMP Certification',           description: 'Pass the Project Management Professional exam',    targetDate: '2026-04-30', weightage: 15, progress: 45, status: 'Active',    category: 'Learning' },
-  { id: 3, title: 'Improve Customer Satisfaction Score',  description: 'Achieve CSAT score of 90% or above',              targetDate: '2026-03-15', weightage: 20, progress: 100, status: 'Completed', category: 'Quality' },
-  { id: 4, title: 'Launch Q2 Product Feature',            description: 'Ship the new reporting module on time',           targetDate: '2026-02-28', weightage: 30, progress: 30, status: 'Overdue',   category: 'Product' },
-  { id: 5, title: 'Reduce Operational Costs by 10%',      description: 'Identify and eliminate inefficiencies in process', targetDate: '2026-06-30', weightage: 10, progress: 20, status: 'Active',    category: 'Operations' },
-];
-
-const TABS = ['All', 'Active', 'Completed', 'Overdue'];
-const CATEGORIES = ['Sales', 'Learning', 'Quality', 'Product', 'Operations', 'Leadership', 'Other'];
-
-const STATUS_META = {
-  Active:    { bg: '#dbeafe', color: '#1d4ed8', icon: <Target size={12} /> },
-  Completed: { bg: '#dcfce7', color: '#15803d', icon: <CheckCircle size={12} /> },
-  Overdue:   { bg: '#fee2e2', color: '#dc2626', icon: <AlertCircle size={12} /> },
+const EMPTY_FORM = {
+  goal_title: '', goal_description: '', target_value: '', achieved_value: '0',
+  unit: '', due_date: '', priority: 'Medium', status: 'active',
+  category: '', review_period: '', weightage: '100',
 };
 
-function progressColor(p, status) {
-  if (status === 'Completed') return '#22c55e';
-  if (status === 'Overdue') return '#ef4444';
-  if (p >= 70) return '#6366f1';
-  if (p >= 40) return '#f59e0b';
-  return '#9ca3af';
+const TAB_FILTERS = [
+  { key: 'all',      label: 'All' },
+  { key: 'active',   label: 'Active' },
+  { key: 'achieved', label: 'Achieved' },
+  { key: 'at_risk',  label: 'At Risk' },
+  { key: 'overdue',  label: 'Overdue' },
+  { key: 'draft',    label: 'Draft' },
+];
+
+function pct(g) {
+  const t = Number(g.target_value || 1);
+  const a = Number(g.achieved_value || g.progress_pct || 0);
+  if (g.progress_pct) return Math.min(100, Math.round(Number(g.progress_pct)));
+  return Math.min(100, Math.round((a / t) * 100));
 }
 
-const BLANK = { title: '', description: '', targetDate: '', weightage: '', progress: 0, category: 'Sales' };
+function ringColor(p) {
+  return p >= 100 ? '#10b981' : p >= 70 ? '#4338ca' : p >= 30 ? '#f59e0b' : '#ef4444';
+}
+
+function GoalCard({ goal, onCheckin, onEdit, onDelete }) {
+  const p = pct(goal);
+  const color = ringColor(p);
+  const r = 22, circ = 2 * Math.PI * r;
+  const offset = circ - (p / 100) * circ;
+  const statusClass = `gl-chip-${(goal.status || 'active').toLowerCase().replace(' ', '_')}`;
+  const priorityClass = `gl-badge-${(goal.priority || 'medium').toLowerCase()}`;
+  const isOverdue = goal.due_date && new Date(goal.due_date) < new Date() && goal.status !== 'achieved';
+
+  return (
+    <div className="gl-card-v2">
+      <div className="gl-card-top">
+        <div className="gl-card-title">{goal.goal_title || goal.title}</div>
+        <div className="gl-card-badges">
+          {goal.priority && <span className={`gl-badge ${priorityClass}`}>{goal.priority}</span>}
+          {goal.category && <span className="gl-badge gl-badge-cat">{goal.category}</span>}
+        </div>
+      </div>
+      {(goal.goal_description || goal.description) && (
+        <p style={{ fontSize: 12, color: '#6b7280', margin: 0, lineHeight: 1.5 }}>
+          {goal.goal_description || goal.description}
+        </p>
+      )}
+      <div className="gl-progress-area">
+        <div className="gl-ring-wrap">
+          <svg width={52} height={52}>
+            <circle className="gl-ring-track" cx={26} cy={26} r={r} />
+            <circle className="gl-ring-fill" cx={26} cy={26} r={r}
+              stroke={color} strokeDasharray={circ}
+              strokeDashoffset={offset} />
+          </svg>
+          <div className="gl-ring-pct">{p}%</div>
+        </div>
+        <div className="gl-progress-info">
+          <div className="gl-progress-nums">
+            <strong>{goal.achieved_value ?? goal.current_value ?? 0}</strong> / {goal.target_value || 0} {goal.unit || ''}
+          </div>
+          <div className="gl-prog-track">
+            <div className="gl-prog-fill" style={{ width: `${p}%`, background: color }} />
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span className={`gl-status-chip ${statusClass}`}>{(goal.status || 'active').replace('_', ' ')}</span>
+        {goal.due_date && (
+          <span className="gl-due" style={isOverdue ? { color: '#dc2626', fontWeight: 700 } : {}}>
+            <Clock size={11} /> Due: {new Date(goal.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
+          </span>
+        )}
+      </div>
+      <div className="gl-card-actions">
+        <button className="gl-btn-checkin" onClick={() => onCheckin(goal)}>
+          <Zap size={11} /> Check In
+        </button>
+        <button className="gl-btn-edit-v2" onClick={() => onEdit(goal)}>
+          <Edit2 size={11} /> Edit
+        </button>
+        <button className="gl-btn-del" onClick={() => onDelete(goal.id)}>
+          <Trash2 size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Goals() {
-  const [goals, setGoals]     = useState(SAMPLE);
-  const [loading, setLoading] = useState(false);
-  const [fTab, setFTab]       = useState('All');
-  const [search, setSearch]   = useState('');
-  const [drawer, setDrawer]   = useState(null);   // null | 'create' | goal-obj
-  const [form, setForm]       = useState(BLANK);
-  const [saving, setSaving]   = useState(false);
-  const [toast, setToast]     = useState(null);
+  const [goals,     setGoals]     = useState([]);
+  const [loading,   setLoading]   = useState(false);
+  const [tab,       setTab]       = useState('all');
+  const [showForm,  setShowForm]  = useState(false);
+  const [editGoal,  setEditGoal]  = useState(null);
+  const [form,      setForm]      = useState(EMPTY_FORM);
+  const [saving,    setSaving]    = useState(false);
+  const [checkin,   setCheckin]   = useState(null);
+  const [ciVal,     setCiVal]     = useState('');
+  const [ciNote,    setCiNote]    = useState('');
+  const [ciSaving,  setCiSaving]  = useState(false);
+  const [toast,     setToast]     = useState(null);
+  const [pendingHandleDelete, setPendingHandleDelete] = useState(null);
 
-  const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  };
 
-  const load = useCallback(async () => {
+  const load = useCallback(() => {
     setLoading(true);
-    try {
-      const params = fTab !== 'All' ? { status: fTab } : {};
-      const res = await api.get('/performance/goals', { params });
-      const raw = res.data?.data ?? res.data;
-      setGoals(Array.isArray(raw) && raw.length ? raw : SAMPLE);
-    } catch { setGoals(SAMPLE); }
-    finally { setLoading(false); }
-  }, [fTab]);
+    api.get('/performance/goals')
+      .then(r => setGoals(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setGoals([]))
+      .finally(() => setLoading(false));
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const counts = TABS.reduce((acc, t) => ({
-    ...acc, [t]: t === 'All' ? goals.length : goals.filter(g => g.status === t).length
-  }), {});
+  const openCreate = () => { setEditGoal(null); setForm(EMPTY_FORM); setShowForm(true); };
+  const openEdit   = (g) => {
+    setEditGoal(g);
+    setForm({
+      goal_title: g.goal_title || g.title || '',
+      goal_description: g.goal_description || g.description || '',
+      target_value: g.target_value || '',
+      achieved_value: g.achieved_value || '0',
+      unit: g.unit || '',
+      due_date: g.due_date ? g.due_date.slice(0, 10) : '',
+      priority: g.priority || 'Medium',
+      status: g.status || 'active',
+      category: g.category || '',
+      review_period: g.review_period || '',
+      weightage: g.weightage || '100',
+    });
+    setShowForm(true);
+  };
 
-  const filtered = goals.filter(g =>
-    (fTab === 'All' || g.status === fTab) &&
-    (g.title?.toLowerCase().includes(search.toLowerCase()) ||
-     g.category?.toLowerCase().includes(search.toLowerCase()))
-  );
-
-  const openCreate = () => { setForm(BLANK); setDrawer('create'); };
-  const openEdit   = g => { setForm({ title: g.title, description: g.description, targetDate: g.targetDate, weightage: g.weightage, progress: g.progress, category: g.category }); setDrawer(g); };
-
-  const handleSubmit = async e => {
-    e.preventDefault();
-    if (!form.title.trim()) { showToast('Title is required', 'error'); return; }
+  const handleSave = async () => {
+    if (!form.goal_title) return;
     setSaving(true);
     try {
-      if (drawer === 'create') await api.post('/performance/goals', form);
-      else await api.put(`/performance/goals/${drawer.id}`, form);
-      showToast(drawer === 'create' ? 'Goal created!' : 'Goal updated!');
-      load();
-    } catch {
-      if (drawer === 'create') {
-        const ng = { id: Date.now(), ...form, status: 'Active' };
-        setGoals(prev => [ng, ...prev]);
-        showToast('Goal created!');
+      const payload = {
+        ...form,
+        target_value:   Number(form.target_value)   || 0,
+        achieved_value: Number(form.achieved_value) || 0,
+        weightage:      Number(form.weightage)      || 100,
+      };
+      if (editGoal) {
+        await api.put(`/performance/goals/${editGoal.id}`, payload);
+        showToast('Goal updated');
       } else {
-        setGoals(prev => prev.map(g => g.id === drawer.id ? { ...g, ...form } : g));
-        showToast('Goal updated!');
+        await api.post('/performance/goals', payload);
+        showToast('Goal created');
       }
-    }
-    setDrawer(null); setSaving(false);
+      setShowForm(false);
+      load();
+    } catch { showToast('Failed to save goal', 'error'); }
+    finally { setSaving(false); }
   };
 
-  const markComplete = async id => {
-    try { await api.put(`/performance/goals/${id}`, { status: 'Completed', progress: 100 }); }
-    catch { /* optimistic */ }
-    setGoals(prev => prev.map(g => g.id === id ? { ...g, status: 'Completed', progress: 100 } : g));
-    showToast('Goal marked as complete!');
+  const handleDelete = async () => {
+    if (!pendingHandleDelete) return;
+    const id = pendingHandleDelete;
+    setPendingHandleDelete(null);
+    try {
+      await api.delete(`/performance/goals/${id}`);
+      setGoals(gs => gs.filter(g => g.id !== id));
+      showToast('Goal deleted');
+    } catch { showToast('Delete failed', 'error'); }
   };
 
-  const totalWeightage = goals.filter(g => g.status !== 'Completed').reduce((s, g) => s + (parseInt(g.weightage)||0), 0);
-  const overallProgress = goals.length ? Math.round(goals.reduce((s, g) => s + (parseInt(g.progress)||0), 0) / goals.length) : 0;
+  const handleCheckin = async () => {
+    if (!ciVal) return;
+    setCiSaving(true);
+    try {
+      const res = await api.post(`/performance/goals/${checkin.id}/checkin`, {
+        achieved_value: Number(ciVal), note: ciNote,
+      });
+      setGoals(gs => gs.map(g => g.id === checkin.id ? { ...g, ...res.data } : g));
+      setCheckin(null); setCiVal(''); setCiNote('');
+      showToast('Progress updated');
+    } catch { showToast('Check-in failed', 'error'); }
+    finally { setCiSaving(false); }
+  };
+
+  const counts = {
+    all:      goals.length,
+    active:   goals.filter(g => g.status === 'active').length,
+    achieved: goals.filter(g => g.status === 'achieved').length,
+    at_risk:  goals.filter(g => g.status === 'at_risk').length,
+    overdue:  goals.filter(g => g.status === 'overdue').length,
+    draft:    goals.filter(g => g.status === 'draft').length,
+  };
+  const filtered = tab === 'all' ? goals : goals.filter(g => g.status === tab);
 
   return (
     <div className="gl-root">
       {toast && <div className={`gl-toast gl-toast-${toast.type}`}>{toast.msg}</div>}
 
       <div className="gl-header">
-        <div>
-          <h1 className="gl-title">Goals &amp; KPIs</h1>
-          <p className="gl-sub">Track progress towards your objectives</p>
+        <div className="gl-header-left">
+          <div className="gl-header-icon"><Target size={20} /></div>
+          <div>
+            <h1 className="gl-title">Goals & KPIs</h1>
+            <p className="gl-sub">{goals.length} goals tracked this period</p>
+          </div>
         </div>
-        <button className="gl-btn-primary" onClick={openCreate}><Plus size={15} /> Add Goal</button>
+        <button className="gl-add-btn" onClick={openCreate}>
+          <Plus size={15} /> Add Goal
+        </button>
       </div>
 
-      {/* Summary strip */}
-      <div className="gl-summary">
-        <div className="gl-sum-card">
-          <div className="gl-sum-num">{goals.length}</div>
-          <div className="gl-sum-lbl">Total Goals</div>
+      <div className="gl-body">
+        {/* KPIs */}
+        <div className="gl-kpis">
+          {[
+            { icon: <Target size={16} />,        val: counts.all,      label: 'Total Goals',  bg: '#eef2ff', color: '#4338ca' },
+            { icon: <TrendingUp size={16} />,     val: counts.active,   label: 'On Track',     bg: '#dbeafe', color: '#1d4ed8' },
+            { icon: <AlertTriangle size={16} />,  val: counts.at_risk,  label: 'At Risk',      bg: '#fef3c7', color: '#d97706' },
+            { icon: <CheckCircle size={16} />,    val: counts.achieved, label: 'Achieved',     bg: '#dcfce7', color: '#15803d' },
+            { icon: <Clock size={16} />,          val: counts.overdue,  label: 'Overdue',      bg: '#fee2e2', color: '#dc2626' },
+          ].map(k => (
+            <div key={k.label} className="gl-kpi">
+              <div className="gl-kpi-icon" style={{ background: k.bg, color: k.color }}>{k.icon}</div>
+              <div className="gl-kpi-val">{k.val}</div>
+              <div className="gl-kpi-lbl">{k.label}</div>
+            </div>
+          ))}
         </div>
-        <div className="gl-sum-card">
-          <div className="gl-sum-num gl-blue">{counts.Active}</div>
-          <div className="gl-sum-lbl">Active</div>
-        </div>
-        <div className="gl-sum-card">
-          <div className="gl-sum-num gl-green">{counts.Completed}</div>
-          <div className="gl-sum-lbl">Completed</div>
-        </div>
-        <div className="gl-sum-card">
-          <div className="gl-sum-num gl-red">{counts.Overdue}</div>
-          <div className="gl-sum-lbl">Overdue</div>
-        </div>
-        <div className="gl-sum-card gl-sum-progress">
-          <div className="gl-sum-num">{overallProgress}%</div>
-          <div className="gl-sum-lbl">Overall Progress</div>
-          <div className="gl-sum-track"><div className="gl-sum-fill" style={{ width: `${overallProgress}%` }} /></div>
-        </div>
-      </div>
 
-      <div className="gl-filters">
-        <div className="gl-search">
-          <Search size={15} color="#9ca3af" />
-          <input placeholder="Search goals…" value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button onClick={() => setSearch('')}><X size={13} /></button>}
-        </div>
+        {/* Filter tabs */}
         <div className="gl-tabs">
-          {TABS.map(t => (
-            <button key={t} className={`gl-tab ${fTab === t ? 'gl-tab-active' : ''}`} onClick={() => setFTab(t)}>
-              {t} <span className="gl-tab-count">{counts[t]}</span>
+          {TAB_FILTERS.map(t => (
+            <button
+              key={t.key}
+              className={`gl-tab${tab === t.key ? ' gl-tab-active' : ''}`}
+              onClick={() => setTab(t.key)}
+            >
+              {t.label}
+              <span className="gl-tab-count">{counts[t.key] ?? 0}</span>
             </button>
           ))}
         </div>
+
+        {/* Content */}
+        {loading ? (
+          <div className="gl-loading"><div className="gl-spinner" /></div>
+        ) : filtered.length === 0 ? (
+          <div className="gl-empty">
+            <Target size={40} color="#d1d5db" />
+            <p>{goals.length === 0 ? 'No goals set yet' : `No ${tab} goals`}</p>
+            {goals.length === 0 && (
+              <button className="gl-btn-primary" onClick={openCreate} style={{ marginTop: 8 }}>
+                <Plus size={14} /> Set First Goal
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="gl-grid">
+            {filtered.map(g => (
+              <GoalCard
+                key={g.id}
+                goal={g}
+                onCheckin={g => { setCheckin(g); setCiVal(String(g.achieved_value || g.current_value || '')); setCiNote(''); }}
+                onEdit={openEdit}
+                onDelete={setPendingHandleDelete}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
-      {loading ? (
-        <div className="gl-loading"><div className="gl-spinner" /></div>
-      ) : filtered.length === 0 ? (
-        <div className="gl-empty"><Target size={36} color="#d1d5db" /><p>No goals found</p></div>
-      ) : (
-        <div className="gl-list">
-          {filtered.map(g => {
-            const sm = STATUS_META[g.status] || STATUS_META.Active;
-            const pc = progressColor(g.progress, g.status);
-            const overdue = new Date(g.targetDate) < new Date() && g.status !== 'Completed';
-            return (
-              <div key={g.id} className={`gl-card ${g.status === 'Overdue' ? 'gl-card-overdue' : ''}`}>
-                <div className="gl-card-hd">
-                  <div className="gl-card-left">
-                    <span className="gl-category">{g.category}</span>
-                    <h3 className="gl-goal-title">{g.title}</h3>
-                    {g.description && <p className="gl-goal-desc">{g.description}</p>}
-                  </div>
-                  <div className="gl-card-right">
-                    <span className="gl-status-badge" style={{ background: sm.bg, color: sm.color }}>
-                      {sm.icon} {g.status}
-                    </span>
-                    <div className="gl-weight">W: {g.weightage}%</div>
-                  </div>
-                </div>
-
-                <div className="gl-progress-row">
-                  <div className="gl-prog-info">
-                    <span className="gl-prog-lbl">Progress</span>
-                    <span className="gl-prog-num" style={{ color: pc }}>{g.progress}%</span>
-                  </div>
-                  <div className="gl-prog-track">
-                    <div className="gl-prog-fill" style={{ width: `${g.progress}%`, background: pc }} />
-                  </div>
-                </div>
-
-                <div className="gl-card-ft">
-                  <div className="gl-due">
-                    <Clock size={11} />
-                    <span className={overdue ? 'gl-overdue-text' : ''}>
-                      {overdue ? 'Overdue — ' : 'Due: '}
-                      {new Date(g.targetDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-                    </span>
-                  </div>
-                  <div className="gl-actions">
-                    <button className="gl-edit-btn" onClick={() => openEdit(g)}><Edit2 size={13} /></button>
-                    {g.status !== 'Completed' && (
-                      <button className="gl-complete-btn" onClick={() => markComplete(g.id)}>
-                        <CheckCircle size={13} /> Mark Complete
-                      </button>
-                    )}
-                  </div>
-                </div>
+      {/* Check-in modal */}
+      {checkin && (
+        <div className="gl-modal-overlay" onClick={() => setCheckin(null)}>
+          <div className="gl-modal-box gl-modal-box-sm" onClick={e => e.stopPropagation()}>
+            <div className="gl-modal-hd-v2">
+              <h3>Check In Progress</h3>
+              <button className="gl-modal-close" onClick={() => setCheckin(null)}>✕</button>
+            </div>
+            <div className="gl-modal-body-v2">
+              <div className="gl-checkin-curr">
+                <strong>{checkin.goal_title || checkin.title}</strong><br />
+                Target: <strong>{checkin.target_value} {checkin.unit}</strong>
               </div>
-            );
-          })}
+              <div className="gl-field">
+                <label className="gl-label-v2">Current Value *</label>
+                <input type="number" className="gl-input-v2"
+                  placeholder={`0 – ${checkin.target_value}`}
+                  value={ciVal} onChange={e => setCiVal(e.target.value)} />
+              </div>
+              <div className="gl-field">
+                <label className="gl-label-v2">Note (optional)</label>
+                <textarea className="gl-textarea-v2" rows={3}
+                  placeholder="Any context or blockers?"
+                  value={ciNote} onChange={e => setCiNote(e.target.value)} />
+              </div>
+            </div>
+            <div className="gl-modal-ft-v2">
+              <button className="gl-btn-cancel-v2" onClick={() => setCheckin(null)}>Cancel</button>
+              <button className="gl-btn-save-v2" onClick={handleCheckin} disabled={ciSaving || !ciVal}>
+                {ciSaving ? 'Saving…' : 'Save Progress'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {drawer !== null && (
-        <div className="gl-overlay" onClick={e => e.target === e.currentTarget && setDrawer(null)}>
-          <div className="gl-drawer">
-            <div className="gl-drawer-hd">
-              <h3>{drawer === 'create' ? 'Add Goal' : 'Edit Goal'}</h3>
-              <button className="gl-icon-btn" onClick={() => setDrawer(null)}><X size={16} /></button>
+      {/* Create / Edit modal */}
+      {showForm && (
+        <div className="gl-modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="gl-modal-box" onClick={e => e.stopPropagation()}>
+            <div className="gl-modal-hd-v2">
+              <h3>{editGoal ? 'Edit Goal' : 'New Goal'}</h3>
+              <button className="gl-modal-close" onClick={() => setShowForm(false)}>✕</button>
             </div>
-            <form className="gl-drawer-body" onSubmit={handleSubmit}>
+            <div className="gl-modal-body-v2">
               <div className="gl-field">
-                <label>Goal Title <span className="gl-req">*</span></label>
-                <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="What do you want to achieve?" required />
+                <label className="gl-label-v2">Goal Title *</label>
+                <input className="gl-input-v2" placeholder="e.g. Increase revenue by 20%"
+                  value={form.goal_title}
+                  onChange={e => setForm(f => ({ ...f, goal_title: e.target.value }))} />
               </div>
               <div className="gl-field">
-                <label>Description</label>
-                <textarea rows={2} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="How will you measure success?" />
+                <label className="gl-label-v2">Description</label>
+                <textarea className="gl-textarea-v2" rows={3} placeholder="Describe the goal..."
+                  value={form.goal_description}
+                  onChange={e => setForm(f => ({ ...f, goal_description: e.target.value }))} />
               </div>
-              <div className="gl-row2">
+              <div className="gl-form-row">
                 <div className="gl-field">
-                  <label>Category <span className="gl-req">*</span></label>
-                  <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
-                    {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                  <label className="gl-label-v2">Target Value</label>
+                  <input type="number" className="gl-input-v2" placeholder="100"
+                    value={form.target_value}
+                    onChange={e => setForm(f => ({ ...f, target_value: e.target.value }))} />
+                </div>
+                <div className="gl-field">
+                  <label className="gl-label-v2">Unit</label>
+                  <input className="gl-input-v2" placeholder="%, ₹, count…"
+                    value={form.unit}
+                    onChange={e => setForm(f => ({ ...f, unit: e.target.value }))} />
+                </div>
+              </div>
+              <div className="gl-form-row">
+                <div className="gl-field">
+                  <label className="gl-label-v2">Category</label>
+                  <input className="gl-input-v2" placeholder="Delivery, Quality, Learning…"
+                    value={form.category}
+                    onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
+                </div>
+                <div className="gl-field">
+                  <label className="gl-label-v2">Review Period</label>
+                  <input className="gl-input-v2" placeholder="Q1 2026"
+                    value={form.review_period}
+                    onChange={e => setForm(f => ({ ...f, review_period: e.target.value }))} />
+                </div>
+              </div>
+              <div className="gl-form-row">
+                <div className="gl-field">
+                  <label className="gl-label-v2">Due Date</label>
+                  <input type="date" className="gl-input-v2"
+                    value={form.due_date}
+                    onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))} />
+                </div>
+                <div className="gl-field">
+                  <label className="gl-label-v2">Weightage (%)</label>
+                  <input type="number" className="gl-input-v2" placeholder="100"
+                    value={form.weightage}
+                    onChange={e => setForm(f => ({ ...f, weightage: e.target.value }))} />
+                </div>
+              </div>
+              <div className="gl-form-row">
+                <div className="gl-field">
+                  <label className="gl-label-v2">Priority</label>
+                  <select className="gl-select-v2" value={form.priority}
+                    onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}>
+                    {['High', 'Medium', 'Low'].map(v => <option key={v}>{v}</option>)}
                   </select>
                 </div>
                 <div className="gl-field">
-                  <label>Target Date <span className="gl-req">*</span></label>
-                  <input type="date" value={form.targetDate} onChange={e => setForm(f => ({ ...f, targetDate: e.target.value }))} required />
+                  <label className="gl-label-v2">Status</label>
+                  <select className="gl-select-v2" value={form.status}
+                    onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
+                    {['active', 'draft', 'achieved', 'at_risk', 'overdue'].map(v => (
+                      <option key={v} value={v}>{v.replace('_', ' ')}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
-              <div className="gl-row2">
-                <div className="gl-field">
-                  <label>Weightage (%) <span className="gl-req">*</span></label>
-                  <input type="number" min="1" max="100" value={form.weightage} onChange={e => setForm(f => ({ ...f, weightage: e.target.value }))} placeholder="e.g. 25" required />
-                </div>
-                <div className="gl-field">
-                  <label>Current Progress (%)</label>
-                  <input type="number" min="0" max="100" value={form.progress} onChange={e => setForm(f => ({ ...f, progress: e.target.value }))} />
-                </div>
-              </div>
-              <div className="gl-drawer-ft">
-                <button type="button" className="gl-btn-outline" onClick={() => setDrawer(null)}>Cancel</button>
-                <button type="submit" className="gl-btn-primary" disabled={saving}>{saving ? 'Saving…' : drawer === 'create' ? 'Add Goal' : 'Save Changes'}</button>
-              </div>
-            </form>
+            </div>
+            <div className="gl-modal-ft-v2">
+              <button className="gl-btn-cancel-v2" onClick={() => setShowForm(false)}>Cancel</button>
+              <button type="submit" className="gl-btn-save-v2" onClick={handleSave}
+                disabled={saving || !form.goal_title}>
+                {saving ? 'Saving…' : editGoal ? 'Update Goal' : 'Create Goal'}
+              </button>
+            </div>
           </div>
         </div>
       )}

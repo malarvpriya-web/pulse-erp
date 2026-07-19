@@ -1,0 +1,34 @@
+.cana-root { padding: 24px; max-width: 1400px; }
+.cana-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.cana-title { font-size: 22px; font-weight: 700; color: #111827; margin: 0 0 4px; }
+.cana-sub { font-size: 13px; color: #6b7280; margin: 0; }
+.cana-summary { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 20px; }
+.cana-sum-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; display: flex; align-items: center; gap: 12px; }
+.cana-sum-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.cana-sum-num { font-size: 20px; font-weight: 700; color: #111827; }
+.cana-sum-lbl { font-size: 11px; color: #6b7280; margin-top: 2px; }
+.cana-chart-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; margin-bottom: 20px; }
+.cana-card-title { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 12px; }
+.cana-filters { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.cana-search { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 7px 12px; flex: 1; min-width: 200px; }
+.cana-search input { border: none; outline: none; font-size: 13px; flex: 1; background: transparent; }
+.cana-search button { background: none; border: none; cursor: pointer; padding: 0; color: #9ca3af; display: flex; }
+.cana-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.cana-pill { padding: 5px 12px; border: 1px solid #e5e7eb; border-radius: 20px; font-size: 12px; font-weight: 500; cursor: pointer; background: #fff; color: #374151; }
+.cana-pill-active { background: #6B3FDB; border-color: #6B3FDB; color: #fff; }
+.cana-table-wrap { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; }
+.cana-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cana-table thead tr { background: #f9fafb; }
+.cana-table th { padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid #e5e7eb; }
+.cana-table td { padding: 12px 14px; border-bottom: 1px solid #f3f4f6; }
+.cana-row:last-child td { border-bottom: none; }
+.cana-row:hover { background: #f9fafb; }
+.cana-name { font-weight: 600; color: #111827; }
+.cana-ch-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: #E8E1FC; color: #4B2DCE; }
+.cana-status-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.cana-amt { font-weight: 600; }
+.cana-center { text-align: center; }
+.cana-loading { display: flex; justify-content: center; padding: 48px; }
+.cana-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: cana-spin .8s linear infinite; }
+@keyframes cana-spin { to { transform: rotate(360deg); } }
+@media (max-width: 768px) { .cana-summary { grid-template-columns: repeat(2,1fr); } .cana-table-wrap { overflow-x: auto; } }

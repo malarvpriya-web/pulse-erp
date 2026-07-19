@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import api from "@/services/api/client";
+import ResultDialog from "@/components/ResultDialog";
 import "./AddEmployee.css";
 import "./EmployeesData.css";
 
@@ -15,77 +16,143 @@ export default function AddEmployee({ setPage, employee, setSelectedEmployee }) 
     return `${year}-${month}-${day}`;
   };
 
-  console.log("Employee data:", employee);
-  console.log("File fields:", {
-    photo_url: employee?.photo_url,
-    pan_file: employee?.pan_file,
-    aadhaar_file: employee?.aadhaar_file,
-    cancelled_cheque_file: employee?.cancelled_cheque_file,
-    bank_statement_file: employee?.bank_statement_file,
-    resume_file: employee?.resume_file,
-    offer_letter_file: employee?.offer_letter_file
-  });
-
   const [notes,setNotes] = useState(employee?.notes || "");
   const [openSection, setOpenSection] = useState("basic");
   const [managers, setManagers]=useState([]);
-  const [showMessage, setShowMessage] = useState(false);
-  const [message, setMessage] = useState("");
+  const [dialog, setDialog] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   const toggleSection = (section) => setOpenSection(section);
 
   const sectionOrder = [
-    "basic","family","address","education","job","experience","bank","compliance","emergency","docs","permissions","notes"
+    "basic","family","address","education","job","experience","bank","compliance","emergency","assets","docs","notes"
   ];
 
   const goToNextSection = (currentSection) => {
     const currentIndex = sectionOrder.indexOf(currentSection);
     const nextSection = sectionOrder[currentIndex + 1];
-    if (nextSection) setOpenSection(nextSection);
+    if (nextSection) {
+      setOpenSection(nextSection);
+      setTimeout(() => {
+        const el = document.querySelector('.accordion-body input:not([disabled]), .accordion-body select, .accordion-body textarea');
+        if (el) el.focus();
+      }, 40);
+    }
   };
 
   const handleLastFieldTab = (e, sectionName) => {
     if (e.key === "Tab" && !e.shiftKey) goToNextSection(sectionName);
   };
 
-  // 🔐 Permissions State
-  const [permissions,setPermissions] = useState({
-    employee_view: employee?.employee_view || false,
-    employee_add: employee?.employee_add || false,
-    employee_edit: employee?.employee_edit || false,
-    employee_delete: employee?.employee_delete || false,
-    finance_view: employee?.finance_view || false,
-    finance_edit: employee?.finance_edit || false,
-    finance_approve: employee?.finance_approve || false,
-    project_view: employee?.project_view || false,
-    project_add: employee?.project_add || false,
-    project_edit: employee?.project_edit || false,
-    report_view: employee?.report_view || false,
-    report_export: employee?.report_export || false
-  });
+  // 🆔 Employee Code from backend
+  const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
+
+  // Hoisted before useEffect to satisfy React Compiler declaration order
+  const [departments, setDepartments] = useState([]);
+  const [zones, setZones] = useState([]);
+  const [designationList, setDesignations] = useState([]);
+  const [shifts, setShifts] = useState([]);
+
+  // SHIFT — persisted as an hr_shift_assignment after the employee is saved.
+  const [shiftId, setShiftId] = useState("");
+  // Loaded in edit mode: the currently-assigned shift and its assignment row id,
+  // so a shift change can retire the old assignment and skip a no-op re-create.
+  const [originalShiftId, setOriginalShiftId] = useState("");
+  const [existingShiftAssignmentId, setExistingShiftAssignmentId] = useState(null);
+
+  // ASSETS — laptop / SIM / phone etc. Each row with an asset_name is created
+  // via POST /employee-assets once the employee record exists.
+  const ASSET_TYPES = ['Laptop','Desktop','Mobile','SIM Card','Tablet','Monitor','Keyboard','Mouse','Headset','Access Card','Vehicle','Tools','Other'];
+  const blankAsset = () => ({ asset_type: 'Laptop', asset_name: '', asset_tag: '', serial_number: '' });
+  const [assetRows, setAssetRows] = useState([blankAsset()]);
+  const [existingAssets, setExistingAssets] = useState([]);
 
   // 👨‍💼 Fetch managers safely
  useEffect(()=>{
-
+  const EX_STATUSES_LOWER = new Set(['left','terminated','resigned','ex-employee','notice_period','notice period','inactive']);
   api.get("/employees")
-    .then(res => setManagers(res.data))
-    .catch(err => console.error("Managers error:", err.response?.data || err));
+    .then(res => setManagers(
+      (Array.isArray(res.data) ? res.data : [])
+        .filter(e => !EX_STATUSES_LOWER.has((e.status || '').toLowerCase()))
+    ))
+    .catch(() => {});
+
+  api.get('/admin/config/departments')
+    .then(res => setDepartments(
+      Array.isArray(res.data) ? res.data.map(d => d.name || d) : []
+    ))
+    .catch(() => setDepartments([]));
+
+  api.get('/admin/config/zones')
+    .then(res => setZones(
+      Array.isArray(res.data) ? res.data.map(z => z.name || z) : []
+    ))
+    .catch(() => setZones([]));
+
+  api.get('/admin/config/designations')
+    .then(res => setDesignations(
+      Array.isArray(res.data) ? res.data.map(d => d.name || d) : []
+    ))
+    .catch(() => setDesignations([]));
+
+  // Shift master for the Job Information shift picker
+  api.get('/hr/shifts')
+    .then(res => setShifts(Array.isArray(res.data) ? res.data : []))
+    .catch(() => setShifts([]));
+
+  // In edit mode, preload the employee's current shift + allocated assets so
+  // they show in the form and a shift change can retire the old assignment.
+  if (employee?.id) {
+    api.get('/hr/shift-assignments')
+      .then(res => {
+        const mine = (Array.isArray(res.data) ? res.data : [])
+          .filter(a => Number(a.employee_id) === Number(employee.id));
+        if (mine.length) {
+          setShiftId(String(mine[0].shift_id));
+          setOriginalShiftId(String(mine[0].shift_id));
+          setExistingShiftAssignmentId(mine[0].id);
+        }
+      })
+      .catch(() => {});
+    api.get(`/employee-assets?employee_id=${employee.id}`)
+      .then(res => setExistingAssets(Array.isArray(res.data) ? res.data : []))
+      .catch(() => {});
+  }
 
   if (!employee) {
     api.get("/employees/next-code")
       .then(res => {
-        console.log("Next code response:", res.data);
-        setEmployeeCode(res.data.code);
+        const code = res.data.code || res.data.next_code ||
+          res.data.office_id || res.data;
+        if (code && typeof code === 'string') {
+          const formatted = code.startsWith('EMP') ? code
+            : 'EMP' + String(parseInt(code.replace(/\D/g, ''), 10) || code).padStart(4, '0');
+          setEmployeeCode(formatted);
+          return;
+        }
+        throw new Error('no usable code');
       })
-      .catch(err => {
-        console.error("Code fetch error:", err.response?.data || err);
+      .catch(() => {
+        // Fallback: read all employees, find max numeric ID, add 1
+        api.get("/employees")
+          .then(r => {
+            const list = Array.isArray(r.data) ? r.data
+              : Array.isArray(r.data?.employees) ? r.data.employees
+              : Array.isArray(r.data?.data) ? r.data.data : [];
+            const ids = list.map(e => {
+              const raw = e.office_id || e.employee_code || e.id || '';
+              const num = parseInt(String(raw).replace(/\D/g, ''), 10);
+              return isNaN(num) ? 0 : num;
+            });
+            const nextNum = (ids.length ? Math.max(...ids) : 0) + 1;
+            setEmployeeCode('EMP' + String(nextNum).padStart(4, '0'));
+          })
+          .catch(() => setEmployeeCode(""));
       });
   }
 
 },[employee]);
 
- // 🆔 Employee Code from backend
-const [employeeCode, setEmployeeCode] = useState(employee?.office_id || ""); 
   // BASIC
   const [firstName,setFirstName]=useState(employee?.first_name || "");
   const [lastName,setLastName]=useState(employee?.last_name || "");
@@ -116,16 +183,20 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
   const [department,setDepartment] = useState(employee?.department || "");
   const [designation,setDesignation]=useState(employee?.designation || "");
   const [employeeRole,setEmployeeRole]=useState(employee?.employee_role || "");
-  const [reportingManager,setReportingManager]=useState(employee?.reporting_manager || "");
+  const [reportingManagerId,setReportingManagerId]=useState(employee?.reporting_manager_id ? String(employee.reporting_manager_id) : "");
+  const [reportingManagerName,setReportingManagerName]=useState(employee?.reporting_manager || "");
   const [location,setLocation]=useState(employee?.location || "");
   const [employmentType,setEmploymentType]=useState(employee?.employment_type || "");
   const [skillType,setSkillType]=useState(employee?.skill_type || "");
+  const [isFieldEmployee,setIsFieldEmployee]=useState(employee?.is_field_employee === true);
   const [zone,setZone]=useState(employee?.zone || "");
 
+  const [status,setStatus]=useState(employee?.status || "Active");
   const today = new Date().toISOString().split("T")[0];
   const [joiningDate,setJoiningDate] = useState(employee?.joining_date ? formatDate(employee.joining_date) : today);
 
   // EXPERIENCE
+  const [isFresher, setIsFresher] = useState(false);
   const [previousCompany1,setPreviousCompany1]=useState(employee?.previous_company_1 || "");
   const [previousRole1,setPreviousRole1]=useState(employee?.previous_role_1 || "");
   const [previousYears1,setPreviousYears1]=useState(employee?.previous_years_1 || "");
@@ -161,23 +232,86 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
   const [resumeFile,setResumeFile]=useState(null);
   const [offerLetterFile,setOfferLetterFile]=useState(null);
 
-  const departments = ["HR","Finance","Sales","Production","IT"];
   const employeeRoles = ["Employee","Manager","Department Head"];
   const employmentTypes = ["Permanent","Probation","Contract"];
   const skillTypes = ["Skilled","Semi Skilled","Unskilled"];
-  const zones = ["North","South","East","West","HO"];
   const relationships = ["Father","Mother","Spouse","Brother","Sister","Friend"];
   const qualifications = ["PhD","Post Graduate","Graduate","Diploma","12th","10th"];
 
+  // ── ASSET ROW HELPERS ──────────────────────────────────────────────
+  const updateAssetRow = (idx, key, val) =>
+    setAssetRows(rows => rows.map((r, i) => i === idx ? { ...r, [key]: val } : r));
+  const addAssetRow    = () => setAssetRows(rows => [...rows, blankAsset()]);
+  const removeAssetRow = (idx) =>
+    setAssetRows(rows => rows.length > 1 ? rows.filter((_, i) => i !== idx) : [blankAsset()]);
+
+  // Persist shift assignment + asset allocations for a saved employee. Best-effort:
+  // the employee is already saved, so a failure here only skips the extra records.
+  const persistShiftAndAssets = async (employeeId) => {
+    if (!employeeId) return;
+    // Shift — only touch assignments when a shift is selected and it changed.
+    try {
+      if (shiftId && String(shiftId) !== String(originalShiftId)) {
+        // Retire any current active assignment before adding the new one so the
+        // attendance shift-resolver doesn't see two active assignments.
+        if (existingShiftAssignmentId) {
+          await api.delete(`/hr/shift-assignments/${existingShiftAssignmentId}`).catch(() => {});
+        }
+        await api.post('/hr/shift-assignments', {
+          employee_id: employeeId,
+          shift_id: Number(shiftId),
+          effective_from: joiningDate || today,
+        });
+      }
+    } catch { /* non-blocking */ }
+
+    // Assets — create one allocation per filled row.
+    const toCreate = assetRows.filter(r => (r.asset_name || '').trim());
+    for (const r of toCreate) {
+      try {
+        await api.post('/employee-assets', {
+          employee_id: employeeId,
+          asset_type: r.asset_type || 'Other',
+          asset_name: r.asset_name.trim(),
+          asset_tag: r.asset_tag || null,
+          serial_number: r.serial_number || null,
+          allocated_date: joiningDate || today,
+        });
+      } catch { /* non-blocking — asset can be added later on the Assets page */ }
+    }
+  };
+
   // 💾 SAVE EMPLOYEE
   const addEmployee = async ()=>{
+    if (saving) return;
     try{
-      
+
       // Required validation
       if (!firstName || !lastName || !companyEmail) {
-        alert("Please fill mandatory fields.");
+        setDialog({ type: 'error', title: 'Required Fields Missing', message: 'First name, last name, and company email are required.' });
         return;
       }
+      const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRe.test(companyEmail)) {
+        setDialog({ type: 'error', title: 'Invalid Email', message: 'Please enter a valid company email address (e.g. name@company.com).' });
+        return;
+      }
+      // Phone format (if filled)
+      if (phone && !/^\d{10}$/.test(phone.replace(/[\s\-()]/g, ''))) {
+        setDialog({ type: 'error', title: 'Invalid Phone', message: 'Phone number must be 10 digits.' });
+        return;
+      }
+      // PAN format (if filled)
+      if (panNumber && !/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(panNumber.trim())) {
+        setDialog({ type: 'error', title: 'Invalid PAN', message: 'PAN must be in format AAAAA9999A (e.g. ABCDE1234F).' });
+        return;
+      }
+      // Aadhaar format (if filled)
+      if (aadhaarNumber && !/^\d{12}$/.test(aadhaarNumber.replace(/\s/g, ''))) {
+        setDialog({ type: 'error', title: 'Invalid Aadhaar', message: 'Aadhaar number must be exactly 12 digits.' });
+        return;
+      }
+      setSaving(true);
 
       const formData = new FormData();
 
@@ -203,12 +337,15 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
         basic_qualification:basicQualification,
         department,
         designation,
-        reporting_manager:reportingManager,
+        reporting_manager_id: reportingManagerId || null,
+        reporting_manager: reportingManagerName || null,
         location,
         joining_date:joiningDate,
         employment_type:employmentType,
         skill_type:skillType,
+        is_field_employee:isFieldEmployee,
         zone,
+        status,
         previous_company_1:previousCompany1,
         previous_role_1:previousRole1,
         previous_years_1:previousYears1,
@@ -236,7 +373,13 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
       }
 
       Object.entries(fields).forEach(([k,v])=>formData.append(k,v));
-      formData.append("permissions", JSON.stringify(permissions));
+
+      // Persist a newly typed zone to the master list so it appears in the
+      // dropdown next time (best-effort — the employee still saves the text).
+      const zoneTrim = (zone || '').trim();
+      if (zoneTrim && !zones.some(z => String(z).toLowerCase() === zoneTrim.toLowerCase())) {
+        api.post('/admin/config/zones', { name: zoneTrim }).catch(() => {});
+      }
 
       if(photoFile) formData.append("photo_file",photoFile);
       if(panFile) formData.append("pan_file",panFile);
@@ -248,45 +391,51 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
 
       if (employee) {
         await api.put(`/employees/${employee.id}`, formData);
-        setMessage("✅ Employee Updated Successfully!");
+        await persistShiftAndAssets(employee.id);
+        setDialog({ type:'success', title:'Employee Updated', message:'Employee details have been updated successfully.', autoClose:2000 });
       } else {
-        await api.post("/employees", formData);
-        setMessage("✅ Employee Added Successfully!");
+        const { data } = await api.post("/employees", formData);
+        await persistShiftAndAssets(data?.id);
+        const login = data?.login;
+        if (login?.created) {
+          // A login account was auto-created — show HR the credentials to share.
+          setDialog({
+            type:'success',
+            title:'Employee Added — Login Created',
+            message:`${login.email} can now sign in. Temporary password: ${login.password}. Please share these and ask them to change the password after their first sign-in.`,
+          });
+          setTimeout(() => {
+            setSelectedEmployee(null);
+            setPage("EmployeesData");
+          }, 6000);
+          return;
+        }
+        setDialog({ type:'success', title:'Employee Added', message:'New employee has been added successfully.', autoClose:2000 });
       }
-      
-      setShowMessage(true);
       setTimeout(() => {
         setSelectedEmployee(null);
         setPage("EmployeesData");
-      }, 1500);
+      }, 2100);
 
     }catch(err){
-      setMessage("❌ " + (err.response?.data?.message || "Error saving employee"));
-      setShowMessage(true);
-      setTimeout(() => setShowMessage(false), 3000);
+      let errMsg =
+        err.response?.data?.error ||
+        err.response?.data?.message ||
+        (typeof err.response?.data === 'string' ? err.response.data : null) ||
+        err.message ||
+        'Error saving employee';
+      if (/unique.*company_email|duplicate.*email/i.test(errMsg)) {
+        errMsg = `An employee with email "${companyEmail}" already exists.`;
+      }
+      setDialog({ type:'error', title:'Save Failed', message: errMsg });
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
     <div className="add-employee-page">
-      {showMessage && (
-        <div style={{
-          position: 'fixed',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          background: 'white',
-          padding: '30px 50px',
-          borderRadius: '12px',
-          boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
-          zIndex: 9999,
-          fontSize: '18px',
-          fontWeight: '600',
-          textAlign: 'center'
-        }}>
-          {message}
-        </div>
-      )}
+      <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
       <div className="page-container">
         <div className="page-header">
           <h1>{employee ? "Edit Employee" : "Add Employee"}</h1>
@@ -295,7 +444,7 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
           </button>
         </div>
 
-        <form onSubmit={(e)=>{ e.preventDefault(); addEmployee(); }} className="add-employee-form">
+        <form noValidate onSubmit={(e)=>{ e.preventDefault(); addEmployee(); }} className="add-employee-form">
           <div className="form-wrapper">
         {/* BASIC INFO */}
 <div className="accordion">
@@ -306,10 +455,10 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
   {openSection === "basic" && (
     <div className="accordion-body">
       <div className="form-grid">
-        <div><label>Employee ID</label><input value={employeeCode || "Auto-generated"} disabled /></div>
-        <div><label>First Name *</label><input value={firstName} onChange={e=>setFirstName(e.target.value)} /></div>
+        <div><label>Employee ID</label><input value={employeeCode || "Fetching ID..."} disabled /></div>
+        <div><label>First Name *</label><input id="firstName" name="firstName" placeholder="First name" value={firstName} onChange={e=>setFirstName(e.target.value)} /></div>
         <div><label>Last Name *</label><input value={lastName} onChange={e=>setLastName(e.target.value)} /></div>
-        <div><label>Company Email *</label><input value={companyEmail} onChange={e=>setCompanyEmail(e.target.value)} /></div>
+        <div><label>Company Email / Gmail *</label><input type="email" required value={companyEmail} onChange={e=>setCompanyEmail(e.target.value)} /></div>
         <div><label>Personal Email</label><input value={personalEmail} onChange={e=>setPersonalEmail(e.target.value)} /></div>
 
         <div>
@@ -328,16 +477,12 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
 
         <div>
           <label>Gender</label>
-          <div style={{ display: "flex", gap: "15px", alignItems: "center" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-              <input type="radio" name="gender" value="Male"
-                checked={gender==="Male"} onChange={e=>setGender(e.target.value)} /> Male
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-              <input type="radio" name="gender" value="Female"
-                checked={gender==="Female"} onChange={e=>setGender(e.target.value)} /> Female
-            </label>
-          </div>
+          <select value={gender} onChange={e=>setGender(e.target.value)}>
+            <option value="">-- Select Gender --</option>
+            <option>Male</option>
+            <option>Female</option>
+            <option>Other</option>
+          </select>
         </div>
 
         <div>
@@ -453,7 +598,12 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
           </select>
         </div>
 
-        <div><label>Designation</label><input value={designation} onChange={e=>setDesignation(e.target.value)} /></div>
+        <div><label>Designation</label>
+          <select value={designation} onChange={e=>setDesignation(e.target.value)}>
+            <option value="" disabled>-- Select Designation --</option>
+            {designationList.map(d => <option key={d}>{d}</option>)}
+          </select>
+        </div>
 
         <div>
           <label>Role</label>
@@ -465,15 +615,32 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
 
         <div>
           <label>Reporting Manager</label>
-          <select value={reportingManager} onChange={e=>setReportingManager(e.target.value)}>
-            <option value="" disabled>-- Select Manager --</option>
-            {managers.map(m => (
-              <option key={m.id} value={`${m.first_name} ${m.last_name}`}>{m.first_name} {m.last_name}</option>
+          <select value={reportingManagerId} onChange={e => {
+            const id = e.target.value;
+            setReportingManagerId(id);
+            const mgr = managers.find(m => String(m.id) === id);
+            setReportingManagerName(mgr ? `${mgr.first_name} ${mgr.last_name}`.trim() : '');
+          }}>
+            <option value="">— None —</option>
+            {managers.filter(m => !employee || m.id !== employee.id).map(m => (
+              <option key={m.id} value={String(m.id)}>{m.first_name} {m.last_name}</option>
             ))}
           </select>
         </div>
 
         <div><label>Location</label><input value={location} onChange={e=>setLocation(e.target.value)} /></div>
+
+        <div>
+          <label>Shift</label>
+          <select value={shiftId} onChange={e=>setShiftId(e.target.value)}>
+            <option value="">-- Select Shift --</option>
+            {shifts.map(s => (
+              <option key={s.id} value={String(s.id)}>
+                {s.name}{s.start_time ? ` (${String(s.start_time).slice(0,5)}–${String(s.end_time).slice(0,5)})` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <div>
           <label>Employment Type</label>
@@ -492,18 +659,42 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
         </div>
 
         <div>
+          <label>Field Employee</label>
+          <label style={{ display:'flex', alignItems:'center', gap:8, fontWeight:400, cursor:'pointer', marginTop:6 }}>
+            <input type="checkbox" checked={isFieldEmployee}
+              onChange={e=>setIsFieldEmployee(e.target.checked)}
+              style={{ width:16, height:16 }} />
+            Exempt from shift-time &amp; location clock-in rules
+          </label>
+        </div>
+
+        <div>
           <label>Zone</label>
-          <select value={zone} onChange={e=>setZone(e.target.value)}>
-            <option value="" disabled>-- Select Zone --</option>
-            {zones.map(z => <option key={z}>{z}</option>)}
-          </select>
+          <input
+            list="zone-options"
+            value={zone}
+            onChange={e=>setZone(e.target.value)}
+            placeholder="Select or type a new zone"
+          />
+          <datalist id="zone-options">
+            {zones.map(z => <option key={z} value={z} />)}
+          </datalist>
         </div>
 
         <div>
           <label>Joining Date</label>
           <input type="date" value={joiningDate}
-            onChange={e=>setJoiningDate(e.target.value)}
-            onKeyDown={(e)=>handleLastFieldTab(e,"job")} />
+            onChange={e=>setJoiningDate(e.target.value)} />
+        </div>
+
+        <div>
+          <label>Status</label>
+          <select value={status} onChange={e=>setStatus(e.target.value)}
+                  onKeyDown={(e)=>handleLastFieldTab(e,"job")}>
+            <option value="Active">Active</option>
+            <option value="Probation">Probation</option>
+            <option value="Inactive">Inactive</option>
+          </select>
         </div>
       </div>
     </div>
@@ -518,17 +709,39 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
 
   {openSection === "experience" && (
     <div className="accordion-body">
-      <div className="form-grid">
-        <div><label>Company 1</label><input value={previousCompany1} onChange={e=>setPreviousCompany1(e.target.value)} /></div>
-        <div><label>Role 1</label><input value={previousRole1} onChange={e=>setPreviousRole1(e.target.value)} /></div>
-        <div><label>Years 1</label><input type="number" value={previousYears1} onChange={e=>setPreviousYears1(e.target.value)} /></div>
-        <div><label>Company 2</label><input value={previousCompany2} onChange={e=>setPreviousCompany2(e.target.value)} /></div>
-        <div><label>Role 2</label><input value={previousRole2} onChange={e=>setPreviousRole2(e.target.value)} /></div>
-        <div><label>Years 2</label>
-          <input type="number" value={previousYears2} onChange={e=>setPreviousYears2(e.target.value)}
-                 onKeyDown={(e)=>handleLastFieldTab(e,"experience")} />
-        </div>
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={isFresher}
+            onChange={e => {
+              setIsFresher(e.target.checked);
+              if (e.target.checked) {
+                setPreviousCompany1('');
+                setPreviousRole1('');
+                setPreviousYears1('');
+                setPreviousCompany2('');
+                setPreviousRole2('');
+                setPreviousYears2('');
+              }
+            }}
+          />
+          Fresher (no previous experience)
+        </label>
       </div>
+      {!isFresher && (
+        <div className="form-grid">
+          <div><label>Company 1</label><input value={previousCompany1} onChange={e=>setPreviousCompany1(e.target.value)} /></div>
+          <div><label>Role 1</label><input value={previousRole1} onChange={e=>setPreviousRole1(e.target.value)} /></div>
+          <div><label>Years 1</label><input type="number" value={previousYears1} onChange={e=>setPreviousYears1(e.target.value)} /></div>
+          <div><label>Company 2</label><input value={previousCompany2} onChange={e=>setPreviousCompany2(e.target.value)} /></div>
+          <div><label>Role 2</label><input value={previousRole2} onChange={e=>setPreviousRole2(e.target.value)} /></div>
+          <div><label>Years 2</label>
+            <input type="number" value={previousYears2} onChange={e=>setPreviousYears2(e.target.value)}
+                   onKeyDown={(e)=>handleLastFieldTab(e,"experience")} />
+          </div>
+        </div>
+      )}
     </div>
   )}
 </div>
@@ -600,6 +813,74 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
   )}
 </div>
 
+{/* ASSETS ALLOCATED */}
+<div className="accordion">
+  <div className="accordion-header" onClick={() => toggleSection("assets")}>
+    <h2>Assets Allocated</h2>
+  </div>
+
+  {openSection === "assets" && (
+    <div className="accordion-body">
+      {existingAssets.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: '#6b7280' }}>Already allocated</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+            {existingAssets.map(a => (
+              <span key={a.id} style={{ background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 20, padding: '4px 12px', fontSize: 12, color: '#374151' }}>
+                {a.asset_type}: {a.asset_name}{a.asset_tag ? ` (${a.asset_tag})` : ''}
+                {a.status && a.status !== 'allocated' ? ` — ${a.status}` : ''}
+              </span>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: '#9ca3af', margin: '6px 0 0' }}>
+            Manage returns and full history on the Employee Assets page. Add new allocations below.
+          </p>
+        </div>
+      )}
+
+      {assetRows.map((row, idx) => (
+        <div key={idx} className="form-grid" style={{ alignItems: 'end', marginBottom: 10 }}>
+          <div>
+            <label>Asset Type</label>
+            <select value={row.asset_type} onChange={e => updateAssetRow(idx, 'asset_type', e.target.value)}>
+              {ASSET_TYPES.map(t => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Asset Name / Description</label>
+            <input value={row.asset_name} placeholder="e.g. Dell Latitude 5440, Airtel SIM 98xxxx"
+                   onChange={e => updateAssetRow(idx, 'asset_name', e.target.value)} />
+          </div>
+          <div>
+            <label>Asset Tag</label>
+            <input value={row.asset_tag} placeholder="e.g. IT-0042"
+                   onChange={e => updateAssetRow(idx, 'asset_tag', e.target.value)} />
+          </div>
+          <div>
+            <label>Serial / Number</label>
+            <input value={row.serial_number} placeholder="Serial no. / SIM no."
+                   onChange={e => updateAssetRow(idx, 'serial_number', e.target.value)} />
+          </div>
+          <div>
+            <button type="button" onClick={() => removeAssetRow(idx)}
+              style={{ padding: '9px 12px', borderRadius: 6, border: '1px solid #fca5a5', background: 'transparent', color: '#dc2626', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              Remove
+            </button>
+          </div>
+        </div>
+      ))}
+
+      <button type="button" onClick={addAssetRow}
+        style={{ padding: '8px 14px', borderRadius: 6, border: '1px dashed #6B3FDB', background: 'transparent', color: '#6B3FDB', fontSize: 13, fontWeight: 600, cursor: 'pointer', marginTop: 4 }}>
+        + Add another asset
+      </button>
+      <p style={{ fontSize: 11, color: '#9ca3af', margin: '10px 0 0' }}>
+        Leave rows blank to skip. Each named asset is recorded against this employee and appears on the Employee Assets page.
+      </p>
+    </div>
+  )}
+</div>
+
 {/* DOCUMENTS */}
 <div className="accordion">
   <div className="accordion-header" onClick={() => toggleSection("docs")}>
@@ -640,73 +921,6 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
   )}
 </div>
 
-{/* SYSTEM PERMISSIONS */}
-<div className="accordion">
-  <div className="accordion-header" onClick={() => toggleSection("permissions")}>
-    <h2>System Permissions</h2>
-  </div>
-
-  {openSection === "permissions" && (
-    <div className="accordion-body">
-      <div className="permission-cards">
-
-        <div className="permission-card">
-          <h3>Employee</h3>
-          <label><input type="checkbox"
-            checked={permissions.employee_view}
-            onChange={(e)=>setPermissions({...permissions, employee_view:e.target.checked})}/> View</label>
-          <label><input type="checkbox"
-            checked={permissions.employee_add}
-            onChange={(e)=>setPermissions({...permissions, employee_add:e.target.checked})}/> Add</label>
-          <label><input type="checkbox"
-            checked={permissions.employee_edit}
-            onChange={(e)=>setPermissions({...permissions, employee_edit:e.target.checked})}/> Edit</label>
-          <label><input type="checkbox"
-            checked={permissions.employee_delete}
-            onChange={(e)=>setPermissions({...permissions, employee_delete:e.target.checked})}/> Delete</label>
-        </div>
-
-        <div className="permission-card">
-          <h3>Finance</h3>
-          <label><input type="checkbox"
-            checked={permissions.finance_view}
-            onChange={(e)=>setPermissions({...permissions, finance_view:e.target.checked})}/> View</label>
-          <label><input type="checkbox"
-            checked={permissions.finance_edit}
-            onChange={(e)=>setPermissions({...permissions, finance_edit:e.target.checked})}/> Edit</label>
-          <label><input type="checkbox"
-            checked={permissions.finance_approve}
-            onChange={(e)=>setPermissions({...permissions, finance_approve:e.target.checked})}/> Approve</label>
-        </div>
-
-        <div className="permission-card">
-          <h3>Projects</h3>
-          <label><input type="checkbox"
-            checked={permissions.project_view}
-            onChange={(e)=>setPermissions({...permissions, project_view:e.target.checked})}/> View</label>
-          <label><input type="checkbox"
-            checked={permissions.project_add}
-            onChange={(e)=>setPermissions({...permissions, project_add:e.target.checked})}/> Add</label>
-          <label><input type="checkbox"
-            checked={permissions.project_edit}
-            onChange={(e)=>setPermissions({...permissions, project_edit:e.target.checked})}/> Edit</label>
-        </div>
-
-        <div className="permission-card">
-          <h3>Reports</h3>
-          <label><input type="checkbox"
-            checked={permissions.report_view}
-            onChange={(e)=>setPermissions({...permissions, report_view:e.target.checked})}/> View</label>
-          <label><input type="checkbox"
-            checked={permissions.report_export}
-            onChange={(e)=>setPermissions({...permissions, report_export:e.target.checked})}/> Export</label>
-        </div>
-
-      </div>
-    </div>
-  )}
-</div>
-
 {/* NOTES */}
 <div className="accordion">
   <div className="accordion-header" onClick={() => toggleSection("notes")}>
@@ -726,7 +940,7 @@ const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
   )}
 </div>
 </div>
-<button type="submit" className="save-btn">Save</button>
+<button type="submit" className="save-btn" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
 
 </form>
 </div>

@@ -1,0 +1,75 @@
+.jrp-root { padding: 24px; max-width: 1400px; }
+.jrp-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.jrp-title { font-size: 22px; font-weight: 700; color: #111827; margin: 0 0 4px; }
+.jrp-sub { font-size: 13px; color: #6b7280; margin: 0; }
+.jrp-summary { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 20px; }
+.jrp-sum-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; display: flex; align-items: center; gap: 12px; }
+.jrp-sum-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.jrp-sum-num { font-size: 20px; font-weight: 700; color: #111827; }
+.jrp-sum-lbl { font-size: 11px; color: #6b7280; margin-top: 2px; }
+.jrp-filters { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.jrp-search { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 7px 12px; flex: 1; min-width: 200px; }
+.jrp-search input { border: none; outline: none; font-size: 13px; flex: 1; background: transparent; }
+.jrp-search button { background: none; border: none; cursor: pointer; padding: 0; color: #9ca3af; display: flex; }
+.jrp-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.jrp-tab { padding: 6px 12px; border: 1px solid #e5e7eb; border-radius: 20px; font-size: 12px; font-weight: 500; cursor: pointer; background: #fff; color: #374151; display: flex; align-items: center; gap: 4px; }
+.jrp-tab-active { background: #6B3FDB; border-color: #6B3FDB; color: #fff; }
+.jrp-tab-count { background: rgba(0,0,0,.1); border-radius: 10px; padding: 0 6px; font-size: 10px; }
+.jrp-tab-active .jrp-tab-count { background: rgba(255,255,255,.3); }
+.jrp-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 12px; }
+.jrp-table-wrap { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; }
+.jrp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.jrp-table thead tr { background: #f9fafb; }
+.jrp-table th { padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid #e5e7eb; }
+.jrp-table td { padding: 12px 14px; border-bottom: 1px solid #f3f4f6; }
+.jrp-row:last-child td { border-bottom: none; }
+.jrp-row:hover { background: #f9fafb; }
+.jrp-no { font-weight: 600; color: #4B2DCE; font-size: 12px; }
+.jrp-title-cell { font-weight: 600; color: #111827; }
+.jrp-dept { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: #f3f4f6; color: #374151; }
+.jrp-center { text-align: center; }
+.jrp-priority { font-size: 12px; }
+.jrp-stage-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.jrp-view-btn { background: #f3f4f6; border: none; border-radius: 6px; padding: 5px 8px; cursor: pointer; color: #6b7280; display: flex; }
+.jrp-view-btn:hover { background: #e5e7eb; }
+.jrp-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 1000; display: flex; justify-content: flex-end; }
+.jrp-drawer { width: 440px; background: #fff; height: 100vh; display: flex; flex-direction: column; animation: jrp-slide .25s ease; }
+@keyframes jrp-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+.jrp-drawer-hd { display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #e5e7eb; }
+.jrp-drawer-hd h3 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }
+.jrp-icon-btn { background: none; border: none; cursor: pointer; color: #6b7280; padding: 4px; border-radius: 4px; display: flex; }
+.jrp-icon-btn:hover { background: #f3f4f6; }
+.jrp-drawer-body { flex: 1; overflow-y: auto; padding: 20px; }
+.jrp-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.jrp-detail-item { display: flex; flex-direction: column; gap: 2px; }
+.jrp-detail-lbl { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: .4px; }
+.jrp-detail-val { font-size: 13px; font-weight: 600; color: #111827; }
+.jrp-drawer-ft { padding: 16px 20px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 8px; }
+.jrp-btn-outline { padding: 8px 20px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; background: #fff; color: #374151; }
+.jrp-loading { display: flex; justify-content: center; padding: 48px; }
+.jrp-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: jrp-spin .8s linear infinite; }
+@keyframes jrp-spin { to { transform: rotate(360deg); } }
+@media (max-width: 768px) { .jrp-summary { grid-template-columns: repeat(2,1fr); } .jrp-table-wrap { overflow-x: auto; } }
+.jrp-header-actions { display: flex; align-items: center; gap: 8px; }
+.jrp-btn-primary { padding: 8px 12px; border: 1px solid #6B3FDB; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; background: #6B3FDB; color: #fff; display: inline-flex; align-items: center; gap: 6px; }
+.jrp-btn-primary:hover { background: #5B35D5; border-color: #5B35D5; }
+.jrp-btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+.jrp-btn-outline { display: inline-flex; align-items: center; gap: 6px; }
+.jrp-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.jrp-field { display: flex; flex-direction: column; gap: 6px; }
+.jrp-field label { font-size: 12px; color: #6b7280; font-weight: 600; }
+.jrp-field input,
+.jrp-field select,
+.jrp-field textarea { width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; font-size: 13px; color: #111827; outline: none; background: #fff; }
+.jrp-field textarea { resize: vertical; }
+.jrp-field input:focus,
+.jrp-field select:focus,
+.jrp-field textarea:focus { border-color: #6B3FDB; box-shadow: 0 0 0 3px rgba(107,63,219,0.12); }
+.jrp-field-full { grid-column: 1 / -1; }
+.jrp-detail-full { grid-column: 1 / -1; }
+
+@media (max-width: 768px) {
+  .jrp-header-actions { width: 100%; justify-content: flex-start; }
+  .jrp-drawer { width: 100%; }
+  .jrp-form-grid { grid-template-columns: 1fr; }
+}

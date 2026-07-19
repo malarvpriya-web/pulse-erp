@@ -8,7 +8,7 @@
 .tvana-period-btns { display: flex; gap: 4px; }
 .tvana-period-btn  { background: none; border: 1px solid #e5e7eb; border-radius: 7px; padding: 6px 14px; font-size: 12px; color: #6b7280; cursor: pointer; transition: all .15s; font-weight: 500; }
 .tvana-period-btn:hover { background: #f9fafb; }
-.tvana-period-active { background: #eef2ff; border-color: #6366f1; color: #4338ca; font-weight: 600; }
+.tvana-period-active { background: #E8E1FC; border-color: #6B3FDB; color: #4B2DCE; font-weight: 600; }
 
 .tvana-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
 @media (max-width: 900px) { .tvana-stats { grid-template-columns: repeat(2, 1fr); } }
@@ -37,6 +37,6 @@
 .tvana-tbl tr:last-child td { border-bottom: none; }
 
 .tvana-emp    { display: flex; align-items: center; gap: 8px; }
-.tvana-avatar { width: 26px; height: 26px; border-radius: 50%; background: #eef2ff; color: #4338ca; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tvana-avatar { width: 26px; height: 26px; border-radius: 50%; background: #E8E1FC; color: #4B2DCE; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .tvana-trips-badge { background: #f3f4f6; color: #374151; border-radius: 20px; padding: 2px 8px; font-size: 12px; font-weight: 600; }
 .tvana-spend { font-weight: 700; color: #111827; }

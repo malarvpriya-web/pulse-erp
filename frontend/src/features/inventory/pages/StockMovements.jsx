@@ -1,24 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Search, Plus, RefreshCw, X, ArrowRightLeft } from 'lucide-react';
 import api from '@/services/api/client';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './StockMovements.css';
 
-const SAMPLE_MOVES = [
-  { id: 1, item_name: 'Steel Rods 12mm',    sku: 'SKU-005', movement_type: 'IN',  quantity: 500, reference: 'GRN-001', notes: 'Receipt against PO-001', created_at: '2024-11-01T09:00:00Z', created_by: 'Rajesh K' },
-  { id: 2, item_name: 'Ball Bearings 20mm', sku: 'SKU-001', movement_type: 'OUT', quantity: 50,  reference: 'SO-102',  notes: 'Issued for production',   created_at: '2024-11-02T11:30:00Z', created_by: 'Priya S' },
-  { id: 3, item_name: 'Packing Tape 48mm',  sku: 'SKU-003', movement_type: 'OUT', quantity: 30,  reference: 'ISS-007', notes: 'Dispatch packaging',        created_at: '2024-11-03T14:00:00Z', created_by: 'Anand M' },
-  { id: 4, item_name: 'Lubricant Oil 5L',   sku: 'SKU-004', movement_type: 'IN',  quantity: 20,  reference: 'GRN-002', notes: 'Monthly restock',          created_at: '2024-11-05T10:00:00Z', created_by: 'Rajesh K' },
-  { id: 5, item_name: 'Copper Wire 2.5mm',  sku: 'SKU-002', movement_type: 'IN',  quantity: 200, reference: 'GRN-003', notes: 'Received from Tata',        created_at: '2024-11-07T09:30:00Z', created_by: 'Priya S' },
-  { id: 6, item_name: 'Steel Rods 12mm',    sku: 'SKU-005', movement_type: 'OUT', quantity: 80,  reference: 'WO-011',  notes: 'Work order issue',          created_at: '2024-11-08T15:00:00Z', created_by: 'Anand M' },
-];
-
-const SAMPLE_ITEMS = [
-  { id: 1, name: 'Steel Rods 12mm',    sku: 'SKU-005' },
-  { id: 2, name: 'Ball Bearings 20mm', sku: 'SKU-001' },
-  { id: 3, name: 'Packing Tape 48mm',  sku: 'SKU-003' },
-  { id: 4, name: 'Lubricant Oil 5L',   sku: 'SKU-004' },
-  { id: 5, name: 'Copper Wire 2.5mm',  sku: 'SKU-002' },
-];
 
 const emptyAdj = () => ({
   item_id: '', item_name: '', adjustment_type: 'Addition',
@@ -26,9 +12,10 @@ const emptyAdj = () => ({
 });
 
 export default function StockMovements() {
+  const { readOnly } = usePageAccess();
   const [moves,     setMoves]     = useState([]);
   const [invItems,  setInvItems]  = useState([]);
-  const [loading,   setLoading]   = useState(true);
+  const [loading,   setLoading]   = useState(false);
   const [search,    setSearch]    = useState('');
   const [fType,     setFType]     = useState('');
   const [drawer,    setDrawer]    = useState(false);
@@ -51,10 +38,10 @@ export default function StockMovements() {
       api.get('/inventory/items'),
     ]);
     const rawMov = movRes.status   === 'fulfilled' ? (movRes.value.data.movements || movRes.value.data) : [];
-    setMoves(Array.isArray(rawMov) && rawMov.length ? rawMov : SAMPLE_MOVES);
+    setMoves(Array.isArray(rawMov) ? rawMov : []);
 
     const rawItems = itemsRes.status === 'fulfilled' ? (itemsRes.value.data.items || itemsRes.value.data) : [];
-    setInvItems(Array.isArray(rawItems) && rawItems.length ? rawItems : SAMPLE_ITEMS);
+    setInvItems(Array.isArray(rawItems) ? rawItems : []);
 
     setLoading(false);
   }, [fType, search]);
@@ -89,6 +76,8 @@ export default function StockMovements() {
 
       {toast && <div className={`sm-toast sm-toast-${toast.type}`}>{toast.msg}</div>}
 
+      {readOnly && <ReadOnlyBanner />}
+
       <div className="sm-header">
         <div>
           <h2 className="sm-title">Stock Movements</h2>
@@ -100,9 +89,11 @@ export default function StockMovements() {
         </div>
         <div className="sm-header-r">
           <button className="sm-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="sm-btn-primary" onClick={() => { setForm(emptyAdj()); setDrawer(true); }}>
-            <Plus size={14} /> Stock Adjustment
-          </button>
+          {!readOnly && (
+            <button className="sm-btn-primary" onClick={() => { setForm(emptyAdj()); setDrawer(true); }}>
+              <Plus size={14} /> Stock Adjustment
+            </button>
+          )}
         </div>
       </div>
 
@@ -161,7 +152,7 @@ export default function StockMovements() {
                   <td className="sm-mono">{m.reference || '—'}</td>
                   <td className="sm-notes">{m.notes || '—'}</td>
                   <td>{m.created_by || '—'}</td>
-                  <td>{m.created_at ? new Date(m.created_at).toLocaleDateString('en-IN') : '—'}</td>
+                  <td>{m.created_at ? new Date(m.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -183,10 +174,10 @@ export default function StockMovements() {
                 <select value={form.item_id}
                   onChange={e => {
                     const it = invItems.find(i => String(i.id) === e.target.value);
-                    setForm(f => ({ ...f, item_id: e.target.value, item_name: it?.name || '' }));
+                    setForm(f => ({ ...f, item_id: e.target.value, item_name: it?.item_name || '' }));
                   }}>
                   <option value="">Select item…</option>
-                  {invItems.map(it => <option key={it.id} value={it.id}>{it.name} ({it.sku})</option>)}
+                  {invItems.map(it => <option key={it.id} value={it.id}>{it.item_name} ({it.item_code})</option>)}
                 </select>
               </div>
               <div className="sm-row2">

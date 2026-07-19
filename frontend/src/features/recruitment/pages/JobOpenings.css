@@ -18,12 +18,12 @@
 .jo-tabs      { display: flex; gap: 4px; flex-wrap: wrap; }
 .jo-tab       { background: none; border: 1px solid #e5e7eb; border-radius: 7px; padding: 5px 12px; font-size: 12px; color: #6b7280; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 5px; }
 .jo-tab:hover { background: #f9fafb; }
-.jo-tab-active { background: #eef2ff; border-color: #6366f1; color: #4338ca; font-weight: 600; }
+.jo-tab-active { background: #E8E1FC; border-color: #6B3FDB; color: #4B2DCE; font-weight: 600; }
 .jo-tab-count  { background: #e5e7eb; border-radius: 10px; padding: 1px 6px; font-size: 10px; }
-.jo-tab-active .jo-tab-count { background: #c7d2fe; color: #4338ca; }
+.jo-tab-active .jo-tab-count { background: #D4CAFE; color: #4B2DCE; }
 
 .jo-loading { display: flex; justify-content: center; padding: 80px; }
-.jo-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: jo-spin .6s linear infinite; }
+.jo-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: jo-spin .6s linear infinite; }
 @keyframes jo-spin { to { transform: rotate(360deg); } }
 
 .jo-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 80px; color: #9ca3af; font-size: 14px; }
@@ -41,10 +41,10 @@
   gap: 10px;
   transition: box-shadow .15s, border-color .15s;
 }
-.jo-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.08); border-color: #c7d2fe; }
+.jo-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.08); border-color: #D4CAFE; }
 
 .jo-card-hd { display: flex; align-items: center; justify-content: space-between; }
-.jo-card-icon { width: 36px; height: 36px; border-radius: 9px; background: #eef2ff; color: #4338ca; display: flex; align-items: center; justify-content: center; }
+.jo-card-icon { width: 36px; height: 36px; border-radius: 9px; background: #E8E1FC; color: #4B2DCE; display: flex; align-items: center; justify-content: center; }
 .jo-card-meta-top { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
 .jo-badge      { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 600; }
@@ -72,7 +72,10 @@
   border-radius: 7px; padding: 7px; font-size: 12px; font-weight: 600;
   color: #374151; cursor: pointer; transition: all .15s;
 }
-.jo-pipeline-btn:hover { background: #eef2ff; border-color: #c7d2fe; color: #4338ca; }
+.jo-pipeline-btn:hover { background: #E8E1FC; border-color: #D4CAFE; color: #4B2DCE; }
+
+.jo-card-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.jo-card-actions .jo-pipeline-btn { flex: 1; }
 
 /* Drawer */
 .jo-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; justify-content: flex-end; }
@@ -93,10 +96,10 @@
 .jo-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
 .jo-field input:focus,
 .jo-field select:focus,
-.jo-field textarea:focus { outline: none; border-color: #6366f1; }
+.jo-field textarea:focus { outline: none; border-color: #6B3FDB; }
 
-.jo-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.jo-btn-primary:hover    { background: #4f46e5; }
+.jo-btn-primary { display: flex; align-items: center; gap: 6px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.jo-btn-primary:hover    { background: #5B35D5; }
 .jo-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 .jo-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
 .jo-btn-outline:hover { background: #f9fafb; }

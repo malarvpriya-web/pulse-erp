@@ -24,7 +24,7 @@
 .st-card-title { font-size: 14px; font-weight: 700; color: #111827; margin-bottom: 14px; }
 
 .st-loading { display: flex; justify-content: center; padding: 60px; }
-.st-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: st-spin .6s linear infinite; }
+.st-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: st-spin .6s linear infinite; }
 @keyframes st-spin { to { transform: rotate(360deg); } }
 
 .st-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
@@ -33,7 +33,7 @@
 
 .st-card-hd { display: flex; align-items: center; justify-content: space-between; }
 .st-emp-info { display: flex; align-items: center; gap: 10px; }
-.st-avatar   { width: 36px; height: 36px; border-radius: 50%; background: #eef2ff; color: #4338ca; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.st-avatar   { width: 36px; height: 36px; border-radius: 50%; background: #E8E1FC; color: #4B2DCE; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .st-emp-name { font-size: 14px; font-weight: 700; color: #111827; }
 .st-emp-role { font-size: 11px; color: #6b7280; margin-top: 1px; }
 .st-pct-badge { font-size: 14px; font-weight: 800; padding: 5px 10px; border-radius: 8px; }
@@ -64,10 +64,10 @@
 .st-field input,
 .st-field select { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
 .st-field input:focus,
-.st-field select:focus { outline: none; border-color: #6366f1; }
+.st-field select:focus { outline: none; border-color: #6B3FDB; }
 
-.st-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.st-btn-primary:hover    { background: #4f46e5; }
+.st-btn-primary { display: flex; align-items: center; gap: 6px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.st-btn-primary:hover    { background: #5B35D5; }
 .st-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 .st-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
 .st-btn-outline:hover { background: #f9fafb; }

@@ -1,189 +1,128 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Search, X, CheckCircle, XCircle, Eye, Plane } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import './TravelApprovals.css';
+import { CheckCircle, XCircle, Clock, Search } from 'lucide-react';
 
-const SAMPLE = [
-  { id: 1, requestNo: 'TR-006', employee: 'Vikram Singh', department: 'Sales', purpose: 'Customer Visit', fromCity: 'Pune', toCity: 'Nagpur', travelDate: '2026-03-22', returnDate: '2026-03-23', mode: 'Train', estimatedBudget: 5200, advanceRequired: true, status: 'Pending' },
-  { id: 2, requestNo: 'TR-007', employee: 'Meera Joshi', department: 'Engineering', purpose: 'Tech Conference', fromCity: 'Pune', toCity: 'Bengaluru', travelDate: '2026-03-28', returnDate: '2026-03-30', mode: 'Air', estimatedBudget: 20000, advanceRequired: true, status: 'Pending' },
-  { id: 3, requestNo: 'TR-008', employee: 'Suresh Nair', department: 'Finance', purpose: 'Board Meeting', fromCity: 'Pune', toCity: 'Mumbai', travelDate: '2026-03-19', returnDate: '2026-03-19', mode: 'Car', estimatedBudget: 3000, advanceRequired: false, status: 'Approved' },
-  { id: 4, requestNo: 'TR-009', employee: 'Anika Patel', department: 'HR', purpose: 'Recruitment Drive', fromCity: 'Pune', toCity: 'Delhi', travelDate: '2026-03-15', returnDate: '2026-03-16', mode: 'Air', estimatedBudget: 14000, advanceRequired: true, status: 'Rejected' },
-  { id: 5, requestNo: 'TR-010', employee: 'Rohit Gupta', department: 'Operations', purpose: 'Site Inspection', fromCity: 'Pune', toCity: 'Kolkata', travelDate: '2026-04-05', returnDate: '2026-04-07', mode: 'Air', estimatedBudget: 25000, advanceRequired: true, status: 'Pending' },
-];
-
-const TABS = ['All', 'Pending', 'Approved', 'Rejected'];
-const STATUS_COLORS = { Pending: '#fef3c7', Approved: '#dcfce7', Rejected: '#fee2e2' };
-const STATUS_TEXT   = { Pending: '#92400e', Approved: '#15803d', Rejected: '#991b1b' };
-const fmt = n => `₹${Number(n).toLocaleString('en-IN')}`;
+const fmt = n => `₹${Number(n||0).toLocaleString('en-IN')}`;
 
 export default function TravelApprovals() {
-  const [approvals, setApprovals] = useState(SAMPLE);
-  const [loading, setLoading]     = useState(false);
-  const [fTab, setFTab]           = useState('Pending');
-  const [search, setSearch]       = useState('');
-  const [drawer, setDrawer]       = useState(null);
-  const [comment, setComment]     = useState('');
-  const [saving, setSaving]       = useState(false);
-  const [toast, setToast]         = useState(null);
+  const [requests, setRequests] = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [filter,   setFilter]   = useState('Pending');
+  const [search,   setSearch]   = useState('');
+  const [acting,   setActing]   = useState(null);
+  const [toast,    setToast]    = useState(null);
 
-  const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = {};
-      if (fTab !== 'All') params.status = fTab;
-      const res = await api.get('/travel/approvals', { params });
-      const raw = res.data?.data ?? res.data;
-      setApprovals(Array.isArray(raw) && raw.length ? raw : SAMPLE);
-    } catch { setApprovals(SAMPLE); }
-    finally { setLoading(false); }
-  }, [fTab]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const counts = TABS.reduce((acc, t) => ({
-    ...acc,
-    [t]: t === 'All' ? approvals.length : approvals.filter(a => a.status === t).length
-  }), {});
-
-  const filtered = approvals.filter(a =>
-    (fTab === 'All' || a.status === fTab) &&
-    (a.employee?.toLowerCase().includes(search.toLowerCase()) ||
-     a.purpose?.toLowerCase().includes(search.toLowerCase()) ||
-     a.requestNo?.toLowerCase().includes(search.toLowerCase()))
-  );
-
-  const handleAction = async (action) => {
-    if (action === 'Rejected' && !comment.trim()) { showToast('Comment required for rejection', 'error'); return; }
-    setSaving(true);
-    const id = drawer.id;
-    try {
-      await api.put(`/travel/requests/${id}/status`, { status: action, comment });
-      showToast(`Request ${action === 'Approved' ? 'approved' : 'rejected'}!`);
-    } catch {
-      showToast(`Request ${action === 'Approved' ? 'approved' : 'rejected'} (offline)`);
-    }
-    setApprovals(prev => prev.map(a => a.id === id ? { ...a, status: action } : a));
-    setDrawer(null);
-    setComment('');
-    setSaving(false);
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
   };
 
+  const load = () => {
+    setLoading(true);
+    api.get('/travel/approvals', { params: { status: filter === 'All' ? undefined : filter } })
+      .then(r => setRequests(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setRequests([]))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [filter]);
+
+  const act = async (id, status) => {
+    setActing(id);
+    try {
+      await api.put(`/travel/requests/${id}/status`, { status });
+      load();
+      showToast(`Travel request ${status.toLowerCase()} successfully`);
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Action failed. Please try again.', 'error');
+    } finally { setActing(null); }
+  };
+
+  const filtered = requests.filter(r =>
+    !search || [r.employee, r.destination, r.purpose].some(v => (v||'').toLowerCase().includes(search.toLowerCase()))
+  );
+
   return (
-    <div className="tva-root">
-      {toast && <div className={`tva-toast tva-toast-${toast.type}`}>{toast.msg}</div>}
-
-      <div className="tva-header">
-        <div>
-          <h1 className="tva-title">Travel Approvals</h1>
-          <p className="tva-sub">Review and approve travel requests from your team</p>
+    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+      {toast && (
+        <div style={{ position:'fixed', top:16, right:16, zIndex:9999, padding:'10px 18px', borderRadius:8, fontWeight:600, fontSize:13,
+          background: toast.type === 'success' ? '#d1fae5' : '#fee2e2',
+          color:      toast.type === 'success' ? '#065f46' : '#991b1b' }}>
+          {toast.msg}
         </div>
+      )}
+      <div style={{ marginBottom:24 }}>
+        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Travel Approvals</h1>
+        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Review and action travel requests</p>
       </div>
 
-      <div className="tva-filters">
-        <div className="tva-search">
-          <Search size={15} color="#9ca3af" />
-          <input placeholder="Search by employee, purpose…" value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button onClick={() => setSearch('')}><X size={13} /></button>}
+      <div style={{ display:'flex', gap:12, marginBottom:20 }}>
+        <div style={{ position:'relative', flex:1 }}>
+          <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..."
+            style={{ width:'100%', paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8, border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
         </div>
-        <div className="tva-tabs">
-          {TABS.map(t => (
-            <button key={t} className={`tva-tab ${fTab === t ? 'tva-tab-active' : ''}`} onClick={() => setFTab(t)}>
-              {t} <span className="tva-tab-count">{counts[t]}</span>
-            </button>
-          ))}
-        </div>
+        {['Pending','Approved','Rejected','All'].map(s => (
+          <button key={s} onClick={() => setFilter(s)}
+            style={{ padding:'7px 14px', borderRadius:8, border:'1px solid', fontSize:12, fontWeight:500, cursor:'pointer',
+              borderColor: filter===s ? '#6B3FDB':'#e5e7eb',
+              background:  filter===s ? '#6B3FDB':'#fff',
+              color:       filter===s ? '#fff'   :'#374151' }}>{s}</button>
+        ))}
       </div>
 
-      {loading ? (
-        <div className="tva-loading"><div className="tva-spinner" /></div>
-      ) : filtered.length === 0 ? (
-        <div className="tva-empty"><Plane size={32} color="#d1d5db" /><p>No requests to review</p></div>
-      ) : (
-        <div className="tva-table-wrap">
-          <table className="tva-table">
+      <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
+        {loading ? (
+          <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>Loading...</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>No requests found.</div>
+        ) : (
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
             <thead>
-              <tr><th>Request #</th><th>Employee</th><th>Department</th><th>Purpose</th><th>Route</th><th>Date</th><th>Budget</th><th>Status</th><th>Actions</th></tr>
+              <tr style={{ background:'#f9fafb' }}>
+                {['Request #','Employee','Destination','Purpose','Dates','Budget','Status','Actions'].map(h => (
+                  <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4' }}>{h}</th>
+                ))}
+              </tr>
             </thead>
             <tbody>
-              {filtered.map(r => (
-                <tr key={r.id} className="tva-row">
-                  <td><span className="tva-num">{r.requestNo}</span></td>
-                  <td><div className="tva-emp"><div className="tva-avatar">{r.employee.split(' ').map(w => w[0]).join('').slice(0,2)}</div>{r.employee}</div></td>
-                  <td><span className="tva-dept">{r.department}</span></td>
-                  <td>{r.purpose}</td>
-                  <td>{r.fromCity} → {r.toCity}</td>
-                  <td>{new Date(r.travelDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</td>
-                  <td><span className="tva-amount">{fmt(r.estimatedBudget)}</span></td>
-                  <td><span className="tva-badge" style={{ background: STATUS_COLORS[r.status], color: STATUS_TEXT[r.status] }}>{r.status}</span></td>
-                  <td>
-                    <div className="tva-row-actions">
-                      <button className="tva-view-btn" onClick={() => { setDrawer(r); setComment(''); }} title="Review"><Eye size={14} /></button>
-                      {r.status === 'Pending' && <>
-                        <button className="tva-approve-btn" onClick={() => { setDrawer(r); setComment(''); }} title="Approve"><CheckCircle size={14} /></button>
-                        <button className="tva-reject-btn"  onClick={() => { setDrawer(r); setComment(''); }} title="Reject"><XCircle size={14} /></button>
-                      </>}
-                    </div>
+              {filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderBottom:'1px solid #f9fafb', background:i%2===0?'#fff':'#fafafa' }}>
+                  <td style={{ padding:'10px 16px', fontWeight:600, color:'#6B3FDB' }}>{r.requestNo || `TR-${String(r.id).padStart(3,'0')}`}</td>
+                  <td style={{ padding:'10px 16px', color:'#1f2937', fontWeight:500 }}>{r.employee || r.employee_name || '—'}</td>
+                  <td style={{ padding:'10px 16px', color:'#374151' }}>{r.destination || r.toCity || '—'}</td>
+                  <td style={{ padding:'10px 16px', color:'#6b7280', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.purpose || '—'}</td>
+                  <td style={{ padding:'10px 16px', color:'#374151', whiteSpace:'nowrap' }}>
+                    {(r.from_date || r.travelDate || '').slice(0,10)} → {(r.to_date || r.returnDate || '').slice(0,10)}
+                  </td>
+                  <td style={{ padding:'10px 16px', color:'#374151' }}>{fmt(r.budget || r.estimatedBudget)}</td>
+                  <td style={{ padding:'10px 16px' }}>
+                    <span style={{
+                      background: r.status==='Pending'?'#fef3c7':r.status==='Approved'?'#d1fae5':'#fee2e2',
+                      color:      r.status==='Pending'?'#92400e':r.status==='Approved'?'#065f46':'#991b1b',
+                      padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600
+                    }}>{r.status}</span>
+                  </td>
+                  <td style={{ padding:'10px 16px' }}>
+                    {r.status === 'Pending' && (
+                      <div style={{ display:'flex', gap:6 }}>
+                        <button onClick={() => act(r.id, 'Approved')} disabled={acting===r.id}
+                          style={{ display:'flex', alignItems:'center', gap:4, padding:'5px 10px', background:'#d1fae5', color:'#065f46', border:'none', borderRadius:6, cursor:'pointer', fontSize:12, fontWeight:600 }}>
+                          <CheckCircle size={13}/> Approve
+                        </button>
+                        <button onClick={() => act(r.id, 'Rejected')} disabled={acting===r.id}
+                          style={{ display:'flex', alignItems:'center', gap:4, padding:'5px 10px', background:'#fee2e2', color:'#991b1b', border:'none', borderRadius:6, cursor:'pointer', fontSize:12, fontWeight:600 }}>
+                          <XCircle size={13}/> Reject
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {drawer && (
-        <div className="tva-overlay" onClick={e => e.target === e.currentTarget && setDrawer(null)}>
-          <div className="tva-drawer">
-            <div className="tva-drawer-hd">
-              <h3>Review — {drawer.requestNo}</h3>
-              <button className="tva-icon-btn" onClick={() => setDrawer(null)}><X size={16} /></button>
-            </div>
-            <div className="tva-drawer-body">
-              <div className="tva-detail-grid">
-                {[
-                  ['Employee', drawer.employee], ['Department', drawer.department],
-                  ['Purpose', drawer.purpose], ['Mode', drawer.mode],
-                  ['From City', drawer.fromCity], ['To City', drawer.toCity],
-                  ['Travel Date', new Date(drawer.travelDate).toLocaleDateString('en-IN')],
-                  ['Return Date', drawer.returnDate ? new Date(drawer.returnDate).toLocaleDateString('en-IN') : '—'],
-                  ['Budget', fmt(drawer.estimatedBudget)], ['Advance Required', drawer.advanceRequired ? 'Yes' : 'No'],
-                ].map(([lbl, val]) => (
-                  <div key={lbl} className="tva-detail-item">
-                    <span className="tva-detail-lbl">{lbl}</span>
-                    <span className="tva-detail-val">{val}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="tva-field">
-                <label>Status</label>
-                <span className="tva-badge" style={{ background: STATUS_COLORS[drawer.status], color: STATUS_TEXT[drawer.status], width: 'fit-content' }}>{drawer.status}</span>
-              </div>
-
-              {drawer.status === 'Pending' && (
-                <div className="tva-field">
-                  <label>Comment {drawer.status === 'Pending' ? '' : ''}</label>
-                  <textarea rows={3} value={comment} onChange={e => setComment(e.target.value)} placeholder="Add a comment (required for rejection)…" />
-                </div>
-              )}
-            </div>
-            {drawer.status === 'Pending' && (
-              <div className="tva-drawer-ft">
-                <button className="tva-btn-outline" onClick={() => setDrawer(null)}>Close</button>
-                <button className="tva-btn-reject" onClick={() => handleAction('Rejected')} disabled={saving}>Reject</button>
-                <button className="tva-btn-approve" onClick={() => handleAction('Approved')} disabled={saving}>Approve</button>
-              </div>
-            )}
-            {drawer.status !== 'Pending' && (
-              <div className="tva-drawer-ft">
-                <button className="tva-btn-outline" onClick={() => setDrawer(null)}>Close</button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

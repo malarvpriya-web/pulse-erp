@@ -1,0 +1,104 @@
+/* ── LeaveSettings.css — prefix: ls- ────────────────────────────────────── */
+
+/* Toast */
+.ls-toast {
+  position: fixed; top: 18px; right: 20px; z-index: 9999;
+  padding: 11px 18px; border-radius: 10px; font-size: 13px; font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0,0,0,.12);
+  animation: ls-fadein .2s ease;
+}
+@keyframes ls-fadein { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+.ls-toast-success { background:#f0fdf4; border:1.5px solid #bbf7d0; color:#166534; }
+.ls-toast-error   { background:#fef2f2; border:1.5px solid #fecaca; color:#991b1b; }
+
+/* Section headings */
+.ls-section-title { font-size:15px; font-weight:700; color:#111827; margin:0 0 12px; }
+
+/* Empty state */
+.ls-empty { text-align:center; color:#9ca3af; font-size:13px; padding:28px 0 !important; }
+
+/* Required asterisk */
+.ls-req { color:#ef4444; margin-left:2px; }
+
+/* Row action buttons */
+.ls-actions { display:flex; gap:6px; align-items:center; }
+.ls-btn-icon {
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; border-radius:7px; border:none;
+  cursor:pointer; transition:background .15s;
+}
+.ls-btn-edit   { background:#eff6ff; color:#2563eb; }
+.ls-btn-edit:hover   { background:#dbeafe; }
+.ls-btn-del  { background:#fef2f2; color:#dc2626; }
+.ls-btn-del:hover  { background:#fee2e2; }
+
+/* Overlay */
+.ls-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:1000;
+  display:flex; align-items:center; justify-content:center;
+}
+
+/* Modal */
+.ls-modal {
+  background:#fff; border-radius:16px; width:100%; max-width:440px;
+  box-shadow:0 16px 48px rgba(0,0,0,.18); overflow:hidden;
+  display:flex; flex-direction:column;
+}
+.ls-modal-hd {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:18px 22px; border-bottom:1px solid #f3f4f6;
+  font-size:15px; font-weight:700; color:#111827;
+}
+.ls-close {
+  background:none; border:none; cursor:pointer; color:#9ca3af;
+  display:flex; align-items:center; padding:4px; border-radius:6px;
+  transition:color .15s;
+}
+.ls-close:hover { color:#374151; }
+
+/* Modal body */
+.ls-modal-body { padding:20px 22px; display:flex; flex-direction:column; gap:16px; }
+
+.ls-field { display:flex; flex-direction:column; gap:6px; }
+.ls-field label { font-size:12px; font-weight:700; color:#374151; text-transform:uppercase; letter-spacing:.04em; }
+.ls-field input,
+.ls-field select,
+.ls-field textarea {
+  border:1.5px solid #e5e7eb; border-radius:9px; padding:9px 13px;
+  font-size:14px; color:#111827; background:#fafafa; outline:none;
+  font-family:inherit; transition:border-color .15s;
+}
+.ls-field input:focus,
+.ls-field select:focus,
+.ls-field textarea:focus { border-color:#6366f1; background:#fff; }
+.ls-field input:disabled,
+.ls-field select:disabled { opacity:.6; cursor:not-allowed; }
+.ls-field textarea { resize:vertical; min-height:80px; }
+
+.ls-hint { font-size:11px; color:#9ca3af; margin-top:2px; }
+
+/* Inline modal error */
+.ls-modal-err {
+  margin: 0 22px 0; padding: 9px 13px; border-radius: 8px;
+  background: #fef2f2; border: 1.5px solid #fecaca; color: #991b1b;
+  font-size: 13px; font-weight: 500;
+}
+
+/* Modal footer */
+.ls-modal-ft {
+  display:flex; justify-content:flex-end; gap:10px;
+  padding:14px 22px; border-top:1px solid #f3f4f6;
+}
+.ls-btn-cancel {
+  padding:8px 18px; border-radius:9px; border:1.5px solid #e5e7eb;
+  background:#fff; color:#374151; font-size:13px; font-weight:600;
+  cursor:pointer; transition:background .15s;
+}
+.ls-btn-cancel:hover { background:#f9fafb; }
+.ls-btn-save {
+  padding:8px 20px; border-radius:9px; border:none;
+  background:#6366f1; color:#fff; font-size:13px; font-weight:700;
+  cursor:pointer; transition:opacity .15s;
+}
+.ls-btn-save:hover:not(:disabled) { opacity:.88; }
+.ls-btn-save:disabled { opacity:.5; cursor:not-allowed; }

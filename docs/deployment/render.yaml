@@ -1,0 +1,68 @@
+databases:
+  # ── Managed PostgreSQL ─────────────────────────────────────────────────────
+  - name: pulse-db
+    databaseName: pulse
+    user: pulse
+    plan: free          # upgrade to starter/standard for production workloads
+
+services:
+  # ── Backend ────────────────────────────────────────────────────────────────
+  - type: web
+    name: pulse-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # Render injects the managed-DB connection string automatically
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pulse-db
+          property: connectionString
+      # Auto-generated on first deploy; rotated via Render dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      # Auto-generated 32-byte key for AES-256 field encryption; rotated via Render dashboard
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      # Frontend origin for CORS — must match the deployed pulse-frontend service URL
+      - key: FRONTEND_URL
+        value: https://pulse-frontend.onrender.com
+      # ── Monitoring ──────────────────────────────────────────────────────────
+      # Slack/Discord/PagerDuty incoming-webhook URL for operational alerts
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      # DB latency (ms) before a slow-query alert fires (two consecutive checks)
+      - key: ALERT_THRESHOLD_MS
+        value: 800
+      # RSS memory (MB) before a memory-pressure alert fires (Render free = 512 MB)
+      - key: MEMORY_ALERT_MB
+        value: 450
+      # Write structured JSONL logs to logs/*.log inside the container
+      - key: LOG_TO_FILE
+        value: true
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+  - type: web
+    name: pulse-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      # Set to https://pulse-backend.onrender.com/api (no trailing slash)
+      - key: VITE_API_URL
+        sync: false
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

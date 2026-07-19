@@ -1,4 +1,5 @@
-import pool from '../../shared/db.js';
+import pool from '../../../config/db.js';
+import { sendPushToUser, isPushConfigured } from '../services/pushSender.js';
 
 const notificationsRepository = {
   async create(data) {
@@ -8,30 +9,47 @@ const notificationsRepository = {
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
       [user_id, title, message, module_name, reference_id, notification_type]
     );
+    // Mirror the in-app notification to the user's mobile devices. Fire-and-forget
+    // and fully guarded — a push failure must never affect the notification write.
+    if (isPushConfigured() && user_id != null) {
+      sendPushToUser(user_id, {
+        title: title || 'Pulse',
+        body: message || '',
+        data: { module: module_name, ref: reference_id, type: notification_type },
+      }).catch(() => {});
+    }
     return result.rows[0];
   },
 
-  async findByUser(user_id, filters = {}) {
+  async findByUser(user_id, company_id = null, filters = {}) {
     let query = `
-      SELECT * FROM notifications
-      WHERE user_id = $1 AND deleted_at IS NULL
+      SELECT n.* FROM notifications n
+      JOIN users u ON n.user_id = u.id
+      WHERE n.user_id = $1 AND n.deleted_at IS NULL
     `;
     const params = [user_id];
     let paramCount = 2;
 
+    if (company_id != null) {
+      query += ` AND u.company_id = $${paramCount}`;
+      params.push(company_id);
+      paramCount++;
+    }
+
     if (filters.is_read !== undefined) {
-      query += ` AND is_read = $${paramCount}`;
+      query += ` AND n.is_read = $${paramCount}`;
       params.push(filters.is_read);
       paramCount++;
     }
 
     if (filters.module_name) {
-      query += ` AND module_name = $${paramCount}`;
+      query += ` AND n.module_name = $${paramCount}`;
       params.push(filters.module_name);
       paramCount++;
     }
 
-    query += ` ORDER BY created_at DESC LIMIT 50`;
+    const limit = Math.min(parseInt(filters.limit) || 50, 100);
+    query += ` ORDER BY n.created_at DESC LIMIT ${limit}`;
 
     const result = await pool.query(query, params);
     return result.rows;
@@ -54,7 +72,17 @@ const notificationsRepository = {
     );
   },
 
-  async getUnreadCount(user_id) {
+  async getUnreadCount(user_id, company_id = null) {
+    if (company_id != null) {
+      const result = await pool.query(
+        `SELECT COUNT(*) as count FROM notifications n
+         JOIN users u ON n.user_id = u.id
+         WHERE n.user_id = $1 AND u.company_id = $2
+           AND n.is_read = false AND n.deleted_at IS NULL`,
+        [user_id, company_id]
+      );
+      return parseInt(result.rows[0].count);
+    }
     const result = await pool.query(
       `SELECT COUNT(*) as count FROM notifications
        WHERE user_id = $1 AND is_read = false AND deleted_at IS NULL`,

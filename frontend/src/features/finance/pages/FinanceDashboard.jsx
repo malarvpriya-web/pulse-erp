@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   Legend, Cell, PieChart, Pie
 } from 'recharts';
 import {
-  TrendingUp, TrendingDown, DollarSign, FileText, AlertTriangle,
+  TrendingUp, TrendingDown, IndianRupee, FileText, AlertTriangle,
   CheckCircle, Clock, RefreshCw, ArrowUpRight, ArrowDownRight,
   CreditCard, Banknote, Receipt, Building2, ChevronRight,
   Maximize2, X, Calendar, Filter
@@ -13,21 +13,13 @@ import {
 import {
   getFinanceDashboard, getInvoices,
 } from '../services/financeService';
+import { fmt, fmtN } from '../financeUtils';
 import api from '@/services/api/client';
+import { useFY } from '@/context/FYContext';
+import FYSelector from '@/components/core/FYSelector';
 import './FinanceDashboard.css';
 
 const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899'];
-
-const fmt = (n) => {
-  if (!n && n !== 0) return '₹0';
-  const num = parseFloat(n);
-  if (num >= 10000000) return `₹${(num/10000000).toFixed(2)}Cr`;
-  if (num >= 100000)   return `₹${(num/100000).toFixed(1)}L`;
-  if (num >= 1000)     return `₹${(num/1000).toFixed(0)}K`;
-  return `₹${num.toFixed(0)}`;
-};
-
-const fmtN = (n) => parseFloat(n||0).toLocaleString('en-IN',{maximumFractionDigits:0});
 
 const TrendBadge = ({ value, suffix='%' }) => {
   const up = value >= 0;
@@ -39,11 +31,11 @@ const TrendBadge = ({ value, suffix='%' }) => {
   );
 };
 
-const KPI = ({ icon:Icon, label, value, sub, trend, color, alert, onClick }) => (
+const KPI = ({ icon:IconComp, label, value, sub, trend, color, alert, onClick }) => (
   <div className={`fd-kpi${alert?' fd-kpi-alert':''}`}
     style={{'--c':color}} onClick={onClick}
     role={onClick?'button':undefined} tabIndex={onClick?0:undefined}>
-    <div className="fd-kpi-icon"><Icon size={19}/></div>
+    <div className="fd-kpi-icon"><IconComp size={19}/></div>
     <div className="fd-kpi-body">
       <p className="fd-kpi-label">{label}</p>
       <h3 className="fd-kpi-val">{value}</h3>
@@ -92,120 +84,155 @@ const statusColor = (s) => {
 };
 
 export default function FinanceDashboard({ setPage }) {
-  const [data,       setData]      = useState({});
-  const [loading,    setLoading]   = useState(true);
-  const [lastSync,   setLastSync]  = useState(new Date());
-  const [expand,     setExpand]    = useState(null);
-  const [period,     setPeriod]    = useState('month'); // month | quarter | year
-  const [activeTab,  setActiveTab] = useState('overview'); // overview | receivables | payables | gst
+  const { fyParams, fyLabel } = useFY();
+  const [data,          setData]         = useState({});
+  const [loading,       setLoading]      = useState(false);
+  const [lastSync,      setLastSync]     = useState(new Date());
+  const [expand,        setExpand]       = useState(null);
+  const [period,        setPeriod]       = useState('month'); // month | quarter | year
+  const [activeTab,     setActiveTab]    = useState('overview'); // overview | receivables | payables | gst
+  const [bankAcctCount, setBankAcctCount] = useState(null); // null = loading, 0 = no accounts
+
+  const isMounted = useRef(true);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
+    const periodMap = { month: '6m', quarter: '6m', year: 'cy' };
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const gstPeriod = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2,'0')}`;
+    const liveFY = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+    // Budget & TDS panels follow the globally selected Financial Year.
+    const selFYStart = parseInt(fyParams.fy.replace(/\D/g, '').slice(0, 4), 10) || liveFY;
+    const fyQ = `${selFYStart}-${String(selFYStart + 1).slice(-2)}`;
+    // Show the elapsed quarter for the live FY, else the final quarter for a closed FY.
+    const currentQtr = selFYStart === liveFY ? Math.ceil((now.getMonth() + 1) / 3) : 4;
     try {
-      const [dash, rev, exp, appr, cash] = await Promise.allSettled([
-        getFinanceDashboard(),
-        api.get('/dashboard/revenue'),
-        api.get('/dashboard/expenses'),
-        api.get('/dashboard/approvals'),
-        api.get('/dashboard/cash'),
+      const [dash, charts, budgets, inv, gstr3b, tdsSummary, dueSoonBills, bankSummary] = await Promise.allSettled([
+        getFinanceDashboard({ fyStart: fyParams.fyStart, fyEnd: fyParams.fyEnd }),
+        api.get('/finance/dashboard/charts'),
+        api.get('/budgets', { params: { financial_year: selFYStart } }),
+        getInvoices({ limit: 10 }),
+        api.get('/gst/gstr3b', { params: { period: gstPeriod } }),
+        api.get('/tds/quarterly-summary', { params: { financial_year: fyQ, quarter: `Q${currentQtr}` } }),
+        api.get('/finance/bills/due-soon', { params: { days: 30 } }),
+        api.get('/finance/bank-accounts/summary'),
       ]);
-      const inv = await getInvoices({ limit: 10 });
+      if (!isMounted.current) return;
       setData({
-        dash : dash.status  === 'fulfilled' ? dash.value  : {},
-        rev  : rev.status   === 'fulfilled' ? rev.value.data   : null,
-        exp  : exp.status   === 'fulfilled' ? exp.value.data   : null,
-        appr : appr.status  === 'fulfilled' ? appr.value.data  : null,
-        inv,
-        cash : cash.status  === 'fulfilled' ? cash.value.data  : {},
+        dash        : dash.status        === 'fulfilled' ? dash.value                                      : {},
+        charts      : charts.status      === 'fulfilled' ? charts.value.data                               : null,
+        budgets     : budgets.status     === 'fulfilled' ? (Array.isArray(budgets.value.data) ? budgets.value.data : []) : [],
+        inv         : inv.status         === 'fulfilled' ? inv.value                                       : [],
+        gstr3b      : gstr3b.status      === 'fulfilled' ? gstr3b.value.data                               : null,
+        tdsSummary  : tdsSummary.status  === 'fulfilled' ? tdsSummary.value.data                           : null,
+        dueSoonBills: dueSoonBills.status === 'fulfilled' ? (dueSoonBills.value.data?.bills || dueSoonBills.value.data || []) : [],
       });
+      if (bankSummary.status === 'fulfilled') {
+        setBankAcctCount(parseInt(bankSummary.value.data?.account_count ?? 0));
+      }
       setLastSync(new Date());
     } catch(e) { console.error(e); }
-    finally { setLoading(false); }
-  }, []);
+    finally { if (isMounted.current) setLoading(false); }
+  }, [period, fyParams.fy, fyParams.fyStart, fyParams.fyEnd]);
 
   useEffect(() => { load(); }, [load]);
 
    // ── derived ────────────────────────────────────────────────────────────
-  const dash = data.dash || {};
-  const rev  = data.rev;
-  const exp  = data.exp;
-  const cash = data.cash || {};
+  const dash    = data.dash    || {};
+  const charts  = data.charts  || null;
 
-  const monthRev  = dash.monthly_revenue  || rev?.thisMonth  || 84000;
-  const monthExp  = dash.monthly_expenses || 62000;
+  const monthRev  = dash.monthly_revenue  ?? 0;
+  const monthExp  = dash.monthly_expenses ?? 0;
   const netProfit = monthRev - monthExp;
   const profitPct = monthRev ? Math.round((netProfit/monthRev)*100) : 0;
-  const overdueAmt   = dash.overdue_amount   || 0;
-  const overdueCount = dash.overdue_invoices || 0;
-  const dueSoon      = dash.due_soon_invoices|| 0;
-  const pendingAppr  = dash.pending_approvals|| 0;
-  const ar = cash.accountsReceivable || 185000;
-  const ap = cash.accountsPayable    || 94000;
+  const overdueAmt   = dash.overdue_amount    ?? 0;
+  const overdueCount = dash.overdue_invoices  ?? 0;
+  const dueSoon      = dash.due_soon_invoices ?? 0;
+  const pendingAppr  = dash.pending_approvals ?? 0;
+  const ar = dash.accounts_receivable ?? 0;
+  const ap = dash.accounts_payable    ?? 0;
 
-  const revChart = rev
-    ? rev.months.map((m,i)=>({month:m, revenue:rev.values[i], expenses:rev.values[i]*0.72}))
-    : [{month:'Oct',revenue:48000,expenses:34000},{month:'Nov',revenue:55000,expenses:39000},
-       {month:'Dec',revenue:62000,expenses:44000},{month:'Jan',revenue:58000,expenses:42000},
-       {month:'Feb',revenue:71000,expenses:50000},{month:'Mar',revenue:84000,expenses:60000}];
+  // Revenue vs Expenses — from real chart data
+  const revChart = charts?.revenueExpenses?.length > 0 ? charts.revenueExpenses : [];
 
-  const expChart = exp
-    ? exp.labels.map((l,i)=>({name:l,value:exp.values[i]}))
-    : [{name:'Salaries',value:42000},{name:'Operations',value:12000},
-       {name:'Marketing',value:8500},{name:'Travel',value:4200},
-       {name:'IT',value:6300},{name:'Other',value:3100}];
+  // Expense Breakdown — from real bill breakdown
+  const expChart = charts?.expenseBreakdown?.length > 0 ? charts.expenseBreakdown : [];
   const totalExp = expChart.reduce((s,e)=>s+e.value,0);
 
-  const cashFlowData = [
-    {month:'Oct',inflow:52000,outflow:38000},{month:'Nov',inflow:61000,outflow:43000},
-    {month:'Dec',inflow:68000,outflow:47000},{month:'Jan',inflow:63000,outflow:45000},
-    {month:'Feb',inflow:77000,outflow:53000},{month:'Mar',inflow:91000,outflow:62000},
-  ];
+  // Cash Flow — from real payment data
+  const cashFlowData = charts?.cashFlow?.length > 0
+    ? charts.cashFlow
+    : revChart.map(m => ({ month: m.month, inflow: m.revenue, outflow: m.expenses }));
 
-  const agingAR = [
-    {bucket:'0–30 days', amount:85000, count:8},
-    {bucket:'31–60 days',amount:52000, count:5},
-    {bucket:'61–90 days',amount:31000, count:3},
-    {bucket:'>90 days',  amount:17000, count:2},
-  ];
-  const agingAP = [
-    {bucket:'0–30 days', amount:44000, count:6},
-    {bucket:'31–60 days',amount:28000, count:4},
-    {bucket:'61–90 days',amount:14000, count:2},
-    {bucket:'>90 days',  amount:8000,  count:1},
-  ];
+  const agingAR = (dash.arAging || []).map(r => ({ bucket: r.bucket, amount: r.amount, count: 0 }));
+  const agingAP = (dash.apAging || []).map(r => ({ bucket: r.bucket, amount: r.amount, count: 0 }));
+
+  // AP "Due in 7 Days" — filter real bills list, not the 30-day aging bucket
+  const _7daysFromNow = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+  const apDue7Days = (data.dueSoonBills || []).filter(b => b.due_date && b.due_date <= _7daysFromNow);
+  const apDue7DaysAmt = apDue7Days.reduce((s, b) => s + parseFloat(b.amount || b.total_amount || 0), 0);
+  const apDue7DaysLabel = apDue7Days.length > 0 ? `${apDue7Days.length} bill${apDue7Days.length > 1 ? 's' : ''} — ${fmt(apDue7DaysAmt)}` : '—';
+
+  // GST data — derived from live API responses (gstr3b + tds quarterly summary)
+  const _now          = new Date();
+  const _filingMon    = _now.toLocaleString('en-IN', { month: 'short' });
+  const _prevMonYear  = new Date(_now.getFullYear(), _now.getMonth() - 1, 1)
+                          .toLocaleString('en-IN', { month: 'short', year: 'numeric' });
+  const _gstr3bOverdue = _now.getDate() > 20;
+  const _tdsOverdue    = _now.getDate() > 7;
+
+  const gstr3bData = data.gstr3b || {};
+  const tdsData    = data.tdsSummary;
+
+  // Extract live values from GSTR-3B API response
+  // API returns: { outward_supplies: { total_tax }, itc_available: { total_itc }, net_tax_payable }
+  const _outputGST = parseFloat(
+    gstr3bData?.outward_supplies?.total_tax ?? gstr3bData?.net_tax_payable ?? 0
+  );
+  const _inputITC  = parseFloat(gstr3bData?.itc_available?.total_itc ?? 0);
+  const _itcAvail  = parseFloat(gstr3bData?.itc_available?.total_itc ?? 0);
+  const _itcUsed   = parseFloat(gstr3bData?.itc_available?.itc_utilized ?? (_itcAvail * 0));
+  const _netGST    = parseFloat(gstr3bData?.net_tax_payable ?? Math.max(0, _outputGST - _inputITC));
+
+  // Extract live TDS total from quarterly summary
+  // API returns: { total_tds_deducted, total_tds_paid, ... }
+  const _tdsTotal  = tdsData
+    ? (Array.isArray(tdsData)
+        ? tdsData.reduce((s, r) => s + parseFloat(r.total_tds_deducted || r.tds_amount || 0), 0)
+        : parseFloat(tdsData.total_tds_deducted ?? tdsData.total_tds ?? 0))
+    : 0;
 
   const gstData = {
-    gstr1:  {status:'Filed',  period:'Feb 2026', due:'11 Mar', liability:38400},
-    gstr3b: {status:'Pending',period:'Feb 2026', due:'20 Mar', liability:38400},
-    gstr2b: {status:'Available',period:'Feb 2026',due:'—',     itc:24800},
-    tds:    {status:'Due',    period:'Feb 2026', due:'7 Mar',  amount:12600},
-    itc:    {available:24800, utilized:18200,    balance:6600},
-    summary:[
-      {label:'Output GST (Sales)',  amount:38400, type:'liability'},
-      {label:'Input ITC (Purchases)',amount:24800,type:'credit'},
-      {label:'Net GST Payable',     amount:13600, type:'payable'},
-      {label:'TDS Deducted',        amount:12600, type:'liability'},
-    ]
+    gstr1:  { status: 'Filed',   period: _prevMonYear, due: `11 ${_filingMon}`, liability: _outputGST },
+    gstr3b: { status: _gstr3bOverdue ? 'Overdue' : 'Pending', period: _prevMonYear, due: `20 ${_filingMon}`, liability: _netGST },
+    gstr2b: { status: 'Available', period: _prevMonYear, due: '—', itc: _itcAvail },
+    tds:    { status: _tdsOverdue ? 'Overdue' : 'Due', period: _prevMonYear, due: `7 ${_filingMon}`, amount: _tdsTotal },
+    itc:    { available: _itcAvail, utilized: _itcUsed, balance: Math.max(0, _itcAvail - _itcUsed) },
+    summary: [
+      { label: 'Output GST (Sales)',    amount: _outputGST, type: 'liability' },
+      { label: 'Input ITC (Purchases)', amount: _inputITC,  type: 'credit' },
+      { label: 'Net GST Payable',       amount: _netGST,    type: 'payable' },
+      { label: 'TDS Deducted',          amount: _tdsTotal,  type: 'liability' },
+    ],
   };
 
- const rawInv = data.inv?.rows || data.inv?.invoices || data.inv?.data || data.inv;
-const topInvoices = Array.isArray(rawInv)
-  ? rawInv.slice(0,8)
-  : [
-      {invoice_number:'INV-012',party_name:'TechCorp Ltd',   total_amount:125000,status:'paid',   due_date:'2026-02-28'},
-      {invoice_number:'INV-011',party_name:'Alpha Solutions', total_amount:145000,status:'pending',due_date:'2026-03-30'},
-      {invoice_number:'INV-010',party_name:'Gamma Corp',      total_amount:93000, status:'overdue',due_date:'2026-03-01'},
-      {invoice_number:'INV-009',party_name:'Beta Systems',    total_amount:62000, status:'pending',due_date:'2026-03-25'},
-      {invoice_number:'INV-008',party_name:'Epsilon Tech',    total_amount:78000, status:'pending',due_date:'2026-04-05'},
-    ];
+  const rawInv = data.inv?.rows || data.inv?.invoices || data.inv?.data || data.inv;
+  const topInvoices = Array.isArray(rawInv) ? rawInv.slice(0,8) : [];
 
-  const budgetData = [
-    {dept:'Engineering',budget:120000,actual:98000},
-    {dept:'Marketing',  budget:50000, actual:52000},
-    {dept:'Operations', budget:80000, actual:71000},
-    {dept:'HR',         budget:30000, actual:24000},
-    {dept:'Finance',    budget:25000, actual:22000},
-  ];
+  // Budget vs Actuals — from real /finance/budgets data, fallback to empty state
+  const budgetData = (data.budgets || [])
+    .filter(b => b.department && parseFloat(b.total_amount) > 0)
+    .slice(0, 6)
+    .map(b => ({
+      dept:   b.department,
+      budget: parseFloat(b.total_amount)   || 0,
+      actual: parseFloat(b.total_actual)   || 0,
+    }));
 
   const tabs = [
     {id:'overview',    label:'Overview'},
@@ -260,6 +287,28 @@ const topInvoices = Array.isArray(rawInv)
         </ExpandModal>
       )}
 
+      {/* No bank accounts banner */}
+      {bankAcctCount === 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 12, padding: '10px 16px', marginBottom: 12,
+          background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8,
+          fontSize: 13, color: '#92400e',
+        }}>
+          <span>
+            <strong>⚠ No bank accounts configured</strong> — Cash Position and Payment Batches are unavailable until you add one.
+          </span>
+          <button
+            onClick={() => setPage?.('BankAccounts')}
+            style={{
+              padding: '5px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: '#6B3FDB', color: '#fff', fontWeight: 600, fontSize: 12, whiteSpace: 'nowrap',
+            }}>
+            Add Bank Account
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="fd-header">
         <div>
@@ -267,6 +316,7 @@ const topInvoices = Array.isArray(rawInv)
           <p className="fd-sub">Last updated: {lastSync.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</p>
         </div>
         <div className="fd-header-r">
+          <FYSelector />
           <div className="fd-period-tabs">
             {['month','quarter','year'].map(p=>(
               <button key={p} className={`fd-period-tab${period===p?' active':''}`}
@@ -275,24 +325,24 @@ const topInvoices = Array.isArray(rawInv)
               </button>
             ))}
           </div>
-          <button className="fd-refresh-btn" onClick={load}>
-            <RefreshCw size={14}/> Refresh
+          <button className="fd-refresh-btn" onClick={load} disabled={loading}>
+            <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}}/> {loading ? 'Loading…' : 'Refresh'}
           </button>
         </div>
       </div>
 
       {/* KPI Strip */}
       <div className="fd-kpis">
-        <KPI icon={TrendingUp}   label="Monthly Revenue"  value={fmt(monthRev)}
-          trend={18} color="#6366f1" sub={`YTD: ${fmt(rev?.ytd||378000)}`}
+        <KPI icon={TrendingUp}   label={dash.fy_scoped ? 'Revenue (FY)' : 'Monthly Revenue'}  value={fmt(monthRev)}
+          color="#6366f1" sub={dash.fy_scoped ? fyLabel : (dash.ytd_revenue ? `YTD: ${fmt(dash.ytd_revenue)}` : undefined)}
           onClick={()=>setPage&&setPage('FinanceReports')}/>
-        <KPI icon={TrendingDown} label="Monthly Expenses" value={fmt(monthExp)}
-          trend={-5} color="#ef4444" sub={`${((monthExp/monthRev)*100).toFixed(0)}% of revenue`}/>
-        <KPI icon={DollarSign}   label="Net Profit"       value={fmt(netProfit)}
+        <KPI icon={TrendingDown} label={dash.fy_scoped ? 'Expenses (FY)' : 'Monthly Expenses'} value={fmt(monthExp)}
+          color="#ef4444" sub={monthRev > 0 ? `${((monthExp/monthRev)*100).toFixed(0)}% of revenue` : undefined}/>
+        <KPI icon={IndianRupee}   label={dash.fy_scoped ? 'Net Profit (FY)' : 'Net Profit'}       value={fmt(netProfit)}
           trend={profitPct} color="#10b981"
           sub={`Margin: ${profitPct}%`}/>
-        <KPI icon={Banknote}     label="Cash Balance"     value={fmt(cash.balance||250000)}
-          color="#3b82f6" sub={`AR: ${fmt(ar)} · AP: ${fmt(ap)}`}/>
+        <KPI icon={Banknote}     label="Cash Balance"     value={dash.cash_balance != null ? fmt(dash.cash_balance) : '—'}
+          color="#3b82f6" sub={ar || ap ? `AR: ${fmt(ar)} · AP: ${fmt(ap)}` : ''}/>
         <KPI icon={AlertTriangle} label="Overdue Invoices" value={overdueCount}
           color="#ef4444" alert={overdueCount>0}
           sub={`${fmt(overdueAmt)} at risk`}
@@ -331,22 +381,20 @@ const topInvoices = Array.isArray(rawInv)
                   <span className="fd-cm-dot" style={{background:'#6366f1'}}/>
                   <span>Revenue</span>
                   <strong>{fmt(monthRev)}</strong>
-                  <TrendBadge value={18}/>
                 </div>
                 <div className="fd-cm-item">
                   <span className="fd-cm-dot" style={{background:'#ef4444'}}/>
                   <span>Expenses</span>
                   <strong>{fmt(monthExp)}</strong>
-                  <TrendBadge value={-5}/>
                 </div>
                 <div className="fd-cm-item">
                   <span className="fd-cm-dot" style={{background:'#10b981'}}/>
                   <span>Net Profit</span>
                   <strong>{fmt(netProfit)}</strong>
-                  <TrendBadge value={profitPct}/>
+                  {monthRev > 0 && <TrendBadge value={profitPct}/>}
                 </div>
               </div>
-              <RevExpChart height={210}/>
+              <RevExpChart height={190}/>
             </Card>
           </div>
 
@@ -357,13 +405,10 @@ const topInvoices = Array.isArray(rawInv)
                 <div className="fd-pl-section">
                   <p className="fd-pl-heading">Income</p>
                   <div className="fd-pl-row"><span>Sales Revenue</span><span className="green">{fmt(monthRev)}</span></div>
-                  <div className="fd-pl-row"><span>Other Income</span><span className="green">{fmt(4200)}</span></div>
-                  <div className="fd-pl-row total"><span>Gross Income</span><span className="green">{fmt(monthRev+4200)}</span></div>
+                  <div className="fd-pl-row total"><span>Gross Income</span><span className="green">{fmt(monthRev)}</span></div>
                 </div>
                 <div className="fd-pl-section">
                   <p className="fd-pl-heading">Expenses</p>
-                  <div className="fd-pl-row"><span>Cost of Goods</span><span className="red">{fmt(28000)}</span></div>
-                  <div className="fd-pl-row"><span>Operating Exp</span><span className="red">{fmt(monthExp-28000)}</span></div>
                   <div className="fd-pl-row total"><span>Total Expenses</span><span className="red">{fmt(monthExp)}</span></div>
                 </div>
                 <div className="fd-pl-net">
@@ -372,7 +417,7 @@ const topInvoices = Array.isArray(rawInv)
                 </div>
                 <div className="fd-pl-margin">
                   <span>Profit Margin</span>
-                  <strong className="green">{profitPct}%</strong>
+                  <strong className={netProfit>=0?'green':'red'}>{profitPct}%</strong>
                 </div>
               </div>
             </Card>
@@ -393,12 +438,12 @@ const topInvoices = Array.isArray(rawInv)
                   <strong className="red">{fmt(cashFlowData.reduce((s,r)=>s+r.outflow,0))}</strong>
                 </div>
                 <div className="fd-cf-item">
-                  <DollarSign size={16} color="#6366f1"/>
-                  <span>Net Position</span>
-                  <strong className="blue">{fmt(cash.balance||250000)}</strong>
+                  <IndianRupee size={16} color="#6366f1"/>
+                  <span>Cash Balance</span>
+                  <strong className="blue">{fmt(dash.cash_balance ?? 0)}</strong>
                 </div>
               </div>
-              <ResponsiveContainer width="100%" height={180}>
+              <ResponsiveContainer width="100%" height={165}>
                 <BarChart data={cashFlowData} margin={{top:5,right:10,left:0,bottom:0}}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
                   <XAxis dataKey="month" tick={{fontSize:11}}/>
@@ -413,36 +458,44 @@ const topInvoices = Array.isArray(rawInv)
 
           {/* Expense Breakdown */}
           <div className="fc6">
-            <Card title="Expense Breakdown">
-              <div className="fd-exp-wrap">
-                <ResponsiveContainer width="45%" height={160}>
-                  <PieChart>
-                    <Pie data={expChart} cx="50%" cy="50%" innerRadius={45} outerRadius={70}
-                      dataKey="value" paddingAngle={3}>
-                      {expChart.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]}/>)}
-                    </Pie>
-                    <Tooltip formatter={v=>[fmt(v),'']}/>
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="fd-exp-legend">
-                  {expChart.map((e,i)=>(
-                    <div key={i} className="fd-exp-row">
-                      <span className="fd-exp-dot" style={{background:COLORS[i%COLORS.length]}}/>
-                      <span className="fd-exp-name">{e.name}</span>
-                      <span className="fd-exp-pct">{((e.value/totalExp)*100).toFixed(1)}%</span>
-                      <span className="fd-exp-amt">{fmt(e.value)}</span>
-                    </div>
-                  ))}
+            <Card title="Expense Breakdown — This Month">
+              {expChart.length > 0 ? (
+                <div className="fd-exp-wrap">
+                  <ResponsiveContainer width="45%" height={160}>
+                    <PieChart>
+                      <Pie data={expChart} cx="50%" cy="50%" innerRadius={45} outerRadius={70}
+                        dataKey="value" paddingAngle={3}>
+                        {expChart.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]}/>)}
+                      </Pie>
+                      <Tooltip formatter={v=>[fmt(v),'']}/>
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="fd-exp-legend">
+                    {expChart.map((e,i)=>(
+                      <div key={i} className="fd-exp-row">
+                        <span className="fd-exp-dot" style={{background:COLORS[i%COLORS.length]}}/>
+                        <span className="fd-exp-name">{e.name}</span>
+                        <span className="fd-exp-pct">{totalExp>0?((e.value/totalExp)*100).toFixed(1):'0.0'}%</span>
+                        <span className="fd-exp-amt">{fmt(e.value)}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="fd-empty">
+                  <Receipt size={24} color="#9ca3af"/>
+                  <p>No expense data for this month</p>
+                </div>
+              )}
             </Card>
           </div>
 
           {/* Budget vs Actual */}
           <div className="fc6">
-            <Card title="Budget vs Actual — This Month">
-              {budgetData.map((b,i)=>{
-                const pct = Math.round((b.actual/b.budget)*100);
+            <Card title="Budget vs Actual — This Year"
+              action={{label:'Manage Budgets', fn:()=>setPage&&setPage('BudgetManagement')}}>
+              {budgetData.length > 0 ? budgetData.map((b,i)=>{
+                const pct = b.budget > 0 ? Math.round((b.actual/b.budget)*100) : 0;
                 const over = pct > 100;
                 return (
                   <div key={i} className="fd-budget-row">
@@ -458,33 +511,49 @@ const topInvoices = Array.isArray(rawInv)
                     <span className="fd-budget-vals">{fmt(b.actual)} / {fmt(b.budget)}</span>
                   </div>
                 );
-              })}
+              }) : (
+                <div className="fd-empty">
+                  <Receipt size={24} color="#9ca3af"/>
+                  <p>No budgets configured for this year</p>
+                  <button className="fd-text-btn"
+                    onClick={()=>setPage&&setPage('BudgetManagement')}>
+                    Set up budgets
+                  </button>
+                </div>
+              )}
             </Card>
           </div>
 
           {/* Recent Invoices */}
           <div className="fc6">
-            <Card title="Recent Invoices" badge={topInvoices.length}
+            <Card title="Recent Invoices" badge={topInvoices.length||undefined}
               action={{label:'View All', fn:()=>setPage&&setPage('Invoices')}}>
-              <div className="fd-inv-list">
-                {topInvoices.slice(0,6).map((inv,i)=>(
-                  <div key={i} className="fd-inv-row">
-                    <div className="fd-inv-icon"><FileText size={14}/></div>
-                    <div className="fd-inv-info">
-                      <span className="fd-inv-num">{inv.invoice_number}</span>
-                      <span className="fd-inv-party">{inv.party_name}</span>
+              {topInvoices.length > 0 ? (
+                <div className="fd-inv-list">
+                  {topInvoices.slice(0,6).map((inv,i)=>(
+                    <div key={i} className="fd-inv-row">
+                      <div className="fd-inv-icon"><FileText size={14}/></div>
+                      <div className="fd-inv-info">
+                        <span className="fd-inv-num">{inv.invoice_number}</span>
+                        <span className="fd-inv-party">{inv.party_name || inv.customer_name || '—'}</span>
+                      </div>
+                      <div className="fd-inv-right">
+                        <span className="fd-inv-amt">{fmt(inv.total_amount)}</span>
+                        <span className="fd-status-badge"
+                          style={{background:statusColor(inv.status)+'18',
+                                  color:statusColor(inv.status)}}>
+                          {inv.status}
+                        </span>
+                      </div>
                     </div>
-                    <div className="fd-inv-right">
-                      <span className="fd-inv-amt">{fmt(inv.total_amount)}</span>
-                      <span className="fd-status-badge"
-                        style={{background:statusColor(inv.status)+'18',
-                                color:statusColor(inv.status)}}>
-                        {inv.status}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="fd-empty">
+                  <FileText size={24} color="#9ca3af"/>
+                  <p>No invoices yet</p>
+                </div>
+              )}
             </Card>
           </div>
 
@@ -503,25 +572,31 @@ const topInvoices = Array.isArray(rawInv)
                   <span>{dueSoon} invoice{dueSoon>1?'s':''} due within 7 days</span>
                 </div>
               )}
-              {gstData.gstr3b.status==='Pending' && (
-                <div className="fd-alert fd-alert-high">
+              {(gstData.gstr3b.status==='Pending'||gstData.gstr3b.status==='Overdue') && (
+                <div className={`fd-alert fd-alert-${gstData.gstr3b.status==='Overdue'?'high':'med'}`}>
                   <AlertTriangle size={14}/>
-                  <span>GSTR-3B filing due {gstData.gstr3b.due} — ₹{fmtN(gstData.summary[2].amount)} payable</span>
+                  <span>GSTR-3B {gstData.gstr3b.status==='Overdue'?'OVERDUE':'filing due'} {gstData.gstr3b.due} — ₹{fmtN(gstData.summary[2].amount)} payable</span>
                 </div>
               )}
-              {gstData.tds.status==='Due' && (
-                <div className="fd-alert fd-alert-med">
+              {(gstData.tds.status==='Due'||gstData.tds.status==='Overdue') && (
+                <div className={`fd-alert fd-alert-${gstData.tds.status==='Overdue'?'high':'med'}`}>
                   <Calendar size={14}/>
-                  <span>TDS payment due {gstData.tds.due} — ₹{fmtN(gstData.tds.amount)}</span>
+                  <span>TDS payment {gstData.tds.status==='Overdue'?'OVERDUE':'due'} {gstData.tds.due} — ₹{fmtN(gstData.tds.amount)}</span>
                 </div>
               )}
+              {budgetData.filter(b=>(b.actual/b.budget)>1).map((b,i)=>(
+                <div key={i} className="fd-alert fd-alert-high">
+                  <AlertTriangle size={14}/>
+                  <span>{b.dept} is {Math.round((b.actual/b.budget-1)*100)}% over budget this month</span>
+                </div>
+              ))}
               {pendingAppr > 0 && (
                 <div className="fd-alert fd-alert-low">
                   <CheckCircle size={14}/>
                   <span>{pendingAppr} items pending your approval</span>
                 </div>
               )}
-              {overdueCount===0 && dueSoon===0 && pendingAppr===0 && (
+              {overdueCount===0 && dueSoon===0 && pendingAppr===0 && budgetData.filter(b=>(b.actual/b.budget)>1).length===0 && (
                 <div className="fd-empty">
                   <CheckCircle size={24} color="#10b981"/>
                   <p>All clear — no urgent alerts</p>
@@ -545,20 +620,20 @@ const topInvoices = Array.isArray(rawInv)
                 </div>
                 <div className="fd-aging-kpi red">
                   <span className="fd-aging-label">Overdue</span>
-                  <span className="fd-aging-val">{fmt(overdueAmt||48000)}</span>
+                  <span className="fd-aging-val">{fmt(overdueAmt)}</span>
                 </div>
                 <div className="fd-aging-kpi">
-                  <span className="fd-aging-label">Collected MTD</span>
-                  <span className="fd-aging-val green">{fmt(137000)}</span>
+                  <span className="fd-aging-label">Collected (FY)</span>
+                  <span className="fd-aging-val green">{fmt(dash.cash_inflow ?? 0)}</span>
                 </div>
                 <div className="fd-aging-kpi">
-                  <span className="fd-aging-label">Collection Rate</span>
-                  <span className="fd-aging-val green">74%</span>
+                  <span className="fd-aging-label">Cash Balance</span>
+                  <span className="fd-aging-val green">{fmt(dash.cash_balance ?? 0)}</span>
                 </div>
               </div>
               <div className="fd-aging-bars">
-                {agingAR.map((a,i)=>{
-                  const pct = Math.round((a.amount/ar)*100);
+                {agingAR.length > 0 ? agingAR.map((a,i)=>{
+                  const pct = ar > 0 ? Math.round((a.amount/ar)*100) : 0;
                   const color = i===0?'#10b981':i===1?'#f59e0b':i===2?'#ef4444':'#991b1b';
                   return (
                     <div key={i} className="fd-aging-row">
@@ -568,16 +643,17 @@ const topInvoices = Array.isArray(rawInv)
                       </div>
                       <span className="fd-aging-pct">{pct}%</span>
                       <span className="fd-aging-amt">{fmt(a.amount)}</span>
-                      <span className="fd-aging-cnt">{a.count} inv</span>
                     </div>
                   );
-                })}
+                }) : (
+                  <div className="fd-empty"><p>No outstanding receivables</p></div>
+                )}
               </div>
             </Card>
           </div>
           <div className="fc12">
-            <Card title="Outstanding Invoices" badge={topInvoices.filter(i=>i.status!=='paid').length}
-              action={{label:'Create Invoice', fn:()=>setPage&&setPage('Invoices')}}>
+            <Card title="Outstanding Invoices" badge={topInvoices.filter(i=>i.status!=='paid').length||undefined}
+              action={{label:'Create Invoice', fn:()=>setPage&&setPage('InvoicesNew')}}>
               <table className="fd-table">
                 <thead>
                   <tr>
@@ -591,7 +667,7 @@ const topInvoices = Array.isArray(rawInv)
                       <td className="fd-td-mono">{inv.invoice_number}</td>
                       <td>{inv.party_name}</td>
                       <td className="fd-td-amt">{fmt(inv.total_amount)}</td>
-                      <td>{inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-IN') : '—'}</td>
+                      <td>{inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                       <td>
                         <span className="fd-status-badge"
                           style={{background:statusColor(inv.status)+'18',color:statusColor(inv.status)}}>
@@ -599,7 +675,7 @@ const topInvoices = Array.isArray(rawInv)
                         </span>
                       </td>
                       <td>
-                        <button className="fd-action-btn">
+                        <button className="fd-action-btn" onClick={() => setPage && setPage('Invoices')}>
                           <ChevronRight size={14}/>
                         </button>
                       </td>
@@ -624,20 +700,20 @@ const topInvoices = Array.isArray(rawInv)
                 </div>
                 <div className="fd-aging-kpi red">
                   <span className="fd-aging-label">Overdue Bills</span>
-                  <span className="fd-aging-val">{fmt(22000)}</span>
+                  <span className="fd-aging-val">{fmt(agingAP.filter(a=>a.bucket!=='Current').reduce((s,a)=>s+a.amount,0))}</span>
                 </div>
                 <div className="fd-aging-kpi">
-                  <span className="fd-aging-label">Paid MTD</span>
-                  <span className="fd-aging-val">{fmt(68000)}</span>
+                  <span className="fd-aging-label">Paid (FY)</span>
+                  <span className="fd-aging-val">{fmt(dash.cash_outflow ?? 0)}</span>
                 </div>
                 <div className="fd-aging-kpi">
                   <span className="fd-aging-label">Due in 7 Days</span>
-                  <span className="fd-aging-val orange">{fmt(28000)}</span>
+                  <span className="fd-aging-val orange">{apDue7Days.length > 0 ? fmt(apDue7DaysAmt) : '—'}</span>
                 </div>
               </div>
               <div className="fd-aging-bars">
-                {agingAP.map((a,i)=>{
-                  const pct = Math.round((a.amount/ap)*100);
+                {agingAP.length > 0 ? agingAP.map((a,i)=>{
+                  const pct = ap > 0 ? Math.round((a.amount/ap)*100) : 0;
                   const color = i===0?'#10b981':i===1?'#f59e0b':i===2?'#ef4444':'#991b1b';
                   return (
                     <div key={i} className="fd-aging-row">
@@ -647,56 +723,59 @@ const topInvoices = Array.isArray(rawInv)
                       </div>
                       <span className="fd-aging-pct">{pct}%</span>
                       <span className="fd-aging-amt">{fmt(a.amount)}</span>
-                      <span className="fd-aging-cnt">{a.count} bills</span>
                     </div>
                   );
-                })}
+                }) : (
+                  <div className="fd-empty"><p>No outstanding payables</p></div>
+                )}
               </div>
             </Card>
           </div>
           <div className="fc8">
-            <Card title="Upcoming Payments — Next 30 Days">
-              {[
-                {supplier:'Office Supplies Co',   amount:12000, due:'17 Mar', category:'Operations'},
-                {supplier:'Cloud Services Ltd',   amount:28000, due:'20 Mar', category:'IT'},
-                {supplier:'Marketing Agency',     amount:45000, due:'25 Mar', category:'Marketing'},
-                {supplier:'Rent — Commercial',    amount:85000, due:'1 Apr',  category:'Facilities'},
-                {supplier:'Insurance Premium',    amount:18000, due:'5 Apr',  category:'Insurance'},
-              ].map((p,i)=>(
-                <div key={i} className="fd-pay-row">
-                  <div className="fd-pay-icon" style={{background:COLORS[i%COLORS.length]+'18',color:COLORS[i%COLORS.length]}}>
-                    <Building2 size={14}/>
-                  </div>
-                  <div className="fd-pay-info">
-                    <span className="fd-pay-supplier">{p.supplier}</span>
-                    <span className="fd-pay-cat">{p.category}</span>
-                  </div>
-                  <div className="fd-pay-right">
-                    <span className="fd-pay-amt">{fmt(p.amount)}</span>
-                    <span className="fd-pay-due">Due {p.due}</span>
-                  </div>
+            <Card title="Upcoming Payments — Next 30 Days"
+              action={{label:'View Bills', fn:()=>setPage&&setPage('SupplierBills')}}>
+              {(data.dueSoonBills || []).length > 0 ? (
+                <table className="fd-table">
+                  <thead><tr><th>Bill #</th><th>Supplier</th><th>Amount</th><th>Due Date</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {(data.dueSoonBills || []).slice(0,6).map((b,i)=>(
+                      <tr key={i}>
+                        <td className="fd-td-mono">{b.bill_number}</td>
+                        <td>{b.party_name || b.supplier_name || '—'}</td>
+                        <td className="fd-td-amt">{fmt(b.total_amount)}</td>
+                        <td>{b.due_date ? new Date(b.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
+                        <td><span className="fd-status-badge" style={{background:statusColor(b.status)+'18',color:statusColor(b.status)}}>{b.status}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="fd-empty">
+                  <Building2 size={24} color="#9ca3af"/>
+                  <p>No bills due in the next 30 days</p>
+                  <button className="fd-text-btn" onClick={()=>setPage&&setPage('SupplierBills')}>View all bills</button>
                 </div>
-              ))}
+              )}
             </Card>
           </div>
           <div className="fc4">
             <Card title="Payment Summary">
               <div className="fd-pay-summary">
                 <div className="fd-ps-item">
-                  <span className="fd-ps-label">Scheduled This Week</span>
-                  <span className="fd-ps-val">{fmt(40000)}</span>
+                  <span className="fd-ps-label">Total Payable</span>
+                  <span className="fd-ps-val">{fmt(ap)}</span>
                 </div>
                 <div className="fd-ps-item">
-                  <span className="fd-ps-label">Scheduled This Month</span>
-                  <span className="fd-ps-val">{fmt(188000)}</span>
+                  <span className="fd-ps-label">Paid (FY)</span>
+                  <span className="fd-ps-val">{fmt(dash.cash_outflow ?? 0)}</span>
                 </div>
                 <div className="fd-ps-item red">
-                  <span className="fd-ps-label">Overdue</span>
-                  <span className="fd-ps-val red">{fmt(22000)}</span>
+                  <span className="fd-ps-label">Overdue Bills</span>
+                  <span className="fd-ps-val red">{fmt(agingAP.filter(a=>a.bucket!=='Current').reduce((s,a)=>s+a.amount,0))}</span>
                 </div>
                 <div className="fd-ps-item">
-                  <span className="fd-ps-label">Pending Approval</span>
-                  <span className="fd-ps-val orange">{fmt(57000)}</span>
+                  <span className="fd-ps-label">Pending Approvals</span>
+                  <span className="fd-ps-val orange">{pendingAppr}</span>
                 </div>
               </div>
               <button className="fd-full-btn"
@@ -730,9 +809,8 @@ const topInvoices = Array.isArray(rawInv)
                       <span className="fd-gst-amtlbl">{g.isCredit?'ITC Available':'Liability'}</span>
                     </div>
                     <div className={`fd-gst-status fd-gst-s-${g.status.toLowerCase().replace(' ','-')}`}>
-                      {g.status==='Filed'     && <CheckCircle size={12}/>}
-                      {g.status==='Pending'   && <AlertTriangle size={12}/>}
-                      {g.status==='Available' && <CheckCircle size={12}/>}
+                      {(g.status==='Filed'||g.status==='Available') && <CheckCircle size={12}/>}
+                      {(g.status==='Pending'||g.status==='Overdue') && <AlertTriangle size={12}/>}
                       {g.status}
                     </div>
                     {g.due !== '—' && <div className="fd-gst-due">Due: {g.due}</div>}
@@ -778,7 +856,7 @@ const topInvoices = Array.isArray(rawInv)
 
           {/* GST Summary Table */}
           <div className="fc6">
-            <Card title="GST Summary — February 2026">
+            <Card title={`GST Summary — ${_prevMonYear}`}>
               <table className="fd-table">
                 <thead>
                   <tr><th>Description</th><th>Amount</th><th>Type</th></tr>
@@ -815,12 +893,12 @@ const topInvoices = Array.isArray(rawInv)
                     <p>Payment due by {gstData.tds.due}</p>
                   </div>
                 </div>
-                {[
-                  {section:'194C', desc:'Contractor Payments', amount:5200,  rate:'2%'},
-                  {section:'194J', desc:'Professional Fees',   amount:4800,  rate:'10%'},
-                  {section:'194I', desc:'Rent',                amount:1700,  rate:'2%'},
-                  {section:'192',  desc:'Salary TDS',          amount:900,   rate:'Slab'},
-                ].map((t,i)=>(
+                {(Array.isArray(data.tdsSummary) && data.tdsSummary.length > 0
+                  ? data.tdsSummary.map(t => ({ section: t.section || t.tds_section, desc: t.description || t.section, amount: parseFloat(t.tds_amount || 0), rate: t.rate ? `${t.rate}%` : '—' }))
+                  : gstData.tds.amount > 0
+                    ? [{ section: 'Various', desc: 'TDS Deducted (all sections)', amount: gstData.tds.amount, rate: '—' }]
+                    : [{ section: '—', desc: 'No TDS transactions this quarter', amount: 0, rate: '—' }]
+                ).map((t,i)=>(
                   <div key={i} className="fd-tds-row">
                     <span className="fd-tds-section">{t.section}</span>
                     <span className="fd-tds-desc">{t.desc}</span>

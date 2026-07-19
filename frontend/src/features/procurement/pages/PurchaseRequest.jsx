@@ -1,7 +1,7 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Plus, Search, RefreshCw, X, ShoppingCart,
-  CheckCircle, XCircle, Eye, Trash2
+  CheckCircle, XCircle, Trash2, ArrowRight,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './PurchaseRequest.css';
@@ -11,42 +11,50 @@ const STATUS_META = {
   pending_approval:  { bg: '#fef3c7', color: '#92400e', label: 'Pending Approval' },
   approved:          { bg: '#dcfce7', color: '#15803d', label: 'Approved'         },
   rejected:          { bg: '#fee2e2', color: '#dc2626', label: 'Rejected'         },
-  ordered:           { bg: '#dbeafe', color: '#1d4ed8', label: 'Ordered'          },
+  converted_to_po:   { bg: '#dbeafe', color: '#1d4ed8', label: 'Ordered'          },
   received:          { bg: '#d1fae5', color: '#065f46', label: 'Received'         },
 };
-const sm = s => STATUS_META[(s || '').replace(/ /g,'_').toLowerCase()] || STATUS_META.draft;
+const sm = s => STATUS_META[(s || '').replace(/ /g, '_').toLowerCase()] || STATUS_META.draft;
+
+const PRIORITY_META = {
+  urgent: { bg: '#fee2e2', color: '#dc2626', label: 'Urgent'  },
+  high:   { bg: '#ffedd5', color: '#c2410c', label: 'High'    },
+  medium: { bg: '#fef3c7', color: '#92400e', label: 'Medium'  },
+  low:    { bg: '#f3f4f6', color: '#6b7280', label: 'Low'     },
+};
+const pm = p => PRIORITY_META[(p || 'medium').toLowerCase()] || PRIORITY_META.medium;
 
 const fmt = n => `₹${parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const emptyItem = () => ({ item_name: '', quantity: 1, expected_price: 0, remarks: '' });
 const emptyForm = () => ({
-  request_date: new Date().toISOString().split('T')[0],
+  request_date:  new Date().toISOString().split('T')[0],
   required_date: '',
-  notes: '',
-  items: [emptyItem()],
+  department:    '',
+  priority:      'medium',
+  notes:         '',
+  items:         [emptyItem()],
 });
 
-const SAMPLE_PRS = [
-  { id: 1, request_number: 'PR-2026-001', request_date: '2026-03-01', requested_by: 'Rajesh Kumar',  department: 'Engineering', status: 'pending_approval', items_count: 3, total_amount: 48500  },
-  { id: 2, request_number: 'PR-2026-002', request_date: '2026-03-05', requested_by: 'Priya Sharma',  department: 'HR',          status: 'approved',          items_count: 2, total_amount: 12000  },
-  { id: 3, request_number: 'PR-2026-003', request_date: '2026-03-08', requested_by: 'Anand Mehta',   department: 'Finance',     status: 'ordered',           items_count: 5, total_amount: 125000 },
-  { id: 4, request_number: 'PR-2026-004', request_date: '2026-03-10', requested_by: 'Sunita Rao',    department: 'Operations',  status: 'draft',             items_count: 1, total_amount: 8500   },
-  { id: 5, request_number: 'PR-2026-005', request_date: '2026-03-12', requested_by: 'Vikram Nair',   department: 'Engineering', status: 'rejected',          items_count: 2, total_amount: 32000  },
-  { id: 6, request_number: 'PR-2026-006', request_date: '2026-03-14', requested_by: 'Meena Pillai',  department: 'Marketing',   status: 'received',          items_count: 4, total_amount: 67500  },
-];
-
-const STATUSES = ['pending_approval', 'approved', 'ordered', 'received', 'draft', 'rejected'];
+const STATUSES = ['pending_approval', 'approved', 'converted_to_po', 'received', 'draft', 'rejected'];
 
 export default function PurchaseRequest() {
-  const [prs,        setPRs]        = useState([]);
-  const [loading,    setLoading]    = useState(true);
-  const [search,     setSearch]     = useState('');
-  const [fStatus,    setFStatus]    = useState('');
-  const [drawer,     setDrawer]     = useState(false);
-  const [viewPR,     setViewPR]     = useState(null);
-  const [form,       setForm]       = useState(emptyForm());
-  const [submitting, setSubmitting] = useState(false);
-  const [toast,      setToast]      = useState(null);
+  const [prs,         setPRs]         = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [loading,     setLoading]     = useState(false);
+  const [search,      setSearch]      = useState('');
+  const [fStatus,     setFStatus]     = useState('');
+  const [drawer,      setDrawer]      = useState(false);
+  const [form,        setForm]        = useState(emptyForm());
+  const [submitting,  setSubmitting]  = useState(false);
+  const [actioningId, setActioningId] = useState(null);
+  const [toast,       setToast]       = useState(null);
+
+  const isMounted = useRef(true);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -57,63 +65,89 @@ export default function PurchaseRequest() {
     setLoading(true);
     try {
       const res = await api.get('/procurement/purchase-requests', { params: fStatus ? { status: fStatus } : {} });
+      if (!isMounted.current) return;
       const raw = res.data?.purchase_requests || res.data?.rows || res.data || [];
-      setPRs(Array.isArray(raw) && raw.length ? raw : SAMPLE_PRS);
+      setPRs(Array.isArray(raw) ? raw : []);
     } catch {
-      setPRs(SAMPLE_PRS);
-    } finally { setLoading(false); }
+      if (!isMounted.current) return;
+      setPRs([]);
+      showToast('Failed to load purchase requests', 'error');
+    } finally { if (isMounted.current) setLoading(false); }
   }, [fStatus]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Load departments once
+  useEffect(() => {
+    api.get('/orgchart/departments')
+      .then(r => { if (isMounted.current) setDepartments(r.data?.data || r.data || []); })
+      .catch(() => { if (isMounted.current) showToast('Could not load departments', 'error'); });
+  }, []);
 
   const handleSubmit = async () => {
     if (!form.items.some(i => i.item_name.trim())) return showToast('Add at least one item', 'error');
     setSubmitting(true);
     try {
       await api.post('/procurement/purchase-requests', form);
+      if (!isMounted.current) return;
       showToast('Purchase request created');
-    } catch {
-      const newPR = {
-        id: Date.now(), request_number: `PR-${new Date().getFullYear()}-${String(prs.length + 1).padStart(3, '0')}`,
-        request_date: form.request_date, requested_by: 'You', department: '—',
-        status: 'pending_approval',
-        items_count: form.items.filter(i => i.item_name).length,
-        total_amount: form.items.reduce((s, i) => s + (parseFloat(i.quantity) || 0) * (parseFloat(i.expected_price) || 0), 0),
-      };
-      setPRs(ps => [newPR, ...ps]);
-      showToast('Purchase request created');
-    } finally {
       setDrawer(false);
       setForm(emptyForm());
-      setSubmitting(false);
+      load();
+    } catch (e) {
+      if (!isMounted.current) return;
+      showToast(e.response?.data?.error || 'Failed to create purchase request', 'error');
+    } finally {
+      if (isMounted.current) setSubmitting(false);
     }
   };
 
   const handleApprove = async (id) => {
+    if (actioningId) return;
+    setActioningId(id);
     try {
-      await api.put(`/procurement/purchase-requests/${id}/approve`);
-      showToast('Purchase request approved');
-    } catch {
-      showToast('Purchase request approved');
-      setPRs(ps => ps.map(p => p.id === id ? { ...p, status: 'approved' } : p));
-    }
-    load();
+      const res = await api.put(`/procurement/purchase-requests/${id}/approve`);
+      if (!isMounted.current) return;
+      const level = res.data?.approval_level;
+      showToast(level === 'auto' ? 'PR auto-approved (below threshold)' : `PR approved (${(level || '').toUpperCase()} level)`);
+      load();
+    } catch (e) {
+      if (!isMounted.current) return;
+      showToast(e.response?.data?.error || 'Failed to approve', 'error');
+    } finally { if (isMounted.current) setActioningId(null); }
   };
 
   const handleReject = async (id) => {
+    if (actioningId) return;
+    setActioningId(id);
     try {
       await api.put(`/procurement/purchase-requests/${id}/reject`);
-      showToast('Purchase request rejected', 'error');
+      if (!isMounted.current) return;
+      showToast('Purchase request rejected');
+      load();
     } catch {
-      showToast('Purchase request rejected', 'error');
-      setPRs(ps => ps.map(p => p.id === id ? { ...p, status: 'rejected' } : p));
-    }
-    load();
+      if (!isMounted.current) return;
+      showToast('Failed to reject', 'error');
+    } finally { if (isMounted.current) setActioningId(null); }
   };
 
-  const addItem  = () => setForm(f => ({ ...f, items: [...f.items, emptyItem()] }));
+  const handleConvertToPO = async (id) => {
+    if (actioningId) return;
+    setActioningId(id);
+    try {
+      const res = await api.patch(`/procurement/purchase-requests/${id}/convert-to-po`);
+      if (!isMounted.current) return;
+      showToast(`PO ${res.data.po_number} created`);
+      load();
+    } catch (e) {
+      if (!isMounted.current) return;
+      showToast(e.response?.data?.error || 'Failed to convert to PO', 'error');
+    } finally { if (isMounted.current) setActioningId(null); }
+  };
+
+  const addItem    = () => setForm(f => ({ ...f, items: [...f.items, emptyItem()] }));
   const removeItem = idx => setForm(f => ({ ...f, items: f.items.filter((_, i) => i !== idx) }));
-  const setItem = (idx, k, v) => setForm(f => {
+  const setItem    = (idx, k, v) => setForm(f => {
     const items = [...f.items];
     items[idx] = { ...items[idx], [k]: v };
     return { ...f, items };
@@ -122,12 +156,11 @@ export default function PurchaseRequest() {
 
   const displayed = prs.filter(p => {
     const q = search.toLowerCase();
-    return (!q || p.request_number?.toLowerCase().includes(q) || p.requested_by?.toLowerCase().includes(q) || p.department?.toLowerCase().includes(q))
+    return (!q || p.request_number?.toLowerCase().includes(q) || p.requested_by?.toLowerCase().includes(q) || (p.first_name + ' ' + p.last_name).toLowerCase().includes(q) || p.department?.toLowerCase().includes(q))
         && (!fStatus || p.status === fStatus);
   });
 
   const counts = STATUSES.reduce((acc, s) => { acc[s] = prs.filter(p => p.status === s).length; return acc; }, {});
-
   const lineTotal = form.items.reduce((s, i) => s + (parseFloat(i.quantity) || 0) * (parseFloat(i.expected_price) || 0), 0);
 
   return (
@@ -141,8 +174,22 @@ export default function PurchaseRequest() {
         </div>
         <div className="pr-header-r">
           <button className="pr-icon-btn" onClick={load}><RefreshCw size={14} /></button>
+          <button className="pr-icon-btn" title="Export CSV"
+            onClick={async () => {
+              try {
+                const r = await api.get('/procurement/purchase-requests/export', { responseType: 'blob' });
+                const url = URL.createObjectURL(r.data);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `purchase-requests-${new Date().toISOString().slice(0,10)}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch { showToast('Export failed', 'error'); }
+            }}>
+            ↓ Export
+          </button>
           <button className="pr-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer(true); }}>
-            <Plus size={14} /> New PR
+            <Plus size={14} /> New Request
           </button>
         </div>
       </div>
@@ -157,7 +204,7 @@ export default function PurchaseRequest() {
           <button className={`pr-tab${!fStatus ? ' pr-tab-active' : ''}`} onClick={() => setFStatus('')}>
             All <span className="pr-tab-count">{prs.length}</span>
           </button>
-          {['pending_approval', 'approved', 'ordered', 'received'].map(s => (
+          {['pending_approval', 'approved', 'converted_to_po', 'received'].map(s => (
             <button key={s} className={`pr-tab${fStatus === s ? ' pr-tab-active' : ''}`} onClick={() => setFStatus(s)}>
               {sm(s).label} <span className="pr-tab-count">{counts[s] || 0}</span>
             </button>
@@ -171,38 +218,61 @@ export default function PurchaseRequest() {
         <div className="pr-empty">
           <ShoppingCart size={40} color="#d1d5db" />
           <p>No purchase requests found</p>
-          <button className="pr-btn-primary" onClick={() => setDrawer(true)}><Plus size={14} /> New PR</button>
+          <button className="pr-btn-primary" onClick={() => setDrawer(true)}><Plus size={14} /> New Request</button>
         </div>
       ) : (
         <div className="pr-table-wrap">
           <table className="pr-table">
             <thead>
-              <tr><th>PR Number</th><th>Request Date</th><th>Requested By</th><th>Dept</th><th>Items</th><th>Est. Value</th><th>Status</th><th></th></tr>
+              <tr>
+                <th>PR Number</th>
+                <th>Request Date</th>
+                <th>Requested By</th>
+                <th>Dept</th>
+                <th>Required By</th>
+                <th>Priority</th>
+                <th>Est. Value</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
             </thead>
             <tbody>
               {displayed.map(pr => {
-                const s = sm(pr.status);
+                const s  = sm(pr.status);
+                const p  = pm(pr.priority);
+                const requestorName = pr.requested_by
+                  || (pr.first_name ? `${pr.first_name} ${pr.last_name || ''}`.trim() : '—');
                 return (
                   <tr key={pr.id} className="pr-row">
                     <td><span className="pr-num">{pr.request_number}</span></td>
-                    <td>{new Date(pr.request_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                    <td>{pr.request_date ? new Date(pr.request_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                     <td>
                       <div className="pr-req-cell">
-                        <div className="pr-avatar">{(pr.requested_by || '?').charAt(0)}</div>
-                        {pr.requested_by}
+                        <div className="pr-avatar">{(requestorName || '?').charAt(0)}</div>
+                        {requestorName}
                       </div>
                     </td>
                     <td>{pr.department || '—'}</td>
-                    <td><span className="pr-items-cnt">{pr.items_count || 0} item{pr.items_count !== 1 ? 's' : ''}</span></td>
+                    <td>{pr.required_date ? new Date(pr.required_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
+                    <td>
+                      {pr.priority && (
+                        <span className="pr-badge" style={{ background: p.bg, color: p.color }}>{p.label}</span>
+                      )}
+                    </td>
                     <td><span className="pr-amount">{fmt(pr.total_amount)}</span></td>
                     <td><span className="pr-badge" style={{ background: s.bg, color: s.color }}>{s.label}</span></td>
                     <td>
                       <div className="pr-row-actions">
                         {pr.status === 'pending_approval' && (
                           <>
-                            <button className="pr-approve-btn" title="Approve" onClick={() => handleApprove(pr.id)}><CheckCircle size={14} /></button>
-                            <button className="pr-reject-btn" title="Reject" onClick={() => handleReject(pr.id)}><XCircle size={14} /></button>
+                            <button className="pr-approve-btn" title="Approve" disabled={!!actioningId} onClick={() => handleApprove(pr.id)}><CheckCircle size={14} /></button>
+                            <button className="pr-reject-btn" title="Reject"  disabled={!!actioningId} onClick={() => handleReject(pr.id)}><XCircle size={14} /></button>
                           </>
+                        )}
+                        {pr.status === 'approved' && (
+                          <button className="pr-convert-btn" title="Convert to PO" disabled={!!actioningId} onClick={() => handleConvertToPO(pr.id)}>
+                            <ArrowRight size={14} /> To PO
+                          </button>
                         )}
                       </div>
                     </td>
@@ -214,7 +284,6 @@ export default function PurchaseRequest() {
         </div>
       )}
 
-      {/* Create PR Drawer */}
       {drawer && (
         <div className="pr-overlay" onClick={() => setDrawer(false)}>
           <div className="pr-drawer" onClick={e => e.stopPropagation()}>
@@ -233,6 +302,24 @@ export default function PurchaseRequest() {
                   <input type="date" value={form.required_date} onChange={e => setF('required_date', e.target.value)} />
                 </div>
               </div>
+              <div className="pr-row2">
+                <div className="pr-field">
+                  <label>Department</label>
+                  <select value={form.department} onChange={e => setF('department', e.target.value)}>
+                    <option value="">Select department…</option>
+                    {departments.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </div>
+                <div className="pr-field">
+                  <label>Priority</label>
+                  <select value={form.priority} onChange={e => setF('priority', e.target.value)}>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="urgent">Urgent</option>
+                  </select>
+                </div>
+              </div>
 
               <div className="pr-items-section">
                 <div className="pr-items-hd">
@@ -247,7 +334,10 @@ export default function PurchaseRequest() {
                     </div>
                     <div className="pr-field pr-item-qty">
                       <label>{idx === 0 ? 'Qty' : ''}</label>
-                      <input type="number" min="1" value={item.quantity} onChange={e => setItem(idx, 'quantity', e.target.value)} />
+                      <input type="number" min="1" value={item.quantity} onChange={e => {
+                          const v = parseFloat(e.target.value);
+                          setItem(idx, 'quantity', isNaN(v) || v < 0 ? 0 : v);
+                        }} />
                     </div>
                     <div className="pr-field pr-item-price">
                       <label>{idx === 0 ? 'Est. Price (₹)' : ''}</label>

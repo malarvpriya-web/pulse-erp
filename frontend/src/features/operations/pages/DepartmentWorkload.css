@@ -17,14 +17,14 @@
 .dw-card-title { font-size: 14px; font-weight: 700; color: #111827; margin-bottom: 14px; }
 
 .dw-loading { display: flex; justify-content: center; padding: 60px; }
-.dw-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: dw-spin .6s linear infinite; }
+.dw-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: dw-spin .6s linear infinite; }
 @keyframes dw-spin { to { transform: rotate(360deg); } }
 
 .dw-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 
 .dw-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; cursor: pointer; transition: box-shadow .15s, border-color .15s; display: flex; flex-direction: column; gap: 12px; }
-.dw-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.07); border-color: #c7d2fe; }
-.dw-card-selected { border-color: #6366f1; box-shadow: 0 0 0 2px #eef2ff; }
+.dw-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.07); border-color: #D4CAFE; }
+.dw-card-selected { border-color: #6B3FDB; box-shadow: 0 0 0 2px #E8E1FC; }
 
 .dw-card-hd { display: flex; align-items: center; justify-content: space-between; }
 .dw-dept-name { font-size: 15px; font-weight: 700; color: #111827; }
@@ -34,7 +34,7 @@
 .dw-num-item  { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .dw-num-val   { font-size: 18px; font-weight: 800; color: #111827; }
 .dw-num-lbl   { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: .3px; }
-.dw-blue { color: #4338ca; }
+.dw-blue { color: #4B2DCE; }
 .dw-green { color: #15803d; }
 
 .dw-capacity-row { display: flex; align-items: center; justify-content: space-between; }

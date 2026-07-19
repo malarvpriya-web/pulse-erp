@@ -3,16 +3,17 @@ import {
   Plus, Search, ChevronRight, ChevronDown, Edit2, ToggleLeft,
   ToggleRight, Download, Upload, X, CheckCircle, AlertTriangle,
   FolderOpen, Folder, FileText, TrendingUp, TrendingDown,
-  DollarSign, CreditCard, BarChart2, Briefcase
+  IndianRupee, CreditCard, BarChart2, Briefcase
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { fmt } from '../financeUtils';
 import './ChartOfAccounts.css';
 
 // ── constants ───────────────────────────────────────────────────────────────
 const ACCOUNT_TYPES = ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'];
 
 const TYPE_META = {
-  Asset:     { color:'#3b82f6', bg:'#eff6ff', icon: DollarSign,   desc:'Resources owned by the business' },
+  Asset:     { color:'#3b82f6', bg:'#eff6ff', icon: IndianRupee,   desc:'Resources owned by the business' },
   Liability: { color:'#ef4444', bg:'#fff8f8', icon: CreditCard,   desc:'Amounts owed to others' },
   Equity:    { color:'#8b5cf6', bg:'#f5f3ff', icon: BarChart2,    desc:'Owner\'s stake in the business' },
   Revenue:   { color:'#10b981', bg:'#f0fdf4', icon: TrendingUp,   desc:'Income from business operations' },
@@ -21,13 +22,6 @@ const TYPE_META = {
 
 const TYPE_CODES = {
   Asset: '1', Liability: '2', Equity: '3', Revenue: '4', Expense: '5',
-};
-
-const fmt = (n) => {
-  const v = parseFloat(n||0);
-  if (v >= 100000) return `₹${(v/100000).toFixed(1)}L`;
-  if (v >= 1000)   return `₹${(v/1000).toFixed(0)}K`;
-  return `₹${v.toFixed(0)}`;
 };
 
 // ── Tree node ────────────────────────────────────────────────────────────────
@@ -109,7 +103,7 @@ const AccountRow = ({ account, level, onToggle, expanded, onEdit, onStatusToggle
 export default function ChartOfAccounts() {
   const [accounts,   setAccounts]   = useState([]);
   const [flat,       setFlat]       = useState([]); // flat list for selects
-  const [loading,    setLoading]    = useState(true);
+  const [loading,    setLoading]    = useState(false);
   const [expanded,   setExpanded]   = useState({});
   const [search,     setSearch]     = useState('');
   const [typeFilter, setTypeFilter] = useState('');
@@ -143,7 +137,7 @@ export default function ChartOfAccounts() {
       const exp = {};
       treeData.forEach(a => { exp[a.id] = true; });
       setExpanded(exp);
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); showToast('Failed to load accounts. Please refresh.', 'error'); }
     finally { setLoading(false); }
   }, []);
 
@@ -249,12 +243,40 @@ export default function ChartOfAccounts() {
       await api.put(`/finance/accounts/${account.id}`, { ...account, is_active: !account.is_active });
       showToast(`Account ${account.is_active ? 'deactivated' : 'activated'}`);
       load();
-    } catch(e) { showToast('Failed to update status', 'error'); }
+    } catch(_e) { showToast('Failed to update status', 'error'); }
   };
 
   const openCreate = () => {
     setForm({ code: suggestCode('Asset'), name:'', account_type:'Asset', parent_id:'', description:'', is_active:true });
     setDrawer('create');
+  };
+
+  const handleSeedDefaults = async () => {
+    setLoading(true);
+    try {
+      const res = await api.post('/finance/accounts/seed-defaults');
+      showToast(`Loaded ${res.data.seeded} standard accounts`);
+      load();
+    } catch(e) {
+      showToast('Seed failed: ' + (e.response?.data?.error || e.message), 'error');
+      setLoading(false);
+    }
+  };
+
+  const handleExport = () => {
+    if (flat.length === 0) { showToast('No accounts to export', 'error'); return; }
+    const header = 'code,name,type,sub_type,description,is_active';
+    const rows = flat.map(a =>
+      [a.code, `"${(a.name||'').replace(/"/g,'""')}"`, a.account_type, a.sub_type||'',
+       `"${(a.description||'').replace(/"/g,'""')}"`, a.is_active].join(',')
+    );
+    const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `chart_of_accounts_${new Date().toISOString().slice(0,10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -275,8 +297,22 @@ export default function ChartOfAccounts() {
           <p className="coa-sub">{flat.length} accounts · {totalActive} active · {totalInactive} inactive</p>
         </div>
         <div className="coa-header-r">
-          <button className="coa-btn-outline"><Upload size={14}/> Import</button>
-          <button className="coa-btn-outline"><Download size={14}/> Export</button>
+          <button className="coa-btn-outline" onClick={() => document.getElementById('coa-import-input')?.click()}><Upload size={14}/> Import</button>
+          <input id="coa-import-input" type="file" accept=".csv,.xlsx" style={{ display:'none' }} onChange={async e => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const fd = new FormData();
+            fd.append('file', file);
+            try {
+              await api.post('/finance/accounts/import', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+              showToast('Accounts imported successfully');
+              load();
+            } catch (err) {
+              showToast(err.response?.data?.error || 'Import failed', 'error');
+            }
+            e.target.value = '';
+          }} />
+          <button className="coa-btn-outline" onClick={handleExport}><Download size={14}/> Export</button>
           <button className="coa-btn-primary" onClick={openCreate}>
             <Plus size={15}/> Add Account
           </button>
@@ -323,11 +359,10 @@ export default function ChartOfAccounts() {
             <button className={`coa-view-tab${activeTab==='list'?' active':''}`}
               onClick={() => setActiveTab('list')}>≡ List View</button>
           </div>
-  <>
-    <button className="coa-btn-sm" onClick={expandAll}>Expand All</button>
-    <button className="coa-btn-sm" onClick={collapseAll}>Collapse All</button>
-  </>
-
+          {activeTab === 'tree' && <>
+            <button className="coa-btn-sm" onClick={expandAll}>Expand All</button>
+            <button className="coa-btn-sm" onClick={collapseAll}>Collapse All</button>
+          </>}
         </div>
       </div>
 
@@ -351,7 +386,26 @@ export default function ChartOfAccounts() {
             <tbody>
               {activeTab === 'tree' ? (
                 displayTree.length === 0 ? (
-                  <tr><td colSpan={7} className="coa-empty-cell">No accounts found</td></tr>
+                  <tr><td colSpan={7} className="coa-empty-cell">
+                    {flat.length === 0 ? (
+                      <div className="coa-empty-state">
+                        <div className="coa-empty-icon">📂</div>
+                        <h3>No Chart of Accounts set up</h3>
+                        <p>Your company needs a Chart of Accounts before you can record financial transactions, generate P&L, Balance Sheet, or Cash Flow statements.</p>
+                        <div className="coa-empty-actions">
+                          <button className="coa-btn-primary" onClick={handleSeedDefaults}>
+                            ⚡ Load Standard Indian CoA (Recommended)
+                          </button>
+                          <button className="coa-btn-outline" onClick={openCreate}>
+                            <Plus size={14}/> Add First Account Manually
+                          </button>
+                        </div>
+                        <p className="coa-empty-hint">The standard CoA includes {'>'}75 accounts covering Assets, Liabilities, Equity, Revenue, and Expenses — all aligned with Indian GST & statutory requirements.</p>
+                      </div>
+                    ) : (
+                      <span>No accounts match your search or filter</span>
+                    )}
+                  </td></tr>
                 ) : (
                   displayTree.map(account => (
                     <AccountRow key={account.id} account={account} level={0}
@@ -506,11 +560,12 @@ export default function ChartOfAccounts() {
               {(form.account_type === 'Revenue' || form.account_type === 'Expense') && (
                 <div className="coa-field">
                   <label>GST Treatment</label>
-                  <select>
-                    <option>Taxable — Standard Rate</option>
-                    <option>Taxable — Reduced Rate</option>
-                    <option>Tax Exempt</option>
-                    <option>Out of Scope</option>
+                  <select value={form.gst_treatment || ''} onChange={e => setForm(f => ({...f, gst_treatment: e.target.value}))}>
+                    <option value="">— Select —</option>
+                    <option value="taxable_standard">Taxable — Standard Rate</option>
+                    <option value="taxable_reduced">Taxable — Reduced Rate</option>
+                    <option value="exempt">Tax Exempt</option>
+                    <option value="out_of_scope">Out of Scope</option>
                   </select>
                 </div>
               )}

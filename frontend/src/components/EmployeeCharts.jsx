@@ -120,7 +120,7 @@ export function GrowthChart({ employees }) {
     if (emp.joining_date) {
       const joinDate = new Date(emp.joining_date);
       const monthKey = `${joinDate.getFullYear()}-${String(joinDate.getMonth() + 1).padStart(2, '0')}`;
-      if (monthCounts.hasOwnProperty(monthKey)) {
+      if (Object.prototype.hasOwnProperty.call(monthCounts, monthKey)) {
         monthCounts[monthKey]++;
       }
     }
@@ -135,7 +135,7 @@ export function GrowthChart({ employees }) {
   
   const growthData = last12Months.map(monthKey => {
     cumulative += monthCounts[monthKey];
-    const [year, month] = monthKey.split('-');
+    const [_year, month] = monthKey.split('-');
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     return { 
       month: monthNames[parseInt(month) - 1], 

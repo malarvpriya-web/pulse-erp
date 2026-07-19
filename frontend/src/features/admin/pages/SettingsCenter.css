@@ -1,0 +1,117 @@
+/* ── SettingsCenter CSS custom properties ──────────────────────────────────── */
+:root {
+  /* Page scaffolding */
+  --sc-page-bg:        #f8fafc;
+  --sc-header-bg:      #ffffff;
+  --sc-card-bg:        #ffffff;
+  --sc-border:         #f0f0f4;
+  --sc-border-subtle:  #e2e8f0;
+
+  /* Text */
+  --sc-text-strong:    #0f172a;
+  --sc-text-body:      #1e293b;
+  --sc-text-muted:     #64748b;
+  --sc-text-faint:     #94a3b8;
+
+  /* Primary (purple) */
+  --sc-primary:        #6B3FDB;
+  --sc-primary-end:    #8b5cf6;
+  --sc-primary-light:  #f5f3ff;
+  --sc-primary-border: #e9e4ff;
+  --sc-on-primary:     #ffffff;
+
+  /* Status chips */
+  --sc-done-bg:        #d1fae5;
+  --sc-done-text:      #065f46;
+  --sc-pending-bg:     #f3f4f6;
+  --sc-pending-text:   #6b7280;
+
+  /* Progress dot states */
+  --sc-dot-done:       #10b981;
+  --sc-dot-partial:    #f59e0b;
+  --sc-dot-empty:      #e2e8f0;
+
+  /* Domain: Company & Organization */
+  --sc-company-color:  #4f46e5;
+  --sc-company-bg:     #eef2ff;
+  --sc-company-border: #c7d2fe;
+
+  /* Domain: People & HR */
+  --sc-hr-color:       #6B3FDB;
+  --sc-hr-bg:          #f5f3ff;
+  --sc-hr-border:      #ddd6fe;
+
+  /* Domain: Finance & Tax */
+  --sc-finance-color:  #059669;
+  --sc-finance-bg:     #ecfdf5;
+  --sc-finance-border: #a7f3d0;
+
+  /* Domain: Operations & Workflow */
+  --sc-ops-color:      #0d9488;
+  --sc-ops-bg:         #f0fdfa;
+  --sc-ops-border:     #99f6e4;
+
+  /* Domain: Integrations & Security */
+  --sc-sec-color:      #e11d48;
+  --sc-sec-bg:         #fff1f2;
+  --sc-sec-border:     #fecdd3;
+
+  /* Domain: User Preferences */
+  --sc-pref-color:     #d97706;
+  --sc-pref-bg:        #fffbeb;
+  --sc-pref-border:    #fde68a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sc-page-bg:        #0f172a;
+    --sc-header-bg:      #1e293b;
+    --sc-card-bg:        #1e293b;
+    --sc-border:         #334155;
+    --sc-border-subtle:  #475569;
+
+    --sc-text-strong:    #f8fafc;
+    --sc-text-body:      #e2e8f0;
+    --sc-text-muted:     #94a3b8;
+    --sc-text-faint:     #64748b;
+
+    --sc-primary:        #a78bfa;
+    --sc-primary-end:    #c4b5fd;
+    --sc-primary-light:  #2e1065;
+    --sc-primary-border: #4c1d95;
+    --sc-on-primary:     #ffffff;
+
+    --sc-done-bg:        #064e3b;
+    --sc-done-text:      #6ee7b7;
+    --sc-pending-bg:     #1e293b;
+    --sc-pending-text:   #94a3b8;
+
+    --sc-dot-done:       #10b981;
+    --sc-dot-partial:    #f59e0b;
+    --sc-dot-empty:      #475569;
+
+    --sc-company-color:  #818cf8;
+    --sc-company-bg:     #1e1b4b;
+    --sc-company-border: #312e81;
+
+    --sc-hr-color:       #a78bfa;
+    --sc-hr-bg:          #2e1065;
+    --sc-hr-border:      #4c1d95;
+
+    --sc-finance-color:  #34d399;
+    --sc-finance-bg:     #064e3b;
+    --sc-finance-border: #065f46;
+
+    --sc-ops-color:      #2dd4bf;
+    --sc-ops-bg:         #042f2e;
+    --sc-ops-border:     #134e4a;
+
+    --sc-sec-color:      #fb7185;
+    --sc-sec-bg:         #4c0519;
+    --sc-sec-border:     #881337;
+
+    --sc-pref-color:     #fbbf24;
+    --sc-pref-bg:        #422006;
+    --sc-pref-border:    #78350f;
+  }
+}

@@ -23,10 +23,22 @@ export const ROLE_MODULE_ACCESS = {
   employee:        ['leave', 'attendance'],
 };
 
+// ─── Current roles (many-to-many) ────────────────────────────────────────────
+// localStorage 'role' is only the PRIMARY role. 'roles' holds the full set —
+// read that, or a member's non-primary roles are silently ignored here.
+// Falls back to [role] for sessions that predate the roles array.
+const currentRoles = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem('roles') || '[]');
+    if (Array.isArray(raw) && raw.length) return raw.map(r => String(r).toLowerCase());
+  } catch { /* fall through */ }
+  const single = String(localStorage.getItem('role') || '').toLowerCase();
+  return single ? [single] : [];
+};
+
 // ─── Standalone helper (reads from localStorage, no hook needed) ──────────────
 export const hasPermission = (module, action) => {
-  const role = localStorage.getItem('role');
-  if (ADMIN_ROLES.includes(role)) return true;
+  if (currentRoles().some(r => ADMIN_ROLES.includes(r))) return true;
 
   const permissions = JSON.parse(localStorage.getItem('permissions') || '[]');
   const modulePermission = permissions.find(p => p.module === module);
@@ -45,23 +57,26 @@ export const hasPermission = (module, action) => {
 
 // ─── Get list of modules the current user can view ───────────────────────────
 export const getVisibleModules = () => {
-  const role = localStorage.getItem('role');
-  if (ADMIN_ROLES.includes(role)) return null; // null = all modules
+  if (currentRoles().some(r => ADMIN_ROLES.includes(r))) return null; // null = all modules
 
   const permissions = JSON.parse(localStorage.getItem('permissions') || '[]');
   return permissions.filter(p => p.can_view).map(p => p.module);
 };
 
-// ─── Check if user has a given role ──────────────────────────────────────────
-export const hasRole = (requiredRole) => {
-  const role = localStorage.getItem('role');
-  return role === requiredRole;
+// ─── Check if user holds a given role (any of the roles they hold) ───────────
+export const hasRole = (...requiredRoles) => {
+  const want = requiredRoles.flat().map(r => String(r).toLowerCase());
+  return currentRoles().some(r => want.includes(r));
 };
 
-export const isAdminOrAbove = () => {
-  const role = localStorage.getItem('role');
-  return ADMIN_ROLES.includes(role);
+// True only when `employee` is the ONLY role held — mirrors the backend's
+// isEmployee fork. Use this for "is this an employee-only view" decisions.
+export const isEmployeeOnly = () => {
+  const roles = currentRoles();
+  return roles.length > 0 && roles.every(r => r === ROLES.EMPLOYEE);
 };
+
+export const isAdminOrAbove = () => currentRoles().some(r => ADMIN_ROLES.includes(r));
 
 // ─── Approval workflow statuses ──────────────────────────────────────────────
 export const APPROVAL_STATUS = {

@@ -1,0 +1,51 @@
+.pcos-root { padding: 24px; max-width: 1400px; }
+.pcos-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.pcos-title { font-size: 22px; font-weight: 700; color: #111827; margin: 0 0 4px; }
+.pcos-sub { font-size: 13px; color: #6b7280; margin: 0; }
+.pcos-summary { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 20px; }
+.pcos-sum-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; display: flex; align-items: center; gap: 12px; }
+.pcos-sum-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.pcos-sum-num { font-size: 20px; font-weight: 700; color: #111827; }
+.pcos-sum-lbl { font-size: 11px; color: #6b7280; margin-top: 2px; }
+.pcos-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.pcos-search { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 7px 12px; flex: 1; max-width: 320px; }
+.pcos-search input { border: none; outline: none; font-size: 13px; flex: 1; background: transparent; }
+.pcos-search button { background: none; border: none; cursor: pointer; padding: 0; color: #9ca3af; display: flex; }
+.pcos-table-wrap { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; }
+.pcos-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pcos-table thead tr { background: #f9fafb; }
+.pcos-table th { padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid #e5e7eb; }
+.pcos-table td { padding: 12px 14px; border-bottom: 1px solid #f3f4f6; }
+.pcos-row:last-child td { border-bottom: none; }
+.pcos-row:hover { background: #f9fafb; }
+.pcos-name { font-weight: 600; color: #111827; }
+.pcos-status-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.pcos-amt { font-weight: 600; }
+.pcos-variance { font-weight: 700; font-size: 13px; }
+.pcos-margin { font-weight: 700; }
+.pcos-view-btn { background: #f3f4f6; border: none; border-radius: 6px; padding: 5px 8px; cursor: pointer; color: #6b7280; display: flex; }
+.pcos-view-btn:hover { background: #e5e7eb; }
+.pcos-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; display: flex; justify-content: flex-end; }
+.pcos-drawer { width: 420px; background: #fff; height: 100vh; display: flex; flex-direction: column; animation: pcos-slide .25s ease; }
+@keyframes pcos-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+.pcos-drawer-hd { display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #e5e7eb; }
+.pcos-drawer-hd h3 { font-size: 15px; font-weight: 700; color: #111827; margin: 0; }
+.pcos-icon-btn { background: none; border: none; cursor: pointer; color: #6b7280; padding: 4px; border-radius: 4px; display: flex; }
+.pcos-icon-btn:hover { background: #f3f4f6; }
+.pcos-drawer-body { flex: 1; overflow-y: auto; padding: 20px; }
+.pcos-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+.pcos-detail-item { display: flex; flex-direction: column; gap: 2px; }
+.pcos-detail-lbl { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: .4px; }
+.pcos-detail-val { font-size: 13px; font-weight: 600; color: #111827; }
+.pcos-budget-section { margin-bottom: 16px; }
+.pcos-budget-bar-lbl { display: flex; justify-content: space-between; font-size: 12px; color: #374151; margin-bottom: 6px; font-weight: 500; }
+.pcos-budget-track { height: 8px; background: #f3f4f6; border-radius: 4px; margin-bottom: 4px; }
+.pcos-budget-fill { height: 100%; border-radius: 4px; }
+.pcos-budget-labels { display: flex; justify-content: space-between; font-size: 11px; color: #9ca3af; }
+.pcos-variance-box { padding: 12px; border-radius: 8px; border: 1px solid; text-align: center; }
+.pcos-drawer-ft { padding: 16px 20px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; }
+.pcos-btn-outline { padding: 8px 20px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; background: #fff; color: #374151; }
+.pcos-loading { display: flex; justify-content: center; padding: 48px; }
+.pcos-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: pcos-spin .8s linear infinite; }
+@keyframes pcos-spin { to { transform: rotate(360deg); } }
+@media (max-width: 768px) { .pcos-summary { grid-template-columns: repeat(2,1fr); } .pcos-table-wrap { overflow-x: auto; } }

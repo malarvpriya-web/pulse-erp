@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell
@@ -8,6 +8,7 @@ import {
   RefreshCw, ArrowUpRight, Plus, ArrowRightLeft
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import './InventoryDashboard.css';
 
 const fmt = n => {
@@ -17,34 +18,6 @@ const fmt = n => {
   return `₹${v.toFixed(0)}`;
 };
 
-const SAMPLE_STATS = {
-  total_items: 142,
-  low_stock_count: 18,
-  total_value: 2340000,
-  pending_pos: 7,
-};
-
-const SAMPLE_SUMMARY = [
-  { category: 'Raw Materials', total_quantity: 850, item_count: 42 },
-  { category: 'Finished Goods', total_quantity: 340, item_count: 28 },
-  { category: 'Packaging',     total_quantity: 1200, item_count: 15 },
-  { category: 'Consumables',   total_quantity: 500, item_count: 30 },
-  { category: 'Spares',        total_quantity: 210, item_count: 27 },
-];
-
-const SAMPLE_LOW = [
-  { id: 1, name: 'Ball Bearings 20mm', sku: 'SKU-001', category: 'Spares', current_stock: 5, reorder_level: 20, unit: 'pcs' },
-  { id: 2, name: 'Packing Tape 48mm', sku: 'SKU-012', category: 'Packaging', current_stock: 12, reorder_level: 50, unit: 'rolls' },
-  { id: 3, name: 'Lubricant Oil 5L',  sku: 'SKU-034', category: 'Consumables', current_stock: 2, reorder_level: 10, unit: 'cans' },
-  { id: 4, name: 'Copper Wire 2.5mm', sku: 'SKU-056', category: 'Raw Materials', current_stock: 30, reorder_level: 100, unit: 'kg' },
-];
-
-const SAMPLE_MOVES = [
-  { id: 1, item_name: 'Ball Bearings 20mm', movement_type: 'IN',  quantity: 200, reference: 'GRN-001', created_at: new Date().toISOString() },
-  { id: 2, item_name: 'Packing Tape 48mm',  movement_type: 'OUT', quantity: 50,  reference: 'SO-102',  created_at: new Date().toISOString() },
-  { id: 3, item_name: 'Lubricant Oil 5L',   movement_type: 'OUT', quantity: 5,   reference: 'ISS-007', created_at: new Date().toISOString() },
-  { id: 4, item_name: 'Copper Wire 2.5mm',  movement_type: 'IN',  quantity: 500, reference: 'PO-045',  created_at: new Date().toISOString() },
-];
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#3b82f6', '#8b5cf6'];
 
@@ -64,41 +37,140 @@ export default function InventoryDashboard({ setPage }) {
   const [summary, setSummary] = useState([]);
   const [lowStock,setLowStock]= useState([]);
   const [moves,   setMoves]   = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [items,   setItems]   = useState([]);
+  const [selectedItemId, setSelectedItemId] = useState('');
+  const [eoqData, setEoqData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [apiErrors, setApiErrors] = useState([]);
+
+  const isMounted = useRef(true);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [dashRes, sumRes, lowRes, movRes] = await Promise.allSettled([
+    const [dashRes, sumRes, lowRes, movRes, itemsRes] = await Promise.allSettled([
       api.get('/inventory/dashboard'),
       api.get('/inventory/stock/summary'),
       api.get('/inventory/stock/low-stock'),
       api.get('/inventory/stock/movement', { params: { limit: 8 } }),
+      api.get('/inventory/items', { params: { limit: 200 } }),
     ]);
 
+    if (!isMounted.current) return;
+
+    const errors = [];
+    if (dashRes.status === 'rejected') errors.push('Dashboard KPIs');
+    if (sumRes.status === 'rejected')  errors.push('Stock Summary');
+    if (lowRes.status === 'rejected')  errors.push('Low Stock Alerts');
+    if (movRes.status === 'rejected')  errors.push('Recent Movements');
+    setApiErrors(errors);
+
     const rawStats = dashRes.status === 'fulfilled' ? dashRes.value.data : null;
-    setStats(rawStats || SAMPLE_STATS);
+    setStats(rawStats || null);
 
     const rawSum = sumRes.status === 'fulfilled' ? (sumRes.value.data.summary || sumRes.value.data) : [];
-    setSummary(Array.isArray(rawSum) && rawSum.length ? rawSum : SAMPLE_SUMMARY);
+    setSummary(Array.isArray(rawSum) ? rawSum : []);
 
     const rawLow = lowRes.status === 'fulfilled' ? (lowRes.value.data.items || lowRes.value.data) : [];
-    setLowStock(Array.isArray(rawLow) && rawLow.length ? rawLow : SAMPLE_LOW);
+    setLowStock(Array.isArray(rawLow) ? rawLow : []);
 
     const rawMov = movRes.status === 'fulfilled' ? (movRes.value.data.movements || movRes.value.data) : [];
-    setMoves(Array.isArray(rawMov) && rawMov.length ? rawMov : SAMPLE_MOVES);
+    setMoves(Array.isArray(rawMov) ? rawMov : []);
+    const rawItems = itemsRes.status === 'fulfilled' ? (itemsRes.value.data.items || itemsRes.value.data) : [];
+    const finalItems = Array.isArray(rawItems) ? rawItems : [];
+    setItems(finalItems);
+    setSelectedItemId(prev => prev || (finalItems.length > 0 ? String(finalItems[0].id) : ''));
 
     setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const fetchEoq = async () => {
+      if (!selectedItemId) {
+        setEoqData(null);
+        return;
+      }
+      try {
+        const res = await api.get('/procurement/analytics/eoq', { params: { item_id: selectedItemId } });
+        if (isMounted.current) setEoqData(res.data || null);
+      } catch {
+        if (isMounted.current) setEoqData(null);
+      }
+    };
+    fetchEoq();
+  }, [selectedItemId]);
 
-  if (loading) return <div className="invd-loading"><div className="invd-spinner" /><p>Loading…</p></div>;
 
-  const s = stats || SAMPLE_STATS;
+  const s = stats || {};
   const chartData = summary.map(r => ({
     name: r.category,
     qty: parseInt(r.total_quantity) || 0,
   }));
+  const stockRows = summary.map((r) => {
+    const qty = parseFloat(r.balance ?? r.total_quantity ?? 0);
+    const rate = parseFloat(r.avg_rate ?? r.rate ?? 0);
+    const value = parseFloat((r.value ?? (qty * rate)) || 0);
+    return {
+      code: r.item_code || r.category || 'ITEM',
+      value: Number.isFinite(value) ? value : 0,
+    };
+  }).filter((r) => r.value > 0);
+  const sortedByValue = [...stockRows].sort((a, b) => b.value - a.value);
+  const totalStockValue = sortedByValue.reduce((s2, r) => s2 + r.value, 0);
+  let running = 0;
+  const abcRows = sortedByValue.map((r) => {
+    running += r.value;
+    const cumPct = totalStockValue > 0 ? (running / totalStockValue) * 100 : 0;
+    const cls = cumPct <= 80 ? 'A' : cumPct <= 95 ? 'B' : 'C';
+    return { ...r, cls };
+  });
+  const abcStats = abcRows.reduce((acc, r) => {
+    acc[r.cls].count += 1;
+    acc[r.cls].value += r.value;
+    return acc;
+  }, {
+    A: { count: 0, value: 0, color: '#ef4444' },
+    B: { count: 0, value: 0, color: '#f59e0b' },
+    C: { count: 0, value: 0, color: '#10b981' },
+  });
+  const abcChartData = ['A', 'B', 'C'].map((k) => ({
+    cls: k,
+    count: abcStats[k].count,
+    value: abcStats[k].value,
+    color: abcStats[k].color,
+  }));
+
+  const categoryChart = (h) => (
+    <ResponsiveContainer width="100%" height={h}>
+      <BarChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+        <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+        <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+        <Tooltip formatter={v => [v.toLocaleString('en-IN'), 'Qty']} />
+        <Bar dataKey="qty" radius={[4, 4, 0, 0]} name="Qty">
+          {chartData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+
+  const abcChart = (h) => (
+    <ResponsiveContainer width="100%" height={h}>
+      <BarChart data={abcChartData} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+        <XAxis dataKey="cls" />
+        <YAxis allowDecimals={false} />
+        <Tooltip formatter={(v, n) => [n === 'value' ? fmt(v) : v, n === 'value' ? 'Value' : 'Items']} />
+        <Bar dataKey="count" name="count" radius={[4, 4, 0, 0]}>
+          {abcChartData.map((entry) => <Cell key={entry.cls} fill={entry.color} />)}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
 
   return (
     <div className="invd-root">
@@ -116,14 +188,30 @@ export default function InventoryDashboard({ setPage }) {
             <Plus size={14} /> Add Item
           </button>
           <button className="invd-icon-btn" onClick={load}><RefreshCw size={14} /></button>
+          <button
+            onClick={() => setPage && setPage('InventorySettings')}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: '1px solid #e5e7eb', borderRadius: 7, padding: '6px 12px', cursor: 'pointer', color: '#6b7280', fontSize: 13, fontWeight: 500 }}
+            title="Inventory Settings"
+          >
+            ⚙ Settings
+          </button>
         </div>
       </div>
+
+      {/* API error banner */}
+      {apiErrors.length > 0 && (
+        <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 8, padding: '10px 16px', marginBottom: 16, color: '#991b1b', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <AlertTriangle size={15} />
+          <span>Failed to load: <strong>{apiErrors.join(', ')}</strong>. Data shown may be incomplete. <button onClick={load} style={{ background: 'none', border: 'none', color: '#991b1b', cursor: 'pointer', textDecoration: 'underline', fontSize: 13, padding: 0 }}>Retry</button></span>
+        </div>
+      )}
 
       {/* KPIs */}
       <div className="invd-kpis">
         <KPI icon={Package}       label="Total Items"     value={s.total_items || 0}    color="#6366f1" sub="In master" />
         <KPI icon={AlertTriangle} label="Low Stock"       value={s.low_stock_count || 0} color="#ef4444" alert={(s.low_stock_count||0)>0} sub="Below reorder level" />
         <KPI icon={TrendingUp}    label="Inventory Value" value={fmt(s.total_value)}     color="#10b981" sub="Total valuation" />
+        <KPI icon={TrendingUp}    label="Holding Cost / Month" value={fmt(s.total_holding_cost_monthly)} color="#6B3FDB" sub={`Annual rate ${(parseFloat(s.holding_cost_rate_annual || 0) * 100).toFixed(1)}%`} />
         <KPI icon={ShoppingCart}  label="Pending POs"     value={s.pending_pos || 0}     color="#f59e0b" sub="Awaiting receipt" />
       </div>
 
@@ -134,19 +222,12 @@ export default function InventoryDashboard({ setPage }) {
         <div className="invd-card invd-fc7">
           <div className="invd-card-hd">
             <span className="invd-card-title">Stock Qty by Category</span>
+            <ChartExpandButton title="Stock Qty by Category" subtitle="Quantity on hand per item category">
+              {categoryChart(420)}
+            </ChartExpandButton>
           </div>
           <div className="invd-card-body">
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                <Tooltip formatter={v => [v.toLocaleString('en-IN'), 'Qty']} />
-                <Bar dataKey="qty" radius={[4, 4, 0, 0]} name="Qty">
-                  {chartData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            {categoryChart(195)}
           </div>
         </div>
 
@@ -163,16 +244,18 @@ export default function InventoryDashboard({ setPage }) {
           </div>
           <div className="invd-card-body invd-scroll">
             {lowStock.map((item, i) => {
-              const pct = Math.min(100, Math.round((item.current_stock / item.reorder_level) * 100));
+              const bal = parseFloat(item.balance ?? item.current_stock ?? 0);
+              const rl  = parseFloat(item.reorder_level ?? 1) || 1;
+              const pct = Math.min(100, Math.round((bal / rl) * 100));
               return (
                 <div key={item.id || i} className="invd-low-row">
                   <div className="invd-low-info">
-                    <span className="invd-low-name">{item.name}</span>
-                    <span className="invd-low-sku">{item.sku} · {item.category}</span>
+                    <span className="invd-low-name">{item.item_name || item.name}</span>
+                    <span className="invd-low-sku">{item.item_code || item.sku} · {item.warehouse_name || item.category}</span>
                   </div>
                   <div className="invd-low-right">
                     <span className="invd-low-stock">
-                      {item.current_stock} / {item.reorder_level} {item.unit}
+                      {bal.toLocaleString('en-IN')} / {rl.toLocaleString('en-IN')}
                     </span>
                     <div className="invd-bar-track">
                       <div className="invd-bar" style={{ width: `${pct}%`, background: pct < 30 ? '#ef4444' : '#f59e0b' }} />
@@ -192,7 +275,7 @@ export default function InventoryDashboard({ setPage }) {
               View All <ArrowUpRight size={12} />
             </button>
           </div>
-          <div className="invd-card-body" style={{ padding: 0 }}>
+          <div className="invd-card-body" style={{ padding: 0, maxHeight: 265, overflowY: 'auto' }}>
             <table className="invd-table">
               <thead>
                 <tr>
@@ -213,11 +296,69 @@ export default function InventoryDashboard({ setPage }) {
                     </td>
                     <td>{parseInt(m.quantity).toLocaleString('en-IN')}</td>
                     <td className="invd-mono">{m.reference || '—'}</td>
-                    <td>{m.created_at ? new Date(m.created_at).toLocaleDateString('en-IN') : '—'}</td>
+                    <td>{m.created_at ? new Date(m.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        {/* EOQ planner */}
+        <div className="invd-card invd-fc12">
+          <div className="invd-card-hd">
+            <span className="invd-card-title">EOQ Planner</span>
+          </div>
+          <div className="invd-card-body">
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+              <label style={{ fontSize: 13, color: '#374151' }}>Item</label>
+              <select
+                value={selectedItemId}
+                onChange={(e) => setSelectedItemId(e.target.value)}
+                style={{ padding: '6px 10px', border: '1px solid #e5e7eb', borderRadius: 8, minWidth: 260 }}
+              >
+                {items.map((it) => (
+                  <option key={it.id} value={it.id}>
+                    {(it.item_code || 'ITEM')} - {it.item_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {!eoqData && <p style={{ color: '#6b7280', margin: 0 }}>EOQ data not available for selected item.</p>}
+            {eoqData && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                <div><strong>EOQ:</strong> {parseFloat(eoqData.eoq || 0).toFixed(2)}</div>
+                <div><strong>Annual Demand:</strong> {parseFloat(eoqData.annual_demand || 0).toFixed(2)}</div>
+                <div><strong>Reorder Point:</strong> {parseFloat(eoqData.reorder_point_calculated || 0).toFixed(2)}</div>
+                <div><strong>Expected Delivery:</strong> {eoqData.expected_delivery_date || '—'}</div>
+                <div><strong>Purchase Cost:</strong> {fmt(eoqData.annual_cost_breakup?.purchase_cost)}</div>
+                <div><strong>Ordering Cost:</strong> {fmt(eoqData.annual_cost_breakup?.ordering_cost)}</div>
+                <div><strong>Holding Cost:</strong> {fmt(eoqData.annual_cost_breakup?.holding_cost)}</div>
+                <div><strong>Total Annual Cost:</strong> {fmt(eoqData.total_annual_inventory_cost)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ABC analysis */}
+        <div className="invd-card invd-fc12">
+          <div className="invd-card-hd">
+            <span className="invd-card-title">ABC Analysis (By Stock Value)</span>
+            <ChartExpandButton title="ABC Analysis" subtitle="Item classes by stock value">
+              {abcChart(420)}
+            </ChartExpandButton>
+          </div>
+          <div className="invd-card-body">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(140px, 1fr))', gap: 8, marginBottom: 12 }}>
+              {abcChartData.map((r) => (
+                <div key={r.cls} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>Class {r.cls}</div>
+                  <div style={{ fontWeight: 700, color: r.color }}>{r.count} items</div>
+                  <div style={{ fontSize: 12 }}>{fmt(r.value)}</div>
+                </div>
+              ))}
+            </div>
+            {abcChart(180)}
           </div>
         </div>
 

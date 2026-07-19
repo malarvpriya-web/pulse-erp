@@ -1,6 +1,11 @@
 import pool from '../../shared/db.js';
 
 class StockLedgerRepository {
+  getHoldingRate() {
+    const parsed = Number.parseFloat(process.env.INVENTORY_HOLDING_COST_RATE ?? '0.18');
+    if (!Number.isFinite(parsed) || parsed < 0) return 0.18;
+    return parsed;
+  }
   async createEntry(client, data) {
     const { item_id, warehouse_id, transaction_type, quantity_in, quantity_out, rate, reference_type, reference_id, transaction_date, remarks, created_by } = data;
     
@@ -36,7 +41,7 @@ class StockLedgerRepository {
   }
 
   async getStockSummary(filters = {}) {
-    let query = `SELECT 
+    let query = `SELECT
                   ii.id, ii.item_code, ii.item_name, ii.unit_of_measure, ii.reorder_level,
                   w.id as warehouse_id, w.warehouse_name,
                   COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) as balance,
@@ -46,17 +51,22 @@ class StockLedgerRepository {
                  LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
                  WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL`;
     const params = [];
-    
+
+    if (filters.company_id != null) {
+      params.push(filters.company_id);
+      query += ` AND ii.company_id = $${params.length}`;
+    }
+
     if (filters.item_id) {
       params.push(filters.item_id);
       query += ` AND ii.id = $${params.length}`;
     }
-    
+
     if (filters.warehouse_id) {
       params.push(filters.warehouse_id);
       query += ` AND w.id = $${params.length}`;
     }
-    
+
     if (filters.item_type) {
       params.push(filters.item_type);
       query += ` AND ii.item_type = $${params.length}`;
@@ -70,29 +80,36 @@ class StockLedgerRepository {
     return result.rows;
   }
 
-  async getLowStockItems() {
+  async getLowStockItems(company_id = null) {
+    const params = [];
+    let companyFilter = '';
+    if (company_id != null) {
+      params.push(company_id);
+      companyFilter = ` AND ii.company_id = $${params.length}`;
+    }
     const result = await pool.query(
-      `SELECT 
+      `SELECT
         ii.id, ii.item_code, ii.item_name, ii.reorder_level,
         w.warehouse_name,
         COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) as balance
        FROM inventory_items ii
        CROSS JOIN warehouses w
        LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
-       WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL
+       WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL${companyFilter}
        GROUP BY ii.id, ii.item_code, ii.item_name, ii.reorder_level, w.warehouse_name
        HAVING COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) <= ii.reorder_level
-       ORDER BY ii.item_code`
+       ORDER BY ii.item_code`,
+      params
     );
     return result.rows;
   }
 
   async getStockMovement(itemId, warehouseId, startDate, endDate) {
     const result = await pool.query(
-      `SELECT sl.*, ii.item_code, ii.item_name 
+      `SELECT sl.*, ii.item_code, ii.item_name
        FROM stock_ledger sl
        JOIN inventory_items ii ON sl.item_id = ii.id
-       WHERE sl.item_id = $1 AND sl.warehouse_id = $2 
+       WHERE sl.item_id = $1 AND sl.warehouse_id = $2
        AND sl.transaction_date BETWEEN $3 AND $4
        ORDER BY sl.transaction_date DESC, sl.created_at DESC`,
       [itemId, warehouseId, startDate, endDate]
@@ -100,30 +117,95 @@ class StockLedgerRepository {
     return result.rows;
   }
 
-  async getInventoryValuation(warehouseId = null) {
-    let query = `SELECT 
-                  ii.item_code, ii.item_name, ii.item_type,
+  // Flexible movement query used by dashboard and stock movements list.
+  // All params optional; returns fields aliased to what both pages expect.
+  async getRecentMovements(filters = {}) {
+    const { item_id, warehouse_id, start_date, end_date, search, limit = 50 } = filters;
+    const params = [];
+    let query = `
+      SELECT
+        sl.id,
+        sl.created_at,
+        sl.transaction_date,
+        CASE WHEN sl.quantity_in > 0 THEN 'IN' ELSE 'OUT' END        AS movement_type,
+        CASE WHEN sl.quantity_in > 0 THEN sl.quantity_in
+             ELSE sl.quantity_out END                                  AS quantity,
+        sl.remarks                                                     AS reference,
+        sl.remarks                                                     AS notes,
+        sl.balance_qty,
+        sl.rate,
+        sl.transaction_type,
+        sl.created_by,
+        ii.item_code,
+        ii.item_name,
+        ii.unit_of_measure                                             AS unit
+      FROM stock_ledger sl
+      JOIN inventory_items ii ON sl.item_id = ii.id
+      WHERE 1=1
+    `;
+
+    if (item_id)    { params.push(item_id);     query += ` AND sl.item_id      = $${params.length}`; }
+    if (warehouse_id) { params.push(warehouse_id); query += ` AND sl.warehouse_id = $${params.length}`; }
+    if (start_date) { params.push(start_date);  query += ` AND sl.transaction_date >= $${params.length}`; }
+    if (end_date)   { params.push(end_date);    query += ` AND sl.transaction_date <= $${params.length}`; }
+    if (search) {
+      params.push(`%${search}%`);
+      const p = params.length;
+      query += ` AND (ii.item_name ILIKE $${p} OR ii.item_code ILIKE $${p} OR sl.remarks ILIKE $${p})`;
+    }
+
+    params.push(Math.min(parseInt(limit, 10) || 50, 500));
+    query += ` ORDER BY sl.created_at DESC, sl.id DESC LIMIT $${params.length}`;
+
+    const result = await pool.query(query, params);
+    return result.rows;
+  }
+
+  async getInventoryValuation(warehouseId = null, valuationMethod = 'Weighted Average') {
+    // All supported methods use weighted average on the stock_ledger for now;
+    // FIFO requires a FIFO-layer table (not yet implemented — tracked as future enhancement).
+    // Standard Cost uses item.standard_cost instead of ledger AVG(rate).
+    const useStandardCost = valuationMethod === 'Standard Cost';
+
+    const rateExpr = useStandardCost
+      ? 'COALESCE(ii.standard_cost, 0)'
+      : 'COALESCE(AVG(NULLIF(sl.rate, 0)), 0)';
+
+    let query = `SELECT
+                  ii.id, ii.item_code, ii.item_name, ii.item_type,
+                  ii.hsn_code, ii.gst_rate,
                   w.warehouse_name,
-                  COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) as balance,
-                  COALESCE(AVG(sl.rate), 0) as avg_rate,
-                  COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) * COALESCE(AVG(sl.rate), 0) as value
+                  COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)           AS balance,
+                  ${rateExpr}                                                   AS avg_rate,
+                  COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) * ${rateExpr} AS value
                  FROM inventory_items ii
                  CROSS JOIN warehouses w
                  LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
                  WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL`;
     const params = [];
-    
+
     if (warehouseId) {
       params.push(warehouseId);
       query += ` AND w.id = $${params.length}`;
     }
-    
-    query += ' GROUP BY ii.item_code, ii.item_name, ii.item_type, w.warehouse_name';
+
+    query += ` GROUP BY ii.id, ii.item_code, ii.item_name, ii.item_type, ii.hsn_code, ii.gst_rate, ii.standard_cost, w.warehouse_name`;
     query += ' HAVING COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) > 0';
     query += ' ORDER BY value DESC';
-    
+
     const result = await pool.query(query, params);
-    return result.rows;
+    const annualRate = this.getHoldingRate();
+    return result.rows.map((row) => {
+      const value = Number.parseFloat(row.value || 0);
+      const annualHoldingCost = value * annualRate;
+      return {
+        ...row,
+        valuation_method: valuationMethod,
+        holding_cost_rate_annual: annualRate,
+        holding_cost_annual: annualHoldingCost,
+        holding_cost_monthly: annualHoldingCost / 12,
+      };
+    });
   }
 }
 

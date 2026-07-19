@@ -1,0 +1,262 @@
+/* RecruitmentAgencies — page-specific styles (prefix: .ra-) */
+
+@keyframes ra-pulse {
+  0%, 100% { background-position: 200% 0; }
+  50%       { background-position: -200% 0; }
+}
+
+.ra-root {
+  padding: 24px;
+}
+
+/* ── header row ── */
+.ra-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.ra-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ── buttons ── */
+.ra-btn-primary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-primary);
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #fff;
+  font-weight: 600;
+}
+
+.ra-btn-outline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #374151;
+}
+
+/* ── error banner ── */
+.ra-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+/* ── search bar ── */
+.ra-search-wrap {
+  margin-bottom: 16px;
+}
+
+.ra-search {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  width: 300px;
+  outline: none;
+}
+
+/* ── skeleton loader ── */
+.ra-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ra-skeleton-row {
+  height: 64px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: ra-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── table wrapper ── */
+.ra-table-wrap {
+  background: var(--color-background-primary);
+  border: 1px solid #f0f0f4;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+/* ── agency name cell ── */
+.ra-agency-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+/* ── specialization badge ── */
+.ra-spec-badge {
+  background: #f0f0ff;
+  color: var(--color-primary);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ── contact cell ── */
+.ra-contact-name {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.ra-contact-phone {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+/* ── success rate bar ── */
+.ra-rate-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ra-rate-track {
+  flex: 1;
+  height: 5px;
+  background: var(--color-border-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 50px;
+}
+
+/* width & background color set via inline style (dynamic) */
+.ra-rate-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.ra-rate-pct {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+
+/* ── toggle button ── */
+.ra-toggle-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  /* color set via inline style (dynamic) */
+}
+
+/* ── modal overlay ── */
+.ra-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.ra-modal {
+  background: var(--color-background-primary);
+  border-radius: var(--border-radius-lg);
+  padding: 28px;
+  width: 460px;
+  max-width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.ra-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.ra-modal-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.ra-modal-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+
+/* ── form fields ── */
+.ra-field {
+  margin-bottom: 14px;
+}
+
+.ra-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 5px;
+}
+
+.ra-input,
+.ra-form-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+/* ── modal footer ── */
+.ra-modal-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.ra-btn-cancel {
+  padding: 8px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--color-background-primary);
+  color: #374151;
+}
+
+.ra-btn-submit {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--color-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.ra-btn-submit:disabled {
+  opacity: 0.7;
+}

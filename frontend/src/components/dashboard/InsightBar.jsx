@@ -1,55 +1,61 @@
 import React from 'react';
 import './InsightBar.css';
 
+const fmt = n => {
+  const v = parseFloat(n) || 0;
+  if (v >= 100_000) return `₹${(v / 100_000).toFixed(1)}L`;
+  if (v >= 1_000)   return `₹${(v / 1_000).toFixed(0)}K`;
+  return `₹${v.toFixed(0)}`;
+};
+
 const InsightBar = ({ data }) => {
   const insights = [
     {
       label: 'Revenue Today',
-      value: data?.revenueToday || 240000,
-      format: 'currency',
+      value: fmt(data?.revenueToday || 0),
       icon: '💰',
-      color: '#10b981'
+      color: '#6B3FDB',
+      bg: '#f5f3ff',
+      border: '#e9e4ff',
     },
     {
       label: 'Invoices Due',
-      value: data?.invoicesDue || 14,
-      format: 'number',
+      value: (data?.invoicesDue || 0).toLocaleString(),
       icon: '📄',
-      color: '#f59e0b'
+      color: '#f59e0b',
+      bg: '#fffbeb',
+      border: '#fde68a',
     },
     {
       label: 'Open Tickets',
-      value: data?.openTickets || 6,
-      format: 'number',
+      value: (data?.openTickets || 0).toLocaleString(),
       icon: '🎫',
-      color: '#3b82f6'
+      color: '#3b82f6',
+      bg: '#eff6ff',
+      border: '#bfdbfe',
     },
     {
       label: 'Stock Alerts',
-      value: data?.stockAlerts || 3,
-      format: 'number',
+      value: (data?.stockAlerts || 0).toLocaleString(),
       icon: '📦',
-      color: '#ef4444'
-    }
+      color: '#ef4444',
+      bg: '#fef2f2',
+      border: '#fecaca',
+    },
   ];
-
-  const formatValue = (value, format) => {
-    if (format === 'currency') {
-      return `₹${(value / 100000).toFixed(1)}L`;
-    }
-    return value.toLocaleString();
-  };
 
   return (
     <div className="insight-bar">
-      {insights.map((insight, index) => (
-        <div key={index} className="insight-card" style={{ borderLeftColor: insight.color }}>
-          <div className="insight-icon">{insight.icon}</div>
+      {insights.map((item, i) => (
+        <div
+          key={i}
+          className="insight-card"
+          style={{ background: item.bg, border: `1px solid ${item.border}` }}
+        >
+          <span className="insight-icon">{item.icon}</span>
           <div className="insight-content">
-            <div className="insight-label">{insight.label}</div>
-            <div className="insight-value" style={{ color: insight.color }}>
-              {formatValue(insight.value, insight.format)}
-            </div>
+            <div className="insight-label">{item.label}</div>
+            <div className="insight-value" style={{ color: item.color }}>{item.value}</div>
           </div>
         </div>
       ))}

@@ -10,47 +10,26 @@ import {
   Tooltip, CartesianGrid, Cell
 } from 'recharts';
 import { useAuth } from '@/context/AuthContext';
+import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
 import './PerformanceReviews.css';
 
-/* ── sample data ────────────────────────────────────── */
-const SAMPLE_REVIEW = {
-  id: 1,
-  period: 'Q4 2025 (Oct – Dec)',
-  cycle: 'Annual Review 2025',
-  status: 'self_review_pending',
-  self_rating: null,
-  manager_rating: null,
-  final_rating: null,
-  self_submitted_at: null,
-  manager_reviewed_at: null,
-  strengths: '',
-  improvements: '',
-  manager_comments: '',
-};
-
-const SAMPLE_GOALS = [
-  { id: 1, title: 'Deliver Q4 feature roadmap', category: 'Delivery', progress: 85, target: 100, status: 'on_track', due: 'Dec 31 2025', weight: 30 },
-  { id: 2, title: 'Reduce bug backlog by 40%', category: 'Quality', progress: 62, target: 100, status: 'on_track', due: 'Dec 31 2025', weight: 20 },
-  { id: 3, title: 'Complete React advanced course', category: 'Learning', progress: 40, target: 100, status: 'at_risk', due: 'Dec 31 2025', weight: 15 },
-  { id: 4, title: 'Mentor 2 junior developers', category: 'Leadership', progress: 100, target: 100, status: 'completed', due: 'Oct 15 2025', weight: 20 },
-  { id: 5, title: 'Improve code review turnaround', category: 'Process', progress: 70, target: 100, status: 'on_track', due: 'Dec 31 2025', weight: 15 },
-];
-
-const SAMPLE_COMPETENCIES = [
-  { subject: 'Technical Skills', self: 4.2, manager: 3.8, fullMark: 5 },
-  { subject: 'Communication', self: 3.5, manager: 3.9, fullMark: 5 },
-  { subject: 'Leadership', self: 3.8, manager: 4.1, fullMark: 5 },
-  { subject: 'Problem Solving', self: 4.5, manager: 4.2, fullMark: 5 },
-  { subject: 'Collaboration', self: 4.0, manager: 4.3, fullMark: 5 },
-  { subject: 'Innovation', self: 3.6, manager: 3.5, fullMark: 5 },
-];
-
-const SAMPLE_HISTORY = [
-  { id: 1, cycle: 'Annual Review 2024', period: 'Jan – Dec 2024', final_rating: 4.1, manager: 'Priya Mehta', completed_at: 'Jan 15 2025', badge: 'Exceeds Expectations' },
-  { id: 2, cycle: 'Mid-Year 2024', period: 'Jan – Jun 2024', final_rating: 3.8, manager: 'Priya Mehta', completed_at: 'Jul 10 2024', badge: 'Meets Expectations' },
-  { id: 3, cycle: 'Annual Review 2023', period: 'Jan – Dec 2023', final_rating: 3.5, manager: 'Rahul Singh', completed_at: 'Jan 20 2024', badge: 'Meets Expectations' },
-];
+function EmptyState({ icon: Icon, title, sub, action }) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+      padding: '48px 24px', textAlign: 'center', gap: 8,
+      background: 'var(--color-background-secondary)',
+      borderRadius: 'var(--border-radius-lg)',
+      border: '0.5px solid var(--color-border-tertiary)',
+    }}>
+      {Icon && <Icon size={36} style={{ color: 'var(--color-text-secondary)', marginBottom: 4 }} />}
+      <p style={{ fontSize: 15, fontWeight: 500, color: 'var(--color-text-primary)', margin: 0 }}>{title}</p>
+      {sub && <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: 0 }}>{sub}</p>}
+      {action}
+    </div>
+  );
+}
 
 const RATING_LABELS = { 1: 'Poor', 2: 'Below Average', 3: 'Meets Expectations', 4: 'Exceeds Expectations', 5: 'Outstanding' };
 const STATUS_META = {
@@ -92,6 +71,7 @@ const Toast = ({ toast, onClose }) => {
 
 /* ── Self Assessment Drawer ─────────────────────────── */
 function SelfAssessmentDrawer({ review, onClose, onSubmit }) {
+  const toast = useToast();
   const [form, setForm] = useState({
     self_rating: review?.self_rating || 0,
     highlights: '',
@@ -104,10 +84,10 @@ function SelfAssessmentDrawer({ review, onClose, onSubmit }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const handleSubmit = async () => {
-    if (!form.self_rating) { alert('Please select a self rating'); return; }
+    if (!form.self_rating) { toast.error('Please select a self rating'); return; }
     setSaving(true);
     try {
-      await api.post(`/performance/reviews/${review.id}/self-assessment`, form);
+      await api.post(`/performance/reviews/${review.id}/self-review`, form);
     } catch (_) {}
     onSubmit({ ...form });
     setSaving(false);
@@ -221,15 +201,18 @@ function GoalRow({ goal }) {
 
 /* ── Main Component ─────────────────────────────────── */
 export default function PerformanceReviews() {
-  const { user } = useAuth();
+  const { user: _user } = useAuth();
   const [tab, setTab] = useState('overview');
-  const [review, setReview] = useState(SAMPLE_REVIEW);
-  const [goals, setGoals] = useState(SAMPLE_GOALS);
-  const [competencies, setCompetencies] = useState(SAMPLE_COMPETENCIES);
-  const [history, setHistory] = useState(SAMPLE_HISTORY);
+  const [review, setReview] = useState(null);
+  const [goals, setGoals] = useState([]);
+  const [competencies, setCompetencies] = useState([]);
+  const [history, setHistory] = useState([]);
   const [showDrawer, setShowDrawer] = useState(false);
+  const [showManagerForm, setShowManagerForm] = useState(false);
+  const [mgr, setMgr] = useState({ manager_rating: 0, manager_comments: '', kra_score: '', behavioral_score: '', final_rating: '', promotion_recommendation: false, salary_revision_percentage: '' });
+  const [mgrSaving, setMgrSaving] = useState(false);
   const [toast, setToast] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const showToast = (msg, type = 'success') => setToast({ msg, type });
 
@@ -241,19 +224,83 @@ export default function PerformanceReviews() {
       api.get('/performance/competencies'),
       api.get('/performance/history'),
     ]);
-    if (revRes.status === 'fulfilled' && revRes.value.data) setReview(revRes.value.data);
-    if (goalsRes.status === 'fulfilled' && goalsRes.value.data?.length) setGoals(goalsRes.value.data);
-    if (compRes.status === 'fulfilled' && compRes.value.data?.length) setCompetencies(compRes.value.data);
-    if (histRes.status === 'fulfilled' && histRes.value.data?.length) setHistory(histRes.value.data);
+    if (revRes.status === 'fulfilled' && revRes.value?.data) {
+      const rd = revRes.value.data;
+      setReview({
+        id:                 rd.id,
+        period:             rd.review_period || 'Current Period',
+        cycle:              rd.cycle_name    || 'Performance Review',
+        status:             rd.status        || 'self_review_pending',
+        self_rating:        rd.self_rating   || null,
+        manager_rating:     rd.manager_rating || null,
+        final_rating:       rd.final_rating  || null,
+        self_submitted_at:  rd.self_submitted_at,
+        manager_reviewed_at:rd.manager_submitted_at,
+        strengths:          rd.achievements  || '',
+        improvements:       rd.challenges    || '',
+        manager_comments:   rd.manager_comments || '',
+        employee_name:      rd.employee_name || '',
+        manager_name:       rd.manager_name  || '',
+        kra_score:          rd.kra_score     || null,
+        behavioral_score:   rd.behavioral_score || null,
+      });
+    }
+    if (goalsRes.status === 'fulfilled' && Array.isArray(goalsRes.value?.data) && goalsRes.value.data.length) {
+      setGoals(goalsRes.value.data.map(g => ({
+        id:       g.id,
+        title:    g.goal_title || g.title || '—',
+        category: g.category   || '—',
+        progress: Number(g.progress_pct || 0),
+        target:   Number(g.target_value || 100),
+        status:   g.status === 'achieved' ? 'completed' : g.status === 'at_risk' ? 'at_risk' : g.status === 'overdue' ? 'overdue' : 'on_track',
+        due:      g.due_date ? new Date(g.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—',
+        weight:   Number(g.weightage || 0),
+      })));
+    }
+    if (compRes.status === 'fulfilled' && Array.isArray(compRes.value?.data) && compRes.value.data.length) {
+      setCompetencies(compRes.value.data);
+    }
+    if (histRes.status === 'fulfilled' && Array.isArray(histRes.value?.data) && histRes.value.data.length) {
+      setHistory(histRes.value.data.map(h => ({
+        id:          h.id,
+        cycle:       h.cycle_name || h.review_period || '—',
+        period:      h.review_period || '—',
+        final_rating:Number(h.final_rating || h.overall_rating || 0),
+        manager:     h.manager_name || '—',
+        completed_at:h.manager_submitted_at ? new Date(h.manager_submitted_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—',
+        badge:       h.final_rating >= 4.5 ? 'Outstanding' : h.final_rating >= 3.5 ? 'Exceeds Expectations' : h.final_rating >= 2.5 ? 'Meets Expectations' : 'Below Expectations',
+      })));
+    }
     setLoading(false);
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleSelfSubmit = (data) => {
-    setReview(r => ({ ...r, self_rating: data.self_rating, status: 'pending_manager_review', self_submitted_at: new Date().toLocaleDateString('en-IN') }));
+    setReview(r => ({ ...r, self_rating: data.self_rating, status: 'pending_manager_review', self_submitted_at: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) }));
     setShowDrawer(false);
     showToast('Self assessment submitted successfully');
+  };
+
+  const handleManagerSubmit = async () => {
+    if (!mgr.manager_rating || !mgr.final_rating) {
+      showToast('Manager rating and final rating are required', 'error'); return;
+    }
+    setMgrSaving(true);
+    try {
+      await api.post(`/performance/reviews/${review.id}/manager-review`, {
+        ...mgr,
+        manager_rating: Number(mgr.manager_rating),
+        final_rating:   Number(mgr.final_rating),
+        kra_score:      Number(mgr.kra_score) || null,
+        behavioral_score: Number(mgr.behavioral_score) || null,
+        salary_revision_percentage: Number(mgr.salary_revision_percentage) || 0,
+      });
+      setReview(r => ({ ...r, manager_rating: Number(mgr.manager_rating), final_rating: Number(mgr.final_rating), status: 'completed', manager_comments: mgr.manager_comments }));
+      setShowManagerForm(false);
+      showToast('Manager review submitted');
+    } catch { showToast('Failed to submit manager review', 'error'); }
+    finally { setMgrSaving(false); }
   };
 
   const statusConfig = {
@@ -262,13 +309,35 @@ export default function PerformanceReviews() {
     completed: { label: 'Review Completed', icon: <CheckCircle size={14}/>, color: '#22c55e' },
     in_progress: { label: 'In Progress', icon: <RefreshCw size={14}/>, color: '#3b82f6' },
   };
-  const sc = statusConfig[review.status] || statusConfig.in_progress;
+  const sc = review ? (statusConfig[review.status] || statusConfig.in_progress) : statusConfig.in_progress;
 
   const completedGoals = goals.filter(g => g.status === 'completed').length;
   const atRiskGoals    = goals.filter(g => g.status === 'at_risk').length;
-  const avgProgress    = Math.round(goals.reduce((s, g) => s + g.progress, 0) / goals.length);
+  const avgProgress    = goals.length ? Math.round(goals.reduce((s, g) => s + (Number(g.progress) || 0), 0) / goals.length) : 0;
 
-  const historyBarData = history.map(h => ({ name: h.cycle.replace('Annual Review','AR').replace('Mid-Year','MYR'), rating: h.final_rating }));
+  const historyBarData = history.map(h => ({ name: (h.cycle || '').replace('Annual Review','AR').replace('Mid-Year','MYR'), rating: h.final_rating }));
+
+  if (loading) {
+    return (
+      <div className="prf-page">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 24px', color: 'var(--color-text-secondary)', gap: 10 }}>
+          <RefreshCw size={18} className="prf-spin" />
+          Loading your review…
+        </div>
+      </div>
+    );
+  }
+  if (!review) {
+    return (
+      <div className="prf-page">
+        <EmptyState
+          icon={Star}
+          title="No active review cycle"
+          sub="An admin needs to configure a review cycle in Performance Settings before reviews can be shown."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="prf-page">
@@ -295,6 +364,11 @@ export default function PerformanceReviews() {
           {review.status === 'self_review_pending' && (
             <button className="prf-btn-primary" onClick={() => setShowDrawer(true)}>
               <FileText size={15}/> Start Self Assessment
+            </button>
+          )}
+          {(review.status === 'self_submitted' || review.status === 'pending_manager_review') && (
+            <button className="prf-btn-primary" onClick={() => setShowManagerForm(true)}>
+              <Star size={15}/> Submit Manager Review
             </button>
           )}
         </div>
@@ -434,7 +508,9 @@ export default function PerformanceReviews() {
             <span className="prf-card-sub">{goals.length} goals · Weighted average: {avgProgress}%</span>
           </div>
           <div className="prf-goals-list">
-            {goals.map(g => <GoalRow key={g.id} goal={g}/>)}
+            {goals.length === 0 ? (
+              <EmptyState icon={Target} title="No goals set" sub="Goals will appear here once assigned" />
+            ) : goals.map(g => <GoalRow key={g.id} goal={g}/>)}
           </div>
         </div>
       )}
@@ -507,24 +583,93 @@ export default function PerformanceReviews() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
-            <div className="prf-history-list">
-              {history.map(h => (
-                <div key={h.id} className="prf-history-row">
-                  <div className="prf-hist-cycle">
-                    <strong>{h.cycle}</strong>
-                    <span>{h.period}</span>
+            {history.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: '#9ca3af' }}>No completed reviews yet</div>
+            ) : (
+              <div className="prf-history-list">
+                {history.map(h => (
+                  <div key={h.id} className="prf-history-row">
+                    <div className="prf-hist-cycle">
+                      <strong>{h.cycle}</strong>
+                      <span>{h.period}</span>
+                    </div>
+                    <div className="prf-hist-badge">{h.badge}</div>
+                    <div className="prf-hist-rating">
+                      <span className="prf-hist-score">{h.final_rating}</span>
+                      <span className="prf-hist-max">/ 5</span>
+                    </div>
+                    <div className="prf-hist-meta">
+                      <User size={13}/> {h.manager}
+                      <span className="prf-hist-date">· {h.completed_at}</span>
+                    </div>
                   </div>
-                  <div className="prf-hist-badge">{h.badge}</div>
-                  <div className="prf-hist-rating">
-                    <span className="prf-hist-score">{h.final_rating}</span>
-                    <span className="prf-hist-max">/ 5</span>
-                  </div>
-                  <div className="prf-hist-meta">
-                    <User size={13}/> {h.manager}
-                    <span className="prf-hist-date">· {h.completed_at}</span>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── Manager Review Modal ─── */}
+      {showManagerForm && (
+        <div className="prf-overlay" onClick={() => setShowManagerForm(false)}>
+          <div className="prf-mgr-modal" onClick={e => e.stopPropagation()}>
+            <div className="prf-mgr-modal-hd">
+              <div>
+                <h3>Manager Review</h3>
+                <p className="prf-drawer-sub">{review.employee_name} · {review.cycle}</p>
+              </div>
+              <button className="prf-drawer-close" onClick={() => setShowManagerForm(false)}><X size={20}/></button>
+            </div>
+            <div className="prf-mgr-modal-body">
+              <section>
+                <label className="prf-field-label">Manager Rating *</label>
+                <StarRating value={mgr.manager_rating} onChange={v => setMgr(m => ({ ...m, manager_rating: v }))} />
+              </section>
+              <section>
+                <label className="prf-field-label">Final Rating *</label>
+                <StarRating value={mgr.final_rating} onChange={v => setMgr(m => ({ ...m, final_rating: v }))} />
+              </section>
+              <div className="prf-mgr-row">
+                <section>
+                  <label className="prf-field-label">KRA Score (0–100)</label>
+                  <input className="prf-input" type="number" min="0" max="100"
+                    placeholder="85" value={mgr.kra_score}
+                    onChange={e => setMgr(m => ({ ...m, kra_score: e.target.value }))} />
+                </section>
+                <section>
+                  <label className="prf-field-label">Behavioral Score (0–100)</label>
+                  <input className="prf-input" type="number" min="0" max="100"
+                    placeholder="80" value={mgr.behavioral_score}
+                    onChange={e => setMgr(m => ({ ...m, behavioral_score: e.target.value }))} />
+                </section>
+              </div>
+              <section>
+                <label className="prf-field-label">Manager Comments</label>
+                <textarea className="prf-textarea" rows={4}
+                  placeholder="Overall feedback, strengths observed, areas for improvement…"
+                  value={mgr.manager_comments}
+                  onChange={e => setMgr(m => ({ ...m, manager_comments: e.target.value }))} />
+              </section>
+              <div className="prf-mgr-row">
+                <section>
+                  <label className="prf-field-label">Salary Revision (%)</label>
+                  <input className="prf-input" type="number" min="0" max="100"
+                    placeholder="0" value={mgr.salary_revision_percentage}
+                    onChange={e => setMgr(m => ({ ...m, salary_revision_percentage: e.target.value }))} />
+                </section>
+                <section style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 22 }}>
+                  <input type="checkbox" id="promo" checked={mgr.promotion_recommendation}
+                    onChange={e => setMgr(m => ({ ...m, promotion_recommendation: e.target.checked }))} />
+                  <label htmlFor="promo" className="prf-field-label" style={{ cursor: 'pointer' }}>Recommend for Promotion</label>
+                </section>
+              </div>
+            </div>
+            <div className="prf-drawer-footer">
+              <button className="prf-btn-ghost" onClick={() => setShowManagerForm(false)}>Cancel</button>
+              <button className="prf-btn-primary" onClick={handleManagerSubmit} disabled={mgrSaving}>
+                {mgrSaving ? 'Submitting…' : 'Submit Manager Review'}
+              </button>
             </div>
           </div>
         </div>

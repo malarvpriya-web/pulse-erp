@@ -5,7 +5,7 @@ import { dashboardAPI } from '../../../services/api/dashboardAPI';
 
 const RevenueTrendChart = ({ title = 'Revenue Trend', data, refreshKey }) => {
   const [chartData, setChartData] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
@@ -19,10 +19,10 @@ const RevenueTrendChart = ({ title = 'Revenue Trend', data, refreshKey }) => {
 
   const fetchData = async () => {
     try {
-      setLoading(true);
+
       const response = await dashboardAPI.getRevenueTrend();
       setChartData(response || []);
-    } catch (err) {
+    } catch (_err) {
       setChartData([]);
     } finally {
       setLoading(false);
@@ -44,7 +44,7 @@ const RevenueTrendChart = ({ title = 'Revenue Trend', data, refreshKey }) => {
           tickFormatter={(value) => `₹${value / 1000}k`}
         />
         <Tooltip 
-          formatter={(value) => [`₹${value.toLocaleString()}`, 'Revenue']}
+          formatter={(value) => [`₹${value.toLocaleString('en-IN')}`, 'Revenue']}
           contentStyle={{ 
             backgroundColor: '#fff', 
             border: '1px solid #e5e7eb',

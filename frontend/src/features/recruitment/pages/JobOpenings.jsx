@@ -1,9 +1,11 @@
 import { useState, useCallback, useEffect } from 'react';
 import {
   Search, Plus, RefreshCw, X, Briefcase,
-  MapPin, Users, Clock, ChevronRight, Building2
+  MapPin, Users, Clock, ChevronRight, Building2,
+  Edit2, PauseCircle, PlayCircle, XCircle,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import useAppStore from '@/store/useAppStore';
 import './JobOpenings.css';
 
 const STATUS_META = {
@@ -19,18 +21,9 @@ const TYPE_META = {
   full_time: { bg: '#dbeafe', color: '#1d4ed8', label: 'Full Time'  },
   contract:  { bg: '#fce7f3', color: '#9d174d', label: 'Contract'   },
   intern:    { bg: '#fef3c7', color: '#92400e', label: 'Intern'      },
-  part_time: { bg: '#f3e8ff', color: '#7c3aed', label: 'Part Time'  },
+  part_time: { bg: '#f3e8ff', color: '#6B3FDB', label: 'Part Time'  },
 };
 const tm = t => TYPE_META[(t || '').toLowerCase()] || TYPE_META.full_time;
-
-const SAMPLE_JOBS = [
-  { id:1, job_title:'Senior React Developer',    department:'Engineering', employment_type:'full_time', location:'Bangalore',  number_of_positions:2, positions_filled:0, applicants_count:14, status:'open',   experience_required:'4-6 years',   salary_range:'₹18L - ₹28L', skills_required:'React, Node.js, TypeScript', closing_date:'2026-04-30' },
-  { id:2, job_title:'Finance Manager',           department:'Finance',     employment_type:'full_time', location:'Mumbai',     number_of_positions:1, positions_filled:0, applicants_count:8,  status:'open',   experience_required:'6-8 years',   salary_range:'₹20L - ₹30L', skills_required:'CA, SAP, Financial Reporting', closing_date:'2026-04-15' },
-  { id:3, job_title:'HR Business Partner',       department:'HR',          employment_type:'full_time', location:'Hyderabad',  number_of_positions:1, positions_filled:1, applicants_count:22, status:'closed', experience_required:'3-5 years',   salary_range:'₹12L - ₹18L', skills_required:'HRBP, PMS, Talent Acquisition', closing_date:'2026-03-15' },
-  { id:4, job_title:'Data Analyst',              department:'Operations',  employment_type:'full_time', location:'Chennai',    number_of_positions:2, positions_filled:0, applicants_count:19, status:'open',   experience_required:'2-4 years',   salary_range:'₹10L - ₹16L', skills_required:'Python, SQL, Power BI', closing_date:'2026-05-01' },
-  { id:5, job_title:'Sales Executive',           department:'Sales',       employment_type:'full_time', location:'Delhi',      number_of_positions:3, positions_filled:1, applicants_count:31, status:'open',   experience_required:'1-3 years',   salary_range:'₹5L - ₹9L',  skills_required:'B2B Sales, CRM, Cold Calling', closing_date:'2026-04-20' },
-  { id:6, job_title:'DevOps Engineer (Intern)',  department:'Engineering', employment_type:'intern',    location:'Bangalore',  number_of_positions:1, positions_filled:0, applicants_count:7,  status:'draft',  experience_required:'Fresher',     salary_range:'₹25K/month',  skills_required:'Linux, Docker, AWS basics', closing_date:'2026-05-15' },
-];
 
 const DEPARTMENTS = ['Engineering', 'Finance', 'HR', 'Sales', 'Operations', 'Marketing', 'Product', 'Legal'];
 const EMP_TYPES   = ['full_time', 'contract', 'intern', 'part_time'];
@@ -43,11 +36,13 @@ const emptyForm = () => ({
 });
 
 export default function JobOpenings({ setPage }) {
+  const setSelectedJobId = useAppStore(s => s.setSelectedJobId);
   const [jobs,       setJobs]       = useState([]);
-  const [loading,    setLoading]    = useState(true);
+  const [loading,    setLoading]    = useState(false);
   const [search,     setSearch]     = useState('');
   const [fStatus,    setFStatus]    = useState('');
   const [drawer,     setDrawer]     = useState(false);
+  const [editingId,  setEditingId]  = useState(null);
   const [form,       setForm]       = useState(emptyForm());
   const [submitting, setSubmitting] = useState(false);
   const [toast,      setToast]      = useState(null);
@@ -63,9 +58,9 @@ export default function JobOpenings({ setPage }) {
       const params = fStatus ? { status: fStatus } : {};
       const res = await api.get('/recruitment/openings', { params });
       const raw = res.data?.openings || res.data || [];
-      setJobs(Array.isArray(raw) && raw.length ? raw : SAMPLE_JOBS);
+      setJobs(Array.isArray(raw) ? raw : []);
     } catch {
-      setJobs(SAMPLE_JOBS);
+      setJobs([]);
     } finally { setLoading(false); }
   }, [fStatus]);
 
@@ -76,17 +71,49 @@ export default function JobOpenings({ setPage }) {
     if (!form.department.trim()) return showToast('Department is required', 'error');
     setSubmitting(true);
     try {
-      await api.post('/recruitment/openings', form);
-      showToast('Job opening created');
-    } catch {
-      setJobs(js => [{ ...form, id: Date.now(), applicants_count: 0, positions_filled: 0, status: 'draft' }, ...js]);
-      showToast('Job opening created');
-    } finally {
+      if (editingId) {
+        await api.put(`/recruitment/openings/${editingId}`, form);
+        showToast('Job opening updated');
+      } else {
+        await api.post('/recruitment/openings', form);
+        showToast('Job opening created');
+      }
       setDrawer(false);
       setForm(emptyForm());
-      setSubmitting(false);
+      setEditingId(null);
       load();
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Failed to save job opening', 'error');
+    } finally {
+      setSubmitting(false);
     }
+  };
+
+  const changeStatus = async (job, newStatus) => {
+    try {
+      await api.put(`/recruitment/openings/${job.id}`, { status: newStatus });
+      showToast(`Job ${newStatus}`);
+      load();
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Failed to update status', 'error');
+    }
+  };
+
+  const openEdit = (job) => {
+    setEditingId(job.id);
+    setForm({
+      job_title: job.job_title || '',
+      department: job.department || '',
+      employment_type: job.employment_type || 'full_time',
+      number_of_positions: job.number_of_positions || 1,
+      job_description: job.description || '',
+      skills_required: job.skills_required || '',
+      experience_required: job.experience_required || '',
+      location: job.location || '',
+      salary_range: job.salary_range || '',
+      closing_date: job.closing_date ? job.closing_date.toString().slice(0,10) : '',
+    });
+    setDrawer(true);
   };
 
   const displayed = jobs.filter(j => {
@@ -111,7 +138,7 @@ export default function JobOpenings({ setPage }) {
         </div>
         <div className="jo-header-r">
           <button className="jo-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="jo-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer(true); }}>
+          <button className="jo-btn-primary" onClick={() => { setForm(emptyForm()); setEditingId(null); setDrawer(true); }}>
             <Plus size={14} /> Post Job
           </button>
         </div>
@@ -180,12 +207,41 @@ export default function JobOpenings({ setPage }) {
                   </div>
                 </div>
                 {job.salary_range && <div className="jo-salary">{job.salary_range}</div>}
-                <button
-                  className="jo-pipeline-btn"
-                  onClick={() => setPage && setPage('CandidatePipeline')}
-                >
-                  View Pipeline <ChevronRight size={13} />
-                </button>
+                <div className="jo-card-actions">
+                  <button className="jo-pipeline-btn" onClick={() => { setSelectedJobId(job.id); setPage && setPage('CandidatePipeline'); }}>
+                    View Pipeline <ChevronRight size={13} />
+                  </button>
+                  <div style={{ display:'flex', gap:6 }}>
+                    <button title="Edit" onClick={() => openEdit(job)}
+                      style={{ padding:'5px 8px', background:'#f3f4f6', border:'none', borderRadius:7, cursor:'pointer', display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, color:'#374151' }}>
+                      <Edit2 size={12} /> Edit
+                    </button>
+                    {job.status === 'open' && (
+                      <button title="Pause" onClick={() => changeStatus(job, 'paused')}
+                        style={{ padding:'5px 8px', background:'#fef3c7', border:'none', borderRadius:7, cursor:'pointer', display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, color:'#92400e' }}>
+                        <PauseCircle size={12} /> Pause
+                      </button>
+                    )}
+                    {job.status === 'paused' && (
+                      <button title="Reopen" onClick={() => changeStatus(job, 'open')}
+                        style={{ padding:'5px 8px', background:'#dcfce7', border:'none', borderRadius:7, cursor:'pointer', display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, color:'#15803d' }}>
+                        <PlayCircle size={12} /> Reopen
+                      </button>
+                    )}
+                    {['open','paused','draft'].includes(job.status) && (
+                      <button title="Close" onClick={() => changeStatus(job, 'closed')}
+                        style={{ padding:'5px 8px', background:'#fee2e2', border:'none', borderRadius:7, cursor:'pointer', display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, color:'#dc2626' }}>
+                        <XCircle size={12} /> Close
+                      </button>
+                    )}
+                    {job.status === 'closed' && (
+                      <button title="Reopen" onClick={() => changeStatus(job, 'open')}
+                        style={{ padding:'5px 8px', background:'#dcfce7', border:'none', borderRadius:7, cursor:'pointer', display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, color:'#15803d' }}>
+                        <PlayCircle size={12} /> Reopen
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
             );
           })}
@@ -196,8 +252,8 @@ export default function JobOpenings({ setPage }) {
         <div className="jo-overlay" onClick={() => setDrawer(false)}>
           <div className="jo-drawer" onClick={e => e.stopPropagation()}>
             <div className="jo-drawer-hd">
-              <h3>Post New Job</h3>
-              <button className="jo-icon-btn" onClick={() => setDrawer(false)}><X size={16} /></button>
+              <h3>{editingId ? 'Edit Job Opening' : 'Post New Job'}</h3>
+              <button className="jo-icon-btn" onClick={() => { setDrawer(false); setEditingId(null); }}><X size={16} /></button>
             </div>
             <div className="jo-drawer-body">
               <div className="jo-row2">
@@ -255,9 +311,9 @@ export default function JobOpenings({ setPage }) {
               </div>
             </div>
             <div className="jo-drawer-ft">
-              <button className="jo-btn-outline" onClick={() => setDrawer(false)}>Cancel</button>
+              <button className="jo-btn-outline" onClick={() => { setDrawer(false); setEditingId(null); }}>Cancel</button>
               <button className="jo-btn-primary" onClick={handleSubmit} disabled={submitting}>
-                {submitting ? 'Posting…' : 'Post Job'}
+                {submitting ? 'Saving…' : editingId ? 'Save Changes' : 'Post Job'}
               </button>
             </div>
           </div>

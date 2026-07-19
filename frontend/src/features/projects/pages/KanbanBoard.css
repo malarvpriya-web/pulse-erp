@@ -12,8 +12,10 @@
 .kb-toast-success { background: #dcfce7; color: #15803d; }
 .kb-toast-error   { background: #fee2e2; color: #dc2626; }
 
-.kb-loading { display: flex; justify-content: center; padding: 80px; }
-.kb-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: kb-spin .6s linear infinite; }
+.kb-loading       { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px; gap: 16px; }
+.kb-error-state   { font-size: 14px; color: #dc2626; text-align: center; margin: 0; }
+.kb-error-inline  { font-size: 13px; color: #dc2626; font-weight: 500; }
+.kb-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: kb-spin .6s linear infinite; }
 @keyframes kb-spin { to { transform: rotate(360deg); } }
 
 /* Board */
@@ -87,13 +89,13 @@
 .kb-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
 .kb-field input:focus,
 .kb-field select:focus,
-.kb-field textarea:focus { outline: none; border-color: #6366f1; }
+.kb-field textarea:focus { outline: none; border-color: #6B3FDB; }
 
-.kb-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.kb-btn-primary:hover    { background: #4f46e5; }
+.kb-btn-primary { display: flex; align-items: center; gap: 6px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.kb-btn-primary:hover    { background: #5B35D5; }
 .kb-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 .kb-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
 .kb-btn-outline:hover { background: #f9fafb; }
 
-.kb-icon-btn { background: none; border: 1px solid #e5e7eb; border-radius: 7px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6b7280; }
-.kb-icon-btn:hover { background: #f3f4f6; }
+.kb-icon-btn { background: #f3f4f6; border: none; border-radius: 7px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #374151; }
+.kb-icon-btn:hover { background: #e5e7eb; }

@@ -1,24 +1,25 @@
-import React from 'react';
-import RevenueWidget        from './widgets/RevenueWidget';
-import ProfitabilityWidget  from './widgets/ProfitabilityWidget';
-import CashPositionWidget   from './widgets/CashPositionWidget';
-import SalesPipelineWidget  from './widgets/SalesPipelineWidget';
-import WorkforceWidget      from './widgets/WorkforceWidget';
-import OperationsWidget     from './widgets/OperationsWidget';
-import TeamAttendanceWidget from './widgets/TeamAttendanceWidget';
-import PendingApprovalsWidget from './widgets/PendingApprovalsWidget';
-import ProjectHealthWidget  from './widgets/ProjectHealthWidget';
-import TeamPerformanceWidget from './widgets/TeamPerformanceWidget';
-import DeptSpendWidget      from './widgets/DeptSpendWidget';
-import MyAttendanceWidget   from './widgets/MyAttendanceWidget';
-import MyLeaveWidget        from './widgets/MyLeaveWidget';
-import MyTasksWidget        from './widgets/MyTasksWidget';
-import MyApprovalsWidget    from './widgets/MyApprovalsWidget';
-import MyPayslipsWidget     from './widgets/MyPayslipsWidget';
-import AnnouncementsWidget  from './widgets/AnnouncementsWidget';
-import NotificationsWidget  from './widgets/NotificationsWidget';
+import { lazy, Suspense } from 'react';
 import WidgetErrorBoundary  from './WidgetErrorBoundary';
 import { WIDGET_TYPES }     from '../../config/dashboardConfig';
+
+const RevenueWidget          = lazy(() => import('./widgets/RevenueWidget'));
+const ProfitabilityWidget    = lazy(() => import('./widgets/ProfitabilityWidget'));
+const CashPositionWidget     = lazy(() => import('./widgets/CashPositionWidget'));
+const SalesPipelineWidget    = lazy(() => import('./widgets/SalesPipelineWidget'));
+const WorkforceWidget        = lazy(() => import('./widgets/WorkforceWidget'));
+const OperationsWidget       = lazy(() => import('./widgets/OperationsWidget'));
+const TeamAttendanceWidget   = lazy(() => import('./widgets/TeamAttendanceWidget'));
+const PendingApprovalsWidget = lazy(() => import('./widgets/PendingApprovalsWidget'));
+const ProjectHealthWidget    = lazy(() => import('./widgets/ProjectHealthWidget'));
+const TeamPerformanceWidget  = lazy(() => import('./widgets/TeamPerformanceWidget'));
+const DeptSpendWidget        = lazy(() => import('./widgets/DeptSpendWidget'));
+const MyAttendanceWidget     = lazy(() => import('./widgets/MyAttendanceWidget'));
+const MyLeaveWidget          = lazy(() => import('./widgets/MyLeaveWidget'));
+const MyTasksWidget          = lazy(() => import('./widgets/MyTasksWidget'));
+const MyApprovalsWidget      = lazy(() => import('./widgets/MyApprovalsWidget'));
+const MyPayslipsWidget       = lazy(() => import('./widgets/MyPayslipsWidget'));
+const AnnouncementsWidget    = lazy(() => import('./widgets/AnnouncementsWidget'));
+const NotificationsWidget    = lazy(() => import('./widgets/NotificationsWidget'));
 
 const WIDGET_COMPONENTS = {
   [WIDGET_TYPES.REVENUE]:           RevenueWidget,
@@ -60,7 +61,9 @@ export default function Widget({ widget, data }) {
       <div className="widget-header"><h3>{widget.title}</h3></div>
       <div className="widget-content">
         <WidgetErrorBoundary>
-          <WidgetComponent data={data || {}} />
+          <Suspense fallback={<div className="widget-skeleton" />}>
+            <WidgetComponent data={data || {}} />
+          </Suspense>
         </WidgetErrorBoundary>
       </div>
     </div>

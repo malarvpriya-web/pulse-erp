@@ -1,59 +1,60 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Search, Filter, Plus, RefreshCw, ChevronDown, X,
-  Ticket, AlertTriangle, Clock, CheckCircle, MessageSquare
+  Search, Plus, RefreshCw, X, Ticket, MessageSquare,
+  Paperclip, Trash2, Download, AlertTriangle
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { priorityColor, statusColor } from './ticketUtils';
 import './AllTickets.css';
-
-const priorityColor = p => {
-  const m = (p || '').toLowerCase();
-  if (m === 'critical') return { bg: '#fef2f2', color: '#7f1d1d' };
-  if (m === 'high')     return { bg: '#fee2e2', color: '#dc2626' };
-  if (m === 'medium')   return { bg: '#fef3c7', color: '#92400e' };
-  return { bg: '#f0fdf4', color: '#15803d' };
-};
-
-const statusColor = s => {
-  const m = (s || '').toLowerCase();
-  if (m === 'open')        return { bg: '#eef2ff', color: '#4338ca' };
-  if (m === 'in progress') return { bg: '#fef3c7', color: '#92400e' };
-  if (m === 'resolved')    return { bg: '#f0fdf4', color: '#15803d' };
-  if (m === 'pending')     return { bg: '#eff6ff', color: '#1d4ed8' };
-  return { bg: '#f3f4f6', color: '#6b7280' };
-};
+import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 
 const emptyForm = () => ({
   title: '', description: '', category: '', priority: 'Medium',
   team: '', requester_name: '', requester_email: '',
+  due_date: '', serial_number: '', amc_contract_id: '',
+  assigned_to: '', department: 'Service',
 });
 
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
+const fmtDateTime = (d) => d ? new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+
 export default function AllTickets() {
-  const [tickets,   setTickets]   = useState([]);
-  const [filters,   setFilters]   = useState({ categories: [], teams: [], priorities: [], statuses: [] });
-  const [total,     setTotal]     = useState(0);
-  const [loading,   setLoading]   = useState(true);
-  const [search,    setSearch]    = useState('');
-  const [fStatus,   setFStatus]   = useState('');
-  const [fPriority, setFPriority] = useState('');
-  const [fCategory, setFCategory] = useState('');
-  const [drawer,    setDrawer]    = useState(null);   // null | 'create' | ticket
-  const [detail,    setDetail]    = useState(null);   // ticket detail
-  const [form,      setForm]      = useState(emptyForm());
-  const [submitting,setSubmitting]= useState(false);
-  const [comment,   setComment]   = useState('');
-  const [toast,     setToast]     = useState(null);
+  const { readOnly } = usePageAccess();
+  const [tickets,    setTickets]    = useState([]);
+  const [filters,    setFilters]    = useState({ categories: [], teams: [], priorities: [], statuses: [] });
+  const [engineers,  setEngineers]  = useState([]);
+  const [total,      setTotal]      = useState(0);
+  const [loading,    setLoading]    = useState(false);
+  const [search,     setSearch]     = useState('');
+  const [fStatus,    setFStatus]    = useState('');
+  const [fPriority,  setFPriority]  = useState('');
+  const [fCategory,  setFCategory]  = useState('');
+  const [drawer,     setDrawer]     = useState(null);
+  const [detail,     setDetail]     = useState(null);
+  const [attachments,setAttachments]= useState([]);
+  const [form,       setForm]       = useState(emptyForm());
+  const [submitting, setSubmitting] = useState(false);
+  const [comment,    setComment]    = useState('');
+  const [toast,      setToast]      = useState(null);
+  const [pendingHandleDelete, setPendingHandleDelete] = useState(null);
+  const fileRef = useRef(null);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 3500);
   };
 
   const loadFilters = async () => {
     try {
-      const r = await api.get('/servicedesk/filters');
-      setFilters(r.data);
-    } catch {}
+      const [filRes, engRes] = await Promise.allSettled([
+        api.get('/servicedesk/filters'),
+        api.get('/servicedesk/engineers'),
+      ]);
+      if (filRes.status === 'fulfilled') setFilters(filRes.value.data);
+      if (engRes.status === 'fulfilled') setEngineers(engRes.value.data || []);
+    } catch (err) { showToast('Could not load filter options', 'error'); }
   };
 
   const load = useCallback(async () => {
@@ -77,10 +78,14 @@ export default function AllTickets() {
 
   const openDetail = async (t) => {
     try {
-      const r = await api.get(`/servicedesk/tickets/${t.id}`);
-      setDetail(r.data);
+      const [detRes, attRes] = await Promise.allSettled([
+        api.get(`/servicedesk/tickets/${t.id}`),
+        api.get(`/servicedesk/tickets/${t.id}/attachments`),
+      ]);
+      setDetail(detRes.status === 'fulfilled' ? detRes.value.data : t);
+      setAttachments(attRes.status === 'fulfilled' ? attRes.value.data : []);
       setDrawer('detail');
-    } catch { setDetail(t); setDrawer('detail'); }
+    } catch { setDetail(t); setAttachments([]); setDrawer('detail'); }
   };
 
   const handleCreate = async () => {
@@ -94,14 +99,30 @@ export default function AllTickets() {
     finally { setSubmitting(false); }
   };
 
-  const handleStatusChange = async (id, status) => {
+  const handleStatusChange = async (id, newStatus) => {
+    const prev = tickets.find(x => x.id === id);
+    const prevStatus = prev?.status;
+    setTickets(ts => ts.map(t => t.id === id ? { ...t, status: newStatus } : t));
+    if (detail?.id === id) setDetail(d => ({ ...d, status: newStatus }));
     try {
-      const t = tickets.find(x => x.id === id);
-      await api.put(`/servicedesk/tickets/${id}`, { ...t, status });
-      showToast(`Status updated to ${status}`);
-      load();
-      if (detail?.id === id) setDetail(d => ({ ...d, status }));
-    } catch { showToast('Failed to update', 'error'); }
+      await api.put(`/servicedesk/tickets/${id}`, { ...prev, status: newStatus });
+      showToast(`Status updated to ${newStatus}`);
+    } catch (e) {
+      setTickets(ts => ts.map(t => t.id === id ? { ...t, status: prevStatus } : t));
+      if (detail?.id === id) setDetail(d => ({ ...d, status: prevStatus }));
+      showToast(e?.response?.data?.error || 'Failed to update status', 'error');
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!pendingHandleDelete) return;
+    const id = pendingHandleDelete;
+    setPendingHandleDelete(null);
+    try {
+      await api.delete(`/servicedesk/tickets/${id}`);
+      showToast('Ticket deleted');
+      setDrawer(null); setDetail(null); load();
+    } catch (e) { showToast(e.response?.data?.error || 'Failed to delete', 'error'); }
   };
 
   const handleComment = async () => {
@@ -114,28 +135,81 @@ export default function AllTickets() {
     } catch { showToast('Failed to add comment', 'error'); }
   };
 
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !detail) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      await api.post(`/servicedesk/tickets/${detail.id}/attachments`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      showToast('File attached');
+      const r = await api.get(`/servicedesk/tickets/${detail.id}/attachments`);
+      setAttachments(r.data);
+    } catch (e) { showToast(e.response?.data?.error || 'Upload failed', 'error'); }
+    e.target.value = '';
+  };
+
+  const handleDeleteAttachment = async (attId) => {
+    try {
+      await api.delete(`/servicedesk/tickets/${detail.id}/attachments/${attId}`);
+      setAttachments(a => a.filter(x => x.id !== attId));
+    } catch { showToast('Failed to remove attachment', 'error'); }
+  };
+
+  const handleExport = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (fStatus)   params.set('status', fStatus);
+      if (fPriority) params.set('priority', fPriority);
+      if (fCategory) params.set('category', fCategory);
+      const res = await api.get(`/servicedesk/export/tickets?${params}`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a'); a.href = url;
+      a.download = `tickets_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch { showToast('Export failed', 'error'); }
+  };
+
   const clearFilters = () => { setFStatus(''); setFPriority(''); setFCategory(''); setSearch(''); };
 
   return (
     <div className="at-root">
 
-      {/* toast */}
+      <ConfirmDialog
+        open={!!pendingHandleDelete}
+        title="Delete Ticket"
+        message="Delete this ticket? This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setPendingHandleDelete(null)}
+      />
+
       {toast && (
         <div className={`at-toast at-toast-${toast.type}`}>{toast.msg}</div>
       )}
 
-      {/* header */}
+      {readOnly && <ReadOnlyBanner />}
+
       <div className="at-header">
         <div>
           <h2 className="at-title">All Tickets</h2>
           <p className="at-sub">{total} ticket{total !== 1 ? 's' : ''} total</p>
         </div>
-        <button className="at-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer('create'); }}>
-          <Plus size={15} /> New Ticket
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="at-btn-outline" onClick={handleExport} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Download size={14} /> Export CSV
+          </button>
+          {!readOnly && (
+            <button className="at-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer('create'); }}>
+              <Plus size={15} /> New Ticket
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* search + filters */}
       <div className="at-filters">
         <div className="at-search">
           <Search size={15} />
@@ -162,7 +236,6 @@ export default function AllTickets() {
         <button className="at-icon-btn" onClick={load}><RefreshCw size={14} /></button>
       </div>
 
-      {/* table */}
       {loading ? (
         <div className="at-loading"><div className="at-spinner" /></div>
       ) : tickets.length === 0 ? (
@@ -177,23 +250,38 @@ export default function AllTickets() {
               <tr>
                 <th>Ticket #</th><th>Title</th><th>Category</th>
                 <th>Requester</th><th>Team</th><th>Priority</th>
-                <th>Status</th><th>Created</th><th></th>
+                <th>Status</th><th>Due</th><th>Created</th><th></th>
               </tr>
             </thead>
             <tbody>
-              {tickets.map((t) => {
-                const pc = priorityColor(t.priority);
-                const sc = statusColor(t.status);
+              {(tickets ?? []).map((t) => {
+                const pc = priorityColor(t?.priority ?? 'Medium');
+                const sc = statusColor(t?.status ?? 'Open');
+                const overdue = t?.due_date && new Date(t.due_date) < new Date() && !['Resolved','Closed'].includes(t?.status ?? '');
                 return (
                   <tr key={t.id} className="at-row" onClick={() => openDetail(t)}>
                     <td className="at-td-mono">{t.ticket_number}</td>
-                    <td className="at-td-title">{t.title}</td>
+                    <td className="at-td-title">
+                      {t.title}
+                      {t.attachment_count > 0 && (
+                        <span title={`${t.attachment_count} attachment(s)`} style={{ marginLeft: 6, color: '#9ca3af', fontSize: 11 }}>
+                          <Paperclip size={11} style={{ verticalAlign: 'middle' }} /> {t.attachment_count}
+                        </span>
+                      )}
+                      {t.serial_number && (
+                        <span style={{ marginLeft: 6, fontSize: 10, color: '#6366f1', fontFamily: 'monospace' }}>{t.serial_number}</span>
+                      )}
+                    </td>
                     <td>{t.category}</td>
-                    <td>{t.requester_name}<br/><span className="at-email">{t.requester_email}</span></td>
-                    <td>{t.team || '—'}</td>
-                    <td><span className="at-badge" style={{ background: pc.bg, color: pc.color }}>{t.priority}</span></td>
-                    <td><span className="at-badge" style={{ background: sc.bg, color: sc.color }}>{t.status}</span></td>
-                    <td>{t.created_at ? new Date(t.created_at).toLocaleDateString('en-IN') : '—'}</td>
+                    <td>{t?.requester_name ?? 'Unknown'}<br/><span className="at-email">{t?.requester_email ?? '—'}</span></td>
+                    <td>{t?.team ?? '—'}</td>
+                    <td><span className="at-badge" style={{ background: pc.bg, color: pc.color }}>{t?.priority ?? 'Medium'}</span></td>
+                    <td><span className="at-badge" style={{ background: sc.bg, color: sc.color }}>{t?.status ?? 'Open'}</span></td>
+                    <td style={{ color: overdue ? '#ef4444' : undefined }}>
+                      {fmtDate(t.due_date)}
+                      {overdue && <AlertTriangle size={12} style={{ marginLeft: 4, verticalAlign: 'middle' }} />}
+                    </td>
+                    <td>{fmtDate(t.created_at)}</td>
                     <td onClick={e => e.stopPropagation()}>
                       <select className="at-status-sel"
                         value={t.status}
@@ -232,7 +320,7 @@ export default function AllTickets() {
                   <label>Category</label>
                   <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
                     <option value="">Select…</option>
-                    {(filters.categories.length ? filters.categories : ['IT Support','Finance','HR','CRM','System','Access','Performance','Documents']).map(c =>
+                    {(filters.categories.length ? filters.categories : ['IT Support','Finance','HR','CRM','System','Access','Performance','Documents','Service','Field','AMC','Warranty']).map(c =>
                       <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
@@ -243,13 +331,22 @@ export default function AllTickets() {
                   </select>
                 </div>
               </div>
-              <div className="at-field">
-                <label>Team</label>
-                <select value={form.team} onChange={e => setForm(f => ({ ...f, team: e.target.value }))}>
-                  <option value="">Select team…</option>
-                  {(filters.teams.length ? filters.teams : ['IT Support','Finance IT','HR Support','CRM Support']).map(t =>
-                    <option key={t} value={t}>{t}</option>)}
-                </select>
+              <div className="at-row2">
+                <div className="at-field">
+                  <label>Team</label>
+                  <select value={form.team} onChange={e => setForm(f => ({ ...f, team: e.target.value }))}>
+                    <option value="">Select team…</option>
+                    {(filters.teams.length ? filters.teams : ['IT Support','Finance IT','HR Support','Service','Field Service']).map(t =>
+                      <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div className="at-field">
+                  <label>Assign Engineer</label>
+                  <select value={form.assigned_to} onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))}>
+                    <option value="">Unassigned</option>
+                    {engineers.map(e => <option key={e.id} value={e.name}>{e.name} — {e.specialization || e.zone || ''}</option>)}
+                  </select>
+                </div>
               </div>
               <div className="at-row2">
                 <div className="at-field">
@@ -259,6 +356,28 @@ export default function AllTickets() {
                 <div className="at-field">
                   <label>Requester Email</label>
                   <input type="email" value={form.requester_email} onChange={e => setForm(f => ({ ...f, requester_email: e.target.value }))} />
+                </div>
+              </div>
+              <div className="at-row2">
+                <div className="at-field">
+                  <label>Serial Number</label>
+                  <input value={form.serial_number} onChange={e => setForm(f => ({ ...f, serial_number: e.target.value }))} placeholder="e.g. MT-HVDC-001" />
+                </div>
+                <div className="at-field">
+                  <label>Due Date</label>
+                  <input type="date" value={form.due_date} onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))} />
+                </div>
+              </div>
+              <div className="at-row2">
+                <div className="at-field">
+                  <label>Department</label>
+                  <select value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))}>
+                    {['Service','Field','AMC','IT','Finance','HR'].map(d => <option key={d}>{d}</option>)}
+                  </select>
+                </div>
+                <div className="at-field">
+                  <label>AMC Contract ID</label>
+                  <input type="number" value={form.amc_contract_id} onChange={e => setForm(f => ({ ...f, amc_contract_id: e.target.value }))} placeholder="Optional" />
                 </div>
               </div>
             </div>
@@ -279,6 +398,11 @@ export default function AllTickets() {
             <div className="at-drawer-hd">
               <div>
                 <span className="at-td-mono">{detail.ticket_number}</span>
+                {detail.serial_number && (
+                  <span style={{ marginLeft: 8, fontSize: 11, color: '#6366f1', fontFamily: 'monospace' }}>
+                    S/N: {detail.serial_number}
+                  </span>
+                )}
                 <h3 style={{ margin: '4px 0 0', fontSize: 16 }}>{detail.title}</h3>
               </div>
               <button className="at-icon-btn" onClick={() => { setDrawer(null); setDetail(null); }}><X size={16} /></button>
@@ -294,12 +418,58 @@ export default function AllTickets() {
                 <span className="at-detail-meta">Category: <strong>{detail.category}</strong></span>
                 <span className="at-detail-meta">Team: <strong>{detail.team || '—'}</strong></span>
                 <span className="at-detail-meta">Requester: <strong>{detail.requester_name}</strong></span>
+                {detail.assigned_to && <span className="at-detail-meta">Assigned: <strong>{detail.assigned_to}</strong></span>}
+                {detail.due_date && (
+                  <span className="at-detail-meta" style={{ color: new Date(detail.due_date) < new Date() && !['Resolved','Closed'].includes(detail.status) ? '#ef4444' : undefined }}>
+                    Due: <strong>{fmtDate(detail.due_date)}</strong>
+                  </span>
+                )}
+                {detail.amc_contract_id && <span className="at-detail-meta">AMC: <strong>#{detail.amc_contract_id}</strong></span>}
               </div>
               {detail.description && (
                 <div className="at-detail-desc">{detail.description}</div>
               )}
+
+              {/* Attachments */}
+              <div className="at-attachments">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <h4 style={{ margin: 0, fontSize: 13, color: '#374151' }}>
+                    <Paperclip size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+                    Attachments ({attachments.length})
+                  </h4>
+                  <button
+                    style={{ fontSize: 12, padding: '4px 10px', background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 5, cursor: 'pointer' }}
+                    onClick={() => fileRef.current?.click()}
+                  >
+                    + Attach File
+                  </button>
+                  <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileUpload} />
+                </div>
+                {attachments.length === 0 && (
+                  <p style={{ color: '#9ca3af', fontSize: 13, margin: 0 }}>No attachments yet.</p>
+                )}
+                {attachments.map(att => (
+                  <div key={att.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f3f4f6' }}>
+                    <Paperclip size={13} color="#9ca3af" />
+                    <a href={att.url} target="_blank" rel="noreferrer" style={{ flex: 1, fontSize: 13, color: '#6366f1', textDecoration: 'none' }}>
+                      {att.original_name || att.filename}
+                    </a>
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                      {att.file_size ? `${(att.file_size / 1024).toFixed(0)} KB` : ''}
+                    </span>
+                    {!readOnly && (
+                      <button onClick={() => handleDeleteAttachment(att.id)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2 }}>
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Comments */}
               <div className="at-comments">
-                <h4 style={{ margin: '0 0 12px', fontSize: 13, color: '#374151' }}>
+                <h4 style={{ margin: '16px 0 12px', fontSize: 13, color: '#374151' }}>
                   <MessageSquare size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
                   Comments ({(detail.comments || []).length})
                 </h4>
@@ -307,26 +477,39 @@ export default function AllTickets() {
                   <div key={i} className="at-comment">
                     <div className="at-comment-hd">
                       <span className="at-comment-author">{c.author}</span>
-                      <span className="at-comment-time">{new Date(c.created_at).toLocaleString('en-IN')}</span>
+                      <span className="at-comment-time">{fmtDateTime(c.created_at)}</span>
                     </div>
                     <p className="at-comment-body">{c.body}</p>
                   </div>
                 ))}
-                <div className="at-comment-input">
-                  <textarea rows={3} placeholder="Add a comment…" value={comment}
-                    onChange={e => setComment(e.target.value)} />
-                  <button className="at-btn-primary" onClick={handleComment} disabled={!comment.trim()}>
-                    Reply
-                  </button>
-                </div>
+                {!readOnly && (
+                  <div className="at-comment-input">
+                    <textarea rows={3} placeholder="Add a comment…" value={comment}
+                      onChange={e => setComment(e.target.value)} />
+                    <button className="at-btn-primary" onClick={handleComment} disabled={!comment.trim()}>
+                      Reply
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
             <div className="at-drawer-ft">
-              <select className="at-select" value={detail.status}
-                onChange={e => handleStatusChange(detail.id, e.target.value)}>
-                {['Open','In Progress','Pending','Resolved','Closed'].map(s =>
-                  <option key={s} value={s}>{s}</option>)}
-              </select>
+              {!readOnly && (
+                <>
+                  <button
+                    style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 13 }}
+                    onClick={() => setPendingHandleDelete(detail.id)}
+                    title="Delete ticket"
+                  >
+                    <Trash2 size={13} /> Delete
+                  </button>
+                  <select className="at-select" value={detail.status}
+                    onChange={e => handleStatusChange(detail.id, e.target.value)}>
+                    {['Open','In Progress','Pending','Resolved','Closed'].map(s =>
+                      <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </>
+              )}
               <button className="at-btn-outline" onClick={() => { setDrawer(null); setDetail(null); }}>Close</button>
             </div>
           </div>

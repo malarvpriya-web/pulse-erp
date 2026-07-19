@@ -1,0 +1,124 @@
+/* FieldService — page-specific styles only.
+   Shared: .page-header, .page-title, .page-subtitle, .data-table-wrap,
+           .data-table, .badge, .action-btn-sm, .empty-state  (global-overrides.css) */
+
+.fs-root {
+  padding: 24px;
+}
+
+.fs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.fs-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #374151;
+}
+
+.fs-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.fs-filter-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.fs-search-input {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  width: 280px;
+  outline: none;
+}
+
+.fs-select {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+.fs-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fs-skeleton-row {
+  height: 52px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: fs-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes fs-pulse {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Table cell helpers */
+.fs-cell-id {
+  padding: 10px 14px;
+  font-weight: 600;
+  color: var(--color-primary);
+  white-space: nowrap;
+}
+
+.fs-cell-customer {
+  padding: 10px 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.fs-cell-muted {
+  padding: 10px 14px;
+  color: var(--color-text-secondary);
+}
+
+.fs-cell-default {
+  padding: 10px 14px;
+  color: #374151;
+}
+
+.fs-cell-date {
+  padding: 10px 14px;
+  color: #374151;
+  white-space: nowrap;
+}
+
+.fs-cell-badge {
+  padding: 10px 14px;
+}
+
+.fs-cell-icon {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (max-width: 768px) {
+  .fs-search-input { width: 100%; }
+}

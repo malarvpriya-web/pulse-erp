@@ -1,393 +1,630 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer
-} from 'recharts';
-import {
-  DollarSign, Users, Download, Eye, Plus, X, CheckCircle,
-  AlertCircle, FileText, TrendingUp, TrendingDown, RefreshCw,
-  Search, Calendar, Printer, Clock
-} from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { IndianRupee, Users, Download, Eye, X, CheckCircle, AlertCircle, FileText, TrendingUp, RefreshCw, Search, Lock, ThumbsUp, CreditCard, RotateCcw } from 'lucide-react';
 import api from '@/services/api/client';
-import './Payroll.css';
 
-// ── Sample data ──────────────────────────────────────────────────────────────
-const SAMPLE_LIST = [
-  { id:1, employee_id:'EMP001', name:'Arjun Sharma',  department:'Engineering', designation:'Sr. Developer',   month:'February 2026', basic:45000, hra:18000, allowances:8000, gross:71000, pf:5400, esi:532,  tds:4200, total_deductions:10132, net_pay:60868, status:'paid',       paid_on:'28 Feb 2026' },
-  { id:2, employee_id:'EMP002', name:'Priya Menon',   department:'Design',      designation:'UI Designer',     month:'February 2026', basic:38000, hra:15200, allowances:6000, gross:59200, pf:4560, esi:444,  tds:2800, total_deductions:7804,  net_pay:51396, status:'paid',       paid_on:'28 Feb 2026' },
-  { id:3, employee_id:'EMP003', name:'Rahul Kumar',   department:'Engineering', designation:'Developer',       month:'February 2026', basic:32000, hra:12800, allowances:5000, gross:49800, pf:3840, esi:374,  tds:1800, total_deductions:6014,  net_pay:43786, status:'paid',       paid_on:'28 Feb 2026' },
-  { id:4, employee_id:'EMP004', name:'Sneha Pillai',  department:'QA',          designation:'QA Engineer',     month:'February 2026', basic:28000, hra:11200, allowances:4500, gross:43700, pf:3360, esi:328,  tds:1200, total_deductions:4888,  net_pay:38812, status:'pending',    paid_on:null },
-  { id:5, employee_id:'EMP005', name:'Vikram Singh',  department:'Engineering', designation:'Backend Dev',     month:'February 2026', basic:35000, hra:14000, allowances:5500, gross:54500, pf:4200, esi:409,  tds:2200, total_deductions:6809,  net_pay:47691, status:'pending',    paid_on:null },
-  { id:6, employee_id:'EMP006', name:'Divya Nair',    department:'HR',          designation:'HR Executive',    month:'February 2026', basic:30000, hra:12000, allowances:4000, gross:46000, pf:3600, esi:345,  tds:1500, total_deductions:5445,  net_pay:40555, status:'processing', paid_on:null },
-  { id:7, employee_id:'EMP007', name:'Karan Mehta',   department:'Finance',     designation:'Finance Analyst', month:'February 2026', basic:40000, hra:16000, allowances:7000, gross:63000, pf:4800, esi:473,  tds:3200, total_deductions:8473,  net_pay:54527, status:'paid',       paid_on:'28 Feb 2026' },
-  { id:8, employee_id:'EMP008', name:'Ananya Iyer',   department:'Marketing',   designation:'Marketing Exec',  month:'February 2026', basic:26000, hra:10400, allowances:3500, gross:39900, pf:3120, esi:299,  tds:900,  total_deductions:4319,  net_pay:35581, status:'on_hold',    paid_on:null },
-];
+const fmtRupee = n => { if(n>=100000) return `₹${(n/100000).toFixed(1)}L`; if(n>=1000) return `₹${(n/1000).toFixed(0)}K`; return `₹${n||0}`; };
+const fmtN = n => Number(n||0).toLocaleString('en-IN');
 
-const SAMPLE_SUMMARY = { total_employees:24, total_gross:1248000, total_net:1089450, total_deductions:158550, paid_count:18, pending_count:4, processing_count:2 };
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const FY_ORDER    = ['April','May','June','July','August','September','October','November','December','January','February','March'];
 
-const SAMPLE_TREND = [
-  { month:'Sep', gross:1180000, net:1030000 },
-  { month:'Oct', gross:1195000, net:1042000 },
-  { month:'Nov', gross:1210000, net:1055000 },
-  { month:'Dec', gross:1235000, net:1078000 },
-  { month:'Jan', gross:1240000, net:1082000 },
-  { month:'Feb', gross:1248000, net:1089450 },
-];
-
-const MONTHS = ['April 2025','May 2025','June 2025','July 2025','August 2025','September 2025','October 2025','November 2025','December 2025','January 2026','February 2026','March 2026'];
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const fmtRupee = (n) => {
-  if (n >= 100000) return `₹${(n/100000).toFixed(1)}L`;
-  if (n >= 1000)   return `₹${(n/1000).toFixed(0)}K`;
-  return `₹${n}`;
+// Builds the 12-month list for the current financial year (Apr–Mar)
+const getCurrentFYMonths = () => {
+  const today  = new Date();
+  const fyYear = today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1;
+  return FY_ORDER.map((m, i) => `${m} ${i <= 8 ? fyYear : fyYear + 1}`);
 };
-const fmtN = (n) => Number(n||0).toLocaleString('en-IN');
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
-const Toast = ({ toast, onClose }) => {
+const getCurrentFYMonth = () =>
+  `${MONTH_NAMES[new Date().getMonth()]} ${new Date().getFullYear()}`;
+
+const parseSelectedMonth = (str) => {
+  const [name, yr] = str.split(' ');
+  return { month: MONTH_NAMES.indexOf(name) + 1, year: parseInt(yr, 10) };
+};
+
+const MONTHS = getCurrentFYMonths();
+
+const STATUS_COLOR = {
+  paid:             { bg:'#d1fae5', color:'#065f46' },
+  pending:          { bg:'#fef3c7', color:'#92400e' },
+  processing:       { bg:'#dbeafe', color:'#1e40af' },
+  on_hold:          { bg:'#fee2e2', color:'#991b1b' },
+  pending_approval: { bg:'#ede9fe', color:'#5b21b6' },
+};
+
+export default function Payroll({ setPage: _setPage }) {
+  const [payrolls,        setPayrolls]        = useState([]);
+  const [summary,         setSummary]         = useState({});
+  const [trend,           setTrend]           = useState([]);
+  const [loading,         setLoading]         = useState(false);
+  const [genLoading,      setGenLoading]      = useState(false);
+  const [approvalLoading, setApprovalLoading] = useState(false);
+  const [markAllLoading,  setMarkAllLoading]  = useState(false);
+  const [showMarkAllConfirm, setShowMarkAllConfirm] = useState(false);
+  const [rerunId,         setRerunId]         = useState(null);
+  const [search,          setSearch]          = useState('');
+  const [statusFilter,    setStatusFilter]    = useState('All');
+  const [selectedMonth,   setSelectedMonth]   = useState(getCurrentFYMonth());
+  const [toast,           setToast]           = useState(null);
+  const [viewPayslip,     setViewPayslip]     = useState(null);
+  const [confirmModal,    setConfirmModal]    = useState(null);
+
+  const isMounted = useRef(true);
   useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(onClose, 3500);
-    return () => clearTimeout(t);
-  }, [toast, onClose]);
-  if (!toast) return null;
-  return (
-    <div className={`py-toast ${toast.type === 'error' ? 'py-toast-error' : 'py-toast-success'}`}>
-      {toast.type === 'error' ? <AlertCircle size={16}/> : <CheckCircle size={16}/>}
-      <span>{toast.message}</span>
-      <button onClick={onClose} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer'}}><X size={14}/></button>
-    </div>
-  );
-};
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
-// ── Status badge ──────────────────────────────────────────────────────────────
-const StatusBadge = ({ status }) => {
-  const map = {
-    paid:       'py-badge-paid',
-    pending:    'py-badge-pending',
-    processing: 'py-badge-processing',
-    on_hold:    'py-badge-on_hold',
+  const showToast = (message, type='success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3500);
   };
-  return <span className={`py-badge ${map[status] || 'py-badge-pending'}`}>{status.replace('_',' ')}</span>;
-};
 
-// ── Payslip Drawer ────────────────────────────────────────────────────────────
-const PayslipDrawer = ({ slip, onClose, onDownload, onPrint }) => {
-  if (!slip) return null;
-  return (
-    <>
-      <div className="py-overlay" onClick={onClose}/>
-      <div className="py-drawer">
-        <div className="py-drawer-hd">
-          <span className="py-drawer-title">Salary Slip</span>
-          <button className="py-icon-btn" onClick={onClose}><X size={16}/></button>
-        </div>
-        <div className="py-drawer-body">
-          {/* Header card */}
-          <div className="py-slip-header">
-            <p className="py-slip-title">SALARY SLIP</p>
-            <p className="py-slip-name">{slip.name}</p>
-            <p className="py-slip-meta">{slip.designation} · {slip.department}</p>
-            <p className="py-slip-meta">{slip.employee_id} · {slip.month}</p>
-          </div>
-
-          {/* Earnings */}
-          <span className="py-slip-section-hd">Earnings</span>
-          <table className="py-slip-table">
-            <tbody>
-              <tr><td>Basic Salary</td><td>₹{fmtN(slip.basic)}</td></tr>
-              <tr><td>House Rent Allowance (HRA)</td><td>₹{fmtN(slip.hra)}</td></tr>
-              <tr><td>Other Allowances</td><td>₹{fmtN(slip.allowances)}</td></tr>
-              <tr className="py-slip-total-row"><td><strong>Gross Earnings</strong></td><td><strong>₹{fmtN(slip.gross)}</strong></td></tr>
-            </tbody>
-          </table>
-
-          {/* Deductions */}
-          <span className="py-slip-section-hd">Deductions</span>
-          <table className="py-slip-table">
-            <tbody>
-              <tr><td>Provident Fund (PF 12%)</td><td style={{color:'#ef4444'}}>₹{fmtN(slip.pf)}</td></tr>
-              <tr><td>ESI (0.75%)</td><td style={{color:'#ef4444'}}>₹{fmtN(slip.esi)}</td></tr>
-              <tr><td>Income Tax (TDS)</td><td style={{color:'#ef4444'}}>₹{fmtN(slip.tds)}</td></tr>
-              <tr className="py-slip-total-row"><td><strong>Total Deductions</strong></td><td><strong style={{color:'#ef4444'}}>₹{fmtN(slip.total_deductions)}</strong></td></tr>
-            </tbody>
-          </table>
-
-          {/* Net Pay */}
-          <div className="py-net-pay-box">
-            <p className="py-net-pay-label">NET PAY</p>
-            <p className="py-net-pay-val">₹{fmtN(slip.net_pay)}</p>
-          </div>
-
-          {/* Status */}
-          <div style={{textAlign:'center',marginTop:8}}>
-            <StatusBadge status={slip.status}/>
-            {slip.paid_on && <p style={{fontSize:12,color:'#6b7280',marginTop:6}}>Paid on {slip.paid_on}</p>}
-          </div>
-        </div>
-        <div className="py-drawer-footer">
-          <button className="py-btn-ghost" onClick={onPrint}><Printer size={14}/> Print</button>
-          <button className="py-btn-primary" onClick={onDownload}><Download size={14}/> Download</button>
-        </div>
-      </div>
-    </>
-  );
-};
-
-// ── Generate Payroll Drawer ───────────────────────────────────────────────────
-const GenerateDrawer = ({ open, onClose, onSubmit }) => {
-  const [form, setForm] = useState({ month:'February 2026', department:'All', notes:'' });
-  if (!open) return null;
-  return (
-    <>
-      <div className="py-overlay" onClick={onClose}/>
-      <div className="py-drawer py-drawer-sm">
-        <div className="py-drawer-hd">
-          <span className="py-drawer-title">Generate Payroll</span>
-          <button className="py-icon-btn" onClick={onClose}><X size={16}/></button>
-        </div>
-        <div className="py-drawer-body">
-          <div className="py-warning">
-            <AlertCircle size={16} style={{flexShrink:0,marginTop:1}}/>
-            <span>This will process payroll for all active employees in the selected department for the chosen month.</span>
-          </div>
-          <div className="py-form-group">
-            <label className="py-label">Payroll Month</label>
-            <select className="py-select" value={form.month} onChange={e=>setForm({...form,month:e.target.value})}>
-              {MONTHS.map(m=><option key={m}>{m}</option>)}
-            </select>
-          </div>
-          <div className="py-form-group">
-            <label className="py-label">Department</label>
-            <select className="py-select" value={form.department} onChange={e=>setForm({...form,department:e.target.value})}>
-              {['All','Engineering','Design','QA','HR','Finance','Marketing'].map(d=><option key={d}>{d}</option>)}
-            </select>
-          </div>
-          <div className="py-form-group">
-            <label className="py-label">Notes (optional)</label>
-            <textarea className="py-textarea" rows={3} placeholder="Any special instructions…" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
-          </div>
-        </div>
-        <div className="py-drawer-footer">
-          <button className="py-btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="py-btn-primary" onClick={()=>onSubmit(form)}>Generate Payroll</button>
-        </div>
-      </div>
-    </>
-  );
-};
-
-// ── Custom tooltip ─────────────────────────────────────────────────────────────
-const TrendTooltip = ({ active, payload, label }) => {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{background:'#fff',border:'1px solid #f0f0f4',borderRadius:8,padding:'10px 14px',fontSize:12,boxShadow:'0 2px 8px rgba(0,0,0,0.08)'}}>
-      <p style={{fontWeight:600,color:'#111827',marginBottom:4}}>{label}</p>
-      {payload.map(p=>(
-        <p key={p.dataKey} style={{color:p.color,margin:'2px 0'}}>{p.dataKey==='gross'?'Gross':'Net'}: {fmtRupee(p.value)}</p>
-      ))}
-    </div>
-  );
-};
-
-// ── Main Component ────────────────────────────────────────────────────────────
-export default function Payroll({ setPage }) {
-  const [payrollList, setPayrollList]   = useState(SAMPLE_LIST);
-  const [summary, setSummary]           = useState(SAMPLE_SUMMARY);
-  const [trend, setTrend]               = useState(SAMPLE_TREND);
-  const [selectedMonth, setSelectedMonth] = useState('February 2026');
-  const [searchTerm, setSearchTerm]     = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [selectedSlip, setSelectedSlip] = useState(null);
-  const [showGenerate, setShowGenerate] = useState(false);
-  const [loading, setLoading]           = useState(false);
-  const [toast, setToast]               = useState(null);
-
-  const showToast = useCallback((message, type='success') => setToast({ message, type }), []);
-
-  const loadData = useCallback(async () => {
+  const load = useCallback(() => {
     setLoading(true);
-    try {
-      const [listRes, sumRes, trendRes] = await Promise.allSettled([
-        api.get(`/payroll?month=${encodeURIComponent(selectedMonth)}`),
-        api.get('/payroll/summary'),
-        api.get('/payroll/trend'),
-      ]);
-      if (listRes.status==='fulfilled'  && listRes.value.data?.length)  setPayrollList(listRes.value.data);
-      if (sumRes.status==='fulfilled'   && sumRes.value.data)            setSummary(sumRes.value.data);
-      if (trendRes.status==='fulfilled' && trendRes.value.data?.length)  setTrend(trendRes.value.data);
-    } catch { /* fall back to sample data */ }
-    finally { setLoading(false); }
+    const { month, year } = parseSelectedMonth(selectedMonth);
+    Promise.allSettled([
+      api.get('/payroll', { params: { month, year, limit: 100 } }),
+      api.get('/payroll/summary', { params: { month, year } }),
+      api.get('/payroll/trend'),
+    ]).then(([listRes, summaryRes, trendRes]) => {
+      if (!isMounted.current) return;
+      setPayrolls(listRes.status==='fulfilled'    ? (Array.isArray(listRes.value?.data)    ? listRes.value.data    : []) : []);
+      setSummary(summaryRes.status==='fulfilled'  ? (summaryRes.value?.data || {})                                       : {});
+      setTrend(trendRes.status==='fulfilled'      ? (Array.isArray(trendRes.value?.data)   ? trendRes.value.data   : []) : []);
+    }).finally(() => { if (isMounted.current) setLoading(false); });
   }, [selectedMonth]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { load(); }, [load]);
 
-  const handleGenerate = async (form) => {
-    try { await api.post('/payroll/generate', form); } catch { /* proceed */ }
-    setShowGenerate(false);
-    showToast(`Payroll generation initiated for ${form.month} — ${form.department}`);
+  // Period is locked once any record has been paid or is in processing
+  const isLocked          = summary.is_locked || payrolls.some(p => p.status === 'paid' || p.status === 'processing');
+  const hasPendingApproval = payrolls.some(p => p.status === 'pending_approval');
+  const pendingCount      = payrolls.filter(p => p.status === 'pending').length;
+
+  // Show confirm modal with pre-computed totals before generating
+  const handleGenerateClick = () => {
+    if (isLocked) {
+      showToast('This period is locked. Use the per-row Re-run button for corrections.', 'error');
+      return;
+    }
+    const gross      = summary.total_gross       || payrolls.reduce((s,p) => s+Number(p.gross||0),           0);
+    const deductions = summary.total_deductions  || payrolls.reduce((s,p) => s+Number(p.total_deductions||0),0);
+    const net        = summary.total_net         || payrolls.reduce((s,p) => s+Number(p.net_pay||0),         0);
+    const count      = summary.total_employees   || payrolls.length;
+    setConfirmModal({ gross, deductions, net, count });
   };
 
-  const filtered = payrollList.filter(e => {
-    const matchSearch = !searchTerm ||
-      e.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      e.department.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      e.employee_id.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchStatus = statusFilter === 'all' || e.status === statusFilter;
-    return matchSearch && matchStatus;
+  const confirmGenerate = async () => {
+    setConfirmModal(null);
+    setGenLoading(true);
+
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      const res = await api.post('/payroll/generate', { month, year });
+      if (!isMounted.current) return;
+      const msg = res?.data?.message || `Payroll generated for ${selectedMonth}`;
+      const errCount = res?.data?.errors?.length || 0;
+      showToast(errCount ? `${msg} — ${errCount} employee(s) had errors` : msg, errCount ? 'error' : 'success');
+      load();
+    } catch(e) {
+      if (!isMounted.current) return;
+      showToast(e?.response?.data?.message || e?.response?.data?.error || 'Failed to generate payroll', 'error');
+    } finally { if (isMounted.current) setGenLoading(false); }
+  };
+
+  const approvePayroll = async () => {
+    if (approvalLoading) return;
+    const pending = payrolls.filter(p => p.status === 'pending');
+    if (!pending.length) { showToast('No pending records to approve', 'error'); return; }
+    setApprovalLoading(true);
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      const res = await api.post('/payroll/approve', { month, year });
+      if (!isMounted.current) return;
+      showToast(res?.data?.message || `Payroll approved for ${selectedMonth}`);
+      load();
+    } catch (e) {
+      if (!isMounted.current) return;
+      showToast(e?.response?.data?.message || 'Approval failed — Finance Head role required', 'error');
+    } finally { if (isMounted.current) setApprovalLoading(false); }
+  };
+
+  const markPaid = async (employeeId) => {
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      await api.post(`/payroll/${employeeId}/mark-paid`, { payment_date: new Date().toISOString().slice(0,10), month, year });
+      if (!isMounted.current) return;
+      showToast('Marked as paid');
+      load();
+    } catch { if (isMounted.current) showToast('Failed to mark as paid', 'error'); }
+  };
+
+  const markAllPaid = async () => {
+    if (markAllLoading) return;
+    const ids = payrolls.filter(p => p.status === 'pending').map(p => p.employee_id);
+    if (!ids.length) { showToast('No pending records', 'error'); return; }
+
+    setMarkAllLoading(true);
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      await Promise.all(ids.map(id =>
+        api.post(`/payroll/${id}/mark-paid`, { payment_date: new Date().toISOString().slice(0,10), month, year })
+      ));
+      if (!isMounted.current) return;
+      showToast(`${ids.length} employees marked as paid`);
+      load();
+    } catch { if (isMounted.current) showToast('Bulk payment failed', 'error'); }
+    finally { if (isMounted.current) setMarkAllLoading(false); }
+  };
+
+  const rerunEmployee = async (employeeId, name) => {
+    setRerunId(employeeId);
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      await api.post('/payroll/generate', { month, year, employee_id: employeeId });
+      if (!isMounted.current) return;
+      showToast(`Payroll re-run for ${name}`);
+      load();
+    } catch(e) {
+      if (!isMounted.current) return;
+      showToast(e?.response?.data?.error || 'Re-run failed', 'error');
+    } finally { if (isMounted.current) setRerunId(null); }
+  };
+
+  const loadPayslip = async (employeeId) => {
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      const r = await api.get('/payroll/payslips', { params: { employee_id: employeeId, month, year } });
+      if (!isMounted.current) return;
+      const data = r?.data?.data ?? r?.data ?? null;
+      setViewPayslip(data);
+    } catch { showToast('Could not load payslip', 'error'); }
+  };
+
+  const exportNEFT = () => {
+    if (!filtered.length) { showToast('No records to export', 'error'); return; }
+    const rows = [
+      ['Employee Name','Employee ID','Bank Account','IFSC Code','Net Pay (INR)','Payment Date'],
+      ...filtered.map(p => [
+        `"${p.name || p.employee_name || ''}"`,
+        p.employee_id || '',
+        p.bank_account || '',
+        p.ifsc_code || '',
+        p.net_pay || 0,
+        new Date().toISOString().slice(0,10),
+      ]),
+    ];
+    const csv  = rows.map(r => r.join(',')).join('\n');
+    const blob = new Blob([csv], { type:'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `NEFT_${selectedMonth.replace(' ','_')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('NEFT file exported');
+  };
+
+  const filtered = payrolls.filter(p => {
+    const matchStatus = statusFilter==='All' || p.status===statusFilter;
+    const matchSearch = !search || [p.name, p.employee_id, p.department, p.designation]
+      .some(v => (v||'').toLowerCase().includes(search.toLowerCase()));
+    return matchStatus && matchSearch;
   });
 
+  const kpis = [
+    { label:'Total Employees',  value: summary.total_employees || payrolls.length,                                                                       icon:Users,       color:'#6366f1' },
+    { label:'Total Gross',      value: fmtRupee(summary.total_gross      || payrolls.reduce((s,p)=>s+Number(p.gross||0),0)),                             icon:IndianRupee,  color:'#10b981', isText:true },
+    { label:'Total Deductions', value: fmtRupee(summary.total_deductions || payrolls.reduce((s,p)=>s+Number(p.total_deductions||0),0)),                  icon:TrendingUp,  color:'#f59e0b', isText:true },
+    { label:'Net Payable',      value: fmtRupee(summary.total_net        || payrolls.reduce((s,p)=>s+Number(p.net_pay||0),0)),                           icon:CheckCircle, color:'#8b5cf6', isText:true },
+  ];
+
   return (
-    <div className="py-root">
-      <Toast toast={toast} onClose={() => setToast(null)}/>
-      <PayslipDrawer
-        slip={selectedSlip}
-        onClose={() => setSelectedSlip(null)}
-        onDownload={() => showToast(`Downloading payslip for ${selectedSlip?.name}…`)}
-        onPrint={() => showToast('Preparing print preview…')}
-      />
-      <GenerateDrawer open={showGenerate} onClose={() => setShowGenerate(false)} onSubmit={handleGenerate}/>
+    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{ position:'fixed', top:20, right:20, zIndex:9999, display:'flex', alignItems:'center', gap:8,
+          padding:'12px 18px', borderRadius:10,
+          background: toast.type==='error'?'#fef2f2':'#f0fdf4',
+          border:`1px solid ${toast.type==='error'?'#fca5a5':'#86efac'}`,
+          boxShadow:'0 4px 20px rgba(0,0,0,.1)',
+          color: toast.type==='error'?'#991b1b':'#166534', fontSize:13, fontWeight:500 }}>
+          {toast.type==='error' ? <AlertCircle size={15}/> : <CheckCircle size={15}/>}
+          {toast.message}
+          <button onClick={()=>setToast(null)} style={{ marginLeft:8, background:'none', border:'none', cursor:'pointer', color:'inherit' }}><X size={13}/></button>
+        </div>
+      )}
+
+      {/* Confirmation Modal */}
+      {confirmModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:3000,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+          onClick={() => setConfirmModal(null)}>
+          <div style={{ background:'#fff', borderRadius:16, padding:32, width:460,
+            boxShadow:'0 20px 60px rgba(0,0,0,.25)' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+              <h2 style={{ fontSize:16, fontWeight:700, color:'#1f2937', margin:0 }}>Confirm Payroll Generation</h2>
+              <button onClick={() => setConfirmModal(null)} style={{ background:'none', border:'none', cursor:'pointer', color:'#9ca3af' }}><X size={20}/></button>
+            </div>
+            <p style={{ color:'#6b7280', fontSize:13, margin:'0 0 20px' }}>
+              You are generating payroll for <strong>{selectedMonth}</strong>. Review the summary below.
+            </p>
+            <div style={{ background:'#f9fafb', borderRadius:10, padding:16, marginBottom:16 }}>
+              {[
+                ['Employees',        confirmModal.count],
+                ['Total Gross',      `₹${fmtN(confirmModal.gross)}`],
+                ['Total Deductions', `₹${fmtN(confirmModal.deductions)}`],
+                ['Net Payable',      `₹${fmtN(confirmModal.net)}`],
+              ].map(([lbl, val], i, arr) => (
+                <div key={lbl} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0',
+                  borderBottom: i < arr.length-1 ? '1px solid #f0f0f4' : 'none', fontSize:13 }}>
+                  <span style={{ color:'#6b7280' }}>{lbl}</span>
+                  <span style={{ fontWeight:700, color:'#1f2937' }}>{val}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ background:'#ede9fe', borderRadius:8, padding:'10px 14px', marginBottom:20, fontSize:12, color:'#5b21b6', lineHeight:1.5 }}>
+              After generation, payroll enters <strong>pending approval</strong>. Finance Head must approve before payslips are emailed.
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <button onClick={() => setConfirmModal(null)}
+                style={{ padding:'9px 18px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:13 }}>Cancel</button>
+              <button onClick={confirmGenerate}
+                style={{ padding:'9px 20px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+                Confirm &amp; Generate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMarkAllConfirm && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:3000,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+          onClick={() => setShowMarkAllConfirm(false)}>
+          <div style={{ background:'#fff', borderRadius:16, padding:28, width:420,
+            boxShadow:'0 20px 60px rgba(0,0,0,.25)' }} onClick={e => e.stopPropagation()}>
+            <h2 style={{ fontSize:16, fontWeight:700, color:'#1f2937', margin:'0 0 10px' }}>Mark All as Paid</h2>
+            <p style={{ color:'#6b7280', fontSize:13, margin:'0 0 20px' }}>
+              Mark all <strong>{pendingCount} pending employee(s)</strong> as paid for <strong>{selectedMonth}</strong>? This cannot be undone.
+            </p>
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <button onClick={() => setShowMarkAllConfirm(false)}
+                style={{ padding:'9px 18px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:13 }}>Cancel</button>
+              <button onClick={() => { setShowMarkAllConfirm(false); markAllPaid(); }}
+                style={{ padding:'9px 20px', background:'#16a34a', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+                Confirm &amp; Mark Paid
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
-      <div className="py-header">
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, flexWrap:'wrap', gap:12 }}>
         <div>
-          <h1 className="py-title">Payroll Management</h1>
-          <p style={{fontSize:13,color:'#6b7280',margin:'4px 0 0'}}>
-            {new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})}
-          </p>
+          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Payroll</h1>
+          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Manage and process employee payroll</p>
         </div>
-        <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
-          {/* Month pills */}
-          <div className="py-month-pills">
-            {['January 2026','February 2026','March 2026'].map(m => (
-              <button key={m} className={`py-month-pill${selectedMonth===m?' active':''}`} onClick={() => setSelectedMonth(m)}>
-                {m.split(' ')[0]}
-              </button>
-            ))}
+        <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+          {/* Month selector with lock indicator */}
+          <div style={{ position:'relative' }}>
+            <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)}
+              style={{ padding:'8px 36px 8px 12px', border:`1px solid ${isLocked?'#fca5a5':'#e5e7eb'}`, borderRadius:8, fontSize:13, outline:'none', color:'#374151', appearance:'none' }}>
+              {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+            {isLocked
+              ? <Lock size={13} color="#ef4444" style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }}/>
+              : <span style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', pointerEvents:'none', color:'#9ca3af', fontSize:10 }}>▼</span>
+            }
           </div>
-          <button className="py-btn-generate" onClick={() => setShowGenerate(true)}>
-            <Plus size={14}/> Generate Payroll
+
+          {/* Approve button — only visible when pending approval exists */}
+          {hasPendingApproval && (
+            <button onClick={approvePayroll} disabled={approvalLoading}
+              style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 16px', background:'#059669', color:'#fff',
+                border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600, opacity:approvalLoading?0.7:1 }}>
+              <ThumbsUp size={14}/> {approvalLoading ? 'Approving…' : 'Approve & Release'}
+            </button>
+          )}
+
+          {/* NEFT Export */}
+          <button onClick={exportNEFT}
+            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 14px', background:'#fff',
+              color:'#374151', border:'1px solid #e5e7eb', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:500 }}>
+            <CreditCard size={14}/> Export NEFT
           </button>
-          <button className="py-icon-btn" onClick={loadData} title="Refresh">
-            <RefreshCw size={14} className={loading ? 'py-spin' : ''}/>
+
+          {/* Generate / Period Locked */}
+          <button onClick={handleGenerateClick} disabled={genLoading || isLocked}
+            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px',
+              background: isLocked ? '#9ca3af' : '#6B3FDB', color:'#fff', border:'none', borderRadius:8,
+              cursor: isLocked ? 'not-allowed' : 'pointer', fontSize:13, fontWeight:600, opacity:genLoading?0.7:1 }}>
+            {isLocked
+              ? <Lock size={14}/>
+              : <RefreshCw size={14} style={{ animation:genLoading?'spin 1s linear infinite':undefined }}/>}
+            {genLoading ? 'Generating…' : isLocked ? 'Period Locked' : 'Generate Payroll'}
           </button>
         </div>
       </div>
 
-      {/* KPI Strip */}
-      <div className="py-kpis">
-        {[
-          { icon: Users,        label: 'Total Employees',   value: summary.total_employees, sub: 'On payroll',         color: '#6366f1' },
-          { icon: TrendingUp,   label: 'Total Gross',       value: fmtRupee(summary.total_gross), sub: selectedMonth,  color: '#10b981' },
-          { icon: DollarSign,   label: 'Total Net Pay',     value: fmtRupee(summary.total_net), sub: 'After deductions',color: '#3b82f6' },
-          { icon: TrendingDown, label: 'Total Deductions',  value: fmtRupee(summary.total_deductions), sub: 'PF + ESI + TDS', color: '#f59e0b' },
-        ].map((k, i) => (
-          <div key={i} className="py-kpi">
-            <div className="py-kpi-icon" style={{background:k.color+'18',color:k.color}}><k.icon size={20}/></div>
-            <div>
-              <p className="py-kpi-label">{k.label}</p>
-              <p className="py-kpi-val">{k.value}</p>
-              <p className="py-kpi-sub">{k.sub}</p>
+      {/* Approval Banner */}
+      {hasPendingApproval && (
+        <div style={{ background:'#ede9fe', border:'1px solid #c4b5fd', borderRadius:10, padding:'12px 16px',
+          marginBottom:16, display:'flex', alignItems:'center', gap:10, fontSize:13, color:'#5b21b6' }}>
+          <AlertCircle size={15}/>
+          <span><strong>Payroll for {selectedMonth} is awaiting Finance Head approval.</strong> Click "Approve &amp; Release" to process and email payslips.</span>
+        </div>
+      )}
+
+      {/* KPIs */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:16, marginBottom:24 }}>
+        {kpis.map(k => (
+          <div key={k.label} style={{ background:'#fff', borderRadius:12, padding:20, border:'1px solid #f0f0f4', boxShadow:'0 1px 3px rgba(0,0,0,.05)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between' }}>
+              <div>
+                <p style={{ fontSize:11, color:'#9ca3af', margin:'0 0 8px', fontWeight:500, textTransform:'uppercase', letterSpacing:'0.5px' }}>{k.label}</p>
+                <p style={{ fontSize:k.isText?20:28, fontWeight:700, color:'#1f2937', margin:0 }}>{loading?'…':k.value}</p>
+              </div>
+              <div style={{ background:k.color+'18', borderRadius:10, padding:10, height:'fit-content' }}>
+                <k.icon size={20} color={k.color}/>
+              </div>
             </div>
           </div>
         ))}
       </div>
 
-      {/* Status chips */}
-      <div className="py-status-chips">
-        <span className="py-chip py-chip-paid"><CheckCircle size={12}/> {summary.paid_count} Paid</span>
-        <span className="py-chip py-chip-pending"><Clock size={12}/> {summary.pending_count} Pending</span>
-        <span className="py-chip py-chip-processing"><RefreshCw size={12}/> {summary.processing_count} Processing</span>
-      </div>
-
       {/* Trend Chart */}
-      <div className="py-card">
-        <div className="py-card-hd">
-          <span className="py-card-title"><TrendingUp size={14} style={{marginRight:6,verticalAlign:'middle',color:'#6366f1'}}/> Monthly Payroll Trend</span>
-          <span style={{fontSize:12,color:'#9ca3af'}}>Last 6 months</span>
-        </div>
-        <div className="py-card-body">
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={trend} margin={{top:5,right:20,left:0,bottom:0}}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4" vertical={false}/>
-              <XAxis dataKey="month" tick={{fontSize:11,fill:'#9ca3af'}} axisLine={false} tickLine={false}/>
-              <YAxis tick={{fontSize:11,fill:'#9ca3af'}} axisLine={false} tickLine={false} tickFormatter={fmtRupee} width={52}/>
-              <Tooltip content={<TrendTooltip/>}/>
-              <Line type="monotone" dataKey="gross" stroke="#6366f1" strokeWidth={2.5} dot={{r:4,fill:'#6366f1'}} name="Gross"/>
-              <Line type="monotone" dataKey="net"   stroke="#10b981" strokeWidth={2.5} dot={{r:4,fill:'#10b981'}} name="Net"/>
+      {trend.length > 0 && (
+        <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:20, marginBottom:20 }}>
+          <h2 style={{ fontSize:15, fontWeight:600, color:'#1f2937', margin:'0 0 16px' }}>Payroll Trend — Last 6 Months</h2>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={trend}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4"/>
+              <XAxis dataKey="month" tick={{ fontSize:11 }}/>
+              <YAxis tickFormatter={v=>`₹${(v/100000).toFixed(0)}L`} tick={{ fontSize:11 }}/>
+              <Tooltip formatter={v=>[fmtRupee(v)]}/>
+              <Line type="monotone" dataKey="gross" stroke="#6B3FDB" strokeWidth={2} name="Gross" dot={false}/>
+              <Line type="monotone" dataKey="net"   stroke="#10b981" strokeWidth={2} name="Net"   dot={false}/>
             </LineChart>
           </ResponsiveContainer>
-          <div style={{display:'flex',gap:20,justifyContent:'center',marginTop:4,fontSize:12,color:'#6b7280'}}>
-            <span><span style={{display:'inline-block',width:10,height:10,borderRadius:2,background:'#6366f1',marginRight:5}}/> Gross</span>
-            <span><span style={{display:'inline-block',width:10,height:10,borderRadius:2,background:'#10b981',marginRight:5}}/> Net Pay</span>
-          </div>
         </div>
+      )}
+
+      {/* Filters + Bulk Actions */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16, gap:12, flexWrap:'wrap' }}>
+        <div style={{ display:'flex', gap:12, flex:1, flexWrap:'wrap' }}>
+          <div style={{ position:'relative', flex:1, minWidth:220 }}>
+            <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search employee, department…"
+              style={{ width:'100%', paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8,
+                border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+          </div>
+          {['All','paid','pending','processing','on_hold','pending_approval'].map(s => (
+            <button key={s} onClick={()=>setStatusFilter(s)}
+              style={{ padding:'7px 14px', borderRadius:8, border:'1px solid', fontSize:12, fontWeight:500,
+                cursor:'pointer', textTransform:'capitalize',
+                borderColor: statusFilter===s?'#6B3FDB':'#e5e7eb',
+                background:  statusFilter===s?'#6B3FDB':'#fff',
+                color:       statusFilter===s?'#fff':'#374151' }}>
+              {s === 'All' ? 'All' : s.replace('_',' ')}
+            </button>
+          ))}
+        </div>
+        {pendingCount > 0 && (
+          <button
+            onClick={() => setShowMarkAllConfirm(true)}
+            disabled={markAllLoading}
+            style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 14px', background:'#d1fae5',
+              color:'#065f46', border:'1px solid #a7f3d0', borderRadius:8, cursor:'pointer', fontSize:12,
+              fontWeight:600, whiteSpace:'nowrap', opacity:markAllLoading?0.7:1 }}>
+            <CheckCircle size={13}/>
+            {markAllLoading ? 'Processing…' : `Mark All Paid (${pendingCount})`}
+          </button>
+        )}
       </div>
 
-      {/* Salary Slips Table */}
-      <div className="py-card">
-        <div className="py-card-hd">
-          <span className="py-card-title"><FileText size={14} style={{marginRight:6,verticalAlign:'middle',color:'#3b82f6'}}/> Salary Slips — {selectedMonth}</span>
-          <span style={{fontSize:12,color:'#9ca3af'}}>{filtered.length} records</span>
-        </div>
-        <div className="py-table-controls">
-          <div className="py-search-wrap">
-            <Search size={14} className="py-search-icon"/>
-            <input className="py-search" placeholder="Search by name, department, ID…" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)}/>
+      {/* Payroll Table */}
+      <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
+        {loading ? (
+          <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>Loading payroll data…</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding:60, textAlign:'center', color:'#9ca3af' }}>
+            <FileText size={40} color="#d1d5db" style={{ display:'block', margin:'0 auto 12px' }}/>
+            <p style={{ margin:'0 0 16px' }}>No payroll records for {selectedMonth}</p>
+            {!isLocked && (
+              <button onClick={handleGenerateClick} disabled={genLoading}
+                style={{ padding:'9px 20px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+                Generate Payroll Now
+              </button>
+            )}
           </div>
-          <select className="py-filter" value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
-            <option value="all">All Status</option>
-            <option value="paid">Paid</option>
-            <option value="pending">Pending</option>
-            <option value="processing">Processing</option>
-            <option value="on_hold">On Hold</option>
-          </select>
-        </div>
-        <div className="py-table-wrap">
-          {filtered.length === 0 ? (
-            <div className="py-empty"><FileText size={28} color="#d1d5db"/><p>No records found</p></div>
-          ) : (
-            <table className="py-table">
+        ) : (
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
               <thead>
-                <tr>
-                  <th>Employee</th>
-                  <th>Gross</th>
-                  <th>PF</th>
-                  <th>ESI</th>
-                  <th>TDS</th>
-                  <th>Deductions</th>
-                  <th>Net Pay</th>
-                  <th>Status</th>
-                  <th>Actions</th>
+                <tr style={{ background:'#f9fafb' }}>
+                  {['Employee','Dept','Gross','PF','ESI','PT','TDS','Total Ded.','Net Pay','Status','Actions'].map(h => (
+                    <th key={h} style={{ padding:'10px 14px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4', whiteSpace:'nowrap' }}>{h}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(e => (
-                  <tr key={e.id}>
-                    <td>
-                      <span className="py-emp-name">{e.name}</span>
-                      <span className="py-emp-dept">{e.department}</span>
-                      <span className="py-emp-id">{e.employee_id}</span>
-                    </td>
-                    <td><span className="py-amt">{fmtRupee(e.gross)}</span></td>
-                    <td><span className="py-deduction">₹{fmtN(e.pf)}</span></td>
-                    <td><span className="py-deduction">₹{fmtN(e.esi)}</span></td>
-                    <td><span className="py-deduction">₹{fmtN(e.tds)}</span></td>
-                    <td><span className="py-deduction">{fmtRupee(e.total_deductions)}</span></td>
-                    <td><span className="py-net">{fmtRupee(e.net_pay)}</span></td>
-                    <td><StatusBadge status={e.status}/></td>
-                    <td>
-                      <button className="py-action-btn" title="View Payslip" onClick={()=>setSelectedSlip(e)}><Eye size={14}/></button>
-                      <button className="py-action-btn" title="Download" onClick={()=>showToast(`Downloading payslip for ${e.name}…`)}><Download size={14}/></button>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((p, i) => {
+                  const sc = STATUS_COLOR[p.status] || STATUS_COLOR.pending;
+                  const isRerunning = rerunId === (p.employee_id||p.id);
+                  return (
+                    <tr key={p.id||i} style={{ borderBottom:'1px solid #f9fafb', background:i%2===0?'#fff':'#fafafa' }}>
+                      <td style={{ padding:'10px 14px' }}>
+                        <p style={{ fontSize:13, fontWeight:600, color:'#1f2937', margin:0 }}>{p.name||p.employee_name||'—'}</p>
+                        <p style={{ fontSize:11, color:'#9ca3af', margin:'1px 0 0' }}>{p.employee_id||''} · {p.designation||''}</p>
+                      </td>
+                      <td style={{ padding:'10px 14px', color:'#6b7280' }}>{p.department||'—'}</td>
+                      <td style={{ padding:'10px 14px', fontWeight:600, color:'#1f2937' }}>₹{fmtN(p.gross)}</td>
+                      <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.employee_pf||p.pf)}</td>
+                      <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.employee_esi||p.esi)}</td>
+                      <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.pt||p.professional_tax)}</td>
+                      <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.tds)}</td>
+                      <td style={{ padding:'10px 14px', color:'#ef4444', fontWeight:500 }}>₹{fmtN(p.total_deductions)}</td>
+                      <td style={{ padding:'10px 14px', fontWeight:700, color:'#10b981' }}>₹{fmtN(p.net_pay)}</td>
+                      <td style={{ padding:'10px 14px' }}>
+                        <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20,
+                          fontSize:11, fontWeight:600, textTransform:'capitalize', whiteSpace:'nowrap' }}>
+                          {(p.status||'pending').replace(/_/g,' ')}
+                        </span>
+                      </td>
+                      <td style={{ padding:'10px 14px' }}>
+                        <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+                          <button onClick={()=>loadPayslip(p.employee_id||p.id)} title="View Payslip"
+                            style={{ padding:'5px 8px', background:'#ede9fe', color:'#6B3FDB', border:'none',
+                              borderRadius:6, cursor:'pointer', display:'flex', alignItems:'center', gap:3, fontSize:11, fontWeight:600 }}>
+                            <Eye size={12}/> View
+                          </button>
+                          {p.status === 'pending' && (
+                            <button onClick={()=>markPaid(p.employee_id)} title="Mark as Paid"
+                              style={{ padding:'5px 8px', background:'#d1fae5', color:'#065f46', border:'none',
+                                borderRadius:6, cursor:'pointer', display:'flex', alignItems:'center', gap:3, fontSize:11, fontWeight:600 }}>
+                              <CheckCircle size={12}/> Pay
+                            </button>
+                          )}
+                          <button onClick={()=>rerunEmployee(p.employee_id||p.id, p.name||p.employee_name)} title="Re-run payroll" disabled={isRerunning}
+                            style={{ padding:'5px 8px', background:'#fef3c7', color:'#92400e', border:'none',
+                              borderRadius:6, cursor:'pointer', display:'flex', alignItems:'center', gap:3, fontSize:11, fontWeight:600,
+                              opacity:isRerunning?0.6:1 }}>
+                            <RotateCcw size={12} style={{ animation:isRerunning?'spin 1s linear infinite':undefined }}/> Re-run
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
+              <tfoot>
+                <tr style={{ background:'#f5f3ff', borderTop:'2px solid #e9e4ff' }}>
+                  <td colSpan={2} style={{ padding:'10px 14px', fontWeight:700, color:'#1f2937' }}>TOTAL ({filtered.length} employees)</td>
+                  <td style={{ padding:'10px 14px', fontWeight:700, color:'#1f2937' }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.gross||0),0))}</td>
+                  <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.employee_pf||p.pf||0),0))}</td>
+                  <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.employee_esi||p.esi||0),0))}</td>
+                  <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.pt||p.professional_tax||0),0))}</td>
+                  <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.tds||0),0))}</td>
+                  <td style={{ padding:'10px 14px', fontWeight:700, color:'#ef4444' }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.total_deductions||0),0))}</td>
+                  <td style={{ padding:'10px 14px', fontWeight:700, color:'#10b981' }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.net_pay||0),0))}</td>
+                  <td colSpan={2}/>
+                </tr>
+              </tfoot>
             </table>
-          )}
-        </div>
+          </div>
+        )}
       </div>
+
+      {/* Payslip Modal */}
+      {viewPayslip && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:2000,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+          onClick={() => setViewPayslip(null)}>
+          <div style={{ background:'#fff', borderRadius:16, padding:32, width:600, maxHeight:'90vh',
+            overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.25)' }} onClick={e=>e.stopPropagation()}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+              <h2 style={{ fontSize:17, fontWeight:700, color:'#1f2937', margin:0 }}>
+                Payslip — {viewPayslip.name || viewPayslip.employee_name}
+              </h2>
+              <button onClick={() => setViewPayslip(null)} style={{ background:'none', border:'none', cursor:'pointer', color:'#9ca3af' }}><X size={20}/></button>
+            </div>
+
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:20, background:'#f9fafb', borderRadius:10, padding:16 }}>
+              {[
+                ['Employee ID', viewPayslip.employee?.id   || viewPayslip.employee_id],
+                ['Department',  viewPayslip.employee?.department || viewPayslip.department],
+                ['Designation', viewPayslip.employee?.designation || viewPayslip.designation],
+                ['Month',       viewPayslip.payroll_period || viewPayslip.month || selectedMonth],
+                ['PAN',         viewPayslip.employee?.pan  || viewPayslip.pan || '—'],
+                ['Bank A/c',    viewPayslip.employee?.bank || (viewPayslip.bank_account ? `****${String(viewPayslip.bank_account).slice(-4)}` : '—')],
+              ].map(([lbl,val]) => (
+                <div key={lbl}>
+                  <p style={{ fontSize:11, color:'#9ca3af', margin:0, fontWeight:500 }}>{lbl}</p>
+                  <p style={{ fontSize:13, color:'#1f2937', margin:'2px 0 0', fontWeight:500 }}>{val||'—'}</p>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
+              <div>
+                <h3 style={{ fontSize:13, fontWeight:700, color:'#1f2937', margin:'0 0 10px', paddingBottom:6, borderBottom:'2px solid #ede9fe' }}>Earnings</h3>
+                {[
+                  ['Basic',             viewPayslip.basic],
+                  ['HRA',               viewPayslip.hra],
+                  ['Conveyance',        viewPayslip.conveyance || 1600],
+                  ['Medical Allowance', viewPayslip.medical    || 1250],
+                  ['Special Allowance', viewPayslip.special_allowance],
+                  ['Other Allowances',  viewPayslip.allowances],
+                ].filter(([,v])=>Number(v||0)>0).map(([lbl,val]) => (
+                  <div key={lbl} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:13 }}>
+                    <span style={{ color:'#6b7280' }}>{lbl}</span>
+                    <span style={{ color:'#1f2937', fontWeight:500 }}>₹{fmtN(val)}</span>
+                  </div>
+                ))}
+                <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', marginTop:6, borderTop:'1px solid #e9e4ff', fontWeight:700, fontSize:14 }}>
+                  <span>Gross Salary</span>
+                  <span style={{ color:'#10b981' }}>₹{fmtN(viewPayslip.gross)}</span>
+                </div>
+              </div>
+              <div>
+                <h3 style={{ fontSize:13, fontWeight:700, color:'#1f2937', margin:'0 0 10px', paddingBottom:6, borderBottom:'2px solid #fee2e2' }}>Deductions</h3>
+                {[
+                  ['PF (Employee)',  viewPayslip.employee_pf || viewPayslip.pf],
+                  ['PF (Employer)', viewPayslip.employer_pf],
+                  ['ESI',           viewPayslip.employee_esi || viewPayslip.esi],
+                  ['Prof. Tax',     viewPayslip.professional_tax || viewPayslip.pt],
+                  ['TDS',           viewPayslip.tds],
+                  ['Loan EMI',      viewPayslip.loan_deduction],
+                  ['Advance',       viewPayslip.advance_deduction],
+                ].filter(([,v])=>Number(v||0)>0).map(([lbl,val]) => (
+                  <div key={lbl} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:13 }}>
+                    <span style={{ color:'#6b7280' }}>{lbl}</span>
+                    <span style={{ color:'#ef4444', fontWeight:500 }}>₹{fmtN(val)}</span>
+                  </div>
+                ))}
+                <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', marginTop:6, borderTop:'1px solid #fee2e2', fontWeight:700, fontSize:14 }}>
+                  <span>Total Deductions</span>
+                  <span style={{ color:'#ef4444' }}>₹{fmtN(viewPayslip.total_deductions)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background:'linear-gradient(135deg,#6B3FDB,#6366f1)', borderRadius:12, padding:'16px 20px',
+              display:'flex', justifyContent:'space-between', alignItems:'center', color:'#fff' }}>
+              <span style={{ fontSize:16, fontWeight:600 }}>Net Pay (Take Home)</span>
+              <span style={{ fontSize:24, fontWeight:800 }}>₹{fmtN(viewPayslip.net_pay)}</span>
+            </div>
+
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:20 }}>
+              <button onClick={() => setViewPayslip(null)}
+                style={{ padding:'9px 18px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:13 }}>Close</button>
+              <button onClick={async () => {
+                  try {
+                    const r = await api.get(`/payroll/payslip-pdf/${viewPayslip.employee_id || viewPayslip.id}?month=${encodeURIComponent(selectedMonth)}`, { responseType: 'blob' });
+                    const url = URL.createObjectURL(r.data);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `Payslip_${(viewPayslip.name || viewPayslip.employee_name || 'employee').replace(/\s+/g,'_')}_${selectedMonth.replace(' ','_')}.pdf`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } catch { showToast('PDF download failed — please try again', 'error'); }
+                }}
+                style={{ padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8,
+                cursor:'pointer', fontSize:13, fontWeight:600, display:'flex', alignItems:'center', gap:6 }}>
+                <Download size={14}/> Download PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`@keyframes spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }`}</style>
     </div>
   );
 }

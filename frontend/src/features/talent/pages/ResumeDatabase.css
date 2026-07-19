@@ -1,0 +1,236 @@
+/* ResumeDatabase — page-specific styles (prefix: .rdb-) */
+
+@keyframes rdb-pulse {
+  0%, 100% { background-position: 200% 0; }
+  50%       { background-position: -200% 0; }
+}
+
+.rdb-root {
+  padding: 24px;
+}
+
+/* ── header row ── */
+.rdb-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.rdb-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ── buttons ── */
+.rdb-btn-outline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #374151;
+}
+
+.rdb-btn-outline:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: #d1d5db;
+}
+
+/* ── error banner ── */
+.rdb-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+/* ── filter bar ── */
+.rdb-filter-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.rdb-input {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  width: 280px;
+  outline: none;
+}
+
+.rdb-select {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+}
+
+/* ── skeleton loader ── */
+.rdb-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rdb-skeleton-row {
+  height: 64px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: rdb-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── resume card list ── */
+.rdb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rdb-card {
+  background: var(--color-background-primary);
+  border: 1px solid #f0f0f4;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+/* ── card main row ── */
+.rdb-card-row {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+}
+
+.rdb-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #f0f0ff;
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.rdb-candidate-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.rdb-candidate-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.rdb-candidate-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--color-text-primary);
+}
+
+.rdb-candidate-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.rdb-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── skill chips ── */
+.rdb-skills-preview {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  max-width: 260px;
+  justify-content: flex-end;
+}
+
+.rdb-skill-chip {
+  background: var(--color-border-tertiary);
+  color: #374151;
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+}
+
+.rdb-skill-chip-accent {
+  background: #f0f0ff;
+  color: var(--color-primary);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.rdb-chevron {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+/* ── expanded detail panel ── */
+.rdb-detail {
+  border-top: 1px solid var(--color-background-secondary);
+  padding: 14px 16px;
+  background: #fafafa;
+}
+
+.rdb-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.rdb-detail-section-label {
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.rdb-detail-summary {
+  margin: 0;
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.6;
+}
+
+.rdb-skills-all {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rdb-detail-email {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}

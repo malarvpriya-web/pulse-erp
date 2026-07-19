@@ -1,12 +1,13 @@
 import pool from '../../shared/db.js';
+import { nextGrnNumber } from '../../../shared/docNumber.js';
 
 class GRNRepository {
   async create(client, data) {
-    const { grn_number, po_id, received_by, received_date, warehouse_id, notes } = data;
+    const { grn_number, po_id, received_by, received_date, warehouse_id, notes, company_id } = data;
     const result = await client.query(
-      `INSERT INTO goods_receipt_notes (grn_number, po_id, received_by, received_date, warehouse_id, notes) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [grn_number, po_id, received_by, received_date, warehouse_id, notes]
+      `INSERT INTO goods_receipt_notes (grn_number, po_id, received_by, received_date, warehouse_id, notes, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [grn_number, po_id, received_by, received_date, warehouse_id, notes, company_id ?? null]
     );
     return result.rows[0];
   }
@@ -22,18 +23,38 @@ class GRNRepository {
   }
 
   async findAll(filters = {}) {
-    let query = `SELECT grn.*, po.po_number, w.warehouse_name 
+    let query = `SELECT grn.*, po.po_number, COALESCE(w.warehouse_name, '') AS warehouse_name
                  FROM goods_receipt_notes grn
                  JOIN purchase_orders po ON grn.po_id = po.id
-                 JOIN warehouses w ON grn.warehouse_id = w.id
+                 LEFT JOIN warehouses w ON grn.warehouse_id = w.id
                  WHERE grn.deleted_at IS NULL`;
     const params = [];
-    
+
+    if (filters.company_id) {
+      params.push(filters.company_id);
+      query += ` AND grn.company_id = $${params.length}`;
+    }
+
     if (filters.po_id) {
       params.push(filters.po_id);
       query += ` AND grn.po_id = $${params.length}`;
     }
-    
+
+    if (filters.vendor_id) {
+      params.push(filters.vendor_id);
+      query += ` AND po.supplier_id = $${params.length}`;
+    }
+
+    if (filters.from_date) {
+      params.push(filters.from_date);
+      query += ` AND grn.received_date >= $${params.length}`;
+    }
+
+    if (filters.to_date) {
+      params.push(filters.to_date);
+      query += ` AND grn.received_date <= $${params.length}`;
+    }
+
     query += ' ORDER BY grn.received_date DESC';
     const result = await pool.query(query, params);
     return result.rows;
@@ -62,19 +83,8 @@ class GRNRepository {
     return result.rows;
   }
 
-  async getNextNumber() {
-    const result = await pool.query(
-      `SELECT grn_number FROM goods_receipt_notes 
-       WHERE grn_number LIKE 'GRN%' 
-       ORDER BY grn_number DESC LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
-      return 'GRN0001';
-    }
-    
-    const lastNum = parseInt(result.rows[0].grn_number.replace('GRN', '')) + 1;
-    return `GRN${lastNum.toString().padStart(4, '0')}`;
+  async getNextNumber(client) {
+    return nextGrnNumber(client);
   }
 }
 

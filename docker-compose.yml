@@ -1,0 +1,83 @@
+# Pulse ERP — full stack.
+#
+#   cp .env.docker.example .env      # then edit the secrets
+#   docker compose up --build
+#   → frontend http://localhost:8080   backend http://localhost:5000
+#
+# This is a self-contained environment for pilot demos, onboarding and restore
+# rehearsals. NOTE: production does NOT run these images — Render builds from
+# source (runtime: node) and Railway uses nixpacks. The only thing that keeps
+# this stack deployable is the "Docker Build & Boot" job in ci.yml, which
+# builds both images and boots the stack to a green /api/health on every push.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     ${DB_USER:-pulse}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB:       ${DB_NAME:-pulse}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT_HOST:-5433}:5432"   # 5433 by default so it cannot collide
+    healthcheck:                        # with a PostgreSQL already on the host
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-pulse} -d ${DB_NAME:-pulse}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    depends_on:
+      db:
+        condition: service_healthy    # migrations run at boot and need a live DB
+    environment:
+      NODE_ENV:      production
+      PORT:          5000
+      DB_HOST:       db
+      DB_PORT:       5432
+      DB_USER:       ${DB_USER:-pulse}
+      DB_PASSWORD:   ${DB_PASSWORD:?DB_PASSWORD is required}
+      DB_NAME:       ${DB_NAME:-pulse}
+      JWT_SECRET:    ${JWT_SECRET:?JWT_SECRET is required — min 32 chars in production}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required in production}
+      FRONTEND_URL:  ${FRONTEND_URL:-http://localhost:8080}
+      # nginx is the only hop in front of the backend here, so req.ip resolves
+      # to the real client. Wrong value = every user shares one rate-limit
+      # bucket, or clients can forge X-Forwarded-For. See SECURITY_AUDIT H-1.
+      TRUST_PROXY_HOPS: "1"
+      # Fail closed on unconfigured permissions — matches .env.production.
+      PERMISSION_STRICT: "true"
+      # Local backups only; set BACKUP_S3_BUCKET for anything you rely on.
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+    volumes:
+      # Named volumes, not bind mounts: uploads and backups must survive
+      # `docker compose down`. A backup that lives only in a container layer is
+      # not a backup.
+      - uploads:/app/uploads
+      - backups:/app/backups
+      - logs:/app/logs
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked in at build time; nginx proxies /api to the backend service.
+        VITE_API_URL: /api
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:
+  backups:
+  logs:

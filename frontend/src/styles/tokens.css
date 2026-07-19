@@ -1,0 +1,123 @@
+/* ============================================================
+   Pulse ERP — Design Tokens
+   Import this in any component that needs design tokens.
+   All tokens are also available via global-overrides.css :root.
+   ============================================================ */
+
+:root {
+  /* ── Colours ── */
+  --color-primary:        #1e40af;
+  --color-primary-hov:    #1d4ed8;
+  --color-primary-light:  #dbeafe;
+
+  --color-success:        #10b981;
+  --color-success-bg:     #dcfce7;
+  --color-success-text:   #15803d;
+
+  --color-warning:        #f59e0b;
+  --color-warning-bg:     #fef3c7;
+  --color-warning-text:   #92400e;
+
+  --color-danger:         #ef4444;
+  --color-danger-bg:      #fee2e2;
+  --color-danger-text:    #dc2626;
+
+  --color-info:           #0ea5e9;
+  --color-info-bg:        #dbeafe;
+  --color-info-text:      #1d4ed8;
+
+  /* ── Neutral / Text ── */
+  --color-text:           #111827;
+  --color-text-sec:       #6b7280;
+  --color-text-muted:     #9ca3af;
+  --color-text-invert:    #ffffff;
+
+  /* ── Backgrounds ── */
+  --color-bg-page:        #f8fafc;
+  --color-bg-card:        #ffffff;
+  --color-bg-hover:       #f8faff;
+  --color-bg-selected:    #eff6ff;
+
+  /* ── Sidebar ── */
+  --sidebar-bg:           #0f172a;
+  --sidebar-logo-bg:      #1e293b;
+  --sidebar-text:         #94a3b8;
+  --sidebar-icon:         #64748b;
+  --sidebar-active-bg:    #1e40af;
+  --sidebar-active-text:  #ffffff;
+  --sidebar-active-border:#60a5fa;
+  --sidebar-sub-active-bg:#1d4ed8;
+  --sidebar-hover-bg:     #1e293b;
+  --sidebar-hover-text:   #e2e8f0;
+  --sidebar-tree-line:    #334155;
+  --sidebar-dot:          #60a5fa;
+
+  /* ── Borders ── */
+  --color-border:         #e5e7eb;
+  --color-border-focus:   #6B3FDB;
+
+  /* ── Shadows ── */
+  --shadow-sm:    0 1px 4px rgba(0,0,0,0.08);
+  --shadow-md:    0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg:    0 10px 25px rgba(0,0,0,0.12);
+
+  /* ── Radii ── */
+  --radius-sm:    6px;
+  --radius-md:    8px;
+  --radius-lg:    12px;
+  --radius-xl:    16px;
+  --radius-full:  9999px;
+
+  /* ── Spacing ── */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+
+  /* ── Typography ── */
+  --font-size-xs:   11px;
+  --font-size-sm:   12px;
+  --font-size-base: 13px;
+  --font-size-md:   14px;
+  --font-size-lg:   16px;
+  --font-size-xl:   18px;
+  --font-size-2xl:  22px;
+  --font-size-3xl:  28px;
+
+  --font-weight-regular: 400;
+  --font-weight-medium:  500;
+  --font-weight-semibold:600;
+  --font-weight-bold:    700;
+  --font-weight-extrabold:800;
+
+  --line-height-tight:  1.25;
+  --line-height-normal: 1.5;
+  --line-height-loose:  1.75;
+
+  /* ── Layout ── */
+  --page-padding:       24px;
+  --card-radius:        12px;
+  --card-shadow:        0 1px 4px rgba(0,0,0,0.08);
+  --table-row-hover:    #f8faff;
+  --table-cell-padding: 12px 16px;
+  --sidebar-width:      70px;
+  --sidebar-expanded:   220px;
+  --topbar-height:      60px;
+
+  /* ── Z-index layers ── */
+  --z-base:     1;
+  --z-dropdown: 100;
+  --z-sidebar:  200;
+  --z-topbar:   300;
+  --z-modal:    1000;
+  --z-toast:    9999;
+
+  /* ── Transitions ── */
+  --transition-fast:   0.1s ease;
+  --transition-normal: 0.2s ease;
+  --transition-slow:   0.3s ease;
+}

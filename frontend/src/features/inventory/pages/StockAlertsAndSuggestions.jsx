@@ -1,29 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import api from '@/services/api/client';
+import { useAuth } from '@/context/AuthContext';
 import './AdvancedInventory.css';
+import { useToast } from '@/context/ToastContext';
 
-const StockAlertsAndSuggestions = () => {
-  const navigate = useNavigate();
+const StockAlertsAndSuggestions = ({ setPage }) => {
+  const toast = useToast();
+  const { user } = useAuth();
+  const uid = user?.employee_id ?? user?.userId ?? user?.id;
   const [alerts, setAlerts] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
   const [activeTab, setActiveTab] = useState('alerts');
   const [alertFilters, setAlertFilters] = useState({ status: 'active' });
   const [suggestionFilters, setSuggestionFilters] = useState({ status: 'pending' });
 
-  useEffect(() => {
-    fetchAlerts();
-    fetchSuggestions();
-  }, [alertFilters, suggestionFilters]);
-
   const fetchAlerts = async () => {
     try {
-      const token = localStorage.getItem('token');
       const params = new URLSearchParams(alertFilters).toString();
-      const res = await axios.get(`http://localhost:5000/api/inventory/advanced/alerts?${params}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setAlerts(res.data);
+      const res = await api.get(`/inventory/advanced/alerts?${params}`);
+      setAlerts(Array.isArray(res.data) ? res.data : (res.data?.alerts || []));
     } catch (error) {
       console.error('Error:', error);
     }
@@ -31,40 +26,57 @@ const StockAlertsAndSuggestions = () => {
 
   const fetchSuggestions = async () => {
     try {
-      const token = localStorage.getItem('token');
       const params = new URLSearchParams(suggestionFilters).toString();
-      const res = await axios.get(`http://localhost:5000/api/inventory/advanced/purchase-suggestions?${params}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setSuggestions(res.data);
+      const res = await api.get(`/inventory/advanced/purchase-suggestions?${params}`);
+      setSuggestions(Array.isArray(res.data) ? res.data : (res.data?.suggestions || []));
     } catch (error) {
       console.error('Error:', error);
     }
   };
 
+  useEffect(() => {
+    fetchAlerts();
+    fetchSuggestions();
+  }, [alertFilters, suggestionFilters]);
+
   const handleAcknowledge = async (id) => {
     try {
-      const token = localStorage.getItem('token');
-      const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-      await axios.post(`http://localhost:5000/api/inventory/advanced/alerts/${id}/acknowledge`, 
-        { user_id: currentUser.id },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      await api.post(`/inventory/advanced/alerts/${id}/acknowledge`, { user_id: uid });
       fetchAlerts();
-    } catch (error) {
-      alert('Error acknowledging alert');
+    } catch (_error) {
+      toast.error('Error acknowledging alert');
     }
   };
 
   const handleResolve = async (id) => {
     try {
-      const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:5000/api/inventory/advanced/alerts/${id}/resolve`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await api.post(`/inventory/advanced/alerts/${id}/resolve`, {});
       fetchAlerts();
-    } catch (error) {
-      alert('Error resolving alert');
+    } catch (_error) {
+      toast.error('Error resolving alert');
+    }
+  };
+
+  const handleCreatePR = async (sug) => {
+    try {
+      await api.post('/procurement/purchase-requests', {
+        item_id: sug.item_id,
+        item_name: sug.item_name,
+        quantity: parseFloat(sug.suggested_quantity) || 1,
+        unit_of_measure: sug.unit_of_measure,
+        required_date: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+        notes: `Auto-generated from stock alert — ${sug.item_name}`,
+        source: 'stock_suggestion',
+        suggestion_id: sug.id,
+      });
+      // Mark suggestion as converted
+      await api.post(`/inventory/advanced/purchase-suggestions/${sug.id}/reject`, {
+        user_id: uid, reason: 'Converted to Purchase Request',
+      }).catch(() => {});
+      fetchSuggestions();
+      setPage('PurchaseRequestDashboard');
+    } catch (_error) {
+      toast.error('Failed to create Purchase Request');
     }
   };
 
@@ -72,15 +84,10 @@ const StockAlertsAndSuggestions = () => {
     const reason = prompt('Reason for rejection:');
     if (!reason) return;
     try {
-      const token = localStorage.getItem('token');
-      const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-      await axios.post(`http://localhost:5000/api/inventory/advanced/purchase-suggestions/${id}/reject`,
-        { user_id: currentUser.id, reason },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      await api.post(`/inventory/advanced/purchase-suggestions/${id}/reject`, { user_id: uid, reason });
       fetchSuggestions();
-    } catch (error) {
-      alert('Error rejecting suggestion');
+    } catch (_error) {
+      toast.error('Error rejecting suggestion');
     }
   };
 
@@ -107,7 +114,6 @@ const StockAlertsAndSuggestions = () => {
     <div className="adv-inv-page">
       <div className="page-header">
         <div>
-          <button className="back-btn" onClick={() => navigate('/inventory/advanced')}>← Back</button>
           <h1>Stock Alerts & Purchase Suggestions</h1>
         </div>
       </div>
@@ -176,7 +182,7 @@ const StockAlertsAndSuggestions = () => {
                     </div>
                   </div>
                   {alert.notes && <p className="alert-notes">{alert.notes}</p>}
-                  <p className="alert-time">Generated: {new Date(alert.alert_date).toLocaleString()}</p>
+                  <p className="alert-time">Generated: {new Date(alert.alert_date).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}</p>
                 </div>
                 {alert.status === 'active' && (
                   <div className="alert-actions">
@@ -245,11 +251,11 @@ const StockAlertsAndSuggestions = () => {
                   <div className="suggested-qty">
                     <strong>Suggested Quantity:</strong> {parseFloat(sug.suggested_quantity).toFixed(2)} {sug.unit_of_measure}
                   </div>
-                  <p className="generated-date">Generated: {new Date(sug.generated_date).toLocaleString()}</p>
+                  <p className="generated-date">Generated: {new Date(sug.generated_date).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}</p>
                 </div>
                 {sug.status === 'pending' && (
                   <div className="suggestion-actions">
-                    <button className="action-btn-sm success" onClick={() => navigate(`/procurement/purchase-requests/new?suggestion_id=${sug.id}`)}>
+                    <button className="action-btn-sm success" onClick={() => handleCreatePR(sug)}>
                       Create PR
                     </button>
                     <button className="action-btn-sm danger" onClick={() => handleRejectSuggestion(sug.id)}>Reject</button>

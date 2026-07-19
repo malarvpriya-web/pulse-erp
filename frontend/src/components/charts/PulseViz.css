@@ -1,0 +1,134 @@
+/* PulseViz — shared visualization styles (prefix: pv-) */
+
+/* ── Card shell ── */
+.pv-card {
+  background: #fff;
+  border: 1px solid #ECE9F8;
+  border-radius: 16px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  box-shadow: 0 1px 3px rgba(21, 15, 61, .05);
+  animation: pv-fade-up .45s ease both;
+  transition: box-shadow .2s, transform .2s;
+}
+.pv-card:hover {
+  box-shadow: 0 6px 20px rgba(75, 45, 206, .1);
+  transform: translateY(-2px);
+}
+.pv-card-hd {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 12px;
+}
+.pv-card-title-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pv-card-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 9px;
+  background: linear-gradient(135deg, rgba(123, 63, 228, .12), rgba(75, 45, 206, .08));
+  color: var(--color-primary, #6B3FDB);
+  flex-shrink: 0;
+}
+.pv-card-title {
+  font-size: 13px; font-weight: 800; color: #1f2237;
+  letter-spacing: -.2px; line-height: 1.2;
+}
+.pv-card-sub { font-size: 10.5px; color: #8b8fa3; margin-top: 2px; }
+.pv-card-body { flex: 1; min-height: 0; }
+
+/* ── Loading shimmer ── */
+.pv-shimmer {
+  height: 160px; border-radius: 10px;
+  background: linear-gradient(90deg, #f3f1fc 25%, #e9e5fa 50%, #f3f1fc 75%);
+  background-size: 200% 100%;
+  animation: pv-shimmer 1.4s infinite;
+}
+@keyframes pv-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Empty state ── */
+.pv-empty {
+  height: 160px; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: #a3a7ba;
+  background: repeating-linear-gradient(-45deg, #fafafe 0 10px, #f5f3fd 10px 20px);
+  border-radius: 10px;
+}
+
+/* ── Tooltip ── */
+.pv-tooltip {
+  background: #1c1633; color: #fff;
+  border-radius: 10px; padding: 8px 12px;
+  box-shadow: 0 8px 24px rgba(21, 15, 61, .3);
+  font-size: 11px; min-width: 120px;
+}
+.pv-tooltip-label { font-weight: 700; margin-bottom: 5px; color: #cdc3f4; }
+.pv-tooltip-row { display: flex; align-items: center; gap: 6px; padding: 1.5px 0; }
+.pv-tooltip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.pv-tooltip-name { color: #b7bac9; flex: 1; }
+.pv-tooltip-val { font-weight: 700; }
+
+/* ── Donut center ── */
+.pv-donut-wrap { position: relative; }
+.pv-donut-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.pv-donut-val { font-size: 19px; font-weight: 900; color: #1f2237; letter-spacing: -.4px; }
+.pv-donut-lbl { font-size: 9.5px; color: #8b8fa3; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-top: 2px; }
+
+/* ── Legend ── */
+.pv-legend { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.pv-legend-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.pv-legend-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
+.pv-legend-name { color: #4b4f63; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-legend-val { font-weight: 700; color: #1f2237; }
+
+/* ── Ranked horizontal bars ── */
+.pv-hbars { display: flex; flex-direction: column; gap: 12px; }
+.pv-hbar-row { display: flex; flex-direction: column; gap: 5px; }
+.pv-hbar-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.pv-hbar-rank {
+  width: 18px; height: 18px; border-radius: 6px;
+  background: #F2EFFE; color: #5B35D5;
+  font-size: 10px; font-weight: 800;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.pv-hbar-name { color: #333850; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-hbar-val { font-weight: 800; color: #1f2237; font-size: 11px; }
+.pv-hbar-track { height: 7px; background: #F2F0FB; border-radius: 4px; overflow: hidden; }
+.pv-hbar-fill {
+  height: 100%; border-radius: 4px;
+  transform-origin: left;
+  animation: pv-grow-x .7s cubic-bezier(.22, .8, .35, 1) both;
+}
+@keyframes pv-grow-x {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+/* ── Progress ring ── */
+.pv-ring { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+.pv-ring svg { transform: translateZ(0); }
+.pv-ring-arc { transition: stroke-dashoffset 1s cubic-bezier(.22, .8, .35, 1); }
+.pv-ring-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: #1f2237;
+}
+.pv-ring-val { font-size: 17px; font-weight: 900; letter-spacing: -.4px; line-height: 1; }
+.pv-ring-sub { font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; opacity: .65; margin-top: 3px; }
+
+/* ── Entrance animation ── */
+@keyframes pv-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pv-card, .pv-hbar-fill { animation: none; }
+  .pv-ring-arc { transition: none; }
+}

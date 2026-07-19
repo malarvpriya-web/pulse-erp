@@ -1,0 +1,198 @@
+import { useState, useEffect } from 'react';
+import api from '@/services/api/client';
+import { useToast } from '@/context/ToastContext';
+import { Plus, X, Search, MapPin, Clock, Calendar } from 'lucide-react';
+
+const STATUS_COLOR = { Scheduled:{ bg:'#dbeafe',color:'#1e40af' }, Completed:{ bg:'#d1fae5',color:'#065f46' }, Cancelled:{ bg:'#fee2e2',color:'#991b1b' }, 'In Progress':{ bg:'#fef3c7',color:'#92400e' } };
+const EMPTY = { customer_name:'', address:'', visit_date:'', visit_time:'09:00', engineer_name:'', purpose:'', ticket_id:'' };
+
+export default function FieldVisitScheduler() {
+  const [visits,   setVisits]   = useState([]);
+  const [loading,  setLoading]  = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [form,     setForm]     = useState(EMPTY);
+  const [saving,   setSaving]   = useState(false);
+  const [search,   setSearch]   = useState('');
+  const [dateFilter,setDateFilter]=useState('');
+
+  const load = () => {
+
+    api.get('/servicedesk/field-visits', { params: { limit:100 } })
+      .then(r => setVisits(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setVisits([]))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const handleSave = async () => {
+    if (!form.customer_name || !form.visit_date) return;
+    setSaving(true);
+    try {
+      await api.post('/servicedesk/field-visits', form);
+      setShowForm(false); setForm(EMPTY); load();
+      toast.success('Visit scheduled successfully');
+    } catch (err) {
+      toast.error(err.response?.data?.error || err.message || 'Save failed. Please try again.');
+    } finally { setSaving(false); }
+  };
+
+  const updateStatus = async (id, status) => {
+    try {
+      await api.put(`/servicedesk/field-visits/${id}`, { status });
+      load();
+      toast.success(`Status updated to ${status}`);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to update status.');
+    }
+  };
+
+  const filtered = visits.filter(v => {
+    const matchSearch = !search || [v.customer_name, v.engineer_name, v.address, v.purpose].some(s => (s||'').toLowerCase().includes(search.toLowerCase()));
+    const matchDate   = !dateFilter || (v.visit_date||'').slice(0,10) === dateFilter;
+    return matchSearch && matchDate;
+  });
+
+  const todayVisits = visits.filter(v => (v.visit_date||'').slice(0,10) === new Date().toISOString().slice(0,10)).length;
+
+  return (
+    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <div>
+          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Field Visit Scheduler</h1>
+          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>{visits.length} visits · {todayVisits} today</p>
+        </div>
+        <button onClick={() => setShowForm(true)}
+          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+          <Plus size={15}/> Schedule Visit
+        </button>
+      </div>
+
+      <div style={{ display:'flex', gap:12, marginBottom:16 }}>
+        <div style={{ position:'relative', flex:1 }}>
+          <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search customer, engineer, purpose..."
+            style={{ width:'100%', paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8, border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+        </div>
+        <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)}
+          style={{ padding:'8px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', color:'#374151' }}/>
+        {dateFilter && <button onClick={() => setDateFilter('')} style={{ padding:'7px 12px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:12, color:'#6b7280' }}>Clear</button>}
+      </div>
+
+      <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
+        {loading ? <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>Loading...</div> :
+         filtered.length === 0 ? (
+          <div style={{ padding:60, textAlign:'center', color:'#9ca3af' }}>
+            <Calendar size={40} color="#d1d5db" style={{ display:'block', margin:'0 auto 12px' }}/>
+            <p style={{ margin:'0 0 16px' }}>No field visits scheduled</p>
+            <button onClick={() => setShowForm(true)} style={{ padding:'9px 20px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>Schedule First Visit</button>
+          </div>
+        ) : (
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+            <thead>
+              <tr style={{ background:'#f9fafb' }}>
+                {['Customer','Address','Date & Time','Engineer','Purpose','Status','Actions'].map(h => (
+                  <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((v,i) => {
+                const sc = STATUS_COLOR[v.status] || STATUS_COLOR.Scheduled;
+                return (
+                  <tr key={v.id||i} style={{ borderBottom:'1px solid #f9fafb', background:i%2===0?'#fff':'#fafafa' }}>
+                    <td style={{ padding:'10px 16px', fontWeight:500, color:'#1f2937' }}>{v.customer_name||'—'}</td>
+                    <td style={{ padding:'10px 16px', color:'#6b7280', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                        <MapPin size={11} color="#9ca3af"/>{v.address||'—'}
+                      </div>
+                    </td>
+                    <td style={{ padding:'10px 16px', color:'#374151', whiteSpace:'nowrap' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                        <Clock size={11} color="#9ca3af"/>
+                        {(v.visit_date||'').slice(0,10)} {v.visit_time||''}
+                      </div>
+                    </td>
+                    <td style={{ padding:'10px 16px', color:'#374151' }}>{v.engineer_name||'Unassigned'}</td>
+                    <td style={{ padding:'10px 16px', color:'#6b7280', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.purpose||'—'}</td>
+                    <td style={{ padding:'10px 16px' }}>
+                      <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600 }}>{v.status||'Scheduled'}</span>
+                    </td>
+                    <td style={{ padding:'10px 16px' }}>
+                      {v.status === 'Scheduled' && (
+                        <div style={{ display:'flex', gap:5 }}>
+                          <button onClick={() => updateStatus(v.id,'In Progress')}
+                            style={{ padding:'4px 8px', background:'#fef3c7', color:'#92400e', border:'none', borderRadius:5, cursor:'pointer', fontSize:11, fontWeight:600 }}>Start</button>
+                          <button onClick={() => updateStatus(v.id,'Completed')}
+                            style={{ padding:'4px 8px', background:'#d1fae5', color:'#065f46', border:'none', borderRadius:5, cursor:'pointer', fontSize:11, fontWeight:600 }}>Done</button>
+                        </div>
+                      )}
+                      {v.status === 'In Progress' && (
+                        <button onClick={() => updateStatus(v.id,'Completed')}
+                          style={{ padding:'4px 8px', background:'#d1fae5', color:'#065f46', border:'none', borderRadius:5, cursor:'pointer', fontSize:11, fontWeight:600 }}>Mark Complete</button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showForm && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:32, width:500, maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+              <h2 style={{ fontSize:17, fontWeight:700, color:'#1f2937', margin:0 }}>Schedule Field Visit</h2>
+              <button onClick={() => setShowForm(false)} style={{ background:'none', border:'none', cursor:'pointer', color:'#9ca3af' }}><X size={20}/></button>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Customer Name *</label>
+                <input value={form.customer_name} onChange={e => setForm(p=>({...p,customer_name:e.target.value}))} placeholder="Customer company name"
+                  style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+              </div>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Site Address</label>
+                <input value={form.address} onChange={e => setForm(p=>({...p,address:e.target.value}))} placeholder="Full site address"
+                  style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Visit Date *</label>
+                <input type="date" value={form.visit_date} onChange={e => setForm(p=>({...p,visit_date:e.target.value}))}
+                  style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Visit Time</label>
+                <input type="time" value={form.visit_time} onChange={e => setForm(p=>({...p,visit_time:e.target.value}))}
+                  style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Assigned Engineer</label>
+                <input value={form.engineer_name} onChange={e => setForm(p=>({...p,engineer_name:e.target.value}))} placeholder="Engineer name"
+                  style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Ticket ID (optional)</label>
+                <input value={form.ticket_id} onChange={e => setForm(p=>({...p,ticket_id:e.target.value}))} placeholder="SD-001"
+                  style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+              </div>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Purpose</label>
+                <input value={form.purpose} onChange={e => setForm(p=>({...p,purpose:e.target.value}))} placeholder="Installation, repair, maintenance, demo..."
+                  style={{ width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:20 }}>
+              <button onClick={() => setShowForm(false)} style={{ padding:'9px 18px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:13 }}>Cancel</button>
+              <button onClick={handleSave} disabled={saving||!form.customer_name||!form.visit_date}
+                style={{ padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600, opacity:(saving||!form.customer_name)?.6:1 }}>
+                {saving?'Scheduling...':'Schedule Visit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

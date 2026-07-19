@@ -17,12 +17,12 @@
 .so-tabs      { display: flex; gap: 4px; flex-wrap: wrap; }
 .so-tab       { background: none; border: 1px solid #e5e7eb; border-radius: 7px; padding: 5px 12px; font-size: 12px; color: #6b7280; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 5px; }
 .so-tab:hover { background: #f9fafb; }
-.so-tab-active { background: #eef2ff; border-color: #6366f1; color: #4338ca; font-weight: 600; }
+.so-tab-active { background: #E8E1FC; border-color: #6B3FDB; color: #4B2DCE; font-weight: 600; }
 .so-tab-count  { background: #e5e7eb; border-radius: 10px; padding: 1px 6px; font-size: 10px; }
-.so-tab-active .so-tab-count { background: #c7d2fe; color: #4338ca; }
+.so-tab-active .so-tab-count { background: #D4CAFE; color: #4B2DCE; }
 
 .so-loading { display: flex; justify-content: center; padding: 80px; }
-.so-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: so-spin .6s linear infinite; }
+.so-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: so-spin .6s linear infinite; }
 @keyframes so-spin { to { transform: rotate(360deg); } }
 
 .so-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 80px; color: #9ca3af; font-size: 14px; }
@@ -35,7 +35,7 @@
 .so-row:last-child td { border-bottom: none; }
 .so-row:hover > td { background: #fafafa; }
 
-.so-num    { font-weight: 700; color: #4338ca; font-size: 12px; font-family: monospace; }
+.so-num    { font-weight: 700; color: #4B2DCE; font-size: 12px; font-family: monospace; }
 .so-ref    { background: #f3f4f6; color: #374151; border-radius: 4px; padding: 2px 7px; font-size: 11px; }
 .so-amount { font-weight: 700; color: #111827; }
 .so-badge  { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
@@ -61,30 +61,108 @@
 .so-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
 .so-field input:focus,
 .so-field select:focus,
-.so-field textarea:focus { outline: none; border-color: #6366f1; }
+.so-field textarea:focus { outline: none; border-color: #6B3FDB; }
 
 .so-items-section { display: flex; flex-direction: column; gap: 8px; }
 .so-items-hd { display: flex; align-items: center; justify-content: space-between; }
 .so-items-hd span { font-size: 12px; font-weight: 600; color: #374151; }
-.so-add-line-btn { display: flex; align-items: center; gap: 4px; background: #eef2ff; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #4338ca; cursor: pointer; font-weight: 600; }
-.so-add-line-btn:hover { background: #e0e7ff; }
+.so-add-line-btn { display: flex; align-items: center; gap: 4px; background: #E8E1FC; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #4B2DCE; cursor: pointer; font-weight: 600; }
+.so-add-line-btn:hover { background: #E8E1FC; }
 .so-line-row { display: grid; grid-template-columns: 3fr 0.6fr 1.2fr 1fr 24px; gap: 6px; align-items: center; }
 .so-line-desc,
 .so-line-qty,
 .so-line-price { border: 1px solid #d1d5db; border-radius: 6px; padding: 7px 10px; font-size: 12px; font-family: inherit; color: #111827; width: 100%; }
 .so-line-desc:focus,
 .so-line-qty:focus,
-.so-line-price:focus { outline: none; border-color: #6366f1; }
+.so-line-price:focus { outline: none; border-color: #6B3FDB; }
 .so-line-total { font-size: 12px; font-weight: 600; color: #111827; text-align: right; }
 .so-remove-btn { background: #fee2e2; border: none; border-radius: 6px; padding: 5px; cursor: pointer; color: #dc2626; display: flex; align-items: center; }
 .so-remove-btn:hover { background: #fecaca; }
 .so-items-total { display: flex; justify-content: flex-end; gap: 10px; padding-top: 8px; border-top: 1px solid #e5e7eb; font-size: 13px; }
 .so-items-total strong { color: #111827; }
 
-.so-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.so-btn-primary:hover    { background: #4f46e5; }
+.so-btn-primary { display: flex; align-items: center; gap: 6px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.so-btn-primary:hover    { background: #5B35D5; }
 .so-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
-.so-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
+.so-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; font-family: inherit; }
 .so-btn-outline:hover { background: #f9fafb; }
 .so-icon-btn { background: none; border: 1px solid #e5e7eb; border-radius: 7px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6b7280; }
 .so-icon-btn:hover { background: #f3f4f6; }
+
+/* ── Detail Drawer additions ── */
+.so-detail-section {
+  font-size: 11px; font-weight: 700; color: #6b7280;
+  text-transform: uppercase; letter-spacing: .05em;
+  margin-bottom: 10px; display: flex; align-items: center; gap: 5px;
+}
+.so-detail-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 4px;
+}
+.so-detail-item { display: flex; flex-direction: column; gap: 3px; }
+.so-detail-item span { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: .04em; }
+.so-detail-item strong { font-size: 13px; color: #111827; }
+
+/* ── GST Breakdown box ── */
+.so-gst-box {
+  background: #f8f9fb; border: 1px solid #e5e7eb; border-radius: 8px;
+  padding: 14px 16px; margin-top: 12px;
+}
+.so-gst-title {
+  font-size: 11px; font-weight: 700; color: #6b7280;
+  text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px;
+}
+.so-gst-row {
+  display: flex; justify-content: space-between;
+  font-size: 13px; color: #374151; padding: 3px 0;
+}
+.so-gst-row span:last-child { font-weight: 600; font-variant-numeric: tabular-nums; }
+.so-gst-slab span:first-child { font-weight: 600; color: #111827; }
+.so-gst-indent { padding-left: 14px; }
+.so-gst-indent span:first-child { color: #6b7280; }
+.so-gst-indent span:last-child { font-weight: 400; color: #6b7280; }
+.so-gst-total {
+  border-top: 1px solid #e5e7eb; margin-top: 6px; padding-top: 8px;
+}
+.so-gst-total span:first-child { font-weight: 700; color: #111827; }
+.so-gst-total span:last-child  { font-weight: 800; color: #6B3FDB; font-size: 14px; }
+
+/* ── Linked invoice card ── */
+.so-invoice-card {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;
+  padding: 12px 14px;
+}
+
+/* ── Drawer footer action buttons ── */
+.so-drawer-ft {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 14px 20px; border-top: 1px solid #e5e7eb; flex-wrap: wrap;
+}
+.so-action-btn {
+  display: flex; align-items: center; gap: 5px;
+  border: none; border-radius: 7px; padding: 7px 14px;
+  font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: opacity .15s;
+}
+.so-action-btn:disabled { opacity: .45; cursor: not-allowed; }
+.so-action-confirm  { background: #dbeafe; color: #1e40af; }
+.so-action-confirm:hover:not(:disabled)  { background: #bfdbfe; }
+.so-action-dispatch { background: #ede9fe; color: #5b21b6; }
+.so-action-dispatch:hover:not(:disabled) { background: #ddd6fe; }
+.so-action-deliver  { background: #d1fae5; color: #065f46; }
+.so-action-deliver:hover:not(:disabled)  { background: #a7f3d0; }
+.so-action-invoice  { background: #ccfbf1; color: #0f766e; }
+.so-action-invoice:hover:not(:disabled)  { background: #99f6e4; }
+.so-action-cancel   { background: #fee2e2; color: #991b1b; }
+.so-action-cancel:hover:not(:disabled)   { background: #fecaca; }
+
+/* ── Customer Summary KPIs ── */
+.so-cust-kpis {
+  display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
+}
+.so-cust-kpi {
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+  padding: 14px 20px; flex: 1; min-width: 120px;
+}
+.so-cust-kpi-val { font-size: 22px; font-weight: 800; color: #111827; line-height: 1; }
+.so-cust-kpi-lbl { font-size: 11px; color: #6b7280; font-weight: 600; margin-top: 4px; }

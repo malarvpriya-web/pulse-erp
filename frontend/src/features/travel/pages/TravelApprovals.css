@@ -17,12 +17,12 @@
 .tva-tabs      { display: flex; gap: 4px; flex-wrap: wrap; }
 .tva-tab       { background: none; border: 1px solid #e5e7eb; border-radius: 7px; padding: 5px 12px; font-size: 12px; color: #6b7280; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 5px; }
 .tva-tab:hover { background: #f9fafb; }
-.tva-tab-active { background: #eef2ff; border-color: #6366f1; color: #4338ca; font-weight: 600; }
+.tva-tab-active { background: #E8E1FC; border-color: #6B3FDB; color: #4B2DCE; font-weight: 600; }
 .tva-tab-count  { background: #e5e7eb; border-radius: 10px; padding: 1px 6px; font-size: 10px; }
-.tva-tab-active .tva-tab-count { background: #c7d2fe; color: #4338ca; }
+.tva-tab-active .tva-tab-count { background: #D4CAFE; color: #4B2DCE; }
 
 .tva-loading { display: flex; justify-content: center; padding: 80px; }
-.tva-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: tva-spin .6s linear infinite; }
+.tva-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: tva-spin .6s linear infinite; }
 @keyframes tva-spin { to { transform: rotate(360deg); } }
 
 .tva-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 80px; color: #9ca3af; font-size: 14px; }
@@ -35,9 +35,9 @@
 .tva-row:last-child td { border-bottom: none; }
 .tva-row:hover > td { background: #fafafa; }
 
-.tva-num    { font-weight: 700; color: #4338ca; font-size: 12px; font-family: monospace; }
+.tva-num    { font-weight: 700; color: #4B2DCE; font-size: 12px; font-family: monospace; }
 .tva-emp    { display: flex; align-items: center; gap: 8px; }
-.tva-avatar { width: 28px; height: 28px; border-radius: 50%; background: #eef2ff; color: #4338ca; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tva-avatar { width: 28px; height: 28px; border-radius: 50%; background: #E8E1FC; color: #4B2DCE; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .tva-dept   { background: #f3f4f6; color: #374151; border-radius: 4px; padding: 2px 7px; font-size: 11px; }
 .tva-amount { font-weight: 700; color: #111827; }
 .tva-badge  { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
@@ -68,7 +68,7 @@
 .tva-field { display: flex; flex-direction: column; gap: 5px; }
 .tva-field label { font-size: 12px; font-weight: 600; color: #374151; }
 .tva-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
-.tva-field textarea:focus { outline: none; border-color: #6366f1; }
+.tva-field textarea:focus { outline: none; border-color: #6B3FDB; }
 
 .tva-btn-approve { background: #dcfce7; color: #15803d; border: none; border-radius: 8px; padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .tva-btn-approve:hover    { background: #bbf7d0; }

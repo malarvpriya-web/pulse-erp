@@ -128,7 +128,7 @@
   outline: none;
   box-sizing: border-box;
 }
-.py-search:focus { border-color: #6366f1; box-shadow: 0 0 0 3px #6366f118; }
+.py-search:focus { border-color: #6B3FDB; box-shadow: 0 0 0 3px #6B3FDB18; }
 
 .py-filter {
   padding: 8px 12px;
@@ -172,7 +172,7 @@
 }
 
 .py-table tr:last-child td { border-bottom: none; }
-.py-table tr:hover td      { background: #fafafe; }
+.py-table tr:hover td      { background: #F2EFFE; }
 
 .py-emp-name  { font-size: 13px; font-weight: 500; color: #111827; display: block; }
 .py-emp-dept  { font-size: 11px; color: #9ca3af; display: block; }
@@ -227,8 +227,8 @@
   font-weight: 500;
   transition: all 0.15s;
 }
-.py-month-pill:hover  { border-color: #6366f1; color: #6366f1; }
-.py-month-pill.active { background: #6366f1; color: #fff; border-color: #6366f1; }
+.py-month-pill:hover  { border-color: #6B3FDB; color: #6B3FDB; }
+.py-month-pill.active { background: #6B3FDB; color: #fff; border-color: #6B3FDB; }
 
 /* Drawer */
 .py-overlay {
@@ -283,7 +283,7 @@
 .py-slip-header {
   text-align: center;
   padding: 20px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, #6B3FDB, #7B3FE4);
   color: #fff;
   border-radius: 10px;
   margin-bottom: 20px;
@@ -351,7 +351,7 @@
 }
 .py-select:focus,
 .py-textarea:focus,
-.py-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px #6366f118; }
+.py-input:focus { border-color: #6B3FDB; box-shadow: 0 0 0 3px #6B3FDB18; }
 
 .py-warning {
   background: #fef3c7;
@@ -369,7 +369,7 @@
 /* Buttons */
 .py-btn-primary {
   padding: 9px 18px;
-  background: #6366f1;
+  background: #6B3FDB;
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -399,7 +399,7 @@
 
 .py-btn-generate {
   padding: 9px 16px;
-  background: #6366f1;
+  background: #6B3FDB;
   color: #fff;
   border: none;
   border-radius: 8px;

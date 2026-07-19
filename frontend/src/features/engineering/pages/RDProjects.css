@@ -1,0 +1,122 @@
+.rdp-page  { padding: 24px; max-width: 1400px; }
+
+.rdp-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+.rdp-title  { font-size: 22px; font-weight: 700; color: #111827; margin: 0 0 4px; }
+.rdp-sub    { font-size: 13px; color: #6b7280; margin: 0; }
+
+.rdp-btn-new {
+  display: flex; align-items: center; gap: 6px; padding: 9px 18px;
+  background: #6366f1; color: #fff; border: none; border-radius: 9px;
+  font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background .15s;
+}
+.rdp-btn-new:hover { background: #4f46e5; }
+
+/* Toolbar */
+.rdp-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.rdp-search  { position: relative; flex: 1; max-width: 320px; }
+.rdp-search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #9ca3af; }
+.rdp-search input {
+  width: 100%; padding: 8px 12px 8px 32px; border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 13px; color: #374151; background: #fff; outline: none;
+}
+.rdp-filter {
+  padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 13px; color: #374151; background: #fff; cursor: pointer;
+}
+.rdp-icon-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border: 1px solid #e5e7eb; border-radius: 8px;
+  background: #fff; cursor: pointer; color: #6b7280; transition: background .15s;
+}
+.rdp-icon-btn:hover { background: #f3f4f6; color: #374151; }
+.rdp-icon-del:hover { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
+
+/* Card grid */
+.rdp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 16px; }
+
+.rdp-card {
+  background: #fff; border-radius: 12px; padding: 18px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08); display: flex; flex-direction: column; gap: 10px;
+  transition: box-shadow .15s;
+}
+.rdp-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.1); }
+
+.rdp-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.rdp-card-name { font-size: 14px; font-weight: 600; color: #111827; }
+.rdp-card-code { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+.rdp-card-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+.rdp-card-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.rdp-pill {
+  display: inline-block; padding: 2px 9px; border-radius: 20px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; text-transform: capitalize;
+}
+.rdp-cat { background: #f3f4f6 !important; color: #6b7280 !important; }
+
+.rdp-card-desc { font-size: 12px; color: #6b7280; line-height: 1.5; margin: 0; }
+
+.rdp-card-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #6b7280; }
+
+.rdp-card-stats {
+  display: flex; gap: 12px; font-size: 11px; color: #9ca3af;
+  border-top: 1px solid #f3f4f6; padding-top: 8px;
+}
+
+.rdp-card-open {
+  display: flex; align-items: center; gap: 4px; background: none; border: none;
+  color: #6366f1; font-size: 12px; font-weight: 500; cursor: pointer; padding: 0; margin-top: 2px;
+}
+.rdp-card-open:hover { text-decoration: underline; }
+
+/* States */
+.rdp-center { display: flex; align-items: center; justify-content: center; min-height: 200px; }
+.rdp-spinner {
+  width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top-color: #6366f1;
+  border-radius: 50%; animation: rdp-spin .7s linear infinite;
+}
+@keyframes rdp-spin { to { transform: rotate(360deg); } }
+.rdp-err   { background: #fef2f2; color: #dc2626; border-radius: 10px; padding: 20px; font-size: 13px; }
+.rdp-empty { text-align: center; padding: 60px 20px; color: #9ca3af; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+
+/* Modal */
+.rdp-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center; z-index: 1000;
+}
+.rdp-modal {
+  background: #fff; border-radius: 16px; width: min(600px, 95vw); max-height: 90vh;
+  overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.2);
+}
+.rdp-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 20px; border-bottom: 1px solid #e5e7eb;
+}
+.rdp-modal-head h2 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }
+.rdp-modal-body { padding: 20px; }
+
+/* Form */
+.rdp-form { display: flex; flex-direction: column; gap: 14px; }
+.rdp-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 500; color: #374151; }
+.rdp-form input, .rdp-form select, .rdp-form textarea {
+  padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 13px; color: #111827; background: #fff; outline: none;
+  transition: border-color .15s;
+}
+.rdp-form input:focus, .rdp-form select:focus, .rdp-form textarea:focus { border-color: #6366f1; }
+.rdp-form textarea { resize: vertical; }
+.rdp-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; }
+
+.rdp-form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+.rdp-btn-cancel {
+  padding: 9px 18px; border: 1px solid #e5e7eb; border-radius: 8px;
+  background: #fff; color: #374151; font-size: 13px; cursor: pointer;
+}
+.rdp-btn-save {
+  padding: 9px 20px; background: #6366f1; color: #fff; border: none;
+  border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.rdp-btn-save:disabled { opacity: .6; cursor: not-allowed; }
+.rdp-btn-del-confirm {
+  padding: 9px 20px; background: #dc2626; color: #fff; border: none;
+  border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+}

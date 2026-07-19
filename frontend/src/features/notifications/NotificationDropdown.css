@@ -1,0 +1,130 @@
+.ntfd-wrap { position: relative; }
+
+.ntfd-bell {
+  position: relative;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 8px;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  transition: background 0.15s;
+}
+.ntfd-bell:hover { background: #f3f4f6; color: #111827; }
+
+.ntfd-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.ntfd-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 360px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.ntfd-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #f3f4f6;
+}
+.ntfd-title { font-weight: 700; font-size: 14px; color: #111827; }
+.ntfd-mark-all {
+  font-size: 12px;
+  color: #6B3FDB;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.ntfd-mark-all:hover { text-decoration: underline; }
+
+.ntfd-list { max-height: 340px; overflow-y: auto; }
+
+.ntfd-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #f9fafb;
+  transition: background 0.1s;
+}
+.ntfd-item:hover { background: #fafafa; }
+.ntfd-item-unread { background: #F2EFFE; }
+.ntfd-item-unread .ntfd-msg { font-weight: 600; }
+
+.ntfd-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ntfd-content { flex: 1; min-width: 0; }
+.ntfd-msg { font-size: 13px; color: #111827; line-height: 1.4; }
+.ntfd-time { font-size: 11px; color: #9ca3af; margin-top: 3px; }
+
+.ntfd-dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #9ca3af;
+  padding: 2px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+}
+.ntfd-dismiss:hover { color: #6b7280; background: #f3f4f6; }
+
+.ntfd-empty {
+  padding: 24px;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.ntfd-footer {
+  padding: 10px 14px;
+  border-top: 1px solid #f3f4f6;
+  text-align: center;
+}
+.ntfd-view-all {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: #6B3FDB;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 6px;
+}
+.ntfd-view-all:hover { background: #E8E1FC; }

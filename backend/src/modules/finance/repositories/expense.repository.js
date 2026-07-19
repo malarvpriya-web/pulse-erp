@@ -1,4 +1,5 @@
 import pool from '../db.js';
+import { nextExpenseNumber } from '../../../shared/docNumber.js';
 
 class ExpenseRepository {
   async create(client, data) {
@@ -33,24 +34,30 @@ class ExpenseRepository {
   }
 
   async findAll(filters = {}) {
-    let query = `SELECT ec.*, e.first_name, e.last_name 
+    const cid = filters.company_id != null ? filters.company_id : null;
+    let query = `SELECT ec.*, e.first_name, e.last_name
                  FROM expense_claims ec
                  JOIN employees e ON ec.employee_id = e.id
                  WHERE ec.deleted_at IS NULL`;
     const params = [];
-    
+
+    if (cid != null) {
+      params.push(cid);
+      query += ` AND e.company_id = $${params.length}`;
+    }
+
     if (filters.status) {
       params.push(filters.status);
       query += ` AND ec.status = $${params.length}`;
     }
-    
+
     if (filters.employee_id) {
       params.push(filters.employee_id);
       query += ` AND ec.employee_id = $${params.length}`;
     }
-    
+
     query += ' ORDER BY ec.claim_date DESC';
-    
+
     const result = await pool.query(query, params);
     return result.rows;
   }
@@ -101,19 +108,8 @@ class ExpenseRepository {
     return result.rows[0];
   }
 
-  async getNextNumber() {
-    const result = await pool.query(
-      `SELECT claim_number FROM expense_claims 
-       WHERE claim_number LIKE 'EXP%' 
-       ORDER BY claim_number DESC LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
-      return 'EXP0001';
-    }
-    
-    const lastNum = parseInt(result.rows[0].claim_number.replace('EXP', '')) + 1;
-    return `EXP${lastNum.toString().padStart(4, '0')}`;
+  async getNextNumber(client) {
+    return nextExpenseNumber(client);
   }
 }
 

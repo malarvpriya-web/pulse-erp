@@ -4,15 +4,74 @@ backend/node_modules/
 frontend/node_modules/
 
 # Environment files — NEVER commit real secrets
-backend/.env
-frontend/.env
+# Wildcard rules cover ALL .env variants (production, staging, local, test, etc.)
+backend/.env*
+frontend/.env*
+.env*
+# Belt-and-suspenders: explicit production, staging, and local names
+**/.env.local
+.env.production
+.env.staging
+.env.local
+backend/.env.production
+backend/.env.staging
+backend/.env.local
+frontend/.env.production
+frontend/.env.staging
+frontend/.env.local
+# Allow ONLY the committed example templates
+!backend/.env.example
+!frontend/.env.example
+!.env.example
+# Belt-and-suspenders: explicitly cover misplaced env files inside src/
+frontend/src/.env*
+
+# Dev-only tools — contain test credentials, never ship to production
+frontend/src/utils/devLogin.js
+
+# TLS / SSL private keys and certificates — never commit private key material
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+*.der
+*.csr
+
+# Secret / credential files used by various tools
+.secret
+.secrets
+secrets/
+credentials.json
+service-account*.json
+*-service-account.json
+firebase-adminsdk*.json
+gcp-credentials.json
+aws-credentials
+*.keystore
+*.jks
 
 # Build output
 frontend/dist/
 
+# Generated dependency reports (dependency-cruiser; the HTML is 400+ MB and
+# would exceed GitHub's 100 MB hard limit)
+frontend/dependency-report.html
+frontend/frontend-graph.svg
+
+# Capacitor-generated web assets — recreated from dist/ by `npx cap sync`
+frontend/android/app/src/main/assets/public/
+frontend/ios/App/App/public/
+
 # Logs
 *.log
 npm-debug.log*
+backend/logs/
+
+# DB backups — local dumps only, never commit
+backend/backups/*
+!backend/backups/.gitkeep
 
 # OS files
 .DS_Store
@@ -21,3 +80,7 @@ Thumbs.db
 # Uploads (user-generated files, keep folder but not contents)
 backend/uploads/*
 !backend/uploads/.gitkeep
+
+# Manual source-tree snapshots — contain gitignored files (devLogin.js test credentials)
+frontend/src*.zip
+frontend/src (*).zip

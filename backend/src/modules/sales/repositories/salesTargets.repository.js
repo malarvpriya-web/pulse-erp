@@ -1,70 +1,122 @@
 import pool from '../../shared/db.js';
 
 const salesTargetsRepository = {
-  async upsert(data) {
-    const { employee_id, month, target_amount } = data;
-    const result = await pool.query(
-      `INSERT INTO sales_targets (employee_id, month, target_amount)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (employee_id, month)
-       DO UPDATE SET target_amount = $3, updated_at = CURRENT_TIMESTAMP
-       RETURNING *`,
-      [employee_id, month, target_amount]
-    );
+  async findAll(filters = {}, companyId = null) {
+    const { period_type, period_year, period_value } = filters;
+    const params = [companyId];
+    let where = `WHERE ($1::int IS NULL OR st.company_id = $1)`;
+    let p = 2;
+
+    if (period_type)  { where += ` AND st.period_type = $${p++}`;               params.push(period_type); }
+    if (period_year)  { where += ` AND st.period_year = $${p++}`;               params.push(parseInt(period_year)); }
+    if (period_value) { where += ` AND st.period_value = $${p++}`;              params.push(parseInt(period_value)); }
+
+    const result = await pool.query(`
+      SELECT
+        st.id,
+        st.period_type,
+        st.period_year,
+        st.period_value,
+        st.target_amount,
+        COALESCE(st.achieved_amount, 0)                                       AS achieved_amount,
+        st.currency,
+        st.notes,
+        st.owner_id,
+        COALESCE(e.name, CONCAT(e.first_name, ' ', e.last_name))              AS owner_name,
+        e.designation,
+        ROUND(
+          COALESCE(st.achieved_amount, 0) / NULLIF(st.target_amount, 0) * 100,
+          1
+        )                                                                     AS achievement_pct
+      FROM sales_targets st
+      JOIN employees e ON e.id = st.owner_id
+        AND e.status IN ('active', 'probation')
+      ${where}
+      ORDER BY achievement_pct DESC NULLS LAST
+    `, params);
+    return result.rows;
+  },
+
+  async getStats(filters = {}, companyId = null) {
+    const { period_type, period_year, period_value } = filters;
+    const params = [companyId];
+    let where = `WHERE ($1::int IS NULL OR st.company_id = $1)`;
+    let p = 2;
+
+    if (period_type)  { where += ` AND st.period_type = $${p++}`;  params.push(period_type); }
+    if (period_year)  { where += ` AND st.period_year = $${p++}`;  params.push(parseInt(period_year)); }
+    if (period_value) { where += ` AND st.period_value = $${p++}`; params.push(parseInt(period_value)); }
+
+    const result = await pool.query(`
+      SELECT
+        COUNT(DISTINCT st.owner_id)::int                                      AS rep_count,
+        COALESCE(SUM(st.target_amount), 0)                                    AS total_target,
+        COALESCE(SUM(COALESCE(st.achieved_amount, 0)), 0)                     AS total_achieved,
+        ROUND(
+          COALESCE(SUM(COALESCE(st.achieved_amount, 0)), 0)
+          / NULLIF(SUM(st.target_amount), 0) * 100,
+          1
+        )                                                                     AS team_achievement_pct
+      FROM sales_targets st
+      ${where}
+    `, params);
+    return result.rows[0] || { rep_count: 0, total_target: 0, total_achieved: 0, team_achievement_pct: 0 };
+  },
+
+  async upsert(data, companyId) {
+    const { owner_id, period_type, period_year, period_value, target_amount, achieved_amount, notes, created_by } = data;
+    const result = await pool.query(`
+      INSERT INTO sales_targets
+        (company_id, owner_id, period_type, period_year, period_value,
+         target_amount, achieved_amount, notes, created_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ON CONFLICT (company_id, owner_id, period_type, period_year, period_value)
+      DO UPDATE SET
+        target_amount   = EXCLUDED.target_amount,
+        achieved_amount = COALESCE(EXCLUDED.achieved_amount, sales_targets.achieved_amount),
+        notes           = EXCLUDED.notes,
+        updated_at      = NOW()
+      RETURNING *
+    `, [
+      companyId,
+      owner_id,
+      period_type,
+      parseInt(period_year),
+      parseInt(period_value),
+      target_amount,
+      achieved_amount ?? 0,
+      notes || null,
+      created_by || null,
+    ]);
     return result.rows[0];
   },
 
-  async findAll(filters = {}) {
-    let query = `
-      SELECT st.*, e.name as employee_name
-      FROM sales_targets st
-      JOIN employees e ON st.employee_id = e.id
-      WHERE st.deleted_at IS NULL
-    `;
-    const params = [];
-    let paramCount = 1;
-
-    if (filters.employee_id) {
-      query += ` AND st.employee_id = $${paramCount}`;
-      params.push(filters.employee_id);
-      paramCount++;
-    }
-
-    if (filters.month) {
-      query += ` AND st.month = $${paramCount}`;
-      params.push(filters.month);
-      paramCount++;
-    }
-
-    query += ` ORDER BY st.month DESC`;
-
-    const result = await pool.query(query, params);
-    return result.rows;
-  },
-
-  async updateAchieved(employee_id, month, achieved_amount) {
+  async deleteById(id, companyId) {
     await pool.query(
-      `UPDATE sales_targets SET achieved_amount = $1, updated_at = CURRENT_TIMESTAMP
-       WHERE employee_id = $2 AND month = $3`,
-      [achieved_amount, employee_id, month]
+      `DELETE FROM sales_targets WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [id, companyId]
     );
   },
 
-  async getSalesVsTarget() {
+  // Legacy — used by /analytics/sales-vs-target
+  async getSalesVsTarget(companyId) {
     const result = await pool.query(`
-      SELECT 
-        e.name as employee_name,
-        st.month,
+      SELECT
+        COALESCE(e.name, CONCAT(e.first_name, ' ', e.last_name)) AS employee_name,
+        CONCAT(st.period_type, ' ', st.period_year)              AS month,
         st.target_amount,
-        st.achieved_amount,
-        ROUND(((st.achieved_amount / NULLIF(st.target_amount, 0)) * 100)::numeric, 2) as achievement_percentage
+        COALESCE(st.achieved_amount, 0)                          AS achieved_amount,
+        ROUND(
+          COALESCE(st.achieved_amount, 0) / NULLIF(st.target_amount, 0) * 100,
+          2
+        )                                                        AS achievement_percentage
       FROM sales_targets st
-      JOIN employees e ON st.employee_id = e.id
-      WHERE st.deleted_at IS NULL
-      ORDER BY st.month DESC, achievement_percentage DESC
-    `);
+      JOIN employees e ON st.owner_id = e.id
+      WHERE ($1::int IS NULL OR st.company_id = $1)
+      ORDER BY st.period_year DESC, achievement_percentage DESC
+    `, [companyId || null]);
     return result.rows;
-  }
+  },
 };
 
 export default salesTargetsRepository;

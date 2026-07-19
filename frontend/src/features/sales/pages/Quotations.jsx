@@ -1,252 +1,843 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Plus, Search, X, Trash2, FileText, Download, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  FileText, Plus, Download, X, ChevronRight, Package,
+  History, GitBranch, TrendingUp, TrendingDown, RefreshCw,
+  CheckCircle, Clock, BarChart2, ShoppingCart, Send,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import './Quotations.css';
+import { useToast } from '@/context/ToastContext';
+import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 
-const SAMPLE = [
-  { id: 1, quotationNumber: 'QT-001', customerName: 'Infosys Ltd', quotationDate: '2026-03-10', validityDate: '2026-04-10', totalAmount: 285000, status: 'Sent' },
-  { id: 2, quotationNumber: 'QT-002', customerName: 'Wipro Technologies', quotationDate: '2026-03-12', validityDate: '2026-04-12', totalAmount: 142000, status: 'Accepted' },
-  { id: 3, quotationNumber: 'QT-003', customerName: 'TCS India', quotationDate: '2026-03-14', validityDate: '2026-04-14', totalAmount: 560000, status: 'Draft' },
-  { id: 4, quotationNumber: 'QT-004', customerName: 'HCL Technologies', quotationDate: '2026-02-20', validityDate: '2026-03-20', totalAmount: 98000, status: 'Expired' },
-  { id: 5, quotationNumber: 'QT-005', customerName: 'Mphasis Ltd', quotationDate: '2026-03-15', validityDate: '2026-04-15', totalAmount: 376000, status: 'Accepted' },
-];
+// ── Constants ────────────────────────────────────────────────────────────────
+const STATUS_META = {
+  draft:     { label: 'Draft',     bg: '#f3f4f6', color: '#374151' },
+  sent:      { label: 'Sent',      bg: '#dbeafe', color: '#1d4ed8' },
+  accepted:  { label: 'Accepted',  bg: '#dcfce7', color: '#15803d' },
+  rejected:  { label: 'Rejected',  bg: '#fee2e2', color: '#b91c1c' },
+  expired:   { label: 'Expired',   bg: '#fef3c7', color: '#92400e' },
+  revised:   { label: 'Revised',   bg: '#e0f2fe', color: '#0369a1' },
+  converted: { label: 'Converted', bg: '#ede9fe', color: '#5b21b6' },
+};
 
-const SAMPLE_CUSTOMERS = [
-  { id: 1, name: 'Infosys Ltd' }, { id: 2, name: 'Wipro Technologies' },
-  { id: 3, name: 'TCS India' }, { id: 4, name: 'HCL Technologies' }, { id: 5, name: 'Mphasis Ltd' },
-];
+const FILTER_TABS = ['all', 'draft', 'sent', 'accepted', 'rejected', 'expired', 'revised', 'converted'];
 
-const TABS = ['All', 'Draft', 'Sent', 'Accepted', 'Expired'];
-const STATUS_COLORS = { Draft: '#f3f4f6', Sent: '#dbeafe', Accepted: '#dcfce7', Expired: '#fef3c7', Rejected: '#fee2e2' };
-const STATUS_TEXT   = { Draft: '#374151', Sent: '#1d4ed8', Accepted: '#15803d', Expired: '#92400e', Rejected: '#991b1b' };
-const fmt = n => `₹${Number(n).toLocaleString('en-IN')}`;
-const BLANK_LINE = { description: '', quantity: 1, unitPrice: '' };
-const BLANK_FORM = { customerId: '', customerName: '', quotationDate: new Date().toISOString().split('T')[0], validityDate: '', discount: 0, taxRate: 18, notes: '' };
+const fmt     = (n) => parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtL    = (n) => {
+  const v = parseFloat(n || 0);
+  if (v >= 10000000) return `₹${(v / 10000000).toFixed(2)}Cr`;
+  if (v >= 100000)   return `₹${(v / 100000).toFixed(2)}L`;
+  return `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+};
+const fmtPct  = (n) => `${parseFloat(n || 0).toFixed(1)}%`;
+const fmtDate = (d) => {
+  if (!d) return '—';
+  try { return new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }); }
+  catch { return d || '—'; }
+};
+const fmtShort = (d) => {
+  if (!d) return '—';
+  try { return new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }); }
+  catch { return d || '—'; }
+};
+const isOverdue = (d) => d && new Date(String(d).slice(0, 10)) < new Date(new Date().toISOString().slice(0, 10));
 
-export default function Quotations({ setPage }) {
-  const [quotations, setQuotations] = useState(SAMPLE);
-  const [customers, setCustomers]   = useState(SAMPLE_CUSTOMERS);
-  const [loading, setLoading]       = useState(false);
-  const [fTab, setFTab]             = useState('All');
-  const [search, setSearch]         = useState('');
-  const [drawer, setDrawer]         = useState(null);
-  const [form, setForm]             = useState(BLANK_FORM);
-  const [lines, setLines]           = useState([{ ...BLANK_LINE }]);
-  const [saving, setSaving]         = useState(false);
-  const [toast, setToast]           = useState(null);
+// ── Revision History Drawer ──────────────────────────────────────────────────
+function RevisionDrawer({ open, onClose, quotationId, onRevise }) {
+  const toast = useToast();
+  const [revisions, setRevisions] = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [revising, setRevising]   = useState(false);
+  const [error, setError]         = useState('');
+  const isMounted = useRef(true);
 
-  const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   const load = useCallback(async () => {
+    if (!quotationId) return;
     setLoading(true);
-    const [q, c] = await Promise.allSettled([
-      api.get('/sales/quotations', { params: fTab !== 'All' ? { status: fTab } : {} }),
-      api.get('/finance/parties', { params: { type: 'customer' } }),
-    ]);
-    if (q.status === 'fulfilled') {
-      const raw = q.value.data?.data ?? q.value.data;
-      setQuotations(Array.isArray(raw) && raw.length ? raw : SAMPLE);
-    } else setQuotations(SAMPLE);
-    if (c.status === 'fulfilled') {
-      const raw = c.value.data?.data ?? c.value.data;
-      if (Array.isArray(raw) && raw.length) setCustomers(raw);
-    }
-    setLoading(false);
-  }, [fTab]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const filtered = quotations.filter(q =>
-    (fTab === 'All' || q.status === fTab) &&
-    (q.quotationNumber?.toLowerCase().includes(search.toLowerCase()) ||
-     q.customerName?.toLowerCase().includes(search.toLowerCase()))
-  );
-
-  const counts = TABS.reduce((acc, t) => ({
-    ...acc, [t]: t === 'All' ? quotations.length : quotations.filter(q => q.status === t).length
-  }), {});
-
-  const subtotal = lines.reduce((s, l) => s + (parseFloat(l.quantity || 0) * parseFloat(l.unitPrice || 0)), 0);
-  const discountAmt = (subtotal * (parseFloat(form.discount) || 0)) / 100;
-  const taxAmt = ((subtotal - discountAmt) * (parseFloat(form.taxRate) || 0)) / 100;
-  const total = subtotal - discountAmt + taxAmt;
-
-  const addLine = () => setLines(prev => [...prev, { ...BLANK_LINE }]);
-  const removeLine = i => setLines(prev => prev.filter((_, idx) => idx !== i));
-  const updateLine = (i, key, val) => setLines(prev => prev.map((l, idx) => idx === i ? { ...l, [key]: val } : l));
-
-  const handleSubmit = async e => {
-    e.preventDefault();
-    setSaving(true);
+    setError('');
     try {
-      await api.post('/sales/quotations', { ...form, items: lines, subtotal, discountAmount: discountAmt, taxAmount: taxAmt, totalAmount: total });
-      showToast('Quotation created!');
-      load();
-    } catch {
-      const cust = customers.find(c => c.id === parseInt(form.customerId));
-      const nq = { id: Date.now(), quotationNumber: `QT-${String(quotations.length + 1).padStart(3, '0')}`, customerName: cust?.name || form.customerName || 'Customer', quotationDate: form.quotationDate, validityDate: form.validityDate, totalAmount: total, status: 'Draft' };
-      setQuotations(prev => [nq, ...prev]);
-      showToast('Quotation saved (offline)');
+      const res = await api.get(`/sales/quotations/${quotationId}/revisions`);
+      if (!isMounted.current) return;
+      setRevisions(Array.isArray(res.data) ? res.data : []);
+    } catch (e) {
+      if (!isMounted.current) return;
+      setError(e.response?.data?.error || 'Failed to load revision history');
+    } finally {
+      if (isMounted.current) setLoading(false);
     }
-    setDrawer(null); setForm(BLANK_FORM); setLines([{ ...BLANK_LINE }]); setSaving(false);
-  };
+  }, [quotationId]);
 
-  const downloadPDF = async (q) => {
-    try {
-      const res = await api.get(`/sales/quotations/${q.id}/pdf`, { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
-      const a = document.createElement('a'); a.href = url;
-      a.setAttribute('download', `${q.quotationNumber}.pdf`); document.body.appendChild(a); a.click(); a.remove();
-    } catch { showToast('PDF download not available', 'error'); }
-  };
+  useEffect(() => { if (open) load(); }, [open, load]);
 
-  const convertToSO = async (q) => {
+  const latest = revisions[revisions.length - 1];
+  const canRevise = latest && !['revised', 'accepted', 'converted'].includes(latest.status);
+
+  async function handleRevise() {
+    if (!latest) return;
+    setRevising(true);
     try {
-      await api.post(`/sales/quotations/${q.id}/convert`);
-      showToast('Converted to Sales Order!');
-      if (setPage) setPage('SalesOrders');
-    } catch {
-      showToast('Convert failed — check Sales Orders manually', 'error');
+      await api.post(`/sales/quotations/${latest.id}/revise`);
+      if (!isMounted.current) return;
+      await load();
+      onRevise();
+    } catch (e) {
+      if (!isMounted.current) return;
+      setError(e.response?.data?.error || 'Failed to create revision');
+    } finally {
+      if (isMounted.current) setRevising(false);
     }
-  };
+  }
+
+  if (!open) return null;
 
   return (
-    <div className="qt-root">
-      {toast && <div className={`qt-toast qt-toast-${toast.type}`}>{toast.msg}</div>}
-
-      <div className="qt-header">
-        <div>
-          <h1 className="qt-title">Quotations</h1>
-          <p className="qt-sub">Create and manage sales quotations</p>
+    <>
+      <div className="sq-rev-overlay" onClick={onClose} />
+      <div className="sq-rev-drawer">
+        <div className="sq-rev-hd">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className="sq-rev-hd-icon"><History size={16} /></div>
+            <div>
+              <div className="sq-rev-hd-title">Revision History</div>
+              <div className="sq-rev-hd-sub">
+                {revisions.length > 0
+                  ? `${revisions[0].quotation_number?.replace(/-v\d+$/, '')} · ${revisions.length} version${revisions.length !== 1 ? 's' : ''}`
+                  : 'Loading…'}
+              </div>
+            </div>
+          </div>
+          <button className="sq-close-btn" onClick={onClose}><X size={16} /></button>
         </div>
-        <button className="qt-btn-primary" onClick={() => { setForm(BLANK_FORM); setLines([{ ...BLANK_LINE }]); setDrawer('create'); }}>
-          <Plus size={15} /> New Quotation
-        </button>
-      </div>
 
-      <div className="qt-filters">
-        <div className="qt-search">
-          <Search size={15} color="#9ca3af" />
-          <input placeholder="Search quotations…" value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button onClick={() => setSearch('')}><X size={13} /></button>}
-        </div>
-        <div className="qt-tabs">
-          {TABS.map(t => (
-            <button key={t} className={`qt-tab ${fTab === t ? 'qt-tab-active' : ''}`} onClick={() => setFTab(t)}>
-              {t} <span className="qt-tab-count">{counts[t]}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+        <div className="sq-rev-body">
+          {loading && (
+            <div className="sq-rev-loading"><RefreshCw size={18} className="sq-spin" /> Loading revision history…</div>
+          )}
+          {error && <div className="sq-rev-error">{error}</div>}
+          {!loading && revisions.length === 0 && !error && (
+            <div className="sq-rev-empty"><GitBranch size={28} strokeWidth={1.5} /><p>No revision history found</p></div>
+          )}
 
-      {loading ? (
-        <div className="qt-loading"><div className="qt-spinner" /></div>
-      ) : filtered.length === 0 ? (
-        <div className="qt-empty"><FileText size={32} color="#d1d5db" /><p>No quotations found</p></div>
-      ) : (
-        <div className="qt-table-wrap">
-          <table className="qt-table">
-            <thead>
-              <tr><th>Quotation #</th><th>Customer</th><th>Date</th><th>Valid Until</th><th>Total Amount</th><th>Status</th><th>Actions</th></tr>
-            </thead>
-            <tbody>
-              {filtered.map(q => (
-                <tr key={q.id} className="qt-row">
-                  <td><span className="qt-num">{q.quotationNumber}</span></td>
-                  <td>{q.customerName}</td>
-                  <td>{new Date(q.quotationDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                  <td>{new Date(q.validityDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                  <td><span className="qt-amount">{fmt(q.totalAmount)}</span></td>
-                  <td><span className="qt-badge" style={{ background: STATUS_COLORS[q.status], color: STATUS_TEXT[q.status] }}>{q.status}</span></td>
-                  <td>
-                    <div className="qt-row-actions">
-                      <button className="qt-action-btn" onClick={() => downloadPDF(q)} title="Download PDF"><Download size={13} /></button>
-                      {q.status === 'Accepted' && (
-                        <button className="qt-convert-btn" onClick={() => convertToSO(q)} title="Convert to SO">
-                          <ArrowRight size={13} /> to SO
-                        </button>
-                      )}
+          {!loading && revisions.length > 0 && (
+            <>
+              {revisions.length > 1 && (
+                <div className="sq-rev-compare">
+                  <div className="sq-rev-compare-title"><BarChart2 size={12} /> Price Progression</div>
+                  <div className="sq-rev-compare-grid">
+                    {revisions.map((r, i) => {
+                      const prev  = revisions[i - 1];
+                      const delta = prev ? parseFloat(r.total_amount || 0) - parseFloat(prev.total_amount || 0) : 0;
+                      const pct   = prev && parseFloat(prev.total_amount)
+                        ? ((delta / parseFloat(prev.total_amount)) * 100).toFixed(1) : null;
+                      return (
+                        <div key={r.id} className="sq-rev-compare-item">
+                          <div className="sq-rev-ver-badge">v{r.version || 1}</div>
+                          <div className="sq-rev-compare-amt">₹{fmt(r.total_amount)}</div>
+                          {pct !== null && (
+                            <div className={`sq-rev-delta ${delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat'}`}>
+                              {delta > 0 ? <TrendingUp size={10} /> : delta < 0 ? <TrendingDown size={10} /> : null}
+                              {delta !== 0 ? `${delta > 0 ? '+' : ''}${pct}%` : 'same'}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="sq-rev-timeline">
+                {revisions.map((r, i) => {
+                  const s = STATUS_META[r.status] || STATUS_META.draft;
+                  const isLatest = i === revisions.length - 1;
+                  const ver = r.version || 1;
+                  return (
+                    <div key={r.id} className="sq-rev-item">
+                      <div className="sq-rev-track">
+                        <div className={`sq-rev-dot ${isLatest ? 'latest' : ''}`}><span>{ver}</span></div>
+                        {i < revisions.length - 1 && <div className="sq-rev-line" />}
+                      </div>
+                      <div className="sq-rev-content">
+                        <div className="sq-rev-content-hd">
+                          <div>
+                            <span className="sq-rev-qnum">{r.quotation_number}</span>
+                            {isLatest && <span className="sq-rev-latest-badge">Latest</span>}
+                          </div>
+                          <span className="sq-badge" style={{ background: s.bg, color: s.color, fontSize: 10, padding: '2px 8px' }}>{s.label}</span>
+                        </div>
+                        <div className="sq-rev-meta">
+                          <span>{fmtShort(r.quotation_date)}</span>
+                          <span className="sq-rev-amt">₹{fmt(r.total_amount)}</span>
+                          {r.status === 'accepted' && (
+                            <span className="sq-rev-accepted-tag"><CheckCircle size={10} /> Accepted Price</span>
+                          )}
+                        </div>
+                        {r.notes && <div className="sq-rev-notes">{r.notes}</div>}
+                      </div>
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="sq-rev-ft">
+          {canRevise && (
+            <button className="sq-submit-btn" onClick={handleRevise} disabled={revising}>
+              {revising
+                ? <><RefreshCw size={13} className="sq-spin" /> Creating…</>
+                : <><GitBranch size={13} /> Create Revision v{(latest?.version || 1) + 1}</>
+              }
+            </button>
+          )}
+          <button className="sq-cancel-btn" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Main Component ────────────────────────────────────────────────────────────
+const Quotations = ({ setPage } = {}) => {
+  const toast = useToast();
+  const { readOnly } = usePageAccess();
+  const [quotations, setQuotations]   = useState([]);
+  const [stats, setStats]             = useState({});
+  const [loading, setLoading]         = useState(false);
+  const [activeTab, setActiveTab]     = useState('all');
+  const [search, setSearch]           = useState('');
+  const [showForm, setShowForm]       = useState(false);
+  const [customers, setCustomers]     = useState([]);
+  const [products, setProducts]       = useState([]);
+  const [selectedProducts, setSelectedProducts] = useState([]);
+  const [submitting, setSubmitting]   = useState(false);
+  const [formError, setFormError]     = useState('');
+  const [pdfError, setPdfError]       = useState('');
+  const [revisingId, setRevisingId]   = useState(null);
+  const [convertingId, setConvertingId] = useState(null);
+  const [historyDrawer, setHistoryDrawer] = useState({ open: false, quotationId: null });
+  const [pendingSalesOrderNav, setPendingSalesOrderNav] = useState(null);
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
+
+  const [formData, setFormData] = useState({
+    quotation_number: '',
+    customer_id: '',
+    quotation_date: new Date().toISOString().split('T')[0],
+    validity_date: '',
+    status: 'draft',
+    notes: '',
+    tax_rate: 18,
+    discount: 0,
+  });
+
+  // ── Data fetching ──
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = {};
+      if (activeTab !== 'all') params.status = activeTab;
+      if (search.trim()) params.search = search.trim();
+
+      const [qRes, sRes] = await Promise.allSettled([
+        api.get('/sales/quotations', { params }),
+        api.get('/sales/quotations/stats'),
+      ]);
+
+      if (!isMounted.current) return;
+
+      if (qRes.status === 'fulfilled') {
+        const data = qRes.value.data;
+        setQuotations(Array.isArray(data) ? data : []);
+      } else {
+        setQuotations([]);
+      }
+
+      if (sRes.status === 'fulfilled') {
+        setStats(sRes.value.data?.data ?? sRes.value.data ?? {});
+      }
+    } catch {
+      if (isMounted.current) setQuotations([]);
+    } finally {
+      if (isMounted.current) setLoading(false);
+    }
+  }, [activeTab, search]);
+
+  useEffect(() => {
+    fetchData();
+    const loadLookups = async () => {
+      try {
+        const [cRes, pRes] = await Promise.allSettled([
+          api.get('/finance/parties?type=customer'),
+          api.get('/inventory/items'),
+        ]);
+        if (!isMounted.current) return;
+        if (cRes.status === 'fulfilled') setCustomers(cRes.value.data || []);
+        if (pRes.status === 'fulfilled') setProducts(pRes.value.data || []);
+      } catch { /* non-critical */ }
+    };
+    loadLookups();
+  }, [fetchData]);
+
+  const handleNewQuotation = async () => {
+    try {
+      const res = await api.get('/sales/quotations/next-number');
+      if (!isMounted.current) return;
+      setFormData({
+        quotation_number: res.data.number || '',
+        customer_id: '',
+        quotation_date: new Date().toISOString().split('T')[0],
+        validity_date: (() => {
+          const d = new Date(); d.setDate(d.getDate() + 30);
+          return d.toISOString().split('T')[0];
+        })(),
+        status: 'draft',
+        notes: '',
+        tax_rate: 18,
+        discount: 0,
+      });
+    } catch {
+      if (!isMounted.current) return;
+      setFormData(f => ({ ...f, quotation_number: '' }));
+    }
+    if (!isMounted.current) return;
+    setSelectedProducts([]);
+    setFormError('');
+    setShowForm(true);
+  };
+
+  const addProduct    = () => setSelectedProducts(p => [...p, { product_id: '', quantity: 1, unit_price: 0, item_description: '' }]);
+  const removeProduct = (i) => setSelectedProducts(p => p.filter((_, idx) => idx !== i));
+
+  const updateProduct = (index, field, value) => {
+    setSelectedProducts(prev => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      if (field === 'product_id') {
+        const p = products.find(p => String(p.id) === String(value));
+        if (p) {
+          updated[index].unit_price = p.unit_price || p.rate || 0;
+          updated[index].item_description = p.item_name || p.name || '';
+        }
+      }
+      return updated;
+    });
+  };
+
+  const calculateTotals = () => {
+    const subtotal = selectedProducts.reduce((s, i) => s + (parseFloat(i.quantity || 0) * parseFloat(i.unit_price || 0)), 0);
+    const discount = (subtotal * parseFloat(formData.discount || 0)) / 100;
+    const taxable  = subtotal - discount;
+    const tax      = (taxable * parseFloat(formData.tax_rate || 0)) / 100;
+    return { subtotal, discount, tax, total: taxable + tax };
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setFormError('');
+    try {
+      const totals = calculateTotals();
+      const quotation = await api.post('/sales/quotations', {
+        ...formData,
+        subtotal:     totals.subtotal,
+        tax_amount:   totals.tax,
+        total_amount: totals.total,
+      });
+      if (!isMounted.current) return;
+      const qId = quotation.data.id;
+      await Promise.all(
+        selectedProducts
+          .filter(it => it.product_id || it.item_description)
+          .map(it => api.post(`/sales/quotations/${qId}/items`, {
+            item_description: it.item_description || '',
+            quantity:         parseFloat(it.quantity || 1),
+            rate:             parseFloat(it.unit_price || 0),
+            tax_percentage:   parseFloat(formData.tax_rate || 18),
+            tax_amount:       parseFloat(it.quantity || 1) * parseFloat(it.unit_price || 0) * parseFloat(formData.tax_rate || 18) / 100,
+            total:            parseFloat(it.quantity || 1) * parseFloat(it.unit_price || 0) * (1 + parseFloat(formData.tax_rate || 18) / 100),
+          }))
+      );
+      if (!isMounted.current) return;
+      setShowForm(false);
+      fetchData();
+    } catch (err) {
+      if (!isMounted.current) return;
+      setFormError(err.response?.data?.error || err.message || 'Error creating quotation.');
+    } finally {
+      if (isMounted.current) setSubmitting(false);
+    }
+  };
+
+  const updateStatus = async (id, newStatus) => {
+    try {
+      await api.put(`/sales/quotations/${id}`, { status: newStatus });
+      if (!isMounted.current) return;
+      fetchData();
+    } catch (err) {
+      if (!isMounted.current) return;
+      toast.error(err?.response?.data?.error || err.message || 'Status update failed');
+    }
+  };
+
+  const sendQuotation = async (id) => {
+    try {
+      await api.patch(`/sales/quotations/${id}/send`);
+      if (!isMounted.current) return;
+      toast.success('Quotation sent successfully');
+      fetchData();
+    } catch (err) {
+      if (!isMounted.current) return;
+      toast.error(err?.response?.data?.error || err.message || 'Failed to send quotation');
+    }
+  };
+
+  const handleRevise = async (id) => {
+    setRevisingId(id);
+    try {
+      const res = await api.post(`/sales/quotations/${id}/revise`);
+      if (!isMounted.current) return;
+      await fetchData();
+      setHistoryDrawer({ open: true, quotationId: res.data?.id || id });
+    } catch (e) {
+      if (!isMounted.current) return;
+      toast.error(e.response?.data?.error || 'Failed to create revision');
+    } finally {
+      if (isMounted.current) setRevisingId(null);
+    }
+  };
+
+  const convertToOrder = async (id) => {
+    setConvertingId(id);
+    try {
+      const res = await api.patch(`/sales/quotations/${id}/convert-to-order`);
+      if (!isMounted.current) return;
+      await fetchData();
+      const orderNum = res.data?.order_number || '';
+      if (typeof setPage === 'function') {
+        setPendingSalesOrderNav({ orderNum, title: `Sales Order ${orderNum} created` });
+      } else {
+        toast.success(`Converted to Sales Order ${orderNum}`);
+      }
+    } catch (e) {
+      if (!isMounted.current) return;
+      toast.error(e.response?.data?.error || 'Failed to convert to order');
+    } finally {
+      if (isMounted.current) setConvertingId(null);
+    }
+  };
+
+  const handleWonConvert = async (id) => {
+    setConvertingId(id);
+    try {
+      // Single atomic endpoint: marks accepted + creates order in one transaction
+      const res = await api.patch(`/sales/quotations/${id}/accept-and-convert`);
+      if (!isMounted.current) return;
+      await fetchData();
+      const orderNum = res.data?.order_number || '';
+      if (typeof setPage === 'function') {
+        setPendingSalesOrderNav({ orderNum, title: `Quotation Won. Sales Order ${orderNum} created` });
+      } else {
+        toast.success(`Quotation marked as Won. Sales Order ${orderNum} created.`);
+      }
+    } catch (e) {
+      if (!isMounted.current) return;
+      toast.error(e.response?.data?.error || 'Failed to convert quotation to Sales Order');
+    } finally {
+      if (isMounted.current) setConvertingId(null);
+    }
+  };
+
+  const downloadPDF = async (id) => {
+    setPdfError('');
+    try {
+      const res = await api.get(`/sales/quotations/${id}/pdf`, { responseType: 'blob' });
+      if (!isMounted.current) return;
+      // Server returns HTML with window.print() embedded — open in new tab so
+      // the browser triggers the print dialog (user saves as PDF from there).
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/html' }));
+      const w = window.open(url, '_blank');
+      setTimeout(() => window.URL.revokeObjectURL(url), 15000);
+      if (!w) setPdfError('Popup blocked. Please allow popups for this site to print the quotation.');
+    } catch (err) {
+      if (!isMounted.current) return;
+      setPdfError(err.response?.data?.error || err.message || 'PDF not available for this quotation.');
+    }
+  };
+
+  const totals = calculateTotals();
+
+  // ── KPI derivation (from stats endpoint — real DB data) ──
+  const kpiTotal       = parseInt(stats?.total ?? 0);
+  const kpiAccepted    = parseInt(stats?.accepted ?? 0);
+  const kpiSentPending = parseInt(stats?.sent_pending ?? 0);
+  const kpiValue       = parseFloat(stats?.total_value ?? 0);
+  const kpiRate        = parseFloat(stats?.acceptance_rate ?? 0);
+
+  return (
+    <div className="sq-root">
+      <ConfirmDialog
+        open={!!pendingSalesOrderNav}
+        title={pendingSalesOrderNav?.title || 'Open Sales Orders?'}
+        message="Open Sales Orders now?"
+        confirmLabel="Open Sales Orders"
+        variant="info"
+        onConfirm={() => { setPendingSalesOrderNav(null); if (typeof setPage === 'function') setPage('SalesOrders'); }}
+        onCancel={() => setPendingSalesOrderNav(null)}
+      />
+
+      {pdfError && (
+        <div style={{ margin: '0 0 16px', padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, color: '#dc2626', fontSize: 13 }}>
+          {pdfError} <button onClick={() => setPdfError('')} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontWeight: 700 }}>×</button>
         </div>
       )}
 
-      {drawer && (
-        <div className="qt-overlay" onClick={e => e.target === e.currentTarget && setDrawer(null)}>
-          <div className="qt-drawer">
-            <div className="qt-drawer-hd">
-              <h3>New Quotation</h3>
-              <button className="qt-icon-btn" onClick={() => setDrawer(null)}><X size={16} /></button>
+      {readOnly && <ReadOnlyBanner />}
+
+      {/* ── Header ── */}
+      <div className="sq-header">
+        <div className="sq-header-l">
+          <div className="sq-header-icon"><FileText size={18} /></div>
+          <div>
+            <h1 className="sq-title">Sales Quotations</h1>
+            <p className="sq-sub">Manage, revise, and track customer quotations</p>
+          </div>
+        </div>
+        {!readOnly && (
+          <button className="sq-new-btn" onClick={handleNewQuotation}>
+            <Plus size={14} /> New Quotation
+          </button>
+        )}
+      </div>
+
+      {/* ── KPI cards (from stats endpoint) ── */}
+      <div className="sq-summary sq-summary-5">
+        <div className="sq-sum-card">
+          <span className="sq-sum-val">{kpiTotal}</span>
+          <span className="sq-sum-label">Total Quotations</span>
+        </div>
+        <div className="sq-sum-card">
+          <span className="sq-sum-val sq-sum-green">{kpiAccepted}</span>
+          <span className="sq-sum-label">Accepted</span>
+        </div>
+        <div className="sq-sum-card">
+          <span className="sq-sum-val sq-sum-blue">{kpiSentPending}</span>
+          <span className="sq-sum-label">Sent / Pending</span>
+        </div>
+        <div className="sq-sum-card">
+          <span className="sq-sum-val sq-sum-purple">{fmtL(kpiValue)}</span>
+          <span className="sq-sum-label">Total Value</span>
+        </div>
+        <div className="sq-sum-card sq-sum-card-rate">
+          <div className="sq-rate-row">
+            <span className={`sq-sum-val ${kpiRate >= 50 ? 'sq-sum-green' : kpiRate >= 30 ? 'sq-sum-orange' : 'sq-sum-red'}`}>
+              {fmtPct(kpiRate)}
+            </span>
+            <div className="sq-rate-bar-wrap">
+              <div className="sq-rate-bar" style={{ width: `${Math.min(kpiRate, 100)}%`, background: kpiRate >= 50 ? '#15803d' : kpiRate >= 30 ? '#d97706' : '#b91c1c' }} />
             </div>
-            <form className="qt-drawer-body" onSubmit={handleSubmit}>
-              <div className="qt-row2">
-                <div className="qt-field">
-                  <label>Customer <span className="qt-req">*</span></label>
-                  <select value={form.customerId} onChange={e => setForm(f => ({ ...f, customerId: e.target.value }))} required>
-                    <option value="">Select customer</option>
-                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-                <div className="qt-field">
-                  <label>Quotation Date <span className="qt-req">*</span></label>
-                  <input type="date" value={form.quotationDate} onChange={e => setForm(f => ({ ...f, quotationDate: e.target.value }))} required />
-                </div>
-              </div>
-              <div className="qt-field">
-                <label>Validity Date <span className="qt-req">*</span></label>
-                <input type="date" value={form.validityDate} onChange={e => setForm(f => ({ ...f, validityDate: e.target.value }))} required />
-              </div>
+          </div>
+          <span className="sq-sum-label">Acceptance Rate</span>
+        </div>
+      </div>
 
-              {/* Line items */}
-              <div className="qt-items-section">
-                <div className="qt-items-hd">
-                  <span>Line Items</span>
-                  <button type="button" className="qt-add-line-btn" onClick={addLine}><Plus size={12} /> Add Line</button>
+      {/* ── Status filter tabs ── */}
+      <div className="sq-tabs">
+        {FILTER_TABS.map(tab => (
+          <button
+            key={tab}
+            className={`sq-tab-btn${activeTab === tab ? ' sq-tab-active' : ''}`}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab === 'all' ? 'All' : STATUS_META[tab]?.label ?? tab}
+          </button>
+        ))}
+        <div className="sq-tab-search">
+          <input
+            type="text"
+            placeholder="Search quotation # or customer…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && fetchData()}
+          />
+        </div>
+      </div>
+
+      {/* ── Table ── */}
+      <div className="sq-table-wrap">
+        {loading ? (
+          <div className="sq-empty"><RefreshCw size={28} className="sq-spin" color="#c4b5fd" /><p>Loading quotations…</p></div>
+        ) : quotations.length === 0 ? (
+          <div className="sq-empty">
+            <FileText size={36} color="#c4b5fd" />
+            <p>No quotations{activeTab !== 'all' ? ` with status "${STATUS_META[activeTab]?.label ?? activeTab}"` : ''} yet.</p>
+          </div>
+        ) : (
+          <table className="sq-table">
+            <thead>
+              <tr>
+                <th>Quotation #</th>
+                <th>Customer</th>
+                <th>Date</th>
+                <th>Valid Until</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {quotations.map(q => {
+                const s        = STATUS_META[q.status] || STATUS_META.draft;
+                const ver      = parseInt(q.version) || 1;
+                const revCount = parseInt(q.total_revisions) || 1;
+                const validUntil = q.validity_date || q.valid_until;
+                const overdue  = isOverdue(validUntil) && !['accepted', 'converted', 'rejected'].includes(q.status);
+                return (
+                  <tr key={q.id}>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span className="sq-quot-num">{q.quotation_number}</span>
+                        {ver > 1 && <span className="sq-ver-badge">v{ver}</span>}
+                        {revCount > 1 && (
+                          <button className="sq-rev-count-btn" onClick={() => setHistoryDrawer({ open: true, quotationId: q.id })} title="View revision history">
+                            <GitBranch size={9} /> {revCount} revisions
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td>{q.customer_name || '—'}</td>
+                    <td>{fmtDate(q.quotation_date)}</td>
+                    <td style={{ color: overdue ? '#b91c1c' : undefined, fontWeight: overdue ? 600 : undefined }}>
+                      {fmtDate(validUntil)}
+                      {overdue && <span style={{ fontSize: 10, marginLeft: 4 }}>Overdue</span>}
+                    </td>
+                    <td><strong>₹{fmt(q.total_amount)}</strong></td>
+                    <td><span className="sq-badge" style={{ background: s.bg, color: s.color }}>{s.label}</span></td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {!readOnly && (
+                        <>
+                        {q.status === 'draft' && (
+                          <>
+                            <button className="sq-act-btn sq-act-blue" onClick={() => sendQuotation(q.id)} title="Mark as Sent">
+                              <Send size={10} /> Send
+                            </button>
+                            <button className="sq-act-btn sq-act-red" onClick={() => updateStatus(q.id, 'rejected')} title="Reject">
+                              <X size={10} /> Reject
+                            </button>
+                          </>
+                        )}
+                        {q.status === 'sent' && (
+                          <>
+                            <button
+                              className="sq-act-btn sq-act-purple"
+                              onClick={() => handleWonConvert(q.id)}
+                              disabled={convertingId === q.id}
+                              title="Mark as Won and create Sales Order"
+                            >
+                              {convertingId === q.id ? <RefreshCw size={10} className="sq-spin" /> : <ShoppingCart size={10} />}
+                              Won → SO
+                            </button>
+                            <button className="sq-act-btn sq-act-green" onClick={() => updateStatus(q.id, 'accepted')} title="Mark Accepted">
+                              <CheckCircle size={10} /> Accept
+                            </button>
+                            <button className="sq-act-btn sq-act-red" onClick={() => updateStatus(q.id, 'rejected')} title="Mark Rejected">
+                              <X size={10} /> Reject
+                            </button>
+                          </>
+                        )}
+                        {q.status === 'accepted' && (
+                          <button
+                            className="sq-act-btn sq-act-purple"
+                            onClick={() => convertToOrder(q.id)}
+                            disabled={convertingId === q.id}
+                            title="Convert to Sales Order"
+                          >
+                            {convertingId === q.id
+                              ? <RefreshCw size={10} className="sq-spin" />
+                              : <ShoppingCart size={10} />
+                            }
+                            Convert to Order
+                          </button>
+                        )}
+                        {['draft', 'sent', 'rejected'].includes(q.status) && (
+                          <button
+                            className="sq-act-btn sq-act-purple"
+                            onClick={() => handleRevise(q.id)}
+                            disabled={revisingId === q.id}
+                            title="Create a new revision"
+                          >
+                            {revisingId === q.id ? <RefreshCw size={10} className="sq-spin" /> : <GitBranch size={10} />}
+                            Revise
+                          </button>
+                        )}
+                        </>
+                        )}
+                        <button className="sq-act-btn sq-act-ghost" onClick={() => setHistoryDrawer({ open: true, quotationId: q.id })} title="View revision history">
+                          <History size={10} /> History
+                        </button>
+                        <button className="sq-pdf-btn" onClick={() => downloadPDF(q.id)} title="Download PDF">
+                          <Download size={12} /> PDF
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* ── Revision History Drawer ── */}
+      <RevisionDrawer
+        open={historyDrawer.open}
+        quotationId={historyDrawer.quotationId}
+        onClose={() => setHistoryDrawer({ open: false, quotationId: null })}
+        onRevise={fetchData}
+      />
+
+      {/* ── Create Quotation Modal ── */}
+      {showForm && (
+        <div className="sq-overlay" onClick={(e) => e.target.className === 'sq-overlay' && setShowForm(false)}>
+          <div className="sq-modal">
+            <div className="sq-modal-hd">
+              <div className="sq-modal-hd-l">
+                <div className="sq-modal-icon"><FileText size={16} /></div>
+                <div>
+                  <div className="sq-modal-title">New Quotation</div>
+                  <div className="sq-modal-sub">{formData.quotation_number}</div>
                 </div>
-                <div className="qt-items-header-row">
-                  <span>Description</span><span>Qty</span><span>Unit Price (₹)</span><span>Total</span><span />
-                </div>
-                {lines.map((line, i) => (
-                  <div key={i} className="qt-line-row">
-                    <input placeholder="Item/service description" value={line.description} onChange={e => updateLine(i, 'description', e.target.value)} />
-                    <input type="number" min="1" placeholder="1" value={line.quantity} onChange={e => updateLine(i, 'quantity', e.target.value)} />
-                    <input type="number" min="0" placeholder="0" value={line.unitPrice} onChange={e => updateLine(i, 'unitPrice', e.target.value)} />
-                    <span className="qt-line-total">{fmt((parseFloat(line.quantity || 0) * parseFloat(line.unitPrice || 0)).toFixed(0))}</span>
-                    {lines.length > 1 && <button type="button" className="qt-remove-btn" onClick={() => removeLine(i)}><Trash2 size={12} /></button>}
+              </div>
+              <button className="sq-close-btn" onClick={() => { setShowForm(false); setFormError(''); }}><X size={16} /></button>
+            </div>
+
+            <div className="sq-modal-body">
+              <form onSubmit={handleSubmit}>
+                {formError && (
+                  <div style={{ marginBottom: 16, padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, color: '#dc2626', fontSize: 13 }}>
+                    {formError}
                   </div>
-                ))}
-              </div>
+                )}
 
-              <div className="qt-totals">
-                <div className="qt-total-row"><span>Subtotal</span><span>{fmt(subtotal.toFixed(0))}</span></div>
-                <div className="qt-total-row">
-                  <span>Discount <input type="number" min="0" max="100" className="qt-pct-input" value={form.discount} onChange={e => setForm(f => ({ ...f, discount: e.target.value }))} />%</span>
-                  <span className="qt-red">−{fmt(discountAmt.toFixed(0))}</span>
+                <div className="sq-section">
+                  <div className="sq-section-title">Customer Details</div>
+                  <div className="sq-form-grid">
+                    <div className="sq-field sq-field-full">
+                      <label>Customer *</label>
+                      <select value={formData.customer_id} onChange={e => setFormData({ ...formData, customer_id: e.target.value })} required>
+                        <option value="">Select customer…</option>
+                        {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="sq-field">
+                      <label>Quotation Date *</label>
+                      <input type="date" value={formData.quotation_date} onChange={e => setFormData({ ...formData, quotation_date: e.target.value })} required />
+                    </div>
+                    <div className="sq-field">
+                      <label>Valid Until *</label>
+                      <input type="date" value={formData.validity_date} onChange={e => setFormData({ ...formData, validity_date: e.target.value })} required />
+                    </div>
+                    <div className="sq-field sq-field-full">
+                      <label>Notes</label>
+                      <textarea rows={2} value={formData.notes} onChange={e => setFormData({ ...formData, notes: e.target.value })} placeholder="Any special terms or notes…" />
+                    </div>
+                  </div>
                 </div>
-                <div className="qt-total-row">
-                  <span>GST <input type="number" min="0" max="100" className="qt-pct-input" value={form.taxRate} onChange={e => setForm(f => ({ ...f, taxRate: e.target.value }))} />%</span>
-                  <span>+{fmt(taxAmt.toFixed(0))}</span>
+
+                <div className="sq-section">
+                  <div className="sq-section-hd">
+                    <div className="sq-section-title"><Package size={13} /> Products</div>
+                    <button type="button" className="sq-add-item-btn" onClick={addProduct}><Plus size={12} /> Add Item</button>
+                  </div>
+                  {selectedProducts.length === 0 && (
+                    <div className="sq-no-items">No items added yet. Click "Add Item" to begin.</div>
+                  )}
+                  {selectedProducts.map((item, idx) => (
+                    <div key={idx} className="sq-item-row">
+                      <div className="sq-item-num">{idx + 1}</div>
+                      <div className="sq-item-fields">
+                        <div className="sq-field">
+                          <label>Product / Description</label>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <select value={item.product_id} onChange={e => updateProduct(idx, 'product_id', e.target.value)} style={{ flex: 1 }}>
+                              <option value="">Select product…</option>
+                              {products.map(p => <option key={p.id} value={p.id}>{p.item_name || p.name}</option>)}
+                            </select>
+                          </div>
+                          <input
+                            type="text"
+                            placeholder="Or type description…"
+                            value={item.item_description}
+                            onChange={e => updateProduct(idx, 'item_description', e.target.value)}
+                            style={{ marginTop: 4 }}
+                          />
+                        </div>
+                        <div className="sq-field sq-field-sm">
+                          <label>Qty</label>
+                          <input type="number" min="0.001" step="0.001" value={item.quantity} onChange={e => updateProduct(idx, 'quantity', e.target.value)} />
+                        </div>
+                        <div className="sq-field sq-field-sm">
+                          <label>Unit Price (₹)</label>
+                          <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateProduct(idx, 'unit_price', e.target.value)} />
+                        </div>
+                        <div className="sq-item-line">
+                          <span className="sq-item-line-label">Line Total</span>
+                          <span className="sq-item-line-val">₹{fmt(parseFloat(item.quantity || 0) * parseFloat(item.unit_price || 0))}</span>
+                        </div>
+                      </div>
+                      <button type="button" className="sq-remove-btn" onClick={() => removeProduct(idx)}><X size={13} /></button>
+                    </div>
+                  ))}
                 </div>
-                <div className="qt-total-row qt-grand-total"><span>Grand Total</span><span>{fmt(total.toFixed(0))}</span></div>
-              </div>
 
-              <div className="qt-field">
-                <label>Notes</label>
-                <textarea rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Terms and conditions, notes…" />
-              </div>
+                <div className="sq-section">
+                  <div className="sq-section-title">Summary</div>
+                  <div className="sq-totals">
+                    <div className="sq-totals-inputs">
+                      <div className="sq-field">
+                        <label>Discount %</label>
+                        <input type="number" min="0" max="100" step="0.01" value={formData.discount} onChange={e => setFormData({ ...formData, discount: e.target.value })} />
+                      </div>
+                      <div className="sq-field">
+                        <label>GST %</label>
+                        <input type="number" min="0" max="100" step="0.01" value={formData.tax_rate} onChange={e => setFormData({ ...formData, tax_rate: e.target.value })} />
+                      </div>
+                    </div>
+                    <div className="sq-totals-box">
+                      <div className="sq-total-row"><span>Subtotal</span><span>₹{fmt(totals.subtotal)}</span></div>
+                      <div className="sq-total-row sq-total-disc"><span>Discount ({formData.discount}%)</span><span>− ₹{fmt(totals.discount)}</span></div>
+                      <div className="sq-total-row"><span>GST ({formData.tax_rate}%)</span><span>₹{fmt(totals.tax)}</span></div>
+                      <div className="sq-total-row sq-grand-total"><span>Total</span><span>₹{fmt(totals.total)}</span></div>
+                    </div>
+                  </div>
+                </div>
 
-              <div className="qt-drawer-ft">
-                <button type="button" className="qt-btn-outline" onClick={() => setDrawer(null)}>Cancel</button>
-                <button type="submit" className="qt-btn-primary" disabled={saving}>{saving ? 'Creating…' : 'Create Quotation'}</button>
-              </div>
-            </form>
+                <div className="sq-modal-actions">
+                  <button type="button" className="sq-cancel-btn" onClick={() => { setShowForm(false); setFormError(''); }}>Cancel</button>
+                  <button type="submit" className="sq-submit-btn" disabled={submitting}>
+                    {submitting ? 'Creating…' : <><ChevronRight size={14} /> Create Quotation</>}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
-}
+};
+
+export default Quotations;

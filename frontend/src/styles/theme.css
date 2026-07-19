@@ -1,0 +1,29 @@
+/* ═══════════════════════════════════════════════════════════
+   PULSE ERP — GLOBAL THEME VARIABLES
+   Gradient: #4B2DCE (deep) → #7B3FE4 (bright)
+   ═══════════════════════════════════════════════════════════ */
+:root {
+  /* ── Brand gradient ── */
+  --brand-dark:    #4B2DCE;
+  --brand:         #5B35D5;
+  --brand-mid:     #6B3FDB;
+  --brand-bright:  #7B3FE4;
+  --brand-gradient: linear-gradient(135deg, #4B2DCE 0%, #7B3FE4 100%);
+  --brand-gradient-r: linear-gradient(135deg, #7B3FE4 0%, #4B2DCE 100%);
+
+  /* ── Brand tints (backgrounds, borders) ── */
+  --brand-50:  #F2EFFE;   /* page backgrounds */
+  --brand-100: #E8E1FC;   /* card borders, light bg */
+  --brand-200: #D4CAFE;   /* hover bg, subtle borders */
+  --brand-300: #BAA8F8;   /* disabled, scrollbars */
+  --brand-400: #9B74F0;   /* soft icons */
+  --brand-900: #150F3D;   /* near-black headings */
+
+  /* ── Shadows ── */
+  --brand-shadow-sm: 0 2px 8px rgba(75,45,206,.18);
+  --brand-shadow:    0 4px 16px rgba(75,45,206,.22);
+  --brand-shadow-lg: 0 8px 28px rgba(75,45,206,.28);
+
+  /* ── Focus ring ── */
+  --brand-ring: 0 0 0 3px rgba(107,63,219,.18);
+}

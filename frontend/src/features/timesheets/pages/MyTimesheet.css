@@ -6,8 +6,8 @@
 .mts-sub     { font-size: 13px; color: #6b7280; margin: 2px 0 0; }
 .mts-header-r{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-.mts-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6366f1; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.mts-btn-primary:hover { background: #4f46e5; }
+.mts-btn-primary { display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.mts-btn-primary:hover { background: #5B35D5; }
 .mts-btn-primary:disabled { opacity: .6; cursor: default; }
 .mts-btn-outline { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; color: #374151; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; cursor: pointer; }
 .mts-btn-outline:hover { background: #f9fafb; }
@@ -30,18 +30,18 @@
 .mts-th-total   { min-width: 68px; font-weight: 700; color: #374151; }
 .mts-day-name   { font-weight: 700; color: #374151; }
 .mts-day-date   { font-size: 10px; color: #9ca3af; margin-top: 2px; }
-.mts-today .mts-day-name { color: #6366f1; }
-th.mts-today    { background: #f5f3ff; }
+.mts-today .mts-day-name { color: #6B3FDB; }
+th.mts-today    { background: #F2EFFE; }
 
 .mts-table td   { padding: 10px 8px; border-bottom: 1px solid #f9fafb; text-align: center; vertical-align: middle; }
 .mts-td-project { text-align: left; padding-left: 16px; border-right: 1px solid #f0f0f4; }
 .mts-td-total   { font-weight: 700; color: #374151; border-left: 1px solid #f0f0f4; background: #fafafa; }
-td.mts-today    { background: #f5f3ff; }
+td.mts-today    { background: #F2EFFE; }
 .mts-row:hover td { background: #f9fafb; }
 .mts-row:hover .mts-td-total { background: #f3f4f6; }
-.mts-row:hover td.mts-today  { background: #ede9fe; }
+.mts-row:hover td.mts-today  { background: #E8E1FC; }
 
-.mts-proj-code { font-family: monospace; font-size: 10px; color: #6366f1; font-weight: 600; }
+.mts-proj-code { font-family: monospace; font-size: 10px; color: #6B3FDB; font-weight: 600; }
 .mts-proj-name { font-size: 12px; font-weight: 500; color: #111827; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 .mts-hrs       { font-size: 13px; font-weight: 600; color: #374151; }
 .mts-hrs-empty { color: #e5e7eb; font-size: 12px; }
@@ -58,7 +58,7 @@ td.mts-today    { background: #f5f3ff; }
 
 /* loading */
 .mts-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 300px; gap: 12px; color: #9ca3af; }
-.mts-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: mts-spin .7s linear infinite; }
+.mts-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: mts-spin .7s linear infinite; }
 @keyframes mts-spin { to { transform: rotate(360deg); } }
 
 /* toast */
@@ -80,8 +80,19 @@ td.mts-today    { background: #f5f3ff; }
   font-size: 13px; color: #111827; outline: none; background: #fff;
   font-family: inherit; width: 100%; box-sizing: border-box;
 }
-.mts-field input:focus, .mts-field textarea:focus, .mts-field select:focus { border-color: #6366f1; }
+.mts-field input:focus, .mts-field textarea:focus, .mts-field select:focus { border-color: #6B3FDB; }
 .mts-row2       { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .mts-check-row  { flex-direction: row; align-items: center; }
 .mts-check-label{ display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: #374151; cursor: pointer; }
-.mts-check-label input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #6366f1; }
+.mts-check-label input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #6B3FDB; }
+
+/* weekend columns */
+th.mts-weekend { background: #f1f3f5 !important; color: #9ca3af; }
+td.mts-weekend { background: #f5f6f8 !important; }
+.mts-row:hover td.mts-weekend { background: #ededf0 !important; }
+.mts-foot-row td.mts-weekend  { background: #eef0f2 !important; }
+.mts-weekend-tag { font-size: 9px; font-weight: 700; color: #9ca3af; text-transform: uppercase; margin-top: 2px; letter-spacing: 0.5px; }
+.mts-hrs-ot { color: #f59e0b !important; }
+
+/* running timer in clock button */
+.mts-clock-timer { font-family: monospace; font-size: 11px; margin-left: 4px; opacity: 0.85; }

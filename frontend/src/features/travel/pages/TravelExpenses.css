@@ -17,12 +17,12 @@
 .tve-tabs      { display: flex; gap: 4px; flex-wrap: wrap; }
 .tve-tab       { background: none; border: 1px solid #e5e7eb; border-radius: 7px; padding: 5px 12px; font-size: 12px; color: #6b7280; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 5px; }
 .tve-tab:hover { background: #f9fafb; }
-.tve-tab-active { background: #eef2ff; border-color: #6366f1; color: #4338ca; font-weight: 600; }
+.tve-tab-active { background: #E8E1FC; border-color: #6B3FDB; color: #4B2DCE; font-weight: 600; }
 .tve-tab-count  { background: #e5e7eb; border-radius: 10px; padding: 1px 6px; font-size: 10px; }
-.tve-tab-active .tve-tab-count { background: #c7d2fe; color: #4338ca; }
+.tve-tab-active .tve-tab-count { background: #D4CAFE; color: #4B2DCE; }
 
 .tve-loading { display: flex; justify-content: center; padding: 80px; }
-.tve-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: tve-spin .6s linear infinite; }
+.tve-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: tve-spin .6s linear infinite; }
 @keyframes tve-spin { to { transform: rotate(360deg); } }
 
 .tve-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 80px; color: #9ca3af; font-size: 14px; }
@@ -35,7 +35,7 @@
 .tve-row:last-child td { border-bottom: none; }
 .tve-row:hover > td { background: #fafafa; }
 
-.tve-num    { font-weight: 700; color: #4338ca; font-size: 12px; font-family: monospace; }
+.tve-num    { font-weight: 700; color: #4B2DCE; font-size: 12px; font-family: monospace; }
 .tve-ref    { background: #f3f4f6; color: #374151; border-radius: 4px; padding: 2px 7px; font-size: 11px; }
 .tve-amount { font-weight: 700; color: #111827; }
 .tve-badge  { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
@@ -59,13 +59,13 @@
 .tve-field textarea { border: 1px solid #d1d5db; border-radius: 7px; padding: 8px 12px; font-size: 13px; font-family: inherit; color: #111827; }
 .tve-field input:focus,
 .tve-field select:focus,
-.tve-field textarea:focus { outline: none; border-color: #6366f1; }
+.tve-field textarea:focus { outline: none; border-color: #6B3FDB; }
 
 .tve-items-section { display: flex; flex-direction: column; gap: 8px; }
 .tve-items-hd { display: flex; align-items: center; justify-content: space-between; }
 .tve-items-hd span { font-size: 12px; font-weight: 600; color: #374151; }
-.tve-add-line-btn { display: flex; align-items: center; gap: 4px; background: #eef2ff; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #4338ca; cursor: pointer; font-weight: 600; }
-.tve-add-line-btn:hover { background: #e0e7ff; }
+.tve-add-line-btn { display: flex; align-items: center; gap: 4px; background: #E8E1FC; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #4B2DCE; cursor: pointer; font-weight: 600; }
+.tve-add-line-btn:hover { background: #E8E1FC; }
 
 .tve-line-row { display: grid; grid-template-columns: 1.4fr 1.6fr 1fr 1fr auto; gap: 6px; align-items: center; }
 .tve-line-cat select,
@@ -75,7 +75,7 @@
 .tve-line-cat select:focus,
 .tve-line-desc input:focus,
 .tve-line-date input:focus,
-.tve-line-amt input:focus { outline: none; border-color: #6366f1; }
+.tve-line-amt input:focus { outline: none; border-color: #6B3FDB; }
 
 .tve-remove-btn { background: #fee2e2; border: none; border-radius: 6px; padding: 6px; cursor: pointer; color: #dc2626; display: flex; align-items: center; }
 .tve-remove-btn:hover { background: #fecaca; }
@@ -84,8 +84,8 @@
 .tve-total span   { font-size: 12px; color: #6b7280; }
 .tve-total strong { font-size: 14px; font-weight: 700; color: #111827; }
 
-.tve-btn-primary { display: flex; align-items: center; gap: 6px; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.tve-btn-primary:hover    { background: #4f46e5; }
+.tve-btn-primary { display: flex; align-items: center; gap: 6px; background: #6B3FDB; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.tve-btn-primary:hover    { background: #5B35D5; }
 .tve-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 .tve-btn-outline { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 16px; font-size: 13px; color: #374151; cursor: pointer; }
 .tve-btn-outline:hover { background: #f9fafb; }

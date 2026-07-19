@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Search, RefreshCw, X, CheckCircle, XCircle,
   Users, Calendar, Filter, Clock
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { useAuth } from '@/context/AuthContext';
 import './TeamLeaves.css';
 
 const STATUS_META = {
@@ -24,20 +25,12 @@ const MONTHS = [
   { value: '11', label: 'November'}, { value: '12', label: 'December' },
 ];
 
-const SAMPLE_LEAVES = [
-  { id: 1, first_name: 'Rajesh',  last_name: 'Kumar',  department: 'Engineering',  leave_type: 'Sick Leave',    start_date: '2026-03-10', end_date: '2026-03-12', days: 3, reason: 'Fever and flu', status: 'pending',  manager_comment: '' },
-  { id: 2, first_name: 'Priya',   last_name: 'Sharma', department: 'Sales',        leave_type: 'Casual Leave',  start_date: '2026-03-15', end_date: '2026-03-15', days: 1, reason: 'Personal work', status: 'approved', manager_comment: 'Approved' },
-  { id: 3, first_name: 'Anand',   last_name: 'Mehta',  department: 'Finance',      leave_type: 'Earned Leave',  start_date: '2026-03-20', end_date: '2026-03-24', days: 5, reason: 'Vacation trip', status: 'pending',  manager_comment: '' },
-  { id: 4, first_name: 'Sunita',  last_name: 'Rao',    department: 'HR',           leave_type: 'Sick Leave',    start_date: '2026-02-28', end_date: '2026-02-28', days: 1, reason: 'Doctor visit', status: 'approved', manager_comment: 'Get well soon' },
-  { id: 5, first_name: 'Vikram',  last_name: 'Nair',   department: 'Engineering',  leave_type: 'Casual Leave',  start_date: '2026-03-18', end_date: '2026-03-18', days: 1, reason: 'Family function', status: 'rejected', manager_comment: 'Sprint in progress' },
-  { id: 6, first_name: 'Meena',   last_name: 'Pillai', department: 'Operations',   leave_type: 'Earned Leave',  start_date: '2026-04-01', end_date: '2026-04-05', days: 5, reason: 'Annual vacation', status: 'pending',  manager_comment: '' },
-];
-
-const fmt = d => d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+const fmt = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 
 export default function TeamLeaves() {
+  const { user } = useAuth();
   const [leaves,    setLeaves]    = useState([]);
-  const [loading,   setLoading]   = useState(true);
+  const [loading,   setLoading]   = useState(false);
   const [search,    setSearch]    = useState('');
   const [fStatus,   setFStatus]   = useState('');
   const [fMonth,    setFMonth]    = useState('');
@@ -45,6 +38,12 @@ export default function TeamLeaves() {
   const [comment,   setComment]   = useState('');
   const [actioning, setActioning] = useState(false);
   const [toast,     setToast]     = useState(null);
+
+  const isMounted = useRef(true);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -58,11 +57,12 @@ export default function TeamLeaves() {
       if (fStatus) params.status = fStatus;
       if (fMonth)  params.month  = fMonth;
       const res = await api.get('/leaves/team', { params });
-      const raw = res.data?.leaves || res.data || [];
-      setLeaves(Array.isArray(raw) && raw.length ? raw : SAMPLE_LEAVES);
+      if (!isMounted.current) return;
+      const raw = Array.isArray(res.data) ? res.data : (res.data?.data || res.data?.leaves || []);
+      setLeaves(Array.isArray(raw) ? raw : []);
     } catch {
-      setLeaves(SAMPLE_LEAVES);
-    } finally { setLoading(false); }
+      if (isMounted.current) setLeaves([]);
+    } finally { if (isMounted.current) setLoading(false); }
   }, [fStatus, fMonth]);
 
   useEffect(() => { load(); }, [load]);
@@ -73,29 +73,32 @@ export default function TeamLeaves() {
     if (action === 'reject' && !comment.trim()) return showToast('Comment required for rejection', 'error');
     setActioning(true);
     try {
-      await api.patch(`/leaves/${drawer.id}/${action}`, { manager_comment: comment });
+      const verb = action === 'approve' ? 'approve' : 'reject';
+      const { data } = await api.post(`/leaves/${verb}/manager/${drawer.id}`, { manager_id: user?.employee_id, comments: comment });
+      const expectedStatus = action === 'approve' ? 'approved' : 'rejected';
+      const persistedStatus = action === 'approve' ? data?.manager_status : data?.status;
+      if (persistedStatus !== expectedStatus) {
+        throw new Error('Leave action did not persist with the expected status');
+      }
       showToast(`Leave ${action === 'approve' ? 'approved' : 'rejected'} successfully`);
-    } catch {
-      // optimistic
-      showToast(`Leave ${action === 'approve' ? 'approved' : 'rejected'}`);
-      setLeaves(ls => ls.map(l =>
-        l.id === drawer.id
-          ? { ...l, status: action === 'approve' ? 'approved' : 'rejected', manager_comment: comment }
-          : l
-      ));
+    } catch (error) {
+      console.error('[TeamLeaves] Leave approval action failed', error);
+      if (isMounted.current) showToast(error.response?.data?.error || 'Leave action failed', 'error');
     } finally {
-      setActioning(false);
-      setDrawer(null);
-      load();
+      if (isMounted.current) {
+        setActioning(false);
+        setDrawer(null);
+        load();
+      }
     }
   };
 
   const displayed = leaves.filter(l => {
     const q = search.toLowerCase();
-    const name = `${l.first_name} ${l.last_name}`.toLowerCase();
-    return (!q || name.includes(q) || l.department?.toLowerCase().includes(q) || l.leave_type?.toLowerCase().includes(q))
-        && (!fStatus || l.status === fStatus)
-        && (!fMonth  || new Date(l.start_date).getMonth() + 1 === parseInt(fMonth));
+    const name = (l.employee_name || `${l.first_name || ''} ${l.last_name || ''}`).toLowerCase();
+    const type = (l.leave_name || l.leave_type || '').toLowerCase();
+    return (!q || name.includes(q) || l.department?.toLowerCase().includes(q) || type.includes(q))
+        && (!fStatus || l.status === fStatus);
   });
 
   const counts = { pending: 0, approved: 0, rejected: 0 };
@@ -146,7 +149,7 @@ export default function TeamLeaves() {
             <thead>
               <tr>
                 <th>Employee</th><th>Department</th><th>Leave Type</th>
-                <th>Dates</th><th>Days</th><th>Reason</th><th>Status</th><th></th>
+                <th>Dates</th><th>Days</th><th>Reason</th><th>Status</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -156,29 +159,29 @@ export default function TeamLeaves() {
                   <tr key={leave.id} className="tl-row">
                     <td>
                       <div className="tl-emp-cell">
-                        <div className="tl-avatar">{(leave.first_name || '?').charAt(0)}</div>
+                        <div className="tl-avatar">{(leave.employee_name || leave.first_name || '?').charAt(0)}</div>
                         <div>
-                          <span className="tl-name">{leave.first_name} {leave.last_name}</span>
+                          <span className="tl-name">{leave.employee_name || `${leave.first_name || ''} ${leave.last_name || ''}`.trim()}</span>
                         </div>
                       </div>
                     </td>
                     <td><span className="tl-dept">{leave.department}</span></td>
-                    <td><span className="tl-type">{leave.leave_type}</span></td>
+                    <td><span className="tl-type">{leave.leave_name || leave.leave_type}</span></td>
                     <td>
                       <span className="tl-dates">
                         <Calendar size={11} />
                         {fmt(leave.start_date)}
-                        {leave.start_date !== leave.end_date && ` → ${fmt(leave.end_date)}`}
+                        {(leave.start_date || '').slice(0, 10) !== (leave.end_date || '').slice(0, 10) && ` → ${fmt(leave.end_date)}`}
                       </span>
                     </td>
-                    <td><span className="tl-days">{leave.days}d</span></td>
+                    <td><span className="tl-days">{leave.number_of_days ?? leave.days}d</span></td>
                     <td><span className="tl-reason" title={leave.reason}>{leave.reason}</span></td>
                     <td><span className="tl-badge" style={{ background: s.bg, color: s.color }}>{s.label}</span></td>
                     <td>
                       {leave.status === 'pending' ? (
                         <button className="tl-review-btn" onClick={() => openReview(leave)}>Review</button>
-                      ) : leave.manager_comment ? (
-                        <span className="tl-comment" title={leave.manager_comment}>{leave.manager_comment}</span>
+                      ) : (leave.manager_comments || leave.manager_comment) ? (
+                        <span className="tl-comment" title={leave.manager_comments || leave.manager_comment}>{leave.manager_comments || leave.manager_comment}</span>
                       ) : null}
                     </td>
                   </tr>
@@ -199,15 +202,15 @@ export default function TeamLeaves() {
             </div>
             <div className="tl-drawer-body">
               <div className="tl-review-info">
-                <div className="tl-review-avatar">{(drawer.first_name || '?').charAt(0)}</div>
+                <div className="tl-review-avatar">{(drawer.employee_name || drawer.first_name || '?').charAt(0)}</div>
                 <div>
-                  <h4>{drawer.first_name} {drawer.last_name}</h4>
+                  <h4>{drawer.employee_name || `${drawer.first_name || ''} ${drawer.last_name || ''}`.trim()}</h4>
                   <p>{drawer.department}</p>
                 </div>
               </div>
               <div className="tl-review-grid">
-                <div className="tl-review-item"><span>Leave Type</span><strong>{drawer.leave_type}</strong></div>
-                <div className="tl-review-item"><span>Days</span><strong>{drawer.days} day{drawer.days !== 1 ? 's' : ''}</strong></div>
+                <div className="tl-review-item"><span>Leave Type</span><strong>{drawer.leave_name || drawer.leave_type}</strong></div>
+                <div className="tl-review-item"><span>Days</span><strong>{drawer.number_of_days ?? drawer.days} day{(drawer.number_of_days ?? drawer.days) !== 1 ? 's' : ''}</strong></div>
                 <div className="tl-review-item"><span>From</span><strong>{fmt(drawer.start_date)}</strong></div>
                 <div className="tl-review-item"><span>To</span><strong>{fmt(drawer.end_date)}</strong></div>
               </div>

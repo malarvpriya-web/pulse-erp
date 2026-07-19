@@ -25,7 +25,7 @@ export const dashboardAPI = {
     try {
       const res = await api.get('/dashboard/revenue');
       return res.data;
-    } catch (err) {
+    } catch (_err) {
       return {};
     }
   },
@@ -34,7 +34,7 @@ export const dashboardAPI = {
     try {
       const res = await api.get('/dashboard/expenses');
       return res.data;
-    } catch (err) {
+    } catch (_err) {
       return {};
     }
   },

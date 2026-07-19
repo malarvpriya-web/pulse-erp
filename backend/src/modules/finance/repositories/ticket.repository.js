@@ -1,4 +1,5 @@
 import pool from '../db.js';
+import { nextFinanceTicketNumber } from '../../../shared/docNumber.js';
 
 class TicketRepository {
   async create(data) {
@@ -123,19 +124,8 @@ class TicketRepository {
     );
   }
 
-  async getNextTicketNumber() {
-    const result = await pool.query(
-      `SELECT ticket_number FROM tickets 
-       WHERE ticket_number LIKE 'TKT%' 
-       ORDER BY ticket_number DESC LIMIT 1`
-    );
-    
-    if (result.rows.length === 0) {
-      return 'TKT0001';
-    }
-    
-    const lastNum = parseInt(result.rows[0].ticket_number.replace('TKT', '')) + 1;
-    return `TKT${lastNum.toString().padStart(4, '0')}`;
+  async getNextTicketNumber(client) {
+    return nextFinanceTicketNumber(client);
   }
 
   async getDashboardStats() {

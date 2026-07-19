@@ -1,27 +1,59 @@
 import pool from '../../shared/db.js';
+import { nextSalesOrderNumber } from '../../../shared/docNumber.js';
+
+const ORDER_COLUMNS = new Set([
+  'order_number', 'quotation_id', 'customer_id', 'order_date', 'delivery_date',
+  'order_status', 'notes', 'carrier', 'tracking_number',
+  'subtotal', 'tax_amount', 'total_amount',
+]);
 
 const salesOrdersRepository = {
   async create(data) {
-    const { order_number, quotation_id, customer_id, order_date, delivery_date, order_status, notes, created_by } = data;
+    const {
+      order_number, quotation_id, company_id, customer_id, customer_name,
+      order_date, delivery_date, order_status, notes, created_by,
+      subtotal, tax_amount, total_amount, supply_type,
+    } = data;
     const result = await pool.query(
-      `INSERT INTO sales_orders (order_number, quotation_id, customer_id, order_date, delivery_date, order_status, notes, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [order_number, quotation_id, customer_id, order_date, delivery_date, order_status, notes, created_by]
+      `INSERT INTO sales_orders
+         (order_number, quotation_id, company_id, customer_id, customer_name,
+          order_date, delivery_date, order_status, notes, created_by,
+          subtotal, tax_amount, total_amount, supply_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       RETURNING *`,
+      [
+        order_number, quotation_id ?? null, company_id, customer_id ?? null, customer_name ?? null,
+        order_date, delivery_date ?? null, order_status ?? 'draft', notes ?? null, created_by,
+        subtotal ?? 0, tax_amount ?? 0, total_amount ?? 0,
+        supply_type === 'inter' ? 'inter' : 'intra',
+      ]
     );
     return result.rows[0];
   },
 
   async findAll(filters = {}) {
-    let query = `
-      SELECT so.*, p.name as customer_name
-      FROM sales_orders so
-      LEFT JOIN parties p ON so.customer_id = p.id
-      WHERE so.deleted_at IS NULL
-    `;
     const params = [];
     let paramCount = 1;
 
-    if (filters.order_status) {
+    let query = `
+      SELECT
+        so.*,
+        COALESCE(so.customer_name, p.name) AS customer_name,
+        so.order_status AS status,
+        COUNT(soi.id)::int AS item_count
+      FROM sales_orders so
+      LEFT JOIN parties p ON p.id = so.customer_id
+      LEFT JOIN sales_order_items soi ON soi.order_id = so.id
+      WHERE so.deleted_at IS NULL
+    `;
+
+    if (filters.company_id) {
+      query += ` AND so.company_id = $${paramCount}`;
+      params.push(filters.company_id);
+      paramCount++;
+    }
+
+    if (filters.order_status && filters.order_status !== 'all') {
       query += ` AND so.order_status = $${paramCount}`;
       params.push(filters.order_status);
       paramCount++;
@@ -33,7 +65,13 @@ const salesOrdersRepository = {
       paramCount++;
     }
 
-    query += ` ORDER BY so.created_at DESC`;
+    if (filters.search) {
+      query += ` AND (so.order_number ILIKE $${paramCount} OR COALESCE(so.customer_name, p.name) ILIKE $${paramCount})`;
+      params.push(`%${filters.search}%`);
+      paramCount++;
+    }
+
+    query += ` GROUP BY so.id, p.name ORDER BY so.created_at DESC`;
 
     const result = await pool.query(query, params);
     return result.rows;
@@ -41,7 +79,7 @@ const salesOrdersRepository = {
 
   async findById(id) {
     const result = await pool.query(
-      `SELECT so.*, p.name as customer_name
+      `SELECT so.*, p.name as customer_name, so.order_status as status
        FROM sales_orders so
        LEFT JOIN parties p ON so.customer_id = p.id
        WHERE so.id = $1 AND so.deleted_at IS NULL`,
@@ -56,18 +94,23 @@ const salesOrdersRepository = {
     let paramCount = 1;
 
     Object.keys(data).forEach(key => {
-      if (data[key] !== undefined) {
+      if (ORDER_COLUMNS.has(key) && data[key] !== undefined) {
         fields.push(`${key} = $${paramCount}`);
         values.push(data[key]);
         paramCount++;
       }
     });
 
+    if (fields.length === 0) {
+      const result = await pool.query('SELECT * FROM sales_orders WHERE id = $1 AND deleted_at IS NULL', [id]);
+      return result.rows[0];
+    }
+
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
 
     const result = await pool.query(
-      `UPDATE sales_orders SET ${fields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+      `UPDATE sales_orders SET ${fields.join(', ')} WHERE id = $${paramCount} AND deleted_at IS NULL RETURNING *`,
       values
     );
     return result.rows[0];
@@ -77,14 +120,8 @@ const salesOrdersRepository = {
     await pool.query(`UPDATE sales_orders SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
   },
 
-  async getNextOrderNumber() {
-    const result = await pool.query(
-      `SELECT order_number FROM sales_orders WHERE order_number LIKE 'SO-%' ORDER BY created_at DESC LIMIT 1`
-    );
-    if (result.rows.length === 0) return 'SO-0001';
-    const lastNum = result.rows[0].order_number;
-    const num = parseInt(lastNum.split('-')[1]) + 1;
-    return `SO-${num.toString().padStart(4, '0')}`;
+  async getNextOrderNumber(client) {
+    return nextSalesOrderNumber(client);
   },
 
   async addItem(data) {
@@ -128,35 +165,37 @@ const salesOrdersRepository = {
     );
   },
 
-  async getMonthlyRevenue() {
+  async getMonthlyRevenue(companyId) {
     const result = await pool.query(`
-      SELECT 
+      SELECT
         DATE_TRUNC('month', order_date) as month,
         SUM(total_amount) as revenue,
         COUNT(*) as order_count
       FROM sales_orders
-      WHERE deleted_at IS NULL AND order_status = 'completed'
+      WHERE deleted_at IS NULL AND order_status IN ('delivered', 'invoiced')
+        AND ($1::int IS NULL OR company_id = $1)
       GROUP BY DATE_TRUNC('month', order_date)
       ORDER BY month DESC
       LIMIT 12
-    `);
+    `, [companyId || null]);
     return result.rows;
   },
 
-  async getTopCustomers(limit = 10) {
+  async getTopCustomers(limit = 10, companyId) {
     const result = await pool.query(`
-      SELECT 
+      SELECT
         p.id,
         p.name,
         SUM(so.total_amount) as total_revenue,
         COUNT(so.id) as order_count
       FROM sales_orders so
       JOIN parties p ON so.customer_id = p.id
-      WHERE so.deleted_at IS NULL AND so.order_status = 'completed'
+      WHERE so.deleted_at IS NULL AND so.order_status IN ('delivered', 'invoiced')
+        AND ($2::int IS NULL OR so.company_id = $2)
       GROUP BY p.id, p.name
       ORDER BY total_revenue DESC
       LIMIT $1
-    `, [limit]);
+    `, [limit, companyId || null]);
     return result.rows;
   }
 };

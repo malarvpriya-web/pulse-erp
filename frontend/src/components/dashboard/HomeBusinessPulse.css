@@ -1,0 +1,34 @@
+/* HomeBusinessPulse — analytics band (prefix: hbp-) */
+.hbp-band { margin-bottom: 28px; }
+
+.hbp-hd {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-bottom: 14px;
+}
+.hbp-title {
+  font-size: 10px; font-weight: 800; color: #5B35D5;
+  letter-spacing: .1em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 8px;
+}
+.hbp-title::before {
+  content: '';
+  display: inline-block; width: 3px; height: 12px;
+  background: linear-gradient(#7B3FE4, #5B35D5);
+  border-radius: 2px;
+}
+.hbp-sub { font-size: 10.5px; color: #8b8fa3; }
+
+.hbp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.hbp-span2 { grid-column: span 2; }
+
+@media (max-width: 1100px) {
+  .hbp-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 720px) {
+  .hbp-grid { grid-template-columns: 1fr; }
+  .hbp-span2 { grid-column: span 1; }
+}

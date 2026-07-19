@@ -1,0 +1,393 @@
+/* RecruiterDashboard — page-specific styles (prefix: .rd-) */
+
+@keyframes rd-pulse {
+  0%, 100% { background-position: 200% 0; }
+  50%       { background-position: -200% 0; }
+}
+
+.rd-root {
+  padding: 16px 18px 20px;
+}
+
+/* ── header row ── */
+.rd-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.rd-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.rd-select {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+}
+
+.rd-btn-outline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #374151;
+}
+
+/* ── error banner ── */
+.rd-error {
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+/* ── skeleton loader ── */
+.rd-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rd-skeleton-row {
+  height: 64px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: rd-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── KPI card grid ── */
+.rd-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.rd-kpi-card {
+  background: var(--color-background-primary);
+  border: 1px solid #f0f0f4;
+  border-radius: 10px;
+  padding: 11px 13px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  opacity: 0;
+  animation: rd-rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* icon background & color set via inline style (dynamic per KPI) */
+.rd-kpi-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.rd-kpi-label {
+  margin: 0;
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.rd-kpi-value {
+  margin: 1px 0 0;
+  font-size: 21px;
+  font-weight: 800;
+  color: var(--color-text-primary);
+}
+
+/* ── two-column panel row ── */
+.rd-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.rd-panel {
+  background: var(--color-background-primary);
+  border: 1px solid #f0f0f4;
+  border-radius: 10px;
+  padding: 13px 15px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  opacity: 0;
+  animation: rd-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.15s forwards;
+}
+
+.rd-panel-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.rd-panel-empty {
+  color: #9ca3af;
+  font-size: 13px;
+  padding: 32px;
+  text-align: center;
+  background: var(--color-background-secondary);
+  border-radius: 8px;
+}
+
+/* ── pipeline bars ── */
+.rd-pipeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rd-pipeline-row-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.rd-pipeline-stage-name {
+  color: #374151;
+  font-weight: 500;
+}
+
+.rd-pipeline-stage-count {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.rd-bar-track {
+  height: 8px;
+  background: var(--color-border-tertiary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* width set via inline style (dynamic) */
+.rd-bar-fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 4px;
+}
+
+/* ── activity list ── */
+.rd-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.rd-activity-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* bg & color set via inline style (dynamic per action) */
+.rd-activity-badge {
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+.rd-activity-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.rd-activity-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.rd-activity-meta {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.rd-activity-time {
+  font-size: 11px;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+/* ── quick action buttons ── */
+.rd-quick-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.rd-qa-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--color-primary, #6366f1);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.rd-qa-btn:hover { opacity: 0.88; }
+
+.rd-qa-btn-ghost {
+  background: none;
+  border: 1px solid var(--color-border, #e5e7eb);
+  color: var(--color-text-primary, #1f2937);
+}
+
+.rd-qa-btn-ghost:hover { background: var(--color-background-secondary, #f9fafb); opacity: 1; }
+
+/* ── 6-column KPI grid ── */
+.rd-kpi-grid-6 {
+  grid-template-columns: repeat(6, 1fr);
+}
+
+@media (max-width: 1200px) {
+  .rd-kpi-grid-6 { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (max-width: 768px) {
+  .rd-kpi-grid-6 { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── section card (interviews + recent apps) ── */
+.rd-section-card {
+  background: var(--color-background-primary, #fff);
+  border: 1px solid #f0f0f4;
+  border-radius: 10px;
+  padding: 13px 15px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  opacity: 0;
+  animation: rd-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.2s forwards;
+}
+
+.rd-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.rd-badge-count {
+  background: var(--color-primary, #6366f1);
+  color: #fff;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 9px;
+  min-width: 22px;
+  text-align: center;
+}
+
+/* ── interview table ── */
+.rd-interview-table {
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.rd-interview-thead,
+.rd-interview-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 1fr 90px 1fr 80px;
+  gap: 8px;
+  padding: 7px 4px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.rd-interview-thead {
+  color: #9ca3af;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid #f0f0f4;
+  padding-bottom: 8px;
+}
+
+.rd-interview-row {
+  border-bottom: 1px solid #f9fafb;
+  color: var(--color-text-primary, #1f2937);
+}
+
+.rd-interview-row:last-child { border-bottom: none; }
+
+.rd-interview-time         { font-weight: 700; color: #6366f1; }
+.rd-interview-name         { font-weight: 500; }
+.rd-interview-job,
+.rd-interview-mode,
+.rd-interview-interviewer  { color: var(--color-text-secondary, #6b7280); }
+
+.rd-join-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #eff6ff;
+  color: #2563eb;
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  border: none;
+}
+
+.rd-join-btn:hover { background: #dbeafe; }
+
+/* entrance animations (compact pass) */
+@keyframes rd-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.rd-kpi-grid > *:nth-child(1) { animation-delay: 0ms; }
+.rd-kpi-grid > *:nth-child(2) { animation-delay: 40ms; }
+.rd-kpi-grid > *:nth-child(3) { animation-delay: 80ms; }
+.rd-kpi-grid > *:nth-child(4) { animation-delay: 120ms; }
+.rd-kpi-grid > *:nth-child(5) { animation-delay: 160ms; }
+.rd-kpi-grid > *:nth-child(6) { animation-delay: 200ms; }
+@media (prefers-reduced-motion: reduce) {
+  .rd-kpi-card, .rd-panel, .rd-section-card { animation: none; opacity: 1; }
+}
+/* entrance animations (compact pass) */
+@keyframes rd-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.rd-kpi-grid > *:nth-child(1) { animation-delay: 0ms; }
+.rd-kpi-grid > *:nth-child(2) { animation-delay: 40ms; }
+.rd-kpi-grid > *:nth-child(3) { animation-delay: 80ms; }
+.rd-kpi-grid > *:nth-child(4) { animation-delay: 120ms; }
+.rd-kpi-grid > *:nth-child(5) { animation-delay: 160ms; }
+.rd-kpi-grid > *:nth-child(6) { animation-delay: 200ms; }
+@media (prefers-reduced-motion: reduce) {
+  .rd-kpi-card, .rd-panel, .rd-section-card { animation: none; opacity: 1; }
+}

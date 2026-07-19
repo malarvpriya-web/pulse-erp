@@ -1,0 +1,26 @@
+.chart-widget {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.chart-widget .widget-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 20px 0;
+}
+
+.chart-widget .widget-loading,
+.chart-widget .widget-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.chart-widget .widget-error {
+  color: #ef4444;
+}

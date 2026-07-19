@@ -1,0 +1,31 @@
+{
+  "ingestUrl": "https://pulse.example.com/api/v1/iot/ingest",
+  "deviceUid": "PULSE-42-AB12CD",
+  "token": "paste-the-token-shown-once-at-provision-time",
+  "pollSecs": 60,
+  "maxQueue": 50000,
+
+  "source": {
+    "type": "sim",
+    "metrics": [
+      { "metric": "thd_i", "base": 4.0, "jitter": 0.6, "spikeTo": 9.0, "spikeEvery": 20 },
+      { "metric": "thd_v", "base": 2.2, "jitter": 0.4 },
+      { "metric": "pf",    "base": 0.98, "jitter": 0.01 },
+      { "metric": "kvar",  "base": 180, "jitter": 25 },
+      { "metric": "temp",  "base": 44, "jitter": 3 }
+    ]
+  },
+
+  "_modbus_source_example": {
+    "type": "modbus",
+    "host": "192.168.1.50",
+    "port": 502,
+    "unitId": 1,
+    "timeoutMs": 2000,
+    "registers": [
+      { "metric": "thd_i", "address": 40001, "register": "holding", "type": "float32", "scale": 1 },
+      { "metric": "pf",    "address": 40003, "register": "holding", "type": "int16",   "scale": 0.001 },
+      { "metric": "kvar",  "address": 40004, "register": "holding", "type": "int32",   "scale": 1 }
+    ]
+  }
+}

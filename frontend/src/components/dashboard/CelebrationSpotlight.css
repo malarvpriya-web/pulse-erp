@@ -1,0 +1,327 @@
+/* CelebrationSpotlight — full-screen once-a-day login celebration overlay.
+   Renders outside .page-content, so it owns its own type scale. */
+
+.cs-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100; /* above topbar/sidebar (1000), below ResultDialog (10000) */
+  background: rgba(24, 16, 48, 0.62);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  animation: cs-fade-in 0.35s ease;
+}
+
+@keyframes cs-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Confetti rain across the whole backdrop ─────────────────────────── */
+.cs-confetti {
+  position: absolute;
+  top: -14px;
+  width: 9px;
+  height: 14px;
+  border-radius: 2px;
+  opacity: 0.9;
+  animation: cs-fall linear infinite;
+}
+@keyframes cs-fall {
+  0%   { transform: translateY(-5vh) rotate(0deg); }
+  100% { transform: translateY(108vh) rotate(540deg); }
+}
+.cs-cf-0  { left: 4%;  background: #f59e0b; animation-duration: 5.2s; animation-delay: 0s; }
+.cs-cf-1  { left: 10%; background: #6B3FDB; animation-duration: 6.4s; animation-delay: 0.8s; }
+.cs-cf-2  { left: 16%; background: #ec4899; animation-duration: 4.8s; animation-delay: 1.6s; }
+.cs-cf-3  { left: 22%; background: #10b981; animation-duration: 6.9s; animation-delay: 0.4s; }
+.cs-cf-4  { left: 28%; background: #3b82f6; animation-duration: 5.6s; animation-delay: 2.1s; }
+.cs-cf-5  { left: 34%; background: #f43f5e; animation-duration: 6.1s; animation-delay: 1.1s; }
+.cs-cf-6  { left: 40%; background: #fbbf24; animation-duration: 4.9s; animation-delay: 0.2s; }
+.cs-cf-7  { left: 46%; background: #8b5cf6; animation-duration: 6.6s; animation-delay: 1.9s; }
+.cs-cf-8  { left: 52%; background: #14b8a6; animation-duration: 5.4s; animation-delay: 0.6s; }
+.cs-cf-9  { left: 58%; background: #ef4444; animation-duration: 6.2s; animation-delay: 2.4s; }
+.cs-cf-10 { left: 64%; background: #6B3FDB; animation-duration: 5.0s; animation-delay: 1.3s; }
+.cs-cf-11 { left: 70%; background: #f59e0b; animation-duration: 6.8s; animation-delay: 0.1s; }
+.cs-cf-12 { left: 76%; background: #22c55e; animation-duration: 5.7s; animation-delay: 1.7s; }
+.cs-cf-13 { left: 82%; background: #ec4899; animation-duration: 4.7s; animation-delay: 0.9s; }
+.cs-cf-14 { left: 88%; background: #3b82f6; animation-duration: 6.3s; animation-delay: 2.2s; }
+.cs-cf-15 { left: 94%; background: #fbbf24; animation-duration: 5.5s; animation-delay: 0.5s; }
+.cs-cf-16 { left: 31%; background: #a78bfa; animation-duration: 7.1s; animation-delay: 2.8s; }
+.cs-cf-17 { left: 67%; background: #f472b6; animation-duration: 7.3s; animation-delay: 3.1s; }
+
+/* ── Spotlight card ──────────────────────────────────────────────────── */
+.cs-card {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 20px;
+  box-shadow: 0 24px 64px rgba(24, 16, 48, 0.45);
+  padding: 20px 22px 22px;
+  animation: cs-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes cs-pop {
+  from { transform: scale(0.82) translateY(24px); opacity: 0; }
+  to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+.cs-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  color: #4b5563;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+}
+.cs-close:hover { background: #fff; color: #111827; }
+
+.cs-count-pill {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-primary, #6B3FDB);
+  background: rgba(107, 63, 219, 0.1);
+  border-radius: 999px;
+  padding: 4px 12px;
+  margin-bottom: 12px;
+}
+
+/* Hero — per-type gradient band */
+.cs-hero {
+  position: relative;
+  border-radius: 16px;
+  padding: 26px 18px 20px;
+  text-align: center;
+  color: #fff;
+  margin-bottom: 16px;
+}
+.cs-type-birthday .cs-hero { background: linear-gradient(135deg, #6B3FDB 0%, #9d5cff 55%, #ec4899 100%); }
+.cs-type-work     .cs-hero { background: linear-gradient(135deg, #b45309 0%, #f59e0b 60%, #fbbf24 100%); }
+.cs-type-wedding  .cs-hero { background: linear-gradient(135deg, #9f1239 0%, #ec4899 60%, #f9a8d4 100%); }
+
+.cs-avatar {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  margin: 0 auto 12px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  border: 3px solid rgba(255, 255, 255, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+.cs-avatar-badge {
+  position: absolute;
+  bottom: -6px;
+  right: -6px;
+  font-size: 26px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
+  animation: cs-bounce 1.6s ease-in-out infinite;
+}
+@keyframes cs-bounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-5px); }
+}
+
+.cs-greeting {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  opacity: 0.92;
+}
+.cs-name {
+  font-size: 24px;
+  font-weight: 800;
+  margin-top: 4px;
+  line-height: 1.2;
+}
+.cs-dept {
+  font-size: 13px;
+  opacity: 0.85;
+  margin-top: 3px;
+}
+.cs-self-banner {
+  margin: 12px auto 0;
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px dashed rgba(255, 255, 255, 0.6);
+  border-radius: 999px;
+  padding: 5px 14px;
+}
+
+/* Emoji reaction bar */
+.cs-reactions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.cs-emoji-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1.5px solid #e5e7eb;
+  background: #fff;
+  border-radius: 999px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.cs-emoji-chip:hover:not(:disabled) {
+  transform: scale(1.14);
+  border-color: var(--color-primary, #6B3FDB);
+}
+.cs-emoji-chip:disabled { cursor: default; opacity: 0.75; }
+.cs-emoji-mine {
+  border-color: var(--color-primary, #6B3FDB);
+  background: rgba(107, 63, 219, 0.08);
+}
+.cs-emoji { font-size: 18px; line-height: 1; }
+.cs-emoji-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-primary, #6B3FDB);
+}
+
+/* Wishes feed */
+.cs-wish-feed {
+  background: var(--color-bg-page, #f8f9fc);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cs-wish-row {
+  font-size: 13px;
+  line-height: 1.45;
+  color: #374151;
+}
+.cs-wish-sender {
+  font-weight: 700;
+  color: #111827;
+  margin-right: 6px;
+}
+.cs-wish-more {
+  font-size: 12px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+/* Composer */
+.cs-composer {
+  display: flex;
+  gap: 8px;
+}
+.cs-input {
+  flex: 1;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: 13px;
+  outline: none;
+}
+.cs-input:focus { border-color: var(--color-primary, #6B3FDB); }
+.cs-send {
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 50%;
+  background: var(--color-primary, #6B3FDB);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.cs-send:hover:not(:disabled) { background: #5B35D5; }
+.cs-send:disabled { opacity: 0.45; cursor: default; }
+
+/* Multi-celebrant navigation */
+.cs-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+.cs-nav-btn {
+  width: 32px;
+  height: 32px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 50%;
+  background: #fff;
+  color: #374151;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.cs-nav-btn:hover:not(:disabled) { border-color: var(--color-primary, #6B3FDB); color: var(--color-primary, #6B3FDB); }
+.cs-nav-btn:disabled { opacity: 0.35; cursor: default; }
+.cs-dots {
+  display: flex;
+  gap: 6px;
+}
+.cs-dot {
+  width: 8px;
+  height: 8px;
+  border: none;
+  border-radius: 50%;
+  background: #d1d5db;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.cs-dot:hover { transform: scale(1.4); }
+.cs-dot-active { background: var(--color-primary, #6B3FDB); transform: scale(1.3); }
+
+/* Floating emoji burst on reaction */
+.cs-flyers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 20px;
+}
+.cs-flyer {
+  position: absolute;
+  bottom: 60px;
+  font-size: 30px;
+  animation: cs-fly 1.35s ease-out forwards;
+}
+@keyframes cs-fly {
+  0%   { transform: translateY(0) scale(0.7); opacity: 0; }
+  15%  { opacity: 1; }
+  100% { transform: translateY(-240px) scale(1.5) rotate(14deg); opacity: 0; }
+}
+
+@media (max-width: 560px) {
+  .cs-card { padding: 16px 14px 18px; border-radius: 16px; }
+  .cs-name { font-size: 20px; }
+  .cs-avatar { width: 72px; height: 72px; font-size: 24px; }
+}

@@ -1,0 +1,454 @@
+/* InterviewScheduler.css — prefix: is- */
+
+/* ── Root ── */
+.is-root {
+  padding: 28px 32px 48px;
+  background: #F2EFFE;
+  min-height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ── Header ── */
+.is-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.is-header-l {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.is-header-icon {
+  width: 42px; height: 42px;
+  background: linear-gradient(135deg, #4B2DCE 0%, #7B3FE4 100%);
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(75,45,206,.35);
+  flex-shrink: 0;
+}
+
+.is-title {
+  font-size: 22px;
+  font-weight: 900;
+  color: #150F3D;
+  margin: 0;
+  letter-spacing: -.4px;
+}
+
+.is-sub {
+  font-size: 12px;
+  color: #7B3FE4;
+  margin: 2px 0 0;
+  font-weight: 500;
+}
+
+.is-header-r {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.is-date-input {
+  padding: 8px 12px;
+  border-radius: 9px;
+  border: 1.5px solid #D4CAFE;
+  font-size: 13px;
+  color: #374151;
+  background: #fff;
+  outline: none;
+  cursor: pointer;
+  transition: border-color .15s, box-shadow .15s;
+  font-family: inherit;
+}
+.is-date-input:focus {
+  border-color: #5B35D5;
+  box-shadow: 0 0 0 3px rgba(75,45,206,.1);
+}
+
+.is-select {
+  padding: 8px 12px;
+  border-radius: 9px;
+  border: 1.5px solid #D4CAFE;
+  font-size: 13px;
+  color: #374151;
+  background: #fff;
+  outline: none;
+  cursor: pointer;
+  transition: border-color .15s, box-shadow .15s;
+  font-family: inherit;
+}
+.is-select:focus {
+  border-color: #5B35D5;
+  box-shadow: 0 0 0 3px rgba(75,45,206,.1);
+}
+
+.is-clear-btn {
+  padding: 8px 14px;
+  border-radius: 9px;
+  border: 1.5px solid #fca5a5;
+  background: #fff;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+}
+.is-clear-btn:hover { background: #fee2e2; border-color: #ef4444; }
+
+/* ── Summary cards ── */
+.is-summary {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+}
+
+.is-sum-card {
+  flex: 1;
+  min-width: 110px;
+  background: #fff;
+  border: 1.5px solid #E8E1FC;
+  border-radius: 14px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 1px 4px rgba(75,45,206,.06);
+  transition: box-shadow .2s, transform .15s;
+}
+.is-sum-card:hover {
+  box-shadow: 0 6px 20px rgba(75,45,206,.12);
+  transform: translateY(-2px);
+}
+
+.is-sum-val {
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 1;
+}
+.is-sum-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: #6b7280;
+}
+
+.is-sum-purple { color: #7B3FE4; }
+.is-sum-blue   { color: #1d4ed8; }
+.is-sum-green  { color: #15803d; }
+.is-sum-red    { color: #b91c1c; }
+
+/* ── Skeleton ── */
+.is-skeleton-list { display: flex; flex-direction: column; gap: 10px; }
+.is-skeleton-row {
+  height: 90px;
+  background: linear-gradient(90deg, #E8E1FC 25%, #F2EFFE 50%, #E8E1FC 75%);
+  background-size: 200% 100%;
+  border-radius: 14px;
+  animation: is-shimmer 1.4s infinite;
+}
+@keyframes is-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* ── Empty ── */
+.is-empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: #9B74F0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.is-empty p { font-size: 15px; font-weight: 600; color: #7B3FE4; margin: 0; }
+
+/* ── Timeline ── */
+.is-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ── Date group ── */
+.is-date-group { display: flex; flex-direction: column; gap: 10px; }
+
+.is-date-hd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px;
+  position: relative;
+}
+
+.is-date-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: #BAA8F8;
+  flex-shrink: 0;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px #BAA8F8;
+}
+
+.is-date-today .is-date-dot {
+  background: #7B3FE4;
+  box-shadow: 0 0 0 2px #7B3FE4, 0 0 10px rgba(123,63,228,.4);
+}
+
+.is-date-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.is-date-label {
+  font-size: 14px;
+  font-weight: 800;
+  color: #150F3D;
+  letter-spacing: -.2px;
+}
+.is-date-today .is-date-label { color: #5B35D5; }
+
+.is-date-sub {
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.is-date-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: #7B3FE4;
+  background: #F2EFFE;
+  padding: 3px 10px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+/* ── Cards container ── */
+.is-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 22px;
+  border-left: 2px solid #E8E1FC;
+  margin-left: 4px;
+}
+
+/* ── Interview card ── */
+.is-card {
+  background: #fff;
+  border: 1.5px solid #E8E1FC;
+  border-radius: 14px;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(75,45,206,.06);
+  transition: box-shadow .2s, border-color .2s, transform .15s;
+}
+.is-card:hover {
+  box-shadow: 0 6px 20px rgba(75,45,206,.12);
+  border-color: #BAA8F8;
+  transform: translateX(3px);
+}
+
+/* ── Card left — time column ── */
+.is-card-time {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 16px;
+  background: #F2EFFE;
+  min-width: 90px;
+  border-right: 1.5px solid #E8E1FC;
+  flex-shrink: 0;
+}
+
+.is-time {
+  font-size: 15px;
+  font-weight: 800;
+  color: #150F3D;
+  letter-spacing: -.3px;
+  white-space: nowrap;
+}
+
+.is-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  letter-spacing: .02em;
+}
+
+/* ── Card divider ── */
+.is-card-divider {
+  width: 1px;
+  background: #E8E1FC;
+  flex-shrink: 0;
+  display: none; /* handled by border above */
+}
+
+/* ── Card body ── */
+.is-card-body {
+  flex: 1;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+  min-width: 0;
+}
+
+.is-candidate-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.is-avatar {
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #4B2DCE 0%, #7B3FE4 100%);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  letter-spacing: .02em;
+}
+
+.is-candidate-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #150F3D;
+  cursor: pointer;
+  transition: color .15s;
+}
+.is-candidate-name:hover { color: #7B3FE4; text-decoration: underline; }
+
+.is-candidate-email {
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.is-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.is-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.is-meeting-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5B35D5;
+  text-decoration: none;
+  background: #E8E1FC;
+  padding: 3px 10px;
+  border-radius: 20px;
+  transition: background .15s, color .15s;
+}
+.is-meeting-link:hover { background: #5B35D5; color: #fff; }
+
+/* ── Card right — status + actions ── */
+.is-card-r {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 18px;
+  flex-shrink: 0;
+}
+
+.is-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  white-space: nowrap;
+}
+
+.is-action-row {
+  display: flex;
+  gap: 6px;
+}
+
+.is-btn-complete,
+.is-btn-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: none;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s;
+  letter-spacing: .02em;
+}
+
+.is-btn-complete {
+  background: #dcfce7;
+  color: #15803d;
+}
+.is-btn-complete:hover {
+  background: #15803d;
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(21,128,61,.3);
+}
+
+.is-btn-cancel {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.is-btn-cancel:hover {
+  background: #b91c1c;
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(185,28,28,.3);
+}
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .is-root { padding: 16px 16px 40px; }
+  .is-card { flex-direction: column; }
+  .is-card-time { flex-direction: row; justify-content: flex-start; border-right: none; border-bottom: 1.5px solid #E8E1FC; }
+  .is-card-r { align-items: flex-start; border-top: 1.5px solid #E8E1FC; }
+  .is-header { flex-direction: column; align-items: flex-start; }
+}
