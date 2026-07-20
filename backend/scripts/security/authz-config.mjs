@@ -11,9 +11,15 @@
  * variable and is `requirePermission('assets', a)`.
  */
 import { readdirSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-export const ROOT = 'c:/Users/malar/OneDrive/Desktop/Pulse_WORKING/Pulse/backend/src';
+// Was a hardcoded absolute path to one developer's machine — worked only
+// there, threw ENOENT (readdirSync on a nonexistent directory) everywhere
+// else, including every CI runner. Never caught before because every prior
+// CI run failed earlier in the pipeline; this is the first to reach it.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+export const ROOT = join(__dirname, '../../src').replace(/\\/g, '/');
 
 /** Public or self-authenticating routers — no role guard by design. */
 export const BY_DESIGN = [
