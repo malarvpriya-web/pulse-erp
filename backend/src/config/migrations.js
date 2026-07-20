@@ -214,6 +214,23 @@ async function isFreshDatabase(client) {
   return fresh;
 }
 
+// Drops whatever "name" turns out to be — table, sequence, index, or view.
+// The racing bootstrap IIFEs create more than just tables (run #11 hit a
+// custom-named sequence, "seq_jv", used for a document-number generator;
+// DROP TABLE on a sequence fails with "X is not a table"), so the retry loop
+// below needs to know the object's actual kind before dropping it.
+async function dropAnyObject(client, name) {
+  const { rows } = await client.query(
+    `SELECT relkind FROM pg_class WHERE relname = $1 AND relnamespace = 'public'::regnamespace`,
+    [name]
+  );
+  const relkind = rows[0]?.relkind;
+  const DROP_BY_KIND = { r: 'TABLE', S: 'SEQUENCE', v: 'VIEW', m: 'MATERIALIZED VIEW', i: 'INDEX' };
+  const kind = DROP_BY_KIND[relkind];
+  if (!kind) return; // already gone, or something DROP can't target this way
+  await client.query(`DROP ${kind} IF EXISTS "${name}" CASCADE`);
+}
+
 async function bootstrapFromBaseline(client) {
   const sqlExists      = fs.existsSync(BASELINE_SQL_PATH);
   const manifestExists = fs.existsSync(BASELINE_MANIFEST_PATH);
@@ -259,65 +276,85 @@ async function bootstrapFromBaseline(client) {
   console.log(`  ⛰  Fresh database — applying baseline snapshot (${manifest.generated_at}, ${manifest.migrations.length} migrations embodied)`);
   const t0 = Date.now();
 
-  await client.query('BEGIN');
-  try {
-    // 18 route modules run their own top-level CREATE TABLE IF NOT EXISTS
-    // IIFEs at import time, independent of this migration system — they fire
-    // as soon as server.js's imports resolve, well before this async
-    // function is ever reached. On an existing DB those are harmless no-ops;
-    // on a genuinely empty one they can win the race and leave a handful of
-    // real tables behind (measured 17 in run #10) before this executes.
-    // Plain pg_dump output has no IF NOT EXISTS, and some of what it recreates
-    // — named PRIMARY KEY/FOREIGN KEY constraints via ALTER TABLE ADD
-    // CONSTRAINT — has no idempotent form in Postgres at all, so colliding
-    // with any of it aborts this whole transaction. Since isFreshDatabase()
-    // already confirmed the core tables are absent, anything sitting in
-    // 'public' at this exact point is unambiguously that incidental IIFE
-    // debris — nothing could have written real data to it in the seconds
-    // since boot started — so it's safe to clear before applying the
-    // canonical snapshot. CASCADE also takes each table's owned sequence
-    // and indexes with it, so this covers every collision type, not just
-    // the ones this comment happened to think of.
-    const { rows: strayTables } = await client.query(
-      `SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name <> 'schema_migrations'`
-    );
-    if (strayTables.length) {
-      console.log(`  🧹 dropping ${strayTables.length} pre-existing table(s) from racing bootstrap IIFEs: ${strayTables.map(r => r.table_name).join(', ')}`);
-      for (const { table_name } of strayTables) {
-        await client.query(`DROP TABLE IF EXISTS "${table_name}" CASCADE`);
-      }
-    }
-    await client.query(sql);
-    // Config rows seeded by data migrations (roles, permission matrix, …) —
-    // the schema-only snapshot marks those migrations applied, so their data
-    // must ride along or a fresh install fails closed on an empty matrix.
-    if (fs.existsSync(BASELINE_DATA_PATH)) {
-      const dataSql = fs.readFileSync(BASELINE_DATA_PATH, 'utf8')
-        .split('\n').filter(l => !l.startsWith('\\')).join('\n');
-      await client.query(dataSql);
-    }
-    // pg_dump output may clear search_path for the session; the ledger INSERTs
-    // below (and every later query on this pooled client) need it back.
-    await client.query('SET search_path TO public');
-    for (const name of manifest.migrations) {
-      const filePath = path.join(MIGRATIONS_DIR, name);
-      const checksum = fs.existsSync(filePath) ? fileChecksum(filePath) : null;
-      await client.query(
-        `INSERT INTO schema_migrations (name, duration_ms, checksum, applied_by)
-         VALUES ($1, 0, $2, $3)`,
-        [name, checksum, 'baseline-bootstrap']
+  // 20+ route modules (not just the original 18 found by grepping for one
+  // IIFE shape — booting the real server against a genuinely empty DB turned
+  // up auth, announcements, payroll, hr, sales, territories, travel,
+  // reimbursement, talent and more) each run their own ad-hoc
+  // CREATE-TABLE-IF-NOT-EXISTS bootstrap at import time, independent of this
+  // migration system and all firing concurrently on their own pool
+  // connections before this function is ever reached. On an existing DB
+  // these are invisible no-ops; on a genuinely empty one they race ahead and
+  // leave real tables behind — plain pg_dump output has no IF NOT EXISTS,
+  // and named PRIMARY KEY/FOREIGN KEY constraints (ALTER TABLE ADD
+  // CONSTRAINT) have no idempotent form in Postgres at all, so colliding
+  // with any of it aborts the whole transaction.
+  //
+  // A single snapshot-then-drop before running baseline.sql isn't enough:
+  // verified by booting the real server against a fresh DB — the snapshot
+  // caught 2 stray tables in the first 2ms, but baseline.sql itself takes
+  // ~700ms to run through 250+ statements, and a THIRD module (talent, not
+  // one of the 2 already dropped) created "interview_questions" sometime
+  // during that window, aborting the transaction with "already exists"
+  // anyway. So: retry with a TARGETED drop of whatever the error names,
+  // bounded — these are all one-shot async functions, not loops, so within a
+  // handful of attempts every racing module has either finished or
+  // permanently failed and no new stray tables can appear.
+  const MAX_ATTEMPTS = 8;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    await client.query('BEGIN');
+    try {
+      const { rows: strayTables } = await client.query(
+        `SELECT table_name FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name <> 'schema_migrations'`
       );
-    }
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error(`  ❌ baseline bootstrap failed — rolled back. Error: ${err.message}`);
-    throw err;
-  }
+      if (strayTables.length) {
+        console.log(`  🧹 [attempt ${attempt}] dropping ${strayTables.length} pre-existing table(s) from racing bootstrap IIFEs: ${strayTables.map(r => r.table_name).join(', ')}`);
+        for (const { table_name } of strayTables) {
+          await dropAnyObject(client, table_name);
+        }
+      }
 
-  console.log(`  ✅ baseline applied (${Date.now() - t0}ms)`);
-  return true;
+      await client.query(sql);
+      // Config rows seeded by data migrations (roles, permission matrix, …) —
+      // the schema-only snapshot marks those migrations applied, so their data
+      // must ride along or a fresh install fails closed on an empty matrix.
+      if (fs.existsSync(BASELINE_DATA_PATH)) {
+        const dataSql = fs.readFileSync(BASELINE_DATA_PATH, 'utf8')
+          .split('\n').filter(l => !l.startsWith('\\')).join('\n');
+        await client.query(dataSql);
+      }
+      // pg_dump output may clear search_path for the session; the ledger
+      // INSERTs below (and every later query on this pooled client) need it back.
+      await client.query('SET search_path TO public');
+      for (const name of manifest.migrations) {
+        const filePath = path.join(MIGRATIONS_DIR, name);
+        const checksum = fs.existsSync(filePath) ? fileChecksum(filePath) : null;
+        await client.query(
+          `INSERT INTO schema_migrations (name, duration_ms, checksum, applied_by)
+           VALUES ($1, 0, $2, $3)`,
+          [name, checksum, 'baseline-bootstrap']
+        );
+      }
+      await client.query('COMMIT');
+      console.log(`  ✅ baseline applied on attempt ${attempt} (${Date.now() - t0}ms)`);
+      return true;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      // Pull a relation name out of whatever Postgres said, covering the
+      // shapes actually seen: 'relation "X" already exists' (duplicate
+      // table/sequence/index), 'for relation "X"' / 'for table "X"'
+      // (duplicate constraint messages). If none match, this genuinely isn't
+      // a racing-IIFE collision — stop retrying and surface it.
+      const m = err.message.match(/relation "([^"]+)" already exists/)
+             || err.message.match(/for (?:relation|table) "([^"]+)"/);
+      if (!m || attempt === MAX_ATTEMPTS) {
+        console.error(`  ❌ baseline bootstrap failed on attempt ${attempt} — rolled back. Error: ${err.message}`);
+        throw err;
+      }
+      console.warn(`  ⚠️  [attempt ${attempt}] collided with "${m[1]}" (a racing bootstrap IIFE won this round) — dropping it and retrying: ${err.message}`);
+      await dropAnyObject(client, m[1]);
+    }
+  }
 }
 
 // ── Public: run all pending migrations ───────────────────────────────────────

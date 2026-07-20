@@ -172,8 +172,8 @@ jobs:
           # (learned the hard way: run #7 showed pg error internals but not
           # the message or file/line that would explain them).
           docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color backend 2>&1 \
-            | grep -E "Error|error:|❌|✅|FATAL|EACCES|ENOENT|code:|message:|at async|at Object|baseline|migrations|npm error|isFreshDatabase|Running database" \
-            | tail -40 \
+            | grep -E "Error|error:|❌|✅|⏱|🧹|FATAL|EACCES|ENOENT|code:|message:|at async|at Object|baseline|migrations|npm error|isFreshDatabase|Running database" \
+            | tail -50 \
             | while IFS= read -r l; do echo "::error::${l}"; done
 
       - name: Tear down
