@@ -1,0 +1,16 @@
+# CI override — `docker compose -f docker-compose.yml -f docker-compose.ci.yml`
+#
+# restart: unless-stopped (the base file) is right for a long-lived demo/pilot
+# stack but wrong for a one-shot CI boot check: if the backend crashes, Docker
+# silently restarts it, and `docker compose logs` then shows every attempt
+# concatenated together with no attempt boundary. Diagnosing runs #6-#9 from
+# that combined stream produced contradictory-looking evidence (adjacent log
+# lines from what turned out to be different attempts). "no" makes a crash
+# terminal, so the failure logs are exactly one attempt — unambiguous.
+services:
+  backend:
+    restart: "no"
+  frontend:
+    restart: "no"
+  db:
+    restart: "no"

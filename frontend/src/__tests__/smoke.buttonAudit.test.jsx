@@ -322,8 +322,18 @@ describe('LearningDevelopment — Enroll and Complete buttons', () => {
       expect(cells.length).toBeGreaterThan(0);
     });
     fireEvent.click(screen.getAllByText(String(TRAINING_DAY))[0]);
-    // Wait for the detail drawer to open (multiple elements may have the title)
-    await waitFor(() => expect(screen.getAllByText('React Workshop').length).toBeGreaterThan(0));
+    // Wait for the detail drawer to open. NOT 'React Workshop' — the calendar
+    // cell itself previews the first two words of the title
+    // (LearningDevelopment.jsx: `p.title.split(' ').slice(0, 2).join(' ')`),
+    // and "React Workshop" is exactly two words, so that text is already in
+    // the DOM before the click even fires. That wait was a false positive:
+    // it passed immediately regardless of whether the drawer had opened,
+    // which is exactly why the Enroll/Complete assertions right after it
+    // flaked under CI's timing (run #8 Complete, run #9 Enroll) while
+    // passing locally by scheduling luck. 'Enroll' only renders inside the
+    // opened drawer (unconditional there, unlike Complete's ongoing-only
+    // gate), so it's the correct exclusive signal.
+    await waitFor(() => expect(screen.getByText('Enroll')).toBeDefined());
   }
 
   it('clicking calendar day 15 reveals Enroll button', async () => {
