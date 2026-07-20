@@ -106,11 +106,29 @@ if (result.status !== 0) {
 // Also strip the set_config('search_path','') line: every object in the dump
 // is schema-qualified anyway, and clearing search_path poisons the session the
 // migration runner then uses for its own unqualified ledger INSERTs.
+//
+// SET lines are whitelisted: pg_dump emits session parameters of ITS major
+// version, and the target may be older — pg_dump 18 writes
+// `SET transaction_timeout = 0` (PG17+), which PG16 rejects as an
+// unrecognized parameter, aborting the whole bootstrap transaction.
+const SAFE_SET_PARAMS = new Set([
+  'statement_timeout', 'lock_timeout', 'idle_in_transaction_session_timeout',
+  'client_encoding', 'standard_conforming_strings', 'check_function_bodies',
+  'xmloption', 'client_min_messages', 'row_security',
+  'default_tablespace', 'default_table_access_method',
+]);
+function keepLine(l) {
+  if (l.startsWith('\\')) return false;
+  if (/set_config\('search_path'/.test(l)) return false;
+  const m = l.match(/^SET\s+([a-z_]+)\s*=/i);
+  if (m) return SAFE_SET_PARAMS.has(m[1].toLowerCase());
+  return true;
+}
+
 const sql = result.stdout
   .replace(/\r\n/g, '\n')
   .split('\n')
-  .filter(l => !l.startsWith('\\'))
-  .filter(l => !/set_config\('search_path'/.test(l))
+  .filter(keepLine)
   .join('\n');
 
 // ── Dump config-table data (INSERT form — COPY cannot run via client.query) ──
@@ -118,8 +136,7 @@ function cleanDump(text) {
   return text
     .replace(/\r\n/g, '\n')
     .split('\n')
-    .filter(l => !l.startsWith('\\'))
-    .filter(l => !/set_config\('search_path'/.test(l))
+    .filter(keepLine)
     .join('\n');
 }
 

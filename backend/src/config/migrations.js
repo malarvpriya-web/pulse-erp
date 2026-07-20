@@ -204,9 +204,14 @@ async function bootstrapFromBaseline(client) {
   }
 
   const manifest = JSON.parse(fs.readFileSync(BASELINE_MANIFEST_PATH, 'utf8'));
-  // Defense in depth: strip psql meta-commands even though generation already does
-  const sql = fs.readFileSync(BASELINE_SQL_PATH, 'utf8')
-    .split('\n').filter(l => !l.startsWith('\\')).join('\n');
+  // Defense in depth, mirroring generate-baseline.js: psql meta-commands are
+  // not SQL, and SET params from a newer pg_dump (e.g. transaction_timeout,
+  // PG17+) abort the whole bootstrap on an older server. Harmless to strip —
+  // they are session tuning, not schema.
+  const UNSAFE_LINE = /^(\\|SET\s+transaction_timeout)/;
+  const readSql = p => fs.readFileSync(p, 'utf8')
+    .split('\n').filter(l => !UNSAFE_LINE.test(l)).join('\n');
+  const sql = readSql(BASELINE_SQL_PATH);
 
   console.log(`  ⛰  Fresh database — applying baseline snapshot (${manifest.generated_at}, ${manifest.migrations.length} migrations embodied)`);
   const t0 = Date.now();
