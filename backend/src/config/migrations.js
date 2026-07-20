@@ -196,11 +196,35 @@ async function isFreshDatabase(client) {
 }
 
 async function bootstrapFromBaseline(client) {
-  if (!fs.existsSync(BASELINE_SQL_PATH) || !fs.existsSync(BASELINE_MANIFEST_PATH)) {
-    console.warn('⚠️  Fresh database but no baseline artifacts — falling through to the');
-    console.warn('    migration chain, which is known to fail from zero. Run');
-    console.warn('    `npm run generate-baseline` against an up-to-date DB and commit both files.');
-    return false;
+  const sqlExists      = fs.existsSync(BASELINE_SQL_PATH);
+  const manifestExists = fs.existsSync(BASELINE_MANIFEST_PATH);
+  if (!sqlExists || !manifestExists) {
+    // Failing fast here, loudly, beats the alternative: falling through to
+    // the migration chain, which is KNOWN to fail from zero (that is the
+    // reason this bootstrap exists at all) — and does so with a cryptic
+    // 42P01 many seconds later that gives no hint the baseline was even
+    // supposed to run. Both files are git-tracked and neither .dockerignore
+    // excludes them, so if this fires in a container the COPY step, build
+    // context, or checkout is missing them — that is itself the bug to fix.
+    const databaseDir = path.dirname(BASELINE_SQL_PATH);
+    let dirListing;
+    try {
+      dirListing = fs.existsSync(databaseDir)
+        ? fs.readdirSync(databaseDir).join(', ')
+        : '(directory does not exist)';
+    } catch (e) {
+      dirListing = `(readdir failed: ${e.message})`;
+    }
+    throw new Error(
+      'Fresh database detected but baseline artifacts are missing — refusing ' +
+      'to fall through to the migration chain (known broken from zero).\n' +
+      `  ${BASELINE_SQL_PATH} exists: ${sqlExists}\n` +
+      `  ${BASELINE_MANIFEST_PATH} exists: ${manifestExists}\n` +
+      `  __dirname: ${__dirname}\n` +
+      `  contents of ${databaseDir}: ${dirListing}\n` +
+      '  Run `npm run generate-baseline` against an up-to-date DB and commit both files, ' +
+      'or check whether this build/checkout is missing src/database/*.sql.'
+    );
   }
 
   const manifest = JSON.parse(fs.readFileSync(BASELINE_MANIFEST_PATH, 'utf8'));
