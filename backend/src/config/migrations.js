@@ -183,20 +183,34 @@ const BASELINE_SQL_PATH      = path.join(__dirname, '../database/baseline.sql');
 const BASELINE_DATA_PATH     = path.join(__dirname, '../database/baseline-data.sql');
 const BASELINE_MANIFEST_PATH = path.join(__dirname, '../database/baseline-manifest.json');
 
+// The load-bearing tables server.js's own assertRequiredTables() already
+// treats as "the app cannot run without these" (kept in sync manually — both
+// are small, stable lists; importing from server.js would be circular).
+const CORE_TABLES = ['users', 'employees', 'approvals', 'notifications', 'workflow_instances', 'audit_logs'];
+
 async function isFreshDatabase(client) {
   const { rows: [{ n: ledgerRows }] } = await client.query(
     'SELECT COUNT(*)::int AS n FROM schema_migrations'
   );
-  const { rows: [{ n: userTables }] } = await client.query(`
-    SELECT COUNT(*)::int AS n FROM information_schema.tables
-     WHERE table_schema = 'public' AND table_name <> 'schema_migrations'
-  `);
-  const fresh = ledgerRows === 0 && userTables === 0;
-  // Loud on purpose: run #8 hit the pre-baseline 42P01 bug in Docker with NO
-  // preceding baseline-related log line at all, meaning this returned false
-  // on what should have been an empty compose volume. Whatever branch fires
-  // next, this is the fact that decided it.
-  console.log(`  🔍 isFreshDatabase: ledgerRows=${ledgerRows}, userTables=${userTables} → ${fresh}`);
+  // NOT "zero tables of any kind" — 18 route modules across this codebase
+  // run their own top-level `(async () => { CREATE TABLE IF NOT EXISTS ... })()`
+  // at import time, independent of this migration system and racing ahead of
+  // it. On an existing DB those are harmless no-ops; on a genuinely empty one
+  // they win the race and create a real but incidental handful of tables
+  // before this function ever runs (run #10 measured 17). Checking for zero
+  // tables treated a fresh DB with those 17 stray tables as "not fresh" and
+  // fell through to the migration chain, which cannot build from zero — the
+  // exact bug this bootstrap exists to fix. Checking for absence of the
+  // small set of foundational tables those 18 modules never create is the
+  // reliable signal instead.
+  const { rows } = await client.query(
+    `SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = ANY($1::text[])`,
+    [CORE_TABLES]
+  );
+  const foundCore = rows.map(r => r.table_name);
+  const fresh = ledgerRows === 0 && foundCore.length === 0;
+  console.log(`  🔍 isFreshDatabase: ledgerRows=${ledgerRows}, core tables present=[${foundCore.join(', ')}] → ${fresh}`);
   return fresh;
 }
 
@@ -247,6 +261,33 @@ async function bootstrapFromBaseline(client) {
 
   await client.query('BEGIN');
   try {
+    // 18 route modules run their own top-level CREATE TABLE IF NOT EXISTS
+    // IIFEs at import time, independent of this migration system — they fire
+    // as soon as server.js's imports resolve, well before this async
+    // function is ever reached. On an existing DB those are harmless no-ops;
+    // on a genuinely empty one they can win the race and leave a handful of
+    // real tables behind (measured 17 in run #10) before this executes.
+    // Plain pg_dump output has no IF NOT EXISTS, and some of what it recreates
+    // — named PRIMARY KEY/FOREIGN KEY constraints via ALTER TABLE ADD
+    // CONSTRAINT — has no idempotent form in Postgres at all, so colliding
+    // with any of it aborts this whole transaction. Since isFreshDatabase()
+    // already confirmed the core tables are absent, anything sitting in
+    // 'public' at this exact point is unambiguously that incidental IIFE
+    // debris — nothing could have written real data to it in the seconds
+    // since boot started — so it's safe to clear before applying the
+    // canonical snapshot. CASCADE also takes each table's owned sequence
+    // and indexes with it, so this covers every collision type, not just
+    // the ones this comment happened to think of.
+    const { rows: strayTables } = await client.query(
+      `SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name <> 'schema_migrations'`
+    );
+    if (strayTables.length) {
+      console.log(`  🧹 dropping ${strayTables.length} pre-existing table(s) from racing bootstrap IIFEs: ${strayTables.map(r => r.table_name).join(', ')}`);
+      for (const { table_name } of strayTables) {
+        await client.query(`DROP TABLE IF EXISTS "${table_name}" CASCADE`);
+      }
+    }
     await client.query(sql);
     // Config rows seeded by data migrations (roles, permission matrix, …) —
     // the schema-only snapshot marks those migrations applied, so their data
