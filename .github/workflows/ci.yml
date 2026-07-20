@@ -61,8 +61,19 @@ jobs:
       - name: Seed test fixtures
         run: node scripts/seed-test-fixtures.mjs
 
+      # tee + annotate: job logs need auth to download, but ::error
+      # annotations are readable via the public checks API — without this,
+      # diagnosing a CI-only failure from a machine with no gh/docker is blind.
       - name: Run tests
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee vitest.log
+      - name: Annotate test failures
+        if: failure()
+        run: |
+          grep -E "FAIL |AssertionError|Error:" vitest.log | head -40 | while IFS= read -r l; do
+            echo "::error::${l}"
+          done
 
       # Ratchet, not a scan: fails only when the count RISES. Newly-added
       # approve/reject/cancel/delete routes with no authorization break the
@@ -147,7 +158,14 @@ jobs:
 
       - name: Logs on failure
         if: failure()
-        run: docker compose logs --no-color
+        run: |
+          docker compose logs --no-color
+          docker compose ps -a
+          # Surface the tail through ::error annotations — they are readable
+          # via the public checks API, unlike the job log itself.
+          docker compose logs --no-color --tail 60 backend 2>&1 | while IFS= read -r l; do
+            echo "::error::${l}"
+          done
 
       - name: Tear down
         if: always()
