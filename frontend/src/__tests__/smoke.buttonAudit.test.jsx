@@ -349,7 +349,11 @@ describe('LearningDevelopment — Enroll and Complete buttons', () => {
     api.put.mockResolvedValue({ data: {} });
     render(<LearningDevelopment />);
     await openTrainingDetail();
-    expect(screen.getByText('Complete')).toBeDefined();
+    // Complete renders in the same synchronous update as the 'React Workshop'
+    // title openTrainingDetail() already waited for — but under CI's runner
+    // (slower, different scheduling than local) that update can still land a
+    // tick later, so this needs the same waitFor rather than a bare getByText.
+    await waitFor(() => expect(screen.getByText('Complete')).toBeDefined());
     fireEvent.click(screen.getByText('Complete'));
     await waitFor(() =>
       expect(api.put).toHaveBeenCalledWith('/training/enrollments/99/complete')

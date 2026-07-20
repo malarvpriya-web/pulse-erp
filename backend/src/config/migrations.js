@@ -187,12 +187,17 @@ async function isFreshDatabase(client) {
   const { rows: [{ n: ledgerRows }] } = await client.query(
     'SELECT COUNT(*)::int AS n FROM schema_migrations'
   );
-  if (ledgerRows > 0) return false;
   const { rows: [{ n: userTables }] } = await client.query(`
     SELECT COUNT(*)::int AS n FROM information_schema.tables
      WHERE table_schema = 'public' AND table_name <> 'schema_migrations'
   `);
-  return userTables === 0;
+  const fresh = ledgerRows === 0 && userTables === 0;
+  // Loud on purpose: run #8 hit the pre-baseline 42P01 bug in Docker with NO
+  // preceding baseline-related log line at all, meaning this returned false
+  // on what should have been an empty compose volume. Whatever branch fires
+  // next, this is the fact that decided it.
+  console.log(`  🔍 isFreshDatabase: ledgerRows=${ledgerRows}, userTables=${userTables} → ${fresh}`);
+  return fresh;
 }
 
 async function bootstrapFromBaseline(client) {
