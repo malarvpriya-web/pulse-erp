@@ -56,6 +56,11 @@ jobs:
       - name: Run migrations
         run: npm run migrate
 
+      # tokens.js mints JWTs for userId 1-4; roles are DB-authoritative, so
+      # the real-DB tests need those users to exist. Idempotent, test-only.
+      - name: Seed test fixtures
+        run: node scripts/seed-test-fixtures.mjs
+
       - name: Run tests
         run: npm test
 

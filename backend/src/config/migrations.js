@@ -170,6 +170,81 @@ export async function verifyApplied() {
   }
 }
 
+// ── Fresh-database bootstrap ──────────────────────────────────────────────────
+// The migration chain cannot build a schema from zero: the earliest files
+// ALTER tables that only ever existed in the original dev database. On a
+// truly fresh database we therefore execute src/database/baseline.sql (a
+// pg_dump snapshot, regenerated via `npm run generate-baseline`) and mark the
+// migrations it embodies (baseline-manifest.json) as applied; anything newer
+// then applies normally. A database with ANY ledger rows or ANY user tables
+// is never touched by this path.
+
+const BASELINE_SQL_PATH      = path.join(__dirname, '../database/baseline.sql');
+const BASELINE_DATA_PATH     = path.join(__dirname, '../database/baseline-data.sql');
+const BASELINE_MANIFEST_PATH = path.join(__dirname, '../database/baseline-manifest.json');
+
+async function isFreshDatabase(client) {
+  const { rows: [{ n: ledgerRows }] } = await client.query(
+    'SELECT COUNT(*)::int AS n FROM schema_migrations'
+  );
+  if (ledgerRows > 0) return false;
+  const { rows: [{ n: userTables }] } = await client.query(`
+    SELECT COUNT(*)::int AS n FROM information_schema.tables
+     WHERE table_schema = 'public' AND table_name <> 'schema_migrations'
+  `);
+  return userTables === 0;
+}
+
+async function bootstrapFromBaseline(client) {
+  if (!fs.existsSync(BASELINE_SQL_PATH) || !fs.existsSync(BASELINE_MANIFEST_PATH)) {
+    console.warn('⚠️  Fresh database but no baseline artifacts — falling through to the');
+    console.warn('    migration chain, which is known to fail from zero. Run');
+    console.warn('    `npm run generate-baseline` against an up-to-date DB and commit both files.');
+    return false;
+  }
+
+  const manifest = JSON.parse(fs.readFileSync(BASELINE_MANIFEST_PATH, 'utf8'));
+  // Defense in depth: strip psql meta-commands even though generation already does
+  const sql = fs.readFileSync(BASELINE_SQL_PATH, 'utf8')
+    .split('\n').filter(l => !l.startsWith('\\')).join('\n');
+
+  console.log(`  ⛰  Fresh database — applying baseline snapshot (${manifest.generated_at}, ${manifest.migrations.length} migrations embodied)`);
+  const t0 = Date.now();
+
+  await client.query('BEGIN');
+  try {
+    await client.query(sql);
+    // Config rows seeded by data migrations (roles, permission matrix, …) —
+    // the schema-only snapshot marks those migrations applied, so their data
+    // must ride along or a fresh install fails closed on an empty matrix.
+    if (fs.existsSync(BASELINE_DATA_PATH)) {
+      const dataSql = fs.readFileSync(BASELINE_DATA_PATH, 'utf8')
+        .split('\n').filter(l => !l.startsWith('\\')).join('\n');
+      await client.query(dataSql);
+    }
+    // pg_dump output may clear search_path for the session; the ledger INSERTs
+    // below (and every later query on this pooled client) need it back.
+    await client.query('SET search_path TO public');
+    for (const name of manifest.migrations) {
+      const filePath = path.join(MIGRATIONS_DIR, name);
+      const checksum = fs.existsSync(filePath) ? fileChecksum(filePath) : null;
+      await client.query(
+        `INSERT INTO schema_migrations (name, duration_ms, checksum, applied_by)
+         VALUES ($1, 0, $2, $3)`,
+        [name, checksum, 'baseline-bootstrap']
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(`  ❌ baseline bootstrap failed — rolled back. Error: ${err.message}`);
+    throw err;
+  }
+
+  console.log(`  ✅ baseline applied (${Date.now() - t0}ms)`);
+  return true;
+}
+
 // ── Public: run all pending migrations ───────────────────────────────────────
 
 export async function runMigrations() {
@@ -178,6 +253,10 @@ export async function runMigrations() {
 
   try {
     await ensureTrackingTable(client);
+
+    if (await isFreshDatabase(client)) {
+      await bootstrapFromBaseline(client);
+    }
 
     // Tamper check before running anything
     const warnings = await detectTamperedMigrations(client);

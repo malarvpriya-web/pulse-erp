@@ -1,17 +1,27 @@
 #!/usr/bin/env node
 /**
- * generate-baseline.js — Capture the current DB schema as a versioned migration file.
+ * generate-baseline.js — Snapshot the current DB schema as the fresh-database
+ * bootstrap artifact pair used by src/config/migrations.js:
+ *
+ *   src/database/baseline.sql            full schema DDL (pg_dump --schema-only)
+ *   src/database/baseline-manifest.json  the migration files whose effects the
+ *                                        snapshot embodies; the runner marks
+ *                                        exactly these as applied after
+ *                                        executing baseline.sql on a fresh DB
+ *
+ * Why this exists: the migration chain cannot build a database from zero —
+ * the earliest migrations ALTER tables that only ever existed in the original
+ * dev database (discovered when CI first ran the chain on an empty Postgres,
+ * 2026-07-19). The snapshot is the reconstruction path; incremental
+ * migrations continue on top of it.
  *
  * Usage:
- *   node scripts/generate-baseline.js                  # writes to src/database/migrations/
- *   node scripts/generate-baseline.js --out ./custom/  # writes to a custom directory
- *   node scripts/generate-baseline.js --dry-run        # print to stdout only
+ *   node scripts/generate-baseline.js            # writes both artifacts
+ *   node scripts/generate-baseline.js --dry-run  # stats only, writes nothing
  *
- * Requires: pg_dump in PATH (shipped with PostgreSQL client tools)
- *
- * The generated file is a self-contained migration that recreates the full
- * schema on a fresh database. Run it after setting up a new environment or
- * before a major release to lock in a known-good snapshot.
+ * Requires pg_dump on PATH (falls back to the standard Windows install dirs).
+ * Regenerate only from a database whose ledger is fully up to date — the
+ * script refuses if migration files on disk are missing from the ledger.
  */
 
 import { spawnSync } from 'child_process';
@@ -21,7 +31,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── Load env ──────────────────────────────────────────────────────────────────
+// ── Load env (same minimal parser the old version used) ──────────────────────
 const dotenvPath = path.join(__dirname, '../.env');
 if (fs.existsSync(dotenvPath)) {
   const vars = fs.readFileSync(dotenvPath, 'utf8')
@@ -29,145 +39,143 @@ if (fs.existsSync(dotenvPath)) {
     .filter(l => l.trim() && !l.startsWith('#') && l.includes('='));
   for (const line of vars) {
     const [k, ...rest] = line.split('=');
-    process.env[k.trim()] = rest.join('=').trim();
+    if (!(k.trim() in process.env)) process.env[k.trim()] = rest.join('=').trim();
   }
 }
 
 const DB = {
-  host:     process.env.DB_HOST     || 'localhost',
-  port:     process.env.DB_PORT     || '5432',
-  name:     process.env.DB_NAME     || 'Pulse',
-  user:     process.env.DB_USER     || 'postgres',
+  host:     process.env.DB_HOST || 'localhost',
+  port:     process.env.DB_PORT || '5432',
+  name:     process.env.DB_NAME || 'Pulse',
+  user:     process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD || '',
 };
-
 const env = { ...process.env, PGPASSWORD: DB.password };
 
-// ── Args ──────────────────────────────────────────────────────────────────────
-const args     = process.argv.slice(2);
-const dryRun   = args.includes('--dry-run');
-const outIdx   = args.indexOf('--out');
-const outDir   = outIdx !== -1
-  ? path.resolve(args[outIdx + 1])
-  : path.join(__dirname, '../src/database/migrations');
+const dryRun = process.argv.includes('--dry-run');
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function checkPgDump() {
-  const r = spawnSync('pg_dump', ['--version'], { encoding: 'utf8' });
-  if (r.error) {
-    console.error('❌  pg_dump not found in PATH.');
-    console.error('    Install PostgreSQL client tools and ensure pg_dump is on your PATH.');
-    process.exit(1);
+const MIGRATIONS_DIR = path.join(__dirname, '../src/database/migrations');
+const OUT_SQL        = path.join(__dirname, '../src/database/baseline.sql');
+const OUT_DATA_SQL   = path.join(__dirname, '../src/database/baseline-data.sql');
+const OUT_MANIFEST   = path.join(__dirname, '../src/database/baseline-manifest.json');
+
+// Config tables whose ROWS were seeded by data migrations and are therefore
+// lost when the schema-only snapshot marks those migrations applied. Order
+// matters (FK dependencies) — each is dumped separately and concatenated.
+// Never add tables holding operational data or credentials (users, employees…).
+const CONFIG_DATA_TABLES = ['companies', 'roles', 'role_permissions'];
+
+// ── Find pg_dump ──────────────────────────────────────────────────────────────
+function findPgDump() {
+  const probe = spawnSync('pg_dump', ['--version'], { encoding: 'utf8' });
+  if (!probe.error) return 'pg_dump';
+  // Windows: PATH rarely includes the Postgres bin dir
+  const base = 'C:\\Program Files\\PostgreSQL';
+  if (fs.existsSync(base)) {
+    const versions = fs.readdirSync(base).sort((a, b) => Number(b) - Number(a));
+    for (const v of versions) {
+      const exe = path.join(base, v, 'bin', 'pg_dump.exe');
+      if (fs.existsSync(exe)) return exe;
+    }
   }
-}
-
-function timestamp() {
-  return new Date().toISOString()
-    .replace(/[-T:]/g, '')
-    .replace(/\..+/, '')
-    .slice(0, 14);           // YYYYMMDDHHmmss
-}
-
-function dumpSchemaOnly() {
-  console.log(`\n🔍 Capturing schema from "${DB.name}"@${DB.host}:${DB.port} ...`);
-
-  const result = spawnSync('pg_dump', [
-    '-h', DB.host,
-    '-p', DB.port,
-    '-U', DB.user,
-    '-d', DB.name,
-    '--schema-only',
-    '--no-owner',
-    '--no-acl',
-    '--no-comments',
-    '--exclude-table=schema_migrations',  // the runner manages this itself
-  ], { env, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 });
-
-  if (result.status !== 0) {
-    console.error('❌  pg_dump failed:\n', result.stderr);
-    process.exit(1);
-  }
-
-  return result.stdout;
-}
-
-function buildMigrationFile(schemaSql, ts) {
-  // Escape backticks and template-literal markers in the SQL
-  const escaped = schemaSql
-    .replace(/\\/g, '\\\\')
-    .replace(/`/g, '\\`')
-    .replace(/\$\{/g, '\\${');
-
-  return `/**
- * Baseline schema snapshot — generated ${new Date().toISOString()}
- * Database: ${DB.name}@${DB.host}:${DB.port}
- *
- * This migration was auto-generated by scripts/generate-baseline.js.
- * It recreates the full schema on a fresh database. Do not edit by hand —
- * add incremental migrations for subsequent changes.
- *
- * To regenerate: npm run generate-baseline
- */
-
-// Raw DDL captured from the live database
-const BASELINE_SQL = \`
-${escaped}
-\`;
-
-export async function up(knex) {
-  // Execute the full baseline schema; IF NOT EXISTS guards make it idempotent.
-  // Split on statement boundaries so errors point at individual statements.
-  const statements = BASELINE_SQL
-    .split(/;\\s*\\n/)
-    .map(s => s.trim())
-    .filter(s => s.length > 0 && !s.startsWith('--'));
-
-  for (const sql of statements) {
-    if (sql) await knex.raw(sql);
-  }
-}
-
-export async function down(knex) {
-  // Dropping the baseline rolls back everything — use only in dev/test environments.
-  const { rows } = await knex.raw(\`
-    SELECT tablename FROM pg_tables
-    WHERE schemaname = 'public'
-      AND tablename <> 'schema_migrations'
-    ORDER BY tablename
-  \`);
-  for (const { tablename } of rows) {
-    await knex.raw(\`DROP TABLE IF EXISTS "\${tablename}" CASCADE\`);
-  }
-}
-`;
-}
-
-// ── Main ──────────────────────────────────────────────────────────────────────
-checkPgDump();
-
-const schemaSql = dumpSchemaOnly();
-const ts        = timestamp();
-const filename  = `${ts}_baseline.js`;
-const content   = buildMigrationFile(schemaSql, ts);
-
-if (dryRun) {
-  console.log('\n── Generated migration (dry run) ────────────────────────────\n');
-  console.log(content.slice(0, 2000), '\n... (truncated)');
-  console.log(`\n✅  Would write to ${path.join(outDir, filename)}`);
-  process.exit(0);
-}
-
-fs.mkdirSync(outDir, { recursive: true });
-const outPath = path.join(outDir, filename);
-
-if (fs.existsSync(outPath)) {
-  console.error(`❌  File already exists: ${outPath}`);
-  console.error('    Delete it or use --out to specify a different directory.');
+  console.error('❌  pg_dump not found on PATH or under C:\\Program Files\\PostgreSQL.');
   process.exit(1);
 }
 
-fs.writeFileSync(outPath, content, 'utf8');
-const sizeMB = (fs.statSync(outPath).size / 1024).toFixed(1);
-console.log(`\n✅  Baseline migration written: ${outPath} (${sizeMB} KB)`);
-console.log('    Review the file before committing — it contains your full schema.');
-console.log('    Add it to git and run: npm run migrate\n');
+// ── Dump schema ───────────────────────────────────────────────────────────────
+const pgDump = findPgDump();
+console.log(`🔍 Capturing schema from "${DB.name}"@${DB.host}:${DB.port}`);
+
+const result = spawnSync(pgDump, [
+  '-h', DB.host, '-p', DB.port, '-U', DB.user, '-d', DB.name,
+  '--schema-only', '--no-owner', '--no-acl', '--no-comments',
+  // The runner manages the ledger itself — and creates it before the baseline
+  // runs, so both the table AND its serial sequence must be excluded or the
+  // bootstrap collides with them ("relation schema_migrations_id_seq already exists").
+  '--exclude-table=schema_migrations',
+  '--exclude-table=schema_migrations_id_seq',
+], { env, encoding: 'utf8', maxBuffer: 100 * 1024 * 1024 });
+
+if (result.status !== 0) {
+  console.error('❌  pg_dump failed:\n', result.stderr);
+  process.exit(1);
+}
+
+// Normalize line endings; strip psql meta-commands (pg_dump >= 16.10 emits
+// \restrict / \unrestrict lines, which are not SQL and break client.query).
+// Also strip the set_config('search_path','') line: every object in the dump
+// is schema-qualified anyway, and clearing search_path poisons the session the
+// migration runner then uses for its own unqualified ledger INSERTs.
+const sql = result.stdout
+  .replace(/\r\n/g, '\n')
+  .split('\n')
+  .filter(l => !l.startsWith('\\'))
+  .filter(l => !/set_config\('search_path'/.test(l))
+  .join('\n');
+
+// ── Dump config-table data (INSERT form — COPY cannot run via client.query) ──
+function cleanDump(text) {
+  return text
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter(l => !l.startsWith('\\'))
+    .filter(l => !/set_config\('search_path'/.test(l))
+    .join('\n');
+}
+
+let dataSql = '';
+for (const table of CONFIG_DATA_TABLES) {
+  const d = spawnSync(pgDump, [
+    '-h', DB.host, '-p', DB.port, '-U', DB.user, '-d', DB.name,
+    '--data-only', '--no-owner', '--no-acl', '--no-comments',
+    '--rows-per-insert=500',
+    '-t', `public.${table}`,
+  ], { env, encoding: 'utf8', maxBuffer: 100 * 1024 * 1024 });
+  if (d.status !== 0) {
+    console.error(`❌  pg_dump (data: ${table}) failed:\n`, d.stderr);
+    process.exit(1);
+  }
+  dataSql += `\n-- ── ${table} ──\n` + cleanDump(d.stdout);
+}
+
+// ── Build manifest: migration files embodied by this snapshot ────────────────
+// A file on disk that is NOT in the source DB's ledger would be silently lost
+// (marked applied without its effects being in the dump) — refuse instead.
+const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.js')).sort();
+
+const { default: pool } = await import('../src/config/db.js');
+const { rows } = await pool.query('SELECT name FROM schema_migrations');
+const ledger = new Set(rows.map(r => r.name));
+const notApplied = files.filter(f => !ledger.has(f));
+if (notApplied.length) {
+  console.error('❌  Refusing: these migration files are not applied to the source DB,');
+  console.error('    so their effects are missing from the snapshot:');
+  notApplied.forEach(f => console.error('      • ' + f));
+  console.error('    Run `npm run migrate` first, then regenerate.');
+  process.exit(1);
+}
+
+const manifest = {
+  generated_at: new Date().toISOString(),
+  source: `${DB.name}@${DB.host}:${DB.port}`,
+  migrations: files,
+};
+
+const tables = (sql.match(/^CREATE TABLE/gm) || []).length;
+const dataRows = (dataSql.match(/^INSERT INTO/gm) || []).length;
+console.log(`   ${(sql.length / 1024).toFixed(0)} KB schema (${tables} tables), ${(dataSql.length / 1024).toFixed(0)} KB config data (${CONFIG_DATA_TABLES.join(', ')}), ${files.length} migrations embodied`);
+
+if (dryRun) {
+  console.log('✅  Dry run — nothing written.');
+  process.exit(0);
+}
+
+fs.writeFileSync(OUT_SQL, sql, 'utf8');
+fs.writeFileSync(OUT_DATA_SQL, dataSql, 'utf8');
+fs.writeFileSync(OUT_MANIFEST, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+console.log(`✅  Wrote ${OUT_SQL}`);
+console.log(`✅  Wrote ${OUT_DATA_SQL}`);
+console.log(`✅  Wrote ${OUT_MANIFEST}`);
+console.log('    Commit both. Fresh databases now bootstrap from the snapshot;');
+console.log('    existing databases are unaffected.');
+process.exit(0);
