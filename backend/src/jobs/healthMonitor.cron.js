@@ -5,7 +5,10 @@ import { fileURLToPath } from 'url';
 import { snapshot as metricsSnapshot } from '../config/metrics.js';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
-const LOGS_DIR   = path.join(__dirname, '../../../logs');
+// Two levels up from src/jobs lands at the backend root (= /app in the
+// container); a third '..' escaped to the filesystem root (EACCES for the
+// non-root `node` user — see errorHandler.js for the same bug at boot time).
+const LOGS_DIR   = path.join(__dirname, '../../logs');
 const HEALTH_LOG = path.join(LOGS_DIR, 'health.log');
 
 const THRESHOLD_MS            = parseInt(process.env.ALERT_THRESHOLD_MS || '800');

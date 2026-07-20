@@ -21,15 +21,30 @@ import request from 'supertest';
 // ── real DB credentials ───────────────────────────────────────────────────────
 // __tests__/setup.js sets DB_PASSWORD='test-db-password' because every other
 // test mocks the pool. This suite does not, so the real password is restored
-// from .env FIRST — config/db.js builds its Pool at import time, which is why
-// every import below that reaches it must be dynamic and come after this.
+// FIRST — config/db.js builds its Pool at import time, which is why every
+// import below that reaches it must be dynamic and come after this.
 // JWT_SECRET is deliberately left as setup.js's test value so the tokens helper
 // and verifyToken agree.
-const here = dirname(fileURLToPath(import.meta.url));
-const envText = readFileSync(resolve(here, '../../.env'), 'utf8');
-const dbPassword = envText.match(/^DB_PASSWORD=(.*)$/m)?.[1]?.trim();
-if (!dbPassword) throw new Error('DB_PASSWORD not found in backend/.env — this suite needs a real database.');
-process.env.DB_PASSWORD = dbPassword;
+//
+// config/db.js prefers DATABASE_URL over discrete DB_* vars, so when it is
+// already set (CI, Docker — both pass the real connection string as an env
+// var, not a checked-out .env file) DB_PASSWORD is irrelevant and there is
+// nothing to restore. Only a local run without DATABASE_URL needs the real
+// password pulled from the gitignored backend/.env.
+if (!process.env.DATABASE_URL) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  let envText;
+  try {
+    envText = readFileSync(resolve(here, '../../.env'), 'utf8');
+  } catch {
+    throw new Error(
+      'Neither DATABASE_URL nor backend/.env is available — this suite needs a real database.'
+    );
+  }
+  const dbPassword = envText.match(/^DB_PASSWORD=(.*)$/m)?.[1]?.trim();
+  if (!dbPassword) throw new Error('DB_PASSWORD not found in backend/.env — this suite needs a real database.');
+  process.env.DB_PASSWORD = dbPassword;
+}
 
 const { default: pool }    = await import('../config/db.js');
 const { default: partnersRoutes } = await import('../modules/sales/routes/partners.routes.js');

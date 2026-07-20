@@ -3,7 +3,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
-const LOGS_DIR   = path.join(__dirname, '../../../logs');
+// Two levels up from src/middlewares lands at the backend root (= /app in the
+// container). A third '..' escaped to the container filesystem root, which is
+// only writable by root — the non-root `node` user hit EACCES there at boot.
+const LOGS_DIR   = path.join(__dirname, '../../logs');
 const ACCESS_LOG = path.join(LOGS_DIR, 'access.log');
 
 // In production, Render/Railway capture stdout — never write to the container filesystem

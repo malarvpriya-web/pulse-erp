@@ -3,7 +3,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
-const LOGS_DIR   = path.join(__dirname, '../../../logs');
+// Two levels up from src/middlewares lands at the backend root (= /app in the
+// container). A third '..' escaped to the container filesystem root, which is
+// only writable by root — the non-root `node` user hit EACCES there at boot
+// (this file's mkdirSync runs at import time and is unconditional whenever
+// NODE_ENV=production, so it crashed every production/compose boot).
+const LOGS_DIR   = path.join(__dirname, '../../logs');
 const ERROR_LOG  = path.join(LOGS_DIR, 'errors.log');
 const LOG_TO_FILE = process.env.LOG_TO_FILE === 'true' || process.env.NODE_ENV === 'production';
 

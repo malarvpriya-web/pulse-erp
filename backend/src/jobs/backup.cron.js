@@ -20,8 +20,12 @@ import path          from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
-const BACKUP_DIR = path.join(__dirname, '../../../backups');
-const LOGS_DIR   = path.join(__dirname, '../../../logs');
+// Two levels up from src/jobs lands at the backend root (= /app in the
+// container, matching the Dockerfile's pre-created, chowned backups/logs
+// dirs); a third '..' escaped past it (EACCES for the non-root `node` user —
+// see errorHandler.js for the same bug at boot time).
+const BACKUP_DIR = path.join(__dirname, '../../backups');
+const LOGS_DIR   = path.join(__dirname, '../../logs');
 const BACKUP_LOG = path.join(LOGS_DIR, 'backup.log');
 
 // In production, stdout is captured by the platform (Render/Railway).
