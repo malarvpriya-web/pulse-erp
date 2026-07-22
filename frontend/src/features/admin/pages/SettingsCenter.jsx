@@ -87,7 +87,6 @@ const DOMAINS = [
       { label: 'Document Signing',    page: 'DocumentSigning',       icon: PenTool,    desc: 'E-signature workflow configuration' },
       { label: 'Asset Maintenance',   page: 'AssetMaintenance',      icon: Truck,      desc: 'Fixed asset and maintenance rules' },
       { label: 'Notification Setup',  page: 'SetupNotifications',    icon: Bell,       desc: 'Alert rules and notification routing' },
-      { label: 'Master Setup',        page: 'MasterSetup',           icon: Database,   desc: 'Departments, grades, bands, leave types and master data' },
     ],
   },
   {
@@ -97,7 +96,6 @@ const DOMAINS = [
     wizard: null,
     items: [
       { label: 'Security Center',     page: 'SecurityCenter',        icon: ShieldCheck, desc: 'Password policy, 2FA, session rules' },
-      { label: 'Roles & Access',      page: 'RolesSetup',            icon: KeyRound,    desc: 'Role-based access control matrix' },
       { label: 'Audit Logs',          page: 'AuditLogs',             icon: History,     desc: 'System-wide change audit trail' },
       { label: 'Attendance Audit',    page: 'AttendanceAuditLogs',   icon: History,     desc: 'Attendance modification tracking' },
       { label: 'Integrations Hub',    page: 'IntegrationsHub',       icon: Plug2,       desc: 'All external system connections' },
