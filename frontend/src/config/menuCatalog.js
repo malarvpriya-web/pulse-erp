@@ -79,6 +79,11 @@ export const EMPLOYEE_SELF_SERVICE_PAGES = new Set([
   // HR ('Announcements' intentionally excluded — disabled for employee self-service)
   'Policies', 'Downloads', 'EmployeeSelfService',
   'EmployeeDocuments', 'EmployeeAssets', 'SkillMatrix',
+  // HR — company phonebook. employee.routes.js's GET /employees/directory
+  // carries only `verifyToken`, no allowRoles: the backend's own
+  // DIRECTORY_PHONE_ROLES set already documents "regular employees" as an
+  // expected caller (they just get `phone` redacted server-side).
+  'EmployeeDirectory',
   // Service Desk ('KnowledgeBase' intentionally excluded — admin-only page)
   'MyTickets',
   // Travel Desk ('TravelPayment'/'TravelAudit' intentionally excluded — finance-only)
@@ -178,12 +183,24 @@ export const FINANCE_ANALYTICS_SCOPED_PAGES = new Set(['CFODashboard']);
 // ERP-Intelligence/System-Health pages that share the section.
 export const MANAGER_ANALYTICS_SCOPED_PAGES = new Set(['ExecutiveDashboard']);
 
+// ── Manager scoping within the shared 'HR' menu ────────────────────────────
+// manager's allowlist below now also includes 'HR', but only for Employee
+// Directory — never Payroll Center, Offboarding, Exit Management, etc., which
+// stay hr-tier-only. employee.routes.js's DIRECTORY_PHONE_ROLES already lists
+// 'manager' as someone who should see the phone field, so the backend already
+// expected managers to reach this page; the section allowlist was the only
+// thing not granting it.
+export const MANAGER_HR_SCOPED_PAGES = new Set(['EmployeeDirectory']);
+
 // True if the manager role may render `page`. Mirrors canHrAccessPage/
 // canFinanceAccessPage above.
 export function canManagerAccessPage(page) {
   const section = getSectionForPage(page);
   if (section === 'Analytics & AI') {
     return MANAGER_ANALYTICS_SCOPED_PAGES.has(page);
+  }
+  if (section === 'HR') {
+    return MANAGER_HR_SCOPED_PAGES.has(page);
   }
   return true;
 }
@@ -246,10 +263,12 @@ export const ROLE_SECTION_ALLOWLIST = {
   // could open the section). No extra page-level scoping needed: each page
   // already conditions its finance-only/manager-only actions on the caller's
   // role (e.g. TravelAdvances.jsx's disburse button).
+  // 'HR' is scoped to Employee Directory only — see MANAGER_HR_SCOPED_PAGES /
+  // canManagerAccessPage above.
   manager: [
     'Home', 'Approvals', 'Employees', 'Attendance', 'Leaves', 'Timesheets',
     'Performance', 'Projects', 'Recruitment', 'Reports', 'QR Codes',
-    'Notifications', 'Org Chart', 'Analytics & AI', 'Travel Desk',
+    'Notifications', 'Org Chart', 'Analytics & AI', 'Travel Desk', 'HR',
   ],
   // department_head = manager-tier lead of an operational team (warehouse,
   // production or service), not an office function — manager's baseline plus
