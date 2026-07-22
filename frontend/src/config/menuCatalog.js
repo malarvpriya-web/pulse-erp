@@ -355,9 +355,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   // [20260721000002_granular_role_approvals_notifications_grants.js]. 'Marketing'
   // has no role_permissions module of its own — its pages call crm-gated
   // endpoints (see crm.routes.js GET /marketing-dashboard) — so it's granted
-  // here as a frontend-only entry, matching useModuleRegistry.js's
-  // ROLE_MODULE_ACCESS (already listed sales_manager for crm/sales/marketing,
-  // but that registry isn't what Sidebar.jsx reads — this allowlist is).
+  // here as a frontend-only entry.
   // sales_exec holds VAE crm / view+add+edit sales (no approve — no
   // pricing-approval authority) and VA approvals/V notifications as an
   // EXEC_TIER member, but NONE on reports/analytics — Reports and Marketing
