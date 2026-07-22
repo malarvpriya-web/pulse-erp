@@ -608,7 +608,7 @@ router.get('/balance/:employee_id', requirePermission('leaves', 'view'), async (
     const role = (req.user?.role || '').toLowerCase();
     const callerEmpId = req.user?.employee_id;
     // Employees may only fetch their own balance
-    if (!isAdminOrHR(role) && !['manager','team_lead','department_head','l2_approver'].includes(role)) {
+    if (!isAdminOrHR(role) && !['manager','department_head','l2_approver'].includes(role)) {
       if (String(callerEmpId) !== String(req.params.employee_id)) {
         return res.status(403).json({ error: 'You can only view your own leave balance' });
       }
@@ -1189,7 +1189,7 @@ router.get('/team', requirePermission('leaves', 'view'), async (req, res) => {
     if (!isAdminOrHR(role)) {
       filters.manager_id = req.user?.employee_id || null;
       // Security: employees and managers cannot pass arbitrary employee_id to see others
-      if (!['manager','team_lead','department_head','l2_approver'].includes(role)) {
+      if (!['manager','department_head','l2_approver'].includes(role)) {
         delete filters.employee_id;
       }
     }

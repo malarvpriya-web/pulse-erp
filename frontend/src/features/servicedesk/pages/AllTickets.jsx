@@ -344,7 +344,11 @@ export default function AllTickets() {
                   <label>Assign Engineer</label>
                   <select value={form.assigned_to} onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))}>
                     <option value="">Unassigned</option>
-                    {engineers.map(e => <option key={e.id} value={e.name}>{e.name} — {e.specialization || e.zone || ''}</option>)}
+                    {/* support_tickets.assigned_to is an employee_id (integer FK), not
+                        the engineer's name — previously this sent e.name, which the
+                        backend silently rejected/mistyped, so assignment never worked.
+                        Engineers with no linked employee record can't be assigned. */}
+                    {engineers.filter(e => e.employee_id).map(e => <option key={e.id} value={e.employee_id}>{e.name} — {e.specialization || e.zone || ''}</option>)}
                   </select>
                 </div>
               </div>
@@ -418,7 +422,7 @@ export default function AllTickets() {
                 <span className="at-detail-meta">Category: <strong>{detail.category}</strong></span>
                 <span className="at-detail-meta">Team: <strong>{detail.team || '—'}</strong></span>
                 <span className="at-detail-meta">Requester: <strong>{detail.requester_name}</strong></span>
-                {detail.assigned_to && <span className="at-detail-meta">Assigned: <strong>{detail.assigned_to}</strong></span>}
+                {detail.assigned_to && <span className="at-detail-meta">Assigned: <strong>{detail.assigned_to_name || `Employee #${detail.assigned_to}`}</strong></span>}
                 {detail.due_date && (
                   <span className="at-detail-meta" style={{ color: new Date(detail.due_date) < new Date() && !['Resolved','Closed'].includes(detail.status) ? '#ef4444' : undefined }}>
                     Due: <strong>{fmtDate(detail.due_date)}</strong>

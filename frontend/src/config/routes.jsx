@@ -54,7 +54,7 @@ export const ROUTES = {
   CeoDashboard:             { component: lazy(() => import('@/features/analytics/pages/CeoDashboard')) },
   // Phase 49H — CEO Intelligence Dashboard
   CEOIntelligenceDashboard: { component: lazy(() => import('@/features/analytics/pages/CEOIntelligenceDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
-  PowerQualityAnalytics:    { component: lazy(() => import('@/features/engineering/pages/PowerQualityAnalytics')) },
+  PowerQualityAnalytics:    { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/PowerQualityAnalytics')) },
 
   // ── Documents ────────────────────────────────────────────────────────────
   // NativeSignature re-exports DocumentSigning — both names render the unified page
@@ -65,6 +65,10 @@ export const ROUTES = {
 
   // ── Approvals / Notifications ────────────────────────────────────────────
   ApprovalCenter:        { component: lazy(() => import('@/features/approvals/pages/ApprovalCenter')) },
+  // Read-only "status of what I submitted" view — no approve/reject/delegate
+  // controls. Reachable by every role via PERSONAL_PAGES (menuCatalog.js),
+  // regardless of section allowlist, since it carries no approval authority.
+  MyRequests:            { component: lazy(() => import('@/features/approvals/pages/MyRequests')) },
   NotificationCenter:    { component: lazy(() => import('@/features/notifications/pages/NotificationCenter')) },
 
   // ── Employees ────────────────────────────────────────────────────────────
@@ -264,20 +268,20 @@ export const ROUTES = {
   InventorySettings:         { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/InventorySettings')),  props: ctx => ({ setPage: ctx.setPage }) },
 
   // ── Production ───────────────────────────────────────────────────────────
-  ProductionSettings:    { component: lazy(() => import('@/features/production/pages/ProductionSettings')),  props: ctx => ({ setPage: ctx.setPage }) },
-  BOMBuilder:            { component: lazy(() => import('@/features/production/pages/BOMBuilder')),           props: ctx => ({ setPage: ctx.setPage }) },
-  ProductionDashboard:   { component: lazy(() => import('@/features/production/pages/ProductionDashboard')),  props: ctx => ({ setPage: ctx.setPage }) },
-  ProductionDetail:      { component: lazy(() => import('@/features/production/pages/ProductionDetail')),     props: ctx => ({ order: ctx.selectedProduction, setPage: ctx.setPage, initialTab: ctx.selectedProduction?._initialTab }) },
-  ProductionOrders:      { component: lazy(() => import('@/features/production/pages/ProductionOrders')),     props: ctx => ({ setPage: ctx.setPage, setSelectedProduction: ctx.setSelectedProduction }) },
-  ProductionModuleRequests: { component: lazy(() => import('@/features/production/pages/ProductionModuleRequests')) },
-  WorkCentrePlanning:    { component: lazy(() => import('@/features/production/pages/WorkCentrePlanning')) },
-  MRPWorkbench:          { component: lazy(() => import('@/features/production/pages/MRPWorkbench')) },
-  CRPWorkbench:          { component: lazy(() => import('@/features/production/pages/CRPWorkbench')) },
-  SubcontractOrders:     { component: lazy(() => import('@/features/production/pages/SubcontractOrders')) },
-  GenealogyTrace:        { component: lazy(() => import('@/features/production/pages/GenealogyTrace')) },
-  BOMModeling:           { component: lazy(() => import('@/features/production/pages/BOMModeling')) },
-  SOPPlanning:           { component: lazy(() => import('@/features/production/pages/SOPPlanning')) },
-  ShopFloor:             { component: lazy(() => import('@/features/production/pages/ShopFloor')),            props: ctx => ({ setPage: ctx.setPage }) },
+  ProductionSettings:    { module: 'production', component: lazy(() => import('@/features/production/pages/ProductionSettings')),  props: ctx => ({ setPage: ctx.setPage }) },
+  BOMBuilder:            { module: 'production', component: lazy(() => import('@/features/production/pages/BOMBuilder')),           props: ctx => ({ setPage: ctx.setPage }) },
+  ProductionDashboard:   { module: 'production', component: lazy(() => import('@/features/production/pages/ProductionDashboard')),  props: ctx => ({ setPage: ctx.setPage }) },
+  ProductionDetail:      { module: 'production', component: lazy(() => import('@/features/production/pages/ProductionDetail')),     props: ctx => ({ order: ctx.selectedProduction, setPage: ctx.setPage, initialTab: ctx.selectedProduction?._initialTab }) },
+  ProductionOrders:      { module: 'production', component: lazy(() => import('@/features/production/pages/ProductionOrders')),     props: ctx => ({ setPage: ctx.setPage, setSelectedProduction: ctx.setSelectedProduction }) },
+  ProductionModuleRequests: { module: 'production', component: lazy(() => import('@/features/production/pages/ProductionModuleRequests')) },
+  WorkCentrePlanning:    { module: 'production', component: lazy(() => import('@/features/production/pages/WorkCentrePlanning')) },
+  MRPWorkbench:          { module: 'production', component: lazy(() => import('@/features/production/pages/MRPWorkbench')) },
+  CRPWorkbench:          { module: 'production', component: lazy(() => import('@/features/production/pages/CRPWorkbench')) },
+  SubcontractOrders:     { module: 'production', component: lazy(() => import('@/features/production/pages/SubcontractOrders')) },
+  GenealogyTrace:        { module: 'production', component: lazy(() => import('@/features/production/pages/GenealogyTrace')) },
+  BOMModeling:           { module: 'production', component: lazy(() => import('@/features/production/pages/BOMModeling')) },
+  SOPPlanning:           { module: 'production', component: lazy(() => import('@/features/production/pages/SOPPlanning')) },
+  ShopFloor:             { module: 'production', component: lazy(() => import('@/features/production/pages/ShopFloor')),            props: ctx => ({ setPage: ctx.setPage }) },
 
   // ── Projects ─────────────────────────────────────────────────────────────
   // Hub pages — merged financial + lifecycle submenus
@@ -510,23 +514,23 @@ export const ROUTES = {
   EngineeringDev:        { component: lazy(() => import('@/features/engineering/pages/EngineeringDev')) },
 
   // ── Engineering ──────────────────────────────────────────────────────────
-  EngineeringDashboard:     { component: lazy(() => import('@/features/engineering/pages/EngineeringDashboard')) },
-  RDProjects:               { component: lazy(() => import('@/features/engineering/pages/RDProjects')),          props: ctx => ({ setPage: ctx.setPage }) },
-  DesignPhases:             { component: lazy(() => import('@/features/engineering/pages/DesignPhases')),         props: ctx => ({ setPage: ctx.setPage, pageParams: ctx.pageParams }) },
-  PrototypeTracker:         { component: lazy(() => import('@/features/engineering/pages/PrototypeTracker')),     props: ctx => ({ setPage: ctx.setPage, pageParams: ctx.pageParams }) },
-  TestPlans:                { component: lazy(() => import('@/features/engineering/pages/TestPlans')),            props: ctx => ({ setPage: ctx.setPage, pageParams: ctx.pageParams }) },
-  ECNManagement:            { component: lazy(() => import('@/features/engineering/pages/ECNManagement')) },
+  EngineeringDashboard:     { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/EngineeringDashboard')) },
+  RDProjects:               { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/RDProjects')),          props: ctx => ({ setPage: ctx.setPage }) },
+  DesignPhases:             { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/DesignPhases')),         props: ctx => ({ setPage: ctx.setPage, pageParams: ctx.pageParams }) },
+  PrototypeTracker:         { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/PrototypeTracker')),     props: ctx => ({ setPage: ctx.setPage, pageParams: ctx.pageParams }) },
+  TestPlans:                { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/TestPlans')),            props: ctx => ({ setPage: ctx.setPage, pageParams: ctx.pageParams }) },
+  ECNManagement:            { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/ECNManagement')) },
 
   // ── Quality Center ───────────────────────────────────────────────────────
-  QualityDashboard:       { component: lazy(() => import('@/features/quality/pages/QualityDashboard')) },
-  NCRManagement:          { component: lazy(() => import('@/features/quality/pages/NCRManagement')) },
-  CAPAManagement:         { component: lazy(() => import('@/features/quality/pages/CAPAManagement')) },
-  InspectionCenter:       { component: lazy(() => import('@/features/quality/pages/InspectionCenter')) },
-  FATManagement:          { component: lazy(() => import('@/features/quality/pages/FATManagement')) },
-  EquipmentCalibration:   { component: lazy(() => import('@/features/quality/pages/EquipmentCalibration')) },
-  SupplierQuality:        { component: lazy(() => import('@/features/quality/pages/SupplierQuality')) },
-  QualityReports:         { component: lazy(() => import('@/features/quality/pages/QualityReports')) },
-  QualitySettings:        { component: lazy(() => import('@/features/quality/pages/QualitySettings')), props: ctx => ({ setPage: ctx.setPage }) },
+  QualityDashboard:       { module: 'quality', component: lazy(() => import('@/features/quality/pages/QualityDashboard')) },
+  NCRManagement:          { module: 'quality', component: lazy(() => import('@/features/quality/pages/NCRManagement')) },
+  CAPAManagement:         { module: 'quality', component: lazy(() => import('@/features/quality/pages/CAPAManagement')) },
+  InspectionCenter:       { module: 'quality', component: lazy(() => import('@/features/quality/pages/InspectionCenter')) },
+  FATManagement:          { module: 'quality', component: lazy(() => import('@/features/quality/pages/FATManagement')) },
+  EquipmentCalibration:   { module: 'quality', component: lazy(() => import('@/features/quality/pages/EquipmentCalibration')) },
+  SupplierQuality:        { module: 'quality', component: lazy(() => import('@/features/quality/pages/SupplierQuality')) },
+  QualityReports:         { module: 'quality', component: lazy(() => import('@/features/quality/pages/QualityReports')) },
+  QualitySettings:        { module: 'quality', component: lazy(() => import('@/features/quality/pages/QualitySettings')), props: ctx => ({ setPage: ctx.setPage }) },
 };
 
 // ── NAV_ITEMS ──────────────────────────────────────────────────────────────
@@ -543,7 +547,7 @@ import {
 
 export const NAV_ITEMS = [
   { name: 'Home',               icon: <FaHome />,              page: 'Home' },
-  { name: 'Approvals',          icon: <FaClipboardCheck />,    page: 'ApprovalCenter' },
+  { name: 'Approvals',          icon: <FaClipboardCheck />,    page: 'ApprovalCenter', module: 'approvals' },
 
   { name: 'Analytics & AI', icon: <FaRobot />, submenu: [
     { name: 'CEO Intelligence',    page: 'CEOIntelligenceDashboard' },
@@ -564,7 +568,7 @@ export const NAV_ITEMS = [
     { name: 'Employee Reports',    page: 'EmployeeReports' },
   ]},
 
-  { name: 'HR', icon: <FaUserTie />, submenu: [
+  { name: 'HR', icon: <FaUserTie />, module: 'hr', submenu: [
     { name: 'Announcements',       page: 'Announcements' },
     { name: 'Payroll Center',      page: 'PayrollCenter' },      // Settings·Run·Structure·Generate·View
     { name: 'Employee Directory',  page: 'EmployeeDirectory' },
@@ -609,7 +613,7 @@ export const NAV_ITEMS = [
     { name: 'Audit Logs',          page: 'AttendanceAuditLogs' },
   ]},
 
-  { name: 'Leaves', icon: <FaUmbrellaBeach />, module: 'leave', submenu: [
+  { name: 'Leaves', icon: <FaUmbrellaBeach />, module: 'leaves', submenu: [
     { name: 'My Leaves',         page: 'MyLeaves' },
     { name: 'Apply Leave',       page: 'ApplyLeave' },
     { name: 'Leave Approvals',   page: 'LeaveApprovals' },
@@ -635,10 +639,21 @@ export const NAV_ITEMS = [
     { name: 'Financial Reports',     page: 'FinanceReports' },
     { name: 'Customers & Suppliers', page: 'Parties' },
     { name: 'Settings',              page: 'FinanceSettings' },
+    { name: 'Self Service',          separator: true },
+    { name: 'My Payslip',            page: 'PayslipViewer' },
   ]},
 
-  { name: 'Recruitment', icon: <FaBriefcase />, submenu: [
+  { name: 'Recruitment', icon: <FaBriefcase />, module: 'recruitment', submenu: [
     { name: 'Dashboard',           page: 'RecruitmentDashboard' },
+    // Recruiter's personal "my day" view (today's interviews, action-required,
+    // recent applications) — the individual-contributor counterpart to the
+    // org-wide Dashboard above. Moved from 'Talent' 2026-07-22: it was grouped
+    // with the sourcing-database tools (Resume Database/Pools/Agencies) even
+    // though nothing about it is sourcing-related, which also meant manager/
+    // department_head — who hold 'Recruitment' but not 'Talent' — could never
+    // reach it. No backend change needed: GET /talent/recruiter-dashboard
+    // carries no allowRoles restriction of its own.
+    { name: 'Recruiter Dashboard', page: 'RecruiterDashboard' },
     { name: 'Job Requisitions',    page: 'JobRequisitionPipeline' },
     { name: 'Job Openings',        page: 'JobOpenings' },
     { name: 'All Candidates',      page: 'AllCandidates' },
@@ -652,12 +667,14 @@ export const NAV_ITEMS = [
     { name: 'Settings',            page: 'RecruitmentSettings' },
   ]},
 
+  // Sourcing/backstage tools, distinct from Recruitment's active-requisition
+  // pipeline: these run on /talent/* against `resumes`/`pools`/`agencies`,
+  // not the `candidates` tied to a specific job opening.
   { name: 'Talent', icon: <FaStar />, submenu: [
     { name: 'Resume Database',     page: 'ResumeDatabase' },
     { name: 'Talent Pools',        page: 'TalentPools' },
     { name: 'Question Bank',       page: 'InterviewQuestionBank' },
     { name: 'Agencies',            page: 'RecruitmentAgencies' },
-    { name: 'Recruiter Dashboard', page: 'RecruiterDashboard' },
   ]},
 
   { name: 'CRM', icon: <FaHandshake />, submenu: [
@@ -737,7 +754,7 @@ export const NAV_ITEMS = [
     { name: 'Settings',            page: 'InventorySettings' },
   ]},
 
-  { name: 'Production', icon: <FaFlask />, submenu: [
+  { name: 'Production', icon: <FaFlask />, module: 'production', submenu: [
     { name: 'Production Dashboard',page: 'ProductionDashboard' },
     { name: 'Module Production Batches', page: 'ProductionOrders' },
     { name: 'Module Batch Requests', page: 'ProductionModuleRequests' },
@@ -754,7 +771,7 @@ export const NAV_ITEMS = [
     { name: 'Settings',            page: 'ProductionSettings' },
   ]},
 
-  { name: 'Quality', icon: <FaShieldAlt />, submenu: [
+  { name: 'Quality', icon: <FaShieldAlt />, module: 'quality', submenu: [
     { name: 'Dashboard',             page: 'QualityDashboard' },
     { name: 'NCR Management',        page: 'NCRManagement' },
     { name: 'CAPA Management',       page: 'CAPAManagement' },
@@ -766,7 +783,7 @@ export const NAV_ITEMS = [
     { name: 'Settings',              page: 'QualitySettings' },
   ]},
 
-  { name: 'Engineering', icon: <FaWrench />, submenu: [
+  { name: 'Engineering', icon: <FaWrench />, module: 'engineering', submenu: [
     { name: 'Dashboard',           page: 'EngineeringDashboard' },
     { name: 'Power Quality',       page: 'PowerQualityAnalytics' },
     { name: 'R&D Projects',        page: 'RDProjects' },
@@ -815,6 +832,7 @@ export const NAV_ITEMS = [
   { name: 'Performance', icon: <FaTrophy />, module: 'performance', submenu: [
     { name: 'My Reviews',          page: 'PerformanceReviews' },
     { name: 'Goals & KPIs',        page: 'Goals' },
+    { name: '360° Feedback',       page: 'Feedback360' },
     { name: 'Team Performance',    page: 'TeamPerformance' },
     { name: 'Settings',            page: 'PerformanceSettings' },
   ]},
@@ -827,7 +845,7 @@ export const NAV_ITEMS = [
     { name: 'Complaint Register',  page: 'CustomerComplaintsIPCS' },
   ]},
 
-  { name: 'Service Desk', icon: <FaHeadset />, submenu: [
+  { name: 'Service Desk', icon: <FaHeadset />, module: 'servicedesk', submenu: [
     { name: 'Dashboard',         page: 'SupportDashboard' },
     { name: 'All Tickets',       page: 'AllTickets' },
     { name: 'My Tickets',        page: 'MyTickets' },
@@ -887,7 +905,8 @@ export const NAV_ITEMS = [
   // Direct access to the account/role/approval screens, which otherwise exist
   // only as tabs inside Settings → Access Control. Users and Roles are in
   // SUPER_ADMIN_ONLY_PAGES, so the Sidebar filters them out for every role
-  // except super_admin — an admin sees this group with Approver alone.
+  // except super_admin — for admin, Sidebar.jsx collapses this group down to
+  // a flat "Approver" link instead of a one-item folder.
   { name: 'User Management', icon: <FaUserShield />, submenu: [
     { name: 'Users',               page: 'UserSetup' },
     { name: 'Roles',               page: 'RolesSetup' },
@@ -918,7 +937,7 @@ export const NAV_ITEMS = [
     { name: 'Org Setup',           page: 'OrganizationSetup' },
   ]},
 
-  { name: 'Notifications', icon: <FaBell />, page: 'NotificationCenter' },
+  { name: 'Notifications', icon: <FaBell />, page: 'NotificationCenter', module: 'notifications' },
   { name: 'Org Chart',     icon: <FaSitemap />, page: 'OrgChart' },
   { name: 'Audit Logs',    icon: <FaHistory />, page: 'AuditLogs' },
 ];

@@ -1,0 +1,29 @@
+/* MyRequests — prefix: mr- */
+.my-requests-page h1 { font-size: 20px; font-weight: 700; color: var(--color-text, #111827); margin: 0 0 4px; }
+.mr-subtitle { font-size: 13px; color: var(--color-text-sec, #6b7280); margin: 0 0 20px; }
+
+.mr-section { margin-bottom: 28px; }
+.mr-section h2 { font-size: 15px; font-weight: 700; color: var(--color-text, #111827); margin: 0 0 6px; }
+.mr-hint { font-size: 12px; color: var(--color-text-sec, #6b7280); margin: 0 0 12px; }
+
+.mr-table-container {
+  background: #fff; border: 1px solid #f0f0f4; border-radius: 12px;
+  overflow-x: auto; box-shadow: 0 1px 4px rgba(0,0,0,.04);
+}
+.mr-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.mr-table th, .mr-table td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #f3f4f6; }
+.mr-table th { font-weight: 600; color: #6b7280; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.mr-table tbody tr:last-child td { border-bottom: none; }
+
+.mr-badge {
+  display: inline-block; padding: 3px 10px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.mr-nowrap { white-space: nowrap; }
+.mr-notes { color: #6b7280; max-width: 260px; }
+
+.mr-empty {
+  background: #fff; border: 1px solid #f0f0f4; border-radius: 12px;
+  padding: 32px; text-align: center; color: #9ca3af; font-size: 13px;
+}
+.mr-error { color: #dc2626; }

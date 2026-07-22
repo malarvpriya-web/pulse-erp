@@ -5,9 +5,10 @@ import {
   KeyRound, Calendar, IndianRupee, Repeat, MapPin, Fingerprint,
   Monitor, Cpu, ClipboardList, Package, Database, BarChart3,
   FileText, PenTool, Link2, Bell, History, Server, BookOpen,
-  Plug2, RefreshCw, Star, Workflow, Truck,
+  Plug2, RefreshCw, Star, Workflow, Truck, AlertTriangle,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { useAuth } from '@/context/AuthContext';
 import './SettingsCenter.css';
 
 const P  = 'var(--sc-primary)';
@@ -103,7 +104,8 @@ const DOMAINS = [
       { label: 'Zoho Sign',           page: 'ZohoSignIntegration',   icon: PenTool,     desc: 'Digital signature integration' },
       { label: 'API Documentation',   page: 'APIDocumentation',      icon: BookOpen,    desc: 'REST API reference and testing' },
       { label: 'System Health',       page: 'SystemHealth',          icon: Server,      desc: 'Monitor system performance' },
-      { label: 'Database Test',       page: 'DatabaseTest',          icon: Database,    desc: 'Database connection diagnostics' },
+      // Database Test deliberately excluded — it writes real production rows,
+      // not a diagnostic on par with the rest of this domain. See DangerZoneCard.
     ],
   },
   {
@@ -241,8 +243,68 @@ function SettingCard({ item, color, bg, border, onClick }) {
   );
 }
 
+// ── Danger Zone — production write-tests, deliberately not a "setting" ─────
+// Kept out of the domain grid above: it doesn't configure anything and has no
+// completion %, it creates real rows in live tables. super_admin only.
+function DangerZoneCard({ onClick }) {
+  const [btnHov, setBtnHov] = useState(false);
+  return (
+    <div style={{
+      marginTop: 22, borderRadius: 14, border: '1px solid #fecaca',
+      background: '#fff', padding: '18px 20px',
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      gap: 16, flexWrap: 'wrap',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+        <div style={{
+          width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+          background: '#fee2e2', border: '1px solid #fecaca',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <AlertTriangle size={18} color="#dc2626" />
+        </div>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#991b1b', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            Danger Zone
+            <span style={{
+              fontSize: 9, fontWeight: 700, color: '#991b1b',
+              background: '#fee2e2', border: '1px solid #fecaca',
+              borderRadius: 20, padding: '2px 8px', letterSpacing: '.03em',
+            }}>
+              SUPER ADMIN ONLY
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: '#7f1d1d', marginTop: 3, maxWidth: 480, lineHeight: 1.5 }}>
+            Database Test writes real records straight into production tables
+            (employees, leaves, announcements, leads…). It's a diagnostic tool,
+            not a sandbox — kept out of Setup Center and everyday settings on purpose.
+          </div>
+        </div>
+      </div>
+      <button
+        onClick={onClick}
+        onMouseEnter={() => setBtnHov(true)}
+        onMouseLeave={() => setBtnHov(false)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+          padding: '9px 16px', borderRadius: 8, border: '1px solid #dc2626',
+          background: btnHov ? '#dc2626' : '#fff', color: btnHov ? '#fff' : '#dc2626',
+          fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+          transition: 'all .15s',
+        }}
+      >
+        <Database size={13} /> Open Database Test
+      </button>
+    </div>
+  );
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 export default function SettingsCenter({ setPage }) {
+  const { role: authRole } = useAuth();
+  const role = (authRole || '').toLowerCase();
+  const isSuperAdmin = role === 'super_admin' || role === 'superadmin';
+
   const [activeDomain, setActiveDomain] = useState(null);
   const [query,        setQuery]        = useState('');
   const [statusData,   setStatusData]   = useState(null);
@@ -463,6 +525,11 @@ export default function SettingsCenter({ setPage }) {
                   />
                 ))}
               </div>
+            )}
+
+            {/* Danger Zone — separate from the domain grid, super_admin only */}
+            {!q && isSuperAdmin && (
+              <DangerZoneCard onClick={() => navigateTo('DatabaseTest')} />
             )}
 
             {/* Flat search results */}

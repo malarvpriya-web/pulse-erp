@@ -4,6 +4,7 @@ import pool from '../../config/db.js';
 import { nextAccountingJournalNumber } from '../../shared/docNumber.js';
 import { numberToWordsINR } from '../../shared/numberToWordsINR.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { postPayrollJournal } from './services/payrollJournal.service.js';
 
 const router = express.Router();
 
@@ -1325,74 +1326,18 @@ router.post('/payroll-journal', requirePermission('finance', 'approve'), async (
     const companyId = cid(req);
     const userId = req.user?.userId ?? req.user?.id ?? null;
 
-    const grossAmt = parseFloat(gross_salary || net_salary || 0);
-    const pfAmt    = parseFloat(pf_employer || 0);
-    const esiAmt   = parseFloat(esi_employer || 0);
-    const totalExp = grossAmt + pfAmt + esiAmt;
-    const salaryPayable = parseFloat(net_salary || grossAmt);
+    const result = await postPayrollJournal({
+      payroll_run_id, payroll_month, net_salary, pf_employer, esi_employer, gross_salary,
+      companyId, userId,
+    });
 
-    if (totalExp <= 0) return res.status(400).json({ error: 'Salary amounts must be greater than zero' });
-
-    // Check if journal already posted for this payroll run
-    const { rows: existing } = await pool.query(
-      `SELECT id FROM journal_entries WHERE reference_type = 'payroll_run' AND reference_id = $1`,
-      [String(payroll_run_id)]
-    );
-    if (existing.length > 0) {
-      return res.status(409).json({ error: `Journal entry already exists for payroll run ${payroll_run_id}`, journal_entry_id: existing[0].id });
+    if (result.skipped && result.reason === 'already_posted') {
+      return res.status(409).json({ error: `Journal entry already exists for payroll run ${payroll_run_id}`, journal_entry_id: result.journal_entry_id });
     }
-
-    const { rows: accts } = await pool.query(
-      `SELECT id, code, name FROM chart_of_accounts WHERE code IN ('5010','5011','5012','2040') AND is_active = true`
-    );
-    const am = accts.reduce((m, a) => { m[a.code] = a; return m; }, {});
-    if (!am['5010'] || !am['2040']) {
-      return res.status(400).json({ error: 'Required accounts 5010 (Salaries) and 2040 (Salary Payable) not found in COA' });
+    if (result.skipped) {
+      return res.status(400).json({ error: result.reason });
     }
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const entryNumber = await nextAccountingJournalNumber(client);
-      const { rows: [je] } = await client.query(
-        `INSERT INTO journal_entries
-           (entry_number, entry_date, entry_type, description, reference_type, reference_id, status, total_debit, total_credit, company_id, created_by)
-         VALUES ($1, $2, 'Payroll', $3, 'payroll_run', $4, 'posted', $5, $6, $7, $8) RETURNING *`,
-        [
-          entryNumber,
-          (() => { const [y,m] = payroll_month.split('-').map(Number); return `${payroll_month}-${String(new Date(y,m,0).getDate()).padStart(2,'0')}`; })(), // last day of payroll month
-          `Payroll journal — ${payroll_month}`,
-          String(payroll_run_id),
-          totalExp, salaryPayable,
-          companyId, userId,
-        ]
-      );
-      const insertLine = (code, debit, credit, narration) => {
-        const a = am[code];
-        if (!a || (debit === 0 && credit === 0)) return Promise.resolve();
-        return client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [je.id, a.id, code, a.name, debit, credit, narration, companyId]
-        );
-      };
-      await insertLine('5010', grossAmt, 0, `Gross salary — ${payroll_month}`);
-      if (pfAmt > 0 && am['5011'])  await insertLine('5011', pfAmt, 0,   `PF employer contribution — ${payroll_month}`);
-      if (esiAmt > 0 && am['5012']) await insertLine('5012', esiAmt, 0,  `ESI employer contribution — ${payroll_month}`);
-      await insertLine('2040', 0, salaryPayable, `Salary payable — ${payroll_month}`);
-
-      await client.query('COMMIT');
-      res.status(201).json({
-        success: true,
-        journal_entry: { id: je.id, entry_number: je.entry_number, status: 'posted' },
-        summary: { gross_salary: grossAmt, pf_employer: pfAmt, esi_employer: esiAmt, salary_payable: salaryPayable },
-      });
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+    res.status(201).json(result);
   } catch (err) {
     console.error('[POST /payroll-journal]', err.message);
     res.status(500).json({ error: err.message });
@@ -1864,7 +1809,7 @@ async function interestHandler(kind, req, res) {
                 (COALESCE(b.net_payable, b.total_amount) - COALESCE(b.paid_amount,0))::NUMERIC AS balance,
                 ($1::date - COALESCE(b.due_date, b.bill_date)) AS overdue_days
          FROM bills b
-         LEFT JOIN parties pt ON pt.id = b.party_id
+         LEFT JOIN parties pt ON pt.id = b.supplier_id
          WHERE b.deleted_at IS NULL
            AND LOWER(COALESCE(b.status,'pending')) NOT IN ('paid','cancelled','rejected','draft')
            AND (COALESCE(b.net_payable, b.total_amount) - COALESCE(b.paid_amount,0)) > 0

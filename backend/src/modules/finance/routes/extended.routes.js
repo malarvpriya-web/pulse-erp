@@ -1019,7 +1019,7 @@ router.get('/purchase-dashboard/payable', async (req, res) => {
         `SELECT b.id, b.bill_number, b.bill_date, b.due_date, b.status,
                 ${amtCol} AS amount,
                 COALESCE(p.name, b.party_name) AS vendor_name
-         FROM bills b LEFT JOIN parties p ON b.party_id = p.id
+         FROM bills b LEFT JOIN parties p ON b.supplier_id = p.id
          WHERE b.status NOT IN ('paid','cancelled','void') AND b.deleted_at IS NULL${cidSQL}
          ORDER BY b.due_date NULLS LAST LIMIT 20`,
         params
@@ -1072,7 +1072,7 @@ router.get('/report-purchase', async (req, res) => {
     }
     if (date_from) { params.push(date_from); where += ` AND b.bill_date>=$${params.length}`; }
     if (date_to)   { params.push(date_to);   where += ` AND b.bill_date<=$${params.length}`; }
-    if (supplier_id) { params.push(parseInt(supplier_id, 10)); where += ` AND b.party_id=$${params.length}`; }
+    if (supplier_id) { params.push(supplier_id); where += ` AND b.supplier_id=$${params.length}`; }
     if (status === 'overdue') {
       where += ` AND b.due_date < CURRENT_DATE AND LOWER(b.status) NOT IN ('paid','cancelled')`;
     } else if (status) {
@@ -1102,7 +1102,7 @@ router.get('/report-purchase', async (req, res) => {
              ELSE LOWER(b.status)
            END                                                            AS display_status
          FROM bills b
-         LEFT JOIN parties p ON b.party_id = p.id
+         LEFT JOIN parties p ON b.supplier_id = p.id
          WHERE ${where}
          ORDER BY b.bill_date DESC NULLS LAST
          LIMIT 1000`,
@@ -1112,7 +1112,7 @@ router.get('/report-purchase', async (req, res) => {
       pool.query(
         `SELECT
            COUNT(*)                                                                                    AS total_bills,
-           COUNT(DISTINCT b.party_id)                                                                  AS unique_suppliers,
+           COUNT(DISTINCT b.supplier_id)                                                                AS unique_suppliers,
            COALESCE(SUM(COALESCE(b.total_amount, b.amount, 0)), 0)                                     AS total_purchase_value,
            COALESCE(SUM(COALESCE(b.tax_amount, 0)), 0)                                                 AS total_gst_paid,
            COALESCE(AVG(COALESCE(b.total_amount, b.amount, 0)), 0)                                     AS avg_bill_value,

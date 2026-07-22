@@ -830,7 +830,7 @@ router.get('/purchase-register', requirePermission('finance', 'view'), async (re
         b.tds_amount,
         b.status
       FROM bills b
-      LEFT JOIN parties p ON p.id = b.party_id
+      LEFT JOIN parties p ON p.id = b.supplier_id
       WHERE DATE(b.bill_date) BETWEEN $1 AND $2
         AND b.company_id = $3
         AND b.status NOT IN ('draft','cancelled')
@@ -901,7 +901,7 @@ router.get('/supplier-outstanding', requirePermission('finance', 'view'), async 
         COALESCE(SUM(b.amount), 0)                                                        AS outstanding,
         MIN(b.due_date)                                                                   AS oldest_due
       FROM bills b
-      JOIN parties p ON p.id = b.party_id
+      JOIN parties p ON p.id = b.supplier_id
       WHERE b.status NOT IN ('paid','cancelled','draft')
         AND b.company_id = $1
       GROUP BY p.id, p.name, p.gstin, p.phone

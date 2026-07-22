@@ -12,7 +12,8 @@ import useSessionManager from '@/hooks/useSessionManager';
 import { MERGED_ROUTES as ROUTES } from '@/config/autoRouter';
 import {
   getSectionForPage, canEmployeeAccessPage, canRoleAccessAdminOnlyPage,
-  canRoleAccessSuperAdminPage, canRoleAccessPageBySection,
+  canRoleAccessSuperAdminPage, canRoleAccessPageBySection, canHrAccessPage,
+  canFinanceAccessPage, canHrExecAccessPage, canManagerAccessPage,
 } from '@/config/menuCatalog';
 import './Layout.css';
 
@@ -77,6 +78,35 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
     // Service Desk, Travel Desk, Attendance, Leaves, Timesheets) — management
     // pages are blocked even via direct URL, not just hidden from the menu.
     if (role === 'employee' && !canEmployeeAccessPage(page)) {
+      const Unauthorized = ROUTES['Unauthorized'].component;
+      return <Unauthorized setPage={setPage} />;
+    }
+    // HR may only reach its own dashboards inside the shared 'Analytics & AI'
+    // section — the CEO/CFO/Ops/Executive/ERP-Intelligence/System-Health
+    // pages that share it are blocked even via direct URL.
+    if (role === 'hr' && sectionAccess !== 'view' && sectionAccess !== 'edit' && !canHrAccessPage(page)) {
+      const Unauthorized = ROUTES['Unauthorized'].component;
+      return <Unauthorized setPage={setPage} />;
+    }
+    // Finance may only reach self-service pages inside the shared Leaves/
+    // Attendance sections (leave approvals, team views, and attendance
+    // admin/config screens are blocked even via direct URL) and, inside the
+    // shared 'Analytics & AI' section, only the CFO Dashboard.
+    if (role === 'finance' && sectionAccess !== 'view' && sectionAccess !== 'edit' && !canFinanceAccessPage(page)) {
+      const Unauthorized = ROUTES['Unauthorized'].component;
+      return <Unauthorized setPage={setPage} />;
+    }
+    // hr_exec may reach the rest of the 'HR' section but not Payroll Center —
+    // role_permissions grants it no payroll access, even via direct URL.
+    if (role === 'hr_exec' && sectionAccess !== 'view' && sectionAccess !== 'edit' && !canHrExecAccessPage(page)) {
+      const Unauthorized = ROUTES['Unauthorized'].component;
+      return <Unauthorized setPage={setPage} />;
+    }
+    // manager may only reach its own dashboard (Executive Dashboard) inside
+    // the shared 'Analytics & AI' section — the CEO/CFO/Ops/HR/ERP-
+    // Intelligence/System-Health pages that share it are blocked even via
+    // direct URL.
+    if (role === 'manager' && sectionAccess !== 'view' && sectionAccess !== 'edit' && !canManagerAccessPage(page)) {
       const Unauthorized = ROUTES['Unauthorized'].component;
       return <Unauthorized setPage={setPage} />;
     }

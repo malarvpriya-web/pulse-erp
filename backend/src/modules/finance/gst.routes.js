@@ -431,7 +431,7 @@ router.get('/rcm/bills', async (req, res) => {
         p.gstin AS supplier_gstin
       FROM bills b
       LEFT JOIN rcm_self_invoices rsi ON rsi.id = b.rcm_self_invoice_id
-      LEFT JOIN parties p ON p.id::text = b.party_id::text
+      LEFT JOIN parties p ON p.id = b.supplier_id
       WHERE b.is_rcm = true
     `;
     const params = [];
@@ -461,7 +461,7 @@ router.post('/rcm/self-invoice', async (req, res) => {
   try {
     const { rows: [bill] } = await pool.query(
       `SELECT b.*, p.name AS p_name, p.gstin AS p_gstin
-       FROM bills b LEFT JOIN parties p ON p.id::text = b.party_id::text
+       FROM bills b LEFT JOIN parties p ON p.id = b.supplier_id
        WHERE b.id = $1`,
       [bill_id]
     );
@@ -526,10 +526,10 @@ router.post('/rcm/self-invoice', async (req, res) => {
       for (const l of itcLines) {
         if (l.amt <= 0) continue;
         const { rows: [acc] } = await client.query(
-          `SELECT id FROM chart_of_accounts WHERE account_code=$1 LIMIT 1`, [l.code]
+          `SELECT id FROM chart_of_accounts WHERE code=$1 LIMIT 1`, [l.code]
         );
         await client.query(
-          `INSERT INTO journal_entry_lines (journal_entry_id, account_id, account_code, description, debit, credit)
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, narration, debit, credit)
            VALUES ($1,$2,$3,$4,$5,0)`,
           [je.id, acc?.id || null, l.code, l.desc, l.amt]
         );
@@ -537,10 +537,10 @@ router.post('/rcm/self-invoice', async (req, res) => {
       for (const l of taxLines) {
         if (l.amt <= 0) continue;
         const { rows: [acc] } = await client.query(
-          `SELECT id FROM chart_of_accounts WHERE account_code=$1 LIMIT 1`, [l.code]
+          `SELECT id FROM chart_of_accounts WHERE code=$1 LIMIT 1`, [l.code]
         );
         await client.query(
-          `INSERT INTO journal_entry_lines (journal_entry_id, account_id, account_code, description, debit, credit)
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, narration, debit, credit)
            VALUES ($1,$2,$3,$4,0,$5)`,
           [je.id, acc?.id || null, l.code, l.desc, l.amt]
         );

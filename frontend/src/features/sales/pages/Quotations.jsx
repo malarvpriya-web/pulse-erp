@@ -206,7 +206,7 @@ function RevisionDrawer({ open, onClose, quotationId, onRevise }) {
 }
 
 // ── Main Component ────────────────────────────────────────────────────────────
-const Quotations = ({ setPage } = {}) => {
+const Quotations = ({ setPage, urlParams } = {}) => {
   const toast = useToast();
   const { readOnly } = usePageAccess();
   const [quotations, setQuotations]   = useState([]);
@@ -230,6 +230,14 @@ const Quotations = ({ setPage } = {}) => {
   useEffect(() => {
     isMounted.current = true;
     return () => { isMounted.current = false; };
+  }, []);
+
+  // Arriving from "Create Quotation" on an Opportunity (OpportunitiesKanban.jsx) —
+  // that action already created the real draft quotation server-side; land here
+  // pre-filtered to it instead of a blank list.
+  useEffect(() => {
+    if (urlParams?.search) setSearch(urlParams.search);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const [formData, setFormData] = useState({

@@ -292,8 +292,10 @@ const pendingApprovalUnion = async (companyId) => {
     .sort((a, b) => new Date(a.request_date || 0) - new Date(b.request_date || 0));
 };
 
-// Employee "My pending approvals" — split into two labeled groups.
-const getEmployeeApprovals = async (userId, employeeId, companyId) => {
+// Employee "My pending approvals" — split into two labeled groups. Exported so
+// the read-only My Requests page (approvals.controller.js getMyRequests) can
+// reuse the same "awaiting my action" logic without re-deriving the query.
+export const getEmployeeApprovals = async (userId, employeeId, companyId) => {
   const all = await pendingApprovalUnion(companyId);
   const empId = employeeId != null ? String(employeeId) : null;
   const uId   = userId != null ? String(userId) : null;

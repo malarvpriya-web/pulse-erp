@@ -63,6 +63,13 @@ class GRNService {
             remarks: `GRN ${grnNumber}` + (item.quantity_rejected > 0 ? ` (${item.quantity_rejected} rejected)` : ''),
             created_by: userId
           });
+
+          // Keep inventory_items.current_stock in sync — dashboard low-stock
+          // KPIs read this column directly, not the stock_ledger balance.
+          await client.query(
+            `UPDATE inventory_items SET current_stock = COALESCE(current_stock, 0) + $2, updated_at = NOW() WHERE id = $1`,
+            [item.item_id, acceptedQty]
+          );
         }
       }
 
@@ -135,6 +142,11 @@ class GRNService {
           remarks: `RTV ${rtvNumber}`,
           created_by: userId
         });
+
+        await client.query(
+          `UPDATE inventory_items SET current_stock = COALESCE(current_stock, 0) - $2, updated_at = NOW() WHERE id = $1`,
+          [item.item_id, item.quantity_returned]
+        );
       }
 
       await client.query('COMMIT');

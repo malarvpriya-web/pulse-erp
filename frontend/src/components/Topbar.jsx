@@ -1,5 +1,5 @@
 import { useAuth } from "@/context/AuthContext";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Bell, Search, ChevronLeft, X, LogOut, CheckCheck, RefreshCw,
@@ -10,6 +10,7 @@ import api from "@/services/api/client";
 import "./Topbar.css";
 import logo from "../assets/logo.png";
 import { NAV_ITEMS } from "@/config/routes";
+import { canRoleOpenPage } from "@/config/menuCatalog";
 
 // Build search list from NAV_ITEMS
 const SEARCH_PAGES = [
@@ -70,8 +71,18 @@ const timeAgo = ts => {
 };
 
 export default function Topbar({ goBack, currentPage }) {
-  const { user, role, logout } = useAuth();
+  const { user, role, menuAccess, logout } = useAuth();
   const navigateTo = useNavigate();
+
+  // Pages the signed-in role could never open — hidden from the inline
+  // search so it doesn't advertise admin/other-role machinery (Setup Wizard,
+  // Master Setup, System Health, Leave Approvals, …) by name to a role that
+  // will only hit "Unauthorized" clicking through. Mirrors the same check
+  // GlobalSearch.jsx runs for the command-palette search.
+  const searchablePages = useMemo(
+    () => SEARCH_PAGES.filter(p => canRoleOpenPage(role, p.page, { menuAccess })),
+    [role, menuAccess]
+  );
 
   // notifications state
   const [notifs,       setNotifs]       = useState([]);
@@ -157,7 +168,7 @@ export default function Topbar({ goBack, currentPage }) {
     }
     // Instant page results
     setResults(
-      SEARCH_PAGES.filter(p =>
+      searchablePages.filter(p =>
         p.label.toLowerCase().includes(q) || p.group.toLowerCase().includes(q)
       ).slice(0, 6)
     );
@@ -182,7 +193,7 @@ export default function Topbar({ goBack, currentPage }) {
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     };
-  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [search, searchablePages]);
 
   // ── Close dropdowns on outside click ──────────────────────────────────────
   useEffect(() => {

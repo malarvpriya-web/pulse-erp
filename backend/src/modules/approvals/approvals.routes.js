@@ -11,6 +11,9 @@ router.get("/pending",     controller.getPendingApprovals);
 router.get("/history",     controller.getApprovalHistory);
 router.get("/stats",       controller.getApprovalStats);
 router.get("/delegates",   controller.getDelegateUsers);
+// Scoped to the caller's own employee_id (resolved server-side, never from
+// client input) — safe for any role, including plain `employee`.
+router.get("/my-requests", controller.getMyRequests);
 router.get("/:id/chain",   controller.getApprovalChain);
 
 // Writes: every route below decides someone else's request. Until 2026-07-19

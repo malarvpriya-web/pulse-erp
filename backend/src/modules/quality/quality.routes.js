@@ -10,11 +10,31 @@ router.use(verifyToken);
 const cid = (req) => req.scope?.company_id ?? null;
 const uid = (req) => req.user?.userId ?? req.user?.id ?? null;
 
-// Role guards — quality_inspector can view/create, quality_manager can approve/close/delete
-const canView   = allowRoles('admin','super_admin','quality_manager','quality_inspector','manager');
-const canCreate = allowRoles('admin','super_admin','quality_manager','quality_inspector','manager');
-const canManage = allowRoles('admin','super_admin','quality_manager','manager');
+// Role guards — codes must match `roles.code` (see phase42_security_roles migration).
+// qc_engineer can view/create, qc_manager can approve/close/delete; production_manager
+// holds broad quality authority (VAEDAP) but no delete/settings; production_engineer and
+// design_engineer are view-only on quality.
+const canView   = allowRoles('admin','super_admin','manager','qc_manager','qc_engineer','production_manager','production_engineer','design_engineer');
+const canCreate = allowRoles('admin','super_admin','manager','qc_manager','qc_engineer','production_manager');
+const canManage = allowRoles('admin','super_admin','manager','qc_manager','production_manager');
 const canAdmin  = allowRoles('admin','super_admin');
+
+// A failed quality check must stop the batch, not just paper-trail it — put the
+// parent production order on hold so non-conforming product can't keep moving.
+async function holdProductionOrderOnQcFail(referenceType, referenceId) {
+  if (!referenceId) return;
+  let poId = null;
+  if (referenceType === 'production_order') poId = referenceId;
+  else if (referenceType === 'production_operation') {
+    const op = await pool.query('SELECT production_order_id FROM production_operations WHERE id=$1', [referenceId]).catch(() => ({ rows: [] }));
+    poId = op.rows[0]?.production_order_id || null;
+  }
+  if (!poId) return;
+  await pool.query(
+    `UPDATE production_orders SET status='on_hold', updated_at=NOW() WHERE id=$1 AND status NOT IN ('completed','cancelled','on_hold')`,
+    [poId]
+  ).catch(() => {});
+}
 
 function toCSV(rows) {
   if (!rows.length) return '';
@@ -171,9 +191,10 @@ router.get('/inspect/:id', canView, async (req, res) => {
 router.put('/inspect/:id', canCreate, async (req, res) => {
   try {
     const { item_results, overall_result, status } = req.body;
-    const existing = await pool.query('SELECT results FROM inspection_reports WHERE id=$1', [req.params.id]);
+    const existing = await pool.query('SELECT * FROM inspection_reports WHERE id=$1', [req.params.id]);
     if (!existing.rows.length) return res.status(404).json({ success: false, error: 'Not found' });
-    const merged = existing.rows[0].results || {};
+    const before = existing.rows[0];
+    const merged = before.results || {};
     if (Array.isArray(item_results)) {
       for (const r of item_results) { merged[r.item_id] = { result: r.result, actual_value: r.actual_value, notes: r.notes }; }
     }
@@ -183,7 +204,24 @@ router.put('/inspect/:id', canCreate, async (req, res) => {
        WHERE id=$4 RETURNING id, status, overall_result, results`,
       [JSON.stringify(merged), status || null, overall_result || null, req.params.id]
     );
-    res.json({ success: true, data: rows[0] });
+    const updated = rows[0];
+    // Auto-raise NCR + hold the parent production order on a fresh fail (mirrors POST /inspect)
+    let autoNcr = null;
+    if (updated.overall_result === 'fail' && before.overall_result !== 'fail') {
+      await holdProductionOrderOnQcFail(before.reference_type, before.reference_id);
+      const settings = await pool.query('SELECT iqc_auto_ncr_on_fail, ncr_auto_number_prefix FROM quality_settings WHERE company_id=$1', [before.company_id]).catch(() => ({ rows: [] }));
+      if (settings.rows[0]?.iqc_auto_ncr_on_fail) {
+        const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
+        const ncrNum = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+        const nr = await pool.query(
+          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'major','quality',$8) RETURNING *`,
+          [`Auto NCR - Inspection Fail`, 'Inspection failed', ncrNum, before.inspector_name, before.reference_type, before.reference_id, before.grn_id || null, before.company_id]
+        ).catch(() => ({ rows: [] }));
+        autoNcr = nr.rows[0] || null;
+      }
+    }
+    res.json({ success: true, data: updated, auto_ncr: autoNcr });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
@@ -218,9 +256,10 @@ router.post('/inspect', canCreate, async (req, res) => {
       [checklist_id, resolvedRefType, resolvedRefId, grn_id || null, inspector_id, inspector_name, status, JSON.stringify(results), remarks || notes || reference_number || null, companyId, stage]
     );
     logAudit({ userId: uid(req), module: 'quality', recordId: rows[0].id, recordType: 'inspection_report', action: 'create', newData: { reference_type, reference_id, status }, req });
-    // Auto-NCR on fail
+    // Auto-NCR + hold on fail
     let autoNcr = null;
     if (status === 'fail') {
+      await holdProductionOrderOnQcFail(resolvedRefType, resolvedRefId);
       const settings = await pool.query('SELECT iqc_auto_ncr_on_fail, ncr_auto_number_prefix FROM quality_settings WHERE company_id=$1', [companyId]).catch(() => ({ rows: [] }));
       if (settings.rows[0]?.iqc_auto_ncr_on_fail) {
         const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
@@ -1055,9 +1094,11 @@ router.put('/tests/:id', canCreate, async (req, res) => {
        effExpected ?? null, test_method ?? null, is_mandatory ?? null, userId, testedName, req.params.id]
     );
     const updated = rows[0];
-    // Auto-NCR on failure (governed by quality_settings)
+    // Hold the parent production order + auto-NCR on failure (NCR governed by quality_settings)
     let autoNcr = null;
     if (result === 'fail' && row.result !== 'fail') {
+      if (updated.production_order_id) await holdProductionOrderOnQcFail('production_order', updated.production_order_id);
+      else if (updated.operation_id) await holdProductionOrderOnQcFail('production_operation', updated.operation_id);
       const settings = await pool.query('SELECT iqc_auto_ncr_on_fail, ncr_auto_number_prefix FROM quality_settings WHERE company_id=$1', [companyId]).catch(() => ({ rows: [] }));
       if (settings.rows[0]?.iqc_auto_ncr_on_fail) {
         const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';

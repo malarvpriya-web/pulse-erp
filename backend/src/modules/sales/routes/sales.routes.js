@@ -11,6 +11,8 @@ import { nextLifecycleNumber } from '../../../shared/docNumber.js';
 import * as drive from '../../../services/googleDrive.service.js';
 import { calculateCommission } from '../../../services/commissionService.js';
 import { companyOf } from '../../../shared/scope.js';
+import invoiceService from '../../finance/services/invoice.service.js';
+import { createProductionOrderFromSalesOrder } from '../../operations/lifecycle.routes.js';
 
 async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
   const client = await pool.connect();
@@ -101,8 +103,43 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
       console.error('[autoBootstrap] project creation failed (non-fatal):', projErr.message);
     }
 
+    // Auto-create the Production Order this Sales Order is meant to trigger.
+    // Previously this only ever created the lifecycle instance + a project stub —
+    // nothing in the reachable confirm/accept path ever created a production_orders
+    // row, so Production had no record to work from unless someone in Production
+    // manually re-typed the order from scratch. createProductionOrderFromSalesOrder
+    // already existed (in the operations/lifecycle module) but was only reachable
+    // via an endpoint the frontend never calls.
+    let productionOrderId = null;
+    try {
+      // Best-effort BOM match by product name, same pattern the lifecycle "design"
+      // gate already uses, so a matched BOM also seeds production_operations.
+      const firstItem = await client.query(
+        `SELECT item_description FROM sales_order_items WHERE order_id=$1 ORDER BY id LIMIT 1`,
+        [salesOrderId]
+      );
+      let bomId = null;
+      if (firstItem.rows[0]?.item_description) {
+        const bomMatch = await client.query(
+          `SELECT id FROM bom_headers WHERE product_name ILIKE '%' || $1 || '%' AND status='active' LIMIT 1`,
+          [firstItem.rows[0].item_description]
+        );
+        bomId = bomMatch.rows[0]?.id || null;
+      }
+      const po = await createProductionOrderFromSalesOrder(client, so, { user }, { bom_id: bomId, project_id: projectId });
+      productionOrderId = po?.id || null;
+      if (productionOrderId) {
+        await client.query(
+          `UPDATE lifecycle_instances SET production_order_id=$1, updated_at=NOW() WHERE id=$2`,
+          [productionOrderId, lifecycleId]
+        );
+      }
+    } catch (poErr) {
+      console.error('[autoBootstrap] production order creation failed (non-fatal):', poErr.message);
+    }
+
     await client.query('COMMIT');
-    return { skipped: false, lifecycle_id: lifecycleId, project_id: projectId };
+    return { skipped: false, lifecycle_id: lifecycleId, project_id: projectId, production_order_id: productionOrderId };
   } catch (e) {
     await client.query('ROLLBACK');
     return { skipped: true, reason: 'error', error: e.message };
@@ -365,6 +402,19 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
       `UPDATE quotations SET status = 'converted', updated_at = NOW() WHERE id = $1`,
       [req.params.id]
     );
+    // Sync the source opportunity to Won. Previously nothing did this — an
+    // opportunity could sit "Negotiation" forever even after its quotation
+    // became a real Sales Order, inflating open-pipeline/forecast reports
+    // indefinitely. Matches the casing/side-effects PATCH /opportunities/:id/stage
+    // applies when the Kanban board itself moves a card to Won.
+    if (quotation.opportunity_id) {
+      await client.query(
+        `UPDATE opportunities
+         SET stage = 'Won', closed_date = NOW(), probability_percentage = 100, updated_at = NOW()
+         WHERE id = $1 AND LOWER(stage) NOT IN ('won','lost')`,
+        [quotation.opportunity_id]
+      ).catch(() => {});
+    }
     await client.query('COMMIT');
     logAudit({ userId, module: 'sales', recordId: req.params.id, recordType: 'quotation', action: 'update', newData: { status: 'converted' }, req });
     res.status(201).json({ quotation_id: quotation.id, order_id: order.id, order_number: order.order_number || orderNumber });
@@ -599,33 +649,44 @@ router.patch('/orders/:id/invoice', requirePermission('sales', 'edit'), async (r
     if (!soRes.rows.length) return res.status(404).json({ error: 'Order not found' });
     const so = soRes.rows[0];
 
-    // Create finance invoice
+    // Create finance invoice — routed through invoiceService.createInvoice so the
+    // invoice actually gets a journal entry (DR AR / CR Revenue+GST) posted to the
+    // GL, same as invoices created directly from Invoices.jsx. The previous version
+    // raw-INSERTed into `invoices`/`invoice_items` with several column names that
+    // don't exist on those tables (customer_name, item_description, rate,
+    // tax_percentage, total) — that insert always failed and was silently
+    // swallowed, so SO-generated invoices never actually got created or posted.
     let invoiceId = null;
+    let invoiceNumber = null;
     try {
-      const items = await salesOrdersRepository.getItems(req.params.id);
-      const invRes = await pool.query(
-        `INSERT INTO invoices
-           (company_id, customer_id, customer_name, invoice_date, due_date,
-            subtotal, tax_amount, total_amount, status, sales_order_id, created_by)
-         VALUES ($1,$2,$3,CURRENT_DATE,CURRENT_DATE+30,$4,$5,$6,'draft',$7,$8)
-         RETURNING id, invoice_number`,
-        [companyId, so.customer_id ?? null, so.customer_name ?? null,
-         so.subtotal ?? 0, so.tax_amount ?? 0, so.total_amount ?? 0,
-         req.params.id, userId]
-      );
-      invoiceId = invRes.rows[0]?.id;
-
-      if (items.length && invoiceId) {
-        for (const it of items) {
-          await pool.query(
-            `INSERT INTO invoice_items
-               (invoice_id, item_description, quantity, rate, tax_percentage, tax_amount, total)
-             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-            [invoiceId, it.item_description, it.quantity, it.rate, it.tax_percentage, it.tax_amount, it.total]
-          ).catch(() => {});
-        }
-      }
-    } catch { /* finance invoice creation non-fatal */ }
+      const soItems = await salesOrdersRepository.getItems(req.params.id);
+      const items = soItems.map(it => ({
+        description: it.item_description,
+        quantity: it.quantity,
+        unit_price: it.rate,
+        tax_rate: it.tax_percentage,
+        amount: it.total,
+      }));
+      const dueDate = new Date();
+      dueDate.setDate(dueDate.getDate() + 30);
+      const invoice = await invoiceService.createInvoice({
+        customer_id: so.customer_id ?? null,
+        invoice_date: new Date().toISOString().split('T')[0],
+        due_date: dueDate.toISOString().split('T')[0],
+        subtotal: so.subtotal ?? 0,
+        tax_amount: so.tax_amount ?? 0,
+        total_amount: so.total_amount ?? 0,
+        sales_order_id: req.params.id,
+        company_id: companyId,
+        items,
+      }, userId);
+      invoiceId = invoice.id;
+      invoiceNumber = invoice.invoice_number;
+      // sales_order_id isn't part of invoiceRepo.create's column list — set it directly.
+      await pool.query(`UPDATE invoices SET sales_order_id = $1 WHERE id = $2`, [req.params.id, invoiceId]);
+    } catch (invErr) {
+      console.error(`[PATCH /orders/${req.params.id}/invoice] finance invoice creation failed:`, invErr.message);
+    }
 
     const { rows } = await pool.query(
       `UPDATE sales_orders
@@ -634,7 +695,7 @@ router.patch('/orders/:id/invoice', requirePermission('sales', 'edit'), async (r
       [invoiceId, req.params.id]
     );
     logAudit({ userId, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: 'invoiced' }, req });
-    res.json({ data: rows[0], invoice_id: invoiceId });
+    res.json({ data: rows[0], invoice_id: invoiceId, invoice_number: invoiceNumber });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

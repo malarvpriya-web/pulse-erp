@@ -24,8 +24,8 @@ router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT pr.*,
-         e.name AS employee_name, e.department, e.designation, e.employee_code,
-         e.date_of_joining, e.grade,
+         e.name AS employee_name, e.department, e.designation, e.office_id AS employee_code,
+         e.joining_date AS date_of_joining, e.grade,
          sub.name AS submitted_by_name,
          apv.name AS approved_by_name
        FROM promotion_recommendations pr
@@ -46,8 +46,8 @@ router.get('/:id', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT pr.*,
-         e.name AS employee_name, e.department, e.designation, e.employee_code,
-         e.date_of_joining, e.grade,
+         e.name AS employee_name, e.department, e.designation, e.office_id AS employee_code,
+         e.joining_date AS date_of_joining, e.grade,
          sub.name AS submitted_by_name, apv.name AS approved_by_name
        FROM promotion_recommendations pr
        JOIN employees e ON e.id = pr.employee_id
@@ -144,7 +144,7 @@ router.patch('/:id/approve', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const rec = rows[0];
     logAudit({ userId: req.user?.userId, module: 'Performance', recordId: req.params.id, recordType: 'promotion', action: 'approve', newData: rec, req });
-    pool.query(`SELECT user_id FROM employees WHERE id=$1`, [rec.employee_id])
+    pool.query(`SELECT id AS user_id FROM users WHERE employee_id=$1`, [rec.employee_id])
       .then(({ rows: empRows }) => {
         notifyWorkflowEvent('approved', { module: 'Promotion', recordId: req.params.id, submitterUserId: empRows[0]?.user_id ?? null });
       }).catch(() => {});
@@ -170,7 +170,7 @@ router.patch('/:id/reject', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const rec = rows[0];
     logAudit({ userId: req.user?.userId, module: 'Performance', recordId: req.params.id, recordType: 'promotion', action: 'reject', newData: rec, req });
-    pool.query(`SELECT user_id FROM employees WHERE id=$1`, [rec.employee_id])
+    pool.query(`SELECT id AS user_id FROM users WHERE employee_id=$1`, [rec.employee_id])
       .then(({ rows: empRows }) => {
         notifyWorkflowEvent('rejected', { module: 'Promotion', recordId: req.params.id, submitterUserId: empRows[0]?.user_id ?? null });
       }).catch(() => {});
@@ -238,8 +238,8 @@ router.get('/eligibility/check', async (req, res) => {
     const { rows } = await pool.query(
       `SELECT
          e.id, e.name, e.department, e.designation, e.grade,
-         e.date_of_joining,
-         DATE_PART('year', AGE(NOW(), e.date_of_joining)) AS years_with_company,
+         e.joining_date AS date_of_joining,
+         DATE_PART('year', AGE(NOW(), e.joining_date)) AS years_with_company,
          ROUND(AVG(COALESCE(pr.calibrated_rating, pr.final_rating))::numeric, 2) AS avg_rating,
          COUNT(pr.id)::int AS review_count,
          EXISTS(
@@ -251,7 +251,7 @@ router.get('/eligibility/check', async (req, res) => {
        JOIN performance_reviews pr ON pr.employee_id = e.id
          AND pr.status = 'completed' AND pr.deleted_at IS NULL${reviewFilter}
        WHERE e.company_id = $1 AND e.deleted_at IS NULL
-       GROUP BY e.id, e.name, e.department, e.designation, e.grade, e.date_of_joining
+       GROUP BY e.id, e.name, e.department, e.designation, e.grade, e.joining_date
        HAVING AVG(COALESCE(pr.calibrated_rating, pr.final_rating)) >= $2
        ORDER BY avg_rating DESC`,
       params

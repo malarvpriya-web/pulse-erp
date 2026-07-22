@@ -332,7 +332,7 @@ router.post('/:id/dispose', requirePermission('finance', 'approve'), async (req,
 
     async function acctId(code) {
       const { rows } = await client.query(
-        `SELECT id FROM chart_of_accounts WHERE account_code=$1 AND is_active=true LIMIT 1`, [code]
+        `SELECT id FROM chart_of_accounts WHERE code=$1 AND is_active=true LIMIT 1`, [code]
       );
       return rows[0]?.id ?? null;
     }

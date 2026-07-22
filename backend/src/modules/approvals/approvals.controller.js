@@ -2,10 +2,24 @@ import pool from "../../config/db.js";
 import { notifyWorkflowEvent } from "../../services/WorkflowNotificationService.js";
 import { logAudit } from "../../services/AuditService.js";
 import { canOverride } from "./approvals.authz.js";
+import { assertCanDecideAmount } from "../procurement/procurement.authz.js";
+import { getEmployeeApprovals } from "../../home/home.service.js";
 
 const uid  = (req) => req.user?.userId ?? req.user?.id ?? null;
 const cid  = (req) => req.scope?.company_id ?? null;
 const role = (req) => req.user?.role ?? '';
+
+// JWT carries employee_id for most logins; legacy/demo users don't, so fall
+// back to the users table (mirrors ownEmployeeId() in the travel routes).
+async function myEmployeeId(req) {
+  if (req.user?.employee_id != null) return req.user.employee_id;
+  const userId = uid(req);
+  if (!userId) return null;
+  try {
+    const { rows } = await pool.query('SELECT employee_id FROM users WHERE id = $1', [userId]);
+    return rows[0]?.employee_id ?? null;
+  } catch { return null; }
+}
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -447,9 +461,141 @@ export const getApprovalStats = async (req, res) => {
   }
 };
 
+// My Requests — read-only status/history of what the caller themselves
+// submitted, across every request type an employee can raise. Unlike
+// getPendingApprovals/getApprovalHistory (both scoped to the caller as
+// APPROVER), this is scoped to the caller as REQUESTER and includes resolved
+// (approved/rejected) rows, not just pending ones — there was previously no
+// endpoint that answered "did my leave request get approved yet?" No role
+// gate: every field is derived from the caller's own employee_id, never from
+// client input, so there is nothing here for another person's requests to leak.
+async function mySubmittedRequests(employeeId) {
+  const eid = String(employeeId);
+  const [leaves, expenses, purchases, regs, ots] = await Promise.all([
+    safeQuery(
+      `SELECT 'leave:' || la.id::text AS id, 'Leave' AS request_type,
+              CONCAT(COALESCE(lt.leave_name, 'Leave'), ' (', la.start_date, ' to ', la.end_date, ')') AS request_title,
+              la.applied_at                                AS request_date,
+              la.number_of_days                            AS amount,
+              INITCAP(REPLACE(la.status, '_', ' '))        AS status,
+              COALESCE(la.manager_comments, la.hr_comments) AS comments
+         FROM leave_applications la
+         LEFT JOIN leave_types lt ON lt.id = la.leave_type_id
+        WHERE la.employee_id::text = $1`,
+      [eid]
+    ),
+    safeQuery(
+      `SELECT 'exp:' || ec.id::text AS id, 'Expense' AS request_type,
+              CONCAT('Expense Claim ', ec.claim_number)     AS request_title,
+              ec.claim_date                                 AS request_date,
+              ec.total_amount                                AS amount,
+              INITCAP(REPLACE(ec.status, '_', ' '))         AS status,
+              COALESCE(ec.rejection_reason, ec.notes)       AS comments
+         FROM expense_claims ec
+        WHERE ec.employee_id::text = $1`,
+      [eid]
+    ),
+    safeQuery(
+      `SELECT 'pr:' || pr.id::text AS id, 'Purchase' AS request_type,
+              CONCAT('Purchase Request ', pr.request_number) AS request_title,
+              pr.request_date                                AS request_date,
+              pr.total_amount                                 AS amount,
+              INITCAP(REPLACE(pr.status, '_', ' '))          AS status,
+              pr.notes                                        AS comments
+         FROM purchase_requests pr
+        WHERE pr.requested_by_employee_id::text = $1`,
+      [eid]
+    ),
+    safeQuery(
+      `SELECT 'reg:' || arr.id::text AS id, 'Regularization' AS request_type,
+              CONCAT('Attendance correction — ', arr.date)  AS request_title,
+              arr.created_at                                AS request_date,
+              NULL::numeric                                 AS amount,
+              INITCAP(REPLACE(arr.status, '_', ' '))        AS status,
+              arr.manager_remarks                           AS comments
+         FROM attendance_regularization_requests arr
+        WHERE arr.employee_id::text = $1`,
+      [eid]
+    ),
+    safeQuery(
+      `SELECT 'ot:' || ot.id::text AS id, 'OT' AS request_type,
+              CONCAT('Overtime ', ot.ot_hours, 'h — ', ot.attendance_date) AS request_title,
+              ot.created_at                                  AS request_date,
+              ot.ot_hours                                    AS amount,
+              INITCAP(REPLACE(ot.status, '_', ' '))         AS status,
+              ot.rejection_remarks                           AS comments
+         FROM attendance_ot_records ot
+        WHERE ot.employee_id::text = $1`,
+      [eid]
+    ),
+  ]);
+
+  return [...leaves, ...expenses, ...purchases, ...regs, ...ots]
+    .sort((a, b) => new Date(b.request_date || 0) - new Date(a.request_date || 0));
+}
+
+export const getMyRequests = async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const employeeId = await myEmployeeId(req);
+    if (employeeId == null) return res.json({ awaitingMyAction: [], submitted: [] });
+
+    const userId    = uid(req);
+    const companyId = cid(req);
+    const [myApprovals, submitted] = await Promise.all([
+      getEmployeeApprovals(userId, employeeId, companyId),
+      mySubmittedRequests(employeeId),
+    ]);
+
+    res.json({
+      awaitingMyAction: myApprovals.awaitingMyAction,
+      submitted: submitted.slice(0, 100),
+    });
+  } catch (err) {
+    console.error("Get my requests error:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // ─── source-table dispatch for approve/reject ───────────────────────────────
 
-async function approveSourceItem(modulePrefix, sourceId, userId, actorRole = null) {
+// Shared PR amount-authority gate for the generic Approval Center's 'pr'
+// source type. Delegates to procurement.authz.js's assertCanDecideAmount —
+// the same function purchase-request approve/reject/cancel routes use in
+// procurement.routes.js — instead of re-deriving the role/amount bands here.
+// An earlier version of this file kept its own copy (roles 'senior_manager',
+// 'cfo', 'finance_head' — none of which exist in `roles`, so only
+// admin/super_admin could ever clear one) which had drifted out of sync with
+// the real fix; rejectSourceItem's 'pr' case had no amount check at all,
+// so any APPROVER_ROLES member could reject/cancel a PR of any value even
+// though approving the same PR required L2/L3 authority.
+async function assertCanDecidePR(req, prId, action) {
+  const prRows = await safeQuery(
+    `SELECT pr.company_id,
+            GREATEST(
+              COALESCE(pr.total_amount, 0),
+              COALESCE((SELECT SUM(COALESCE(quantity, 0) * COALESCE(expected_price, 0))
+                        FROM purchase_request_items WHERE pr_id = pr.id), 0)
+            ) AS amount
+       FROM purchase_requests pr WHERE pr.id = $1::integer`,
+    [prId]
+  );
+  const pr = prRows[0];
+  if (!pr) return;
+  const setRows = await safeQuery(
+    `SELECT auto_approve_below, l1_approval_limit, l2_approval_limit, cfo_approval_above
+       FROM procurement_settings WHERE company_id = $1 LIMIT 1`,
+    [pr.company_id]
+  );
+  const decision = assertCanDecideAmount(req, pr.amount, setRows[0] || {}, action);
+  if (decision) {
+    const err = new Error(decision.body.message);
+    err.statusCode = decision.status;
+    throw err;
+  }
+}
+
+async function approveSourceItem(modulePrefix, sourceId, userId, req) {
   switch (modulePrefix) {
     case 'leave':
       await safeQuery(
@@ -497,58 +643,13 @@ async function approveSourceItem(modulePrefix, sourceId, userId, actorRole = nul
         [sourceId, userId]
       );
       break;
-    case 'pr': {
-      // Enforce the same amount-based approval limits as the procurement route
-      // (see requiredApprovalLevel/canApprove in procurement.routes.js) so this
-      // generic Approval Center cannot become a back door around L1/L2/CFO gating.
-      const prRows = await safeQuery(
-        `SELECT pr.company_id,
-                GREATEST(
-                  COALESCE(pr.total_amount, 0),
-                  COALESCE((SELECT SUM(COALESCE(quantity, 0) * COALESCE(expected_price, 0))
-                            FROM purchase_request_items WHERE pr_id = pr.id), 0)
-                ) AS amount
-           FROM purchase_requests pr WHERE pr.id = $1::integer`,
-        [sourceId]
-      );
-      const pr = prRows[0];
-      if (pr) {
-        const amount  = parseFloat(pr.amount || 0);
-        const setRows = await safeQuery(
-          `SELECT auto_approve_below, l1_approval_limit, l2_approval_limit
-             FROM procurement_settings WHERE company_id = $1 LIMIT 1`,
-          [pr.company_id]
-        );
-        const s        = setRows[0] || {};
-        const autoBelow = parseFloat(s.auto_approve_below ?? 5000);
-        const l1        = parseFloat(s.l1_approval_limit  ?? 25000);
-        const l2        = parseFloat(s.l2_approval_limit  ?? 100000);
-        let required = 'auto';
-        if      (amount > l2)        required = 'cfo';
-        else if (amount > l1)        required = 'l2';
-        else if (amount > autoBelow) required = 'l1';
-
-        const rank     = { auto: 0, l1: 1, l2: 2, cfo: 3 };
-        const roleRank = {
-          manager: 1, department_head: 1,
-          senior_manager: 2, procurement_manager: 2,
-          cfo: 3, finance_head: 3, admin: 3, super_admin: 3,
-        };
-        if (required !== 'auto' && (roleRank[actorRole] ?? 0) < rank[required]) {
-          const err = new Error(
-            `This purchase request (₹${amount.toLocaleString('en-IN')}) requires ${required.toUpperCase()} approval; ` +
-            `your role (${actorRole || 'unknown'}) is insufficient. Approve it from Procurement › Purchase Requests.`
-          );
-          err.statusCode = 403;
-          throw err;
-        }
-      }
+    case 'pr':
+      await assertCanDecidePR(req, sourceId, 'approve');
       await safeQuery(
         `UPDATE purchase_requests SET status = 'approved', approved_by = $2, approved_at = NOW() WHERE id = $1::integer`,
         [sourceId, userId]
       );
       break;
-    }
     case 'exp':
       await safeQuery(
         `UPDATE expense_claims SET status = 'Approved', approved_by = $2, approved_at = NOW() WHERE id = $1::integer`,
@@ -572,7 +673,7 @@ async function approveSourceItem(modulePrefix, sourceId, userId, actorRole = nul
   }
 }
 
-async function rejectSourceItem(modulePrefix, sourceId, userId, comment) {
+async function rejectSourceItem(modulePrefix, sourceId, userId, comment, req) {
   switch (modulePrefix) {
     case 'leave':
       await safeQuery(
@@ -608,6 +709,7 @@ async function rejectSourceItem(modulePrefix, sourceId, userId, comment) {
       );
       break;
     case 'pr':
+      await assertCanDecidePR(req, sourceId, 'reject');
       await safeQuery(
         `UPDATE purchase_requests SET status = 'rejected', rejection_reason = $2, approved_at = NOW() WHERE id = $1::integer`,
         [sourceId, comment]
@@ -648,7 +750,7 @@ export const approveRequest = async (req, res) => {
 
     if (isSource) {
       const [prefix, sourceId] = id.split(':');
-      await approveSourceItem(prefix, sourceId, userId, role(req));
+      await approveSourceItem(prefix, sourceId, userId, req);
 
       // Close any existing pending central-approval row for the same reference
       const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
@@ -695,7 +797,7 @@ export const approveRequest = async (req, res) => {
 
     // Also approve the linked source-table record so it no longer shows as pending
     if (approval.reference_id && approval.module_name) {
-      await approveSourceItem(approval.module_name, String(approval.reference_id), userId, role(req));
+      await approveSourceItem(approval.module_name, String(approval.reference_id), userId, req);
     }
 
     logAudit({
@@ -726,7 +828,7 @@ export const rejectRequest = async (req, res) => {
 
     if (isSource) {
       const [prefix, sourceId] = id.split(':');
-      await rejectSourceItem(prefix, sourceId, userId, comment || '');
+      await rejectSourceItem(prefix, sourceId, userId, comment || '', req);
 
       // Close any existing pending central-approval row for the same reference
       const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
@@ -772,7 +874,7 @@ export const rejectRequest = async (req, res) => {
 
     // Also reject the linked source-table record so it no longer shows as pending
     if (approval.reference_id && approval.module_name) {
-      await rejectSourceItem(approval.module_name, String(approval.reference_id), userId, comment || '');
+      await rejectSourceItem(approval.module_name, String(approval.reference_id), userId, comment || '', req);
     }
 
     logAudit({
@@ -811,7 +913,7 @@ export const bulkApprove = async (req, res) => {
     // Process source items
     for (const id of sourceIds) {
       const [prefix, sourceId] = String(id).split(':');
-      await approveSourceItem(prefix, sourceId, userId, role(req));
+      await approveSourceItem(prefix, sourceId, userId, req);
       const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
       await safeQuery(
         `UPDATE approvals SET status = 'Approved', decision_date = NOW(), approver_id = $1
@@ -838,7 +940,7 @@ export const bulkApprove = async (req, res) => {
       );
       for (const approval of r.rows) {
         if (approval.reference_id && approval.module_name) {
-          await approveSourceItem(approval.module_name, String(approval.reference_id), userId, role(req));
+          await approveSourceItem(approval.module_name, String(approval.reference_id), userId, req);
         }
         logAudit({ userId, module: 'approvals', recordId: approval.id, recordType: approval.module_name || 'approval', action: 'approve', oldData: { status: 'Pending' }, newData: { status: 'Approved', bulk: true }, req });
         notifyWorkflowEvent('approved', { module: approval.module_name || 'Approval', recordId: approval.reference_id || approval.id, submitterUserId: approval.requested_by });
@@ -881,7 +983,7 @@ export const bulkReject = async (req, res) => {
 
     for (const id of sourceIds) {
       const [prefix, sourceId] = String(id).split(':');
-      await rejectSourceItem(prefix, sourceId, userId, comment || '');
+      await rejectSourceItem(prefix, sourceId, userId, comment || '', req);
       const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
       await safeQuery(
         `UPDATE approvals SET status = 'Rejected', decision_date = NOW(), approver_id = $1, comments = $2
@@ -902,7 +1004,7 @@ export const bulkReject = async (req, res) => {
       );
       for (const approval of r.rows) {
         if (approval.reference_id && approval.module_name) {
-          await rejectSourceItem(approval.module_name, String(approval.reference_id), userId, comment || '');
+          await rejectSourceItem(approval.module_name, String(approval.reference_id), userId, comment || '', req);
         }
         logAudit({ userId, module: 'approvals', recordId: approval.id, recordType: approval.module_name || 'approval', action: 'reject', oldData: { status: 'Pending' }, newData: { status: 'Rejected', comment: comment || '', bulk: true }, req });
         notifyWorkflowEvent('rejected', { module: approval.module_name || 'Approval', recordId: approval.reference_id || approval.id, submitterUserId: approval.requested_by, comments: comment });

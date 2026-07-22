@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Search, X, ArrowRight, Zap } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
-import { canRoleAccessAdminOnlyPage, canEmployeeAccessPage } from '@/config/menuCatalog';
+import { canRoleOpenPage } from '@/config/menuCatalog';
 
 const SEARCHABLE_PAGES = [
   // Core
@@ -174,16 +174,17 @@ export default function GlobalSearch({ setPage, onClose }) {
   const [active, setActive] = useState(0);
   const inputRef = useRef(null);
   const listRef  = useRef(null);
-  const { role } = useAuth();
+  const { role, menuAccess } = useAuth();
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  // Hide pages the caller's role can never open (admin-only pages such as
-  // Knowledge Base; management pages for the employee role).
-  const accessiblePages = SEARCHABLE_PAGES.filter(p =>
-    canRoleAccessAdminOnlyPage(role, p.page) &&
-    (role !== 'employee' || canEmployeeAccessPage(p.page))
-  );
+  // Hide pages the caller's role can never open — admin/super-admin-only
+  // pages, sections outside the role's allowlist, and (for hr/finance/
+  // hr_exec/manager/employee) pages outside their scoped/self-service slice
+  // of a shared menu. canRoleOpenPage already lets super_admin/admin through
+  // (they hold no section allowlist) while still enforcing SUPER_ADMIN_ONLY_
+  // PAGES against admin.
+  const accessiblePages = SEARCHABLE_PAGES.filter(p => canRoleOpenPage(role, p.page, { menuAccess }));
 
   const results = query.trim().length === 0
     ? accessiblePages.slice(0, 8)

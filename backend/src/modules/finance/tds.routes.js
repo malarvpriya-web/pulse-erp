@@ -599,14 +599,14 @@ router.get('/194q-tracker', async (req, res) => {
   const fy = req.query.financial_year || currentFY();
   const threshold = 5000000; // ₹50 lakhs
   try {
-    // Aggregate purchases from bills grouped by supplier (party_id) for the FY
+    // Aggregate purchases from bills grouped by supplier (supplier_id) for the FY
     const fyStart = fy.split('-')[0];
     const startDate = `${fyStart}-04-01`;
     const endDate   = `${parseInt(fyStart) + 1}-03-31`;
 
     const { rows } = await pool.query(`
       SELECT
-        b.party_id,
+        b.supplier_id,
         COALESCE(p.name, b.party_name, 'Unknown') AS supplier_name,
         COALESCE(p.pan, '')                              AS pan,
         COALESCE(p.gstin, '')                            AS gstin,
@@ -625,11 +625,11 @@ router.get('/194q-tracker', async (req, res) => {
              AND t.financial_year = $2), 0
         )                                                  AS tds_already_deducted
       FROM bills b
-      LEFT JOIN parties p ON p.id::text = b.party_id::text
+      LEFT JOIN parties p ON p.id = b.supplier_id
       WHERE b.bill_date BETWEEN $3 AND $4
         AND COALESCE(b.deleted_at::text, '') = ''
-        AND b.party_id IS NOT NULL
-      GROUP BY b.party_id, p.name, b.party_name, p.pan, p.gstin
+        AND b.supplier_id IS NOT NULL
+      GROUP BY b.supplier_id, p.name, b.party_name, p.pan, p.gstin
       ORDER BY total_purchases DESC
     `, [threshold, fy, startDate, endDate]);
 

@@ -7,7 +7,10 @@ import { companyOf } from '../../shared/scope.js';
 const router = express.Router();
 router.use(requirePermission('finance', 'view'));
 
-const BUDGET_APPROVE_ROLES = ['admin', 'super_admin', 'finance', 'cfo', 'manager'];
+// 'cfo' was never a row in `roles` (see procurement.authz.js's ROLE_LEVEL,
+// which removed it for the same reason) — 'finance_manager' is the real
+// seeded senior-finance role that fills the same slot.
+const BUDGET_APPROVE_ROLES = ['admin', 'super_admin', 'finance', 'finance_manager', 'manager'];
 
 
 // ── GET /budgets ──────────────────────────────────────────────────────────────
@@ -874,7 +877,7 @@ router.post('/sync-actuals', requirePermission('finance', 'approve'), async (req
       `SELECT
          COALESCE(jl.cost_centre, 'General') AS department,
          SUM(jl.debit - jl.credit) AS actual_amount
-       FROM journal_entry_lines jl
+       FROM journal_lines jl
        JOIN journal_entries je ON je.id = jl.entry_id
        JOIN chart_of_accounts coa ON coa.id = jl.account_id
        WHERE je.status = 'posted'

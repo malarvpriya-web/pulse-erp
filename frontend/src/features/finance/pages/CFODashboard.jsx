@@ -68,21 +68,21 @@ const Card = ({ title, sub, children, expand, className = '' }) => (
 // ── Gauge component ───────────────────────────────────────────────────────────
 const Gauge = ({ value, label, color }) => {
   const pctVal = Math.min(Math.max(value, 0), 100);
-  const r = 54, cx = 70, cy = 70;
+  const r = 34, cx = 44, cy = 44;
   const circumference = Math.PI * r;
   const dash = (pctVal / 100) * circumference;
   return (
     <div className="cfo-gauge">
-      <svg width="140" height="80" viewBox="0 0 140 80">
+      <svg width="88" height="52" viewBox="0 0 88 52">
         <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
-          fill="none" stroke="#f3f4f6" strokeWidth="12" strokeLinecap="round" />
+          fill="none" stroke="#f3f4f6" strokeWidth="8" strokeLinecap="round" />
         <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
-          fill="none" stroke={color} strokeWidth="12" strokeLinecap="round"
+          fill="none" stroke={color} strokeWidth="8" strokeLinecap="round"
           strokeDasharray={`${dash} ${circumference}`} />
-        <text x={cx} y={cy - 8} textAnchor="middle" fontSize="18" fontWeight="700" fill="#111827">
+        <text x={cx} y={cy - 6} textAnchor="middle" fontSize="14" fontWeight="700" fill="#111827">
           {pctVal.toFixed(0)}%
         </text>
-        <text x={cx} y={cy + 8} textAnchor="middle" fontSize="10" fill="#9ca3af">{label}</text>
+        <text x={cx} y={cy + 7} textAnchor="middle" fontSize="8" fill="#9ca3af">{label}</text>
       </svg>
     </div>
   );
@@ -408,7 +408,7 @@ export default function CFODashboard({ setPage }) {
             </div>
           </div>
           <div className="cfo-exec-kpi-chart">
-            <ResponsiveContainer width="100%" height={60}>
+            <ResponsiveContainer width="100%" height={44}>
               <AreaChart data={revenueChart} margin={{ top: 5, right: 0, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="sparkRev" x1="0" y1="0" x2="0" y2="1">
@@ -504,7 +504,7 @@ export default function CFODashboard({ setPage }) {
               </div>
             </div>
             {revenueChart.length > 0
-              ? <RevenueVsTargetChart height={220} />
+              ? <div className="cfo-chart-fill"><RevenueVsTargetChart height="100%" /></div>
               : <div className="cfo-empty">No revenue data for this period</div>}
           </Card>
         </div>
@@ -550,7 +550,7 @@ export default function CFODashboard({ setPage }) {
                 <strong>{fmt(cashFlowMonthly.reduce((s, r) => s + r.net, 0))}</strong>
               </div>
             </div>
-            <CashFlowChart height={190} />
+            <div className="cfo-chart-fill"><CashFlowChart height="100%" /></div>
           </Card>
         </div>
 
@@ -564,23 +564,25 @@ export default function CFODashboard({ setPage }) {
               <span className="cfo-fl-item" style={{ color: '#f59e0b' }}>● Conservative</span>
             </div>
             {forecastData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={210}>
-                <AreaChart data={forecastData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="optG" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.12} />
-                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                  <YAxis tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v, n) => [fmt(v), n]} />
-                  <Area type="monotone" dataKey="optimistic"   stroke="#6366f1" fill="url(#optG)" strokeWidth={1.5} />
-                  <Area type="monotone" dataKey="base"         stroke="#10b981" fill="none"        strokeWidth={2.5} />
-                  <Area type="monotone" dataKey="conservative" stroke="#f59e0b" fill="none"        strokeWidth={1.5} strokeDasharray="5 3" />
-                </AreaChart>
-              </ResponsiveContainer>
+              <div className="cfo-chart-fill">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={forecastData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="optG" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.12} />
+                        <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                    <YAxis tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v, n) => [fmt(v), n]} />
+                    <Area type="monotone" dataKey="optimistic"   stroke="#6366f1" fill="url(#optG)" strokeWidth={1.5} />
+                    <Area type="monotone" dataKey="base"         stroke="#10b981" fill="none"        strokeWidth={2.5} />
+                    <Area type="monotone" dataKey="conservative" stroke="#f59e0b" fill="none"        strokeWidth={1.5} strokeDasharray="5 3" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
             ) : <div className="cfo-empty">Insufficient historical data for forecast</div>}
           </Card>
         </div>
@@ -588,17 +590,19 @@ export default function CFODashboard({ setPage }) {
         {/* Financial Ratios */}
         <div className="cg6">
           <Card title="Key Financial Ratios" sub="Computed from live data">
-            <div className="cfo-ratios-grid">
-              {ratiosData.map((r, i) => (
-                <div key={i} className={`cfo-ratio-item cfo-ratio-${r.status}`}>
-                  <div className="cfo-ratio-label">{r.label}</div>
-                  <div className="cfo-ratio-val">{r.value}</div>
-                  <div className="cfo-ratio-bench">Bench: {r.bench}</div>
-                  {r.status === 'good'
-                    ? <CheckCircle size={12} className="cfo-ratio-icon green" />
-                    : <AlertTriangle size={12} className="cfo-ratio-icon amber" />}
-                </div>
-              ))}
+            <div className="cfo-card-body">
+              <div className="cfo-ratios-grid">
+                {ratiosData.map((r, i) => (
+                  <div key={i} className={`cfo-ratio-item cfo-ratio-${r.status}`}>
+                    <div className="cfo-ratio-label">{r.label}</div>
+                    <div className="cfo-ratio-val">{r.value}</div>
+                    <div className="cfo-ratio-bench">Bench: {r.bench}</div>
+                    {r.status === 'good'
+                      ? <CheckCircle size={12} className="cfo-ratio-icon green" />
+                      : <AlertTriangle size={12} className="cfo-ratio-icon amber" />}
+                  </div>
+                ))}
+              </div>
             </div>
           </Card>
         </div>
@@ -606,7 +610,7 @@ export default function CFODashboard({ setPage }) {
         {/* Department Expenses — estimated split of total opex across departments */}
         <div className="cg6">
           <Card title="Department Expenses" sub="Estimated split from total OpEx">
-            <div style={{ padding: '8px 0 4px', fontSize: 11, color: '#9ca3af' }}>
+            <div style={{ padding: '4px 0 4px', fontSize: 11, color: '#9ca3af', flexShrink: 0 }}>
               Revenue attribution requires project tagging — showing expense data only
             </div>
             {opex > 0 ? (
@@ -681,15 +685,17 @@ export default function CFODashboard({ setPage }) {
                   <span>Total OpEx</span>
                   <strong>{fmtCr(expChart.reduce((s, e) => s + e.value, 0))}</strong>
                 </div>
-                <ResponsiveContainer width="100%" height={160}>
-                  <PieChart>
-                    <Pie data={expChart} cx="50%" cy="50%" innerRadius={48} outerRadius={72}
-                      dataKey="value" paddingAngle={3}>
-                      {expChart.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip formatter={v => [fmt(v), '']} />
-                  </PieChart>
-                </ResponsiveContainer>
+                <div className="cfo-pie-wrap">
+                  <ResponsiveContainer width="100%" height={120}>
+                    <PieChart>
+                      <Pie data={expChart} cx="50%" cy="50%" innerRadius={38} outerRadius={56}
+                        dataKey="value" paddingAngle={3}>
+                        {expChart.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip formatter={v => [fmt(v), '']} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
                 <div className="cfo-exp-legend">
                   {expChart.map((e, i) => {
                     const total = expChart.reduce((s, x) => s + x.value, 0) || 1;
@@ -712,22 +718,24 @@ export default function CFODashboard({ setPage }) {
         {/* Executive Alerts */}
         <div className="cg4">
           <Card title="Executive Alerts">
-            {alertsData.length > 0 ? alertsData.map((a, i) => (
-              <div key={i} className={`cfo-alert cfo-alert-${a.level}`}>
-                <div className="cfo-alert-body">
-                  {alertLevelIcon(a.level)}
-                  <span>{a.msg}</span>
+            <div className="cfo-card-body">
+              {alertsData.length > 0 ? alertsData.map((a, i) => (
+                <div key={i} className={`cfo-alert cfo-alert-${a.level}`}>
+                  <div className="cfo-alert-body">
+                    {alertLevelIcon(a.level)}
+                    <span>{a.msg}</span>
+                  </div>
+                  {a.action && (
+                    <button className="cfo-alert-action" onClick={() => {
+                      const page = ALERT_ACTION_PAGE[a.action];
+                      if (page && setPage) setPage(page);
+                    }}>{a.action}</button>
+                  )}
                 </div>
-                {a.action && (
-                  <button className="cfo-alert-action" onClick={() => {
-                    const page = ALERT_ACTION_PAGE[a.action];
-                    if (page && setPage) setPage(page);
-                  }}>{a.action}</button>
-                )}
-              </div>
-            )) : (
-              <div className="cfo-empty">No alerts</div>
-            )}
+              )) : (
+                <div className="cfo-empty">No alerts</div>
+              )}
+            </div>
           </Card>
         </div>
 

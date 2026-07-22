@@ -212,7 +212,7 @@ router.get('/parties/:id/transactions', requirePermission('finance', 'view'), as
          COALESCE(b.status, 'pending') AS status
        FROM bills b
        WHERE b.deleted_at IS NULL
-         AND b.party_id = $1
+         AND b.supplier_id = $1
          AND ($2::int IS NULL OR b.company_id = $2)
        ORDER BY txn_date DESC`,
       [req.params.id, companyId]
@@ -304,8 +304,12 @@ router.post('/invoices', requirePermission('finance', 'add'), async (req, res, n
   if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
   next();
 }, async (req, res, next) => {
-  // Credit limit enforcement — block invoice if customer would exceed their credit limit
-  const { party_id, total_amount } = req.body;
+  // Credit limit enforcement — block invoice if customer would exceed their credit limit.
+  // Invoices.jsx (and invoiceRepo.create) only ever populate `customer_id` (uuid) — `party_id`
+  // (int) is a dead legacy column on `invoices` that real invoice creation never sets, so this
+  // check must key off customer_id or it silently no-ops on every real invoice.
+  const party_id = req.body.customer_id || req.body.party_id;
+  const { total_amount } = req.body;
   if (!party_id || !total_amount) return next();
   try {
     const companyId = req.scope?.company_id ?? null;
@@ -317,10 +321,10 @@ router.post('/invoices', requirePermission('finance', 'add'), async (req, res, n
 
     // Outstanding AR for this customer
     const { rows: [arRow] } = await pool.query(`
-      SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid, 0)), 0) AS outstanding
+      SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount, 0)), 0) AS outstanding
       FROM invoices
-      WHERE party_id = $1 AND company_id = $2
-        AND status NOT IN ('paid','cancelled','draft')
+      WHERE (customer_id = $1 OR party_id::text = $1::text) AND company_id = $2
+        AND LOWER(status) NOT IN ('paid','cancelled','draft')
     `, [party_id, companyId]);
 
     const outstanding  = parseFloat(arRow?.outstanding ?? 0);

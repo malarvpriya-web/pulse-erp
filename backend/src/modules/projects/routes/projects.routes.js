@@ -10,6 +10,7 @@ import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { recalculateProjectCost } from '../services/projectCostRollup.service.js';
 import * as drive from '../../../services/googleDrive.service.js';
+import invoiceService from '../../finance/services/invoice.service.js';
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? null;
@@ -531,7 +532,12 @@ router.put('/projects/milestones/:id/complete', requirePermission('projects', 'e
     let invoice_created = false;
     let invoice = null;
 
-    // Auto-create sales invoice for billing milestones
+    // Auto-create a REAL finance invoice for billing milestones. This used to
+    // insert into `sales_invoices`, a table with no Finance-side reader anywhere
+    // in the app (no route, no page) — milestones were marked "invoiced" but
+    // Finance had no way to ever collect on them. Routed through
+    // invoiceService.createInvoice so it lands in the real `invoices` table with
+    // a posted journal entry, same as every other invoice in the system.
     if (milestone.billing_milestone && parseFloat(milestone.amount) > 0) {
       try {
         const projectRes = await pool.query(
@@ -543,28 +549,37 @@ router.put('/projects/milestones/:id/complete', requirePermission('projects', 'e
         const project = projectRes.rows[0];
         const customerName = project?.customer_name || project?.client_name || project?.customer_name_alt || 'Customer';
 
-        // Generate invoice number
-        const invoiceNoRes = await pool.query(
-          `SELECT COALESCE(MAX(CAST(NULLIF(REGEXP_REPLACE(invoice_number,'[^0-9]','','g'),'') AS INT)),0)+1 AS next
-           FROM sales_invoices WHERE ($1::int IS NULL OR company_id=$1)`,
-          [cid(req)]
-        );
-        const invoiceNo = `INV-${String(invoiceNoRes.rows[0]?.next || 1).padStart(5, '0')}`;
+        // Best-effort match to a real Finance party by name — projects only
+        // store a free-text customer_name, not a parties.id FK.
+        const partyMatch = await pool.query(
+          `SELECT id FROM parties WHERE LOWER(name) = LOWER($1) AND deleted_at IS NULL LIMIT 1`,
+          [customerName]
+        ).catch(() => ({ rows: [] }));
+        const customerId = partyMatch.rows[0]?.id ?? null;
 
-        const invoiceRes = await pool.query(
-          `INSERT INTO sales_invoices
-             (invoice_number, project_id, milestone_id, customer_name, invoice_date,
-              due_date, subtotal, total_amount, status, notes, company_id, created_by)
-           VALUES ($1,$2,$3,$4,CURRENT_DATE,CURRENT_DATE+30,$5,$5,'draft',
-                   $6,$7,$8) RETURNING *`,
-          [invoiceNo, milestone.project_id, milestone.id, customerName,
-           milestone.amount,
-           `Milestone: ${milestone.title} — Project: ${project?.project_name || ''}`,
-           cid(req), uid(req)]
-        ).catch(() => null);
+        const dueDate = new Date();
+        dueDate.setDate(dueDate.getDate() + 30);
+        const createdInvoice = await invoiceService.createInvoice({
+          customer_id: customerId,
+          party_name: customerId ? null : customerName,
+          invoice_date: new Date().toISOString().split('T')[0],
+          due_date: dueDate.toISOString().split('T')[0],
+          subtotal: milestone.amount,
+          tax_amount: 0,
+          total_amount: milestone.amount,
+          company_id: cid(req),
+          notes: `Milestone: ${milestone.title} — Project: ${project?.project_name || ''}`,
+          items: [{
+            description: `Milestone: ${milestone.title} — Project: ${project?.project_name || ''}`,
+            quantity: 1,
+            unit_price: milestone.amount,
+            tax_rate: 0,
+            amount: milestone.amount,
+          }],
+        }, uid(req)).catch((e) => { console.error('[milestone] invoice creation failed:', e.message); return null; });
 
-        if (invoiceRes?.rows[0]) {
-          invoice = invoiceRes.rows[0];
+        if (createdInvoice) {
+          invoice = createdInvoice;
           invoice_created = true;
           await pool.query(
             `UPDATE project_milestones SET invoice_id=$1, invoice_created=true WHERE id=$2`,
@@ -1094,13 +1109,15 @@ router.get('/projects/:id/timesheets', requirePermission('projects', 'view'), as
 // ── Project Invoices ──────────────────────────────────────────────────────────
 router.get('/projects/:id/invoices', requirePermission('projects', 'view'), async (req, res) => {
   try {
+    // Milestone invoices are real Finance invoices (see PUT /milestones/:id/complete)
+    // linked back via project_milestones.invoice_id -> invoices.id.
     const { rows } = await pool.query(
-      `SELECT si.*, pm.title AS milestone_title
-       FROM sales_invoices si
-       LEFT JOIN project_milestones pm ON pm.id=si.milestone_id
-       WHERE si.project_id=$1
-         AND ($2::int IS NULL OR si.company_id=$2)
-       ORDER BY si.invoice_date DESC`,
+      `SELECT i.*, pm.title AS milestone_title
+       FROM project_milestones pm
+       JOIN invoices i ON i.id = pm.invoice_id
+       WHERE pm.project_id=$1
+         AND ($2::int IS NULL OR i.company_id=$2)
+       ORDER BY i.invoice_date DESC`,
       [req.params.id, cid(req)]
     ).catch(() => ({ rows: [] }));
     res.json(rows);

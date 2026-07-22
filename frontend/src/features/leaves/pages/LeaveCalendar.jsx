@@ -10,7 +10,7 @@ const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const COLOR_PALETTE = ['#6366f1','#ef4444','#f59e0b','#ec4899','#3b82f6','#8b5cf6','#10b981','#f97316'];
 const colorForId = (id) => COLOR_PALETTE[((id ?? 1) - 1) % COLOR_PALETTE.length];
 
-const ADMIN_ROLES = ['admin','super_admin','hr','hr_manager','hr_exec','manager','team_lead','department_head','l2_approver'];
+const ADMIN_ROLES = ['admin','super_admin','hr','hr_manager','hr_exec','manager','department_head','l2_approver'];
 
 const FILTER_SELECT = {
   border: '1px solid #e5e7eb', borderRadius: 8, padding: '6px 10px',

@@ -4,9 +4,11 @@ import {
   RefreshCw, Megaphone, PartyPopper, CheckCheck,
   FileText, Download, LogIn, LogOut, MapPin,
   Inbox, Send, ShieldCheck, Sparkles,
+  Users, KeyRound, Lock, Activity, History,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
+import { canRoleSeeSection } from '@/config/menuCatalog';
 import { ProgressRing } from '@/components/charts/PulseViz';
 import FaceClockModal, { getLocationString } from '@/components/attendance/FaceClockModal';
 import './Home.css';
@@ -25,6 +27,18 @@ const PRIORITY_META = {
 const pm = p => PRIORITY_META[(p || '').toLowerCase()] || PRIORITY_META.low;
 
 const STATUS_DOT = { in_progress: 'var(--color-warning)', todo: 'var(--color-text-muted)', done: 'var(--color-success)', review: '#3b82f6', blocked: 'var(--color-danger)' };
+
+// Super Admin console — the 6 governance screens the role actually opens daily,
+// surfaced on Home so they don't have to be found through the same flyouts as
+// a data-entry role's ~300 pages.
+const CONSOLE_LINKS = [
+  { label: 'Access Control',  page: 'AccessControl', icon: ShieldCheck },
+  { label: 'Users',           page: 'UserSetup',     icon: Users },
+  { label: 'Roles',           page: 'RolesSetup',    icon: KeyRound },
+  { label: 'Security Center', page: 'SecurityCenter',icon: Lock },
+  { label: 'System Health',   page: 'SystemHealth',  icon: Activity },
+  { label: 'Audit Logs',      page: 'AuditLogs',     icon: History },
+];
 
 const ROLE_LABEL = {
   super_admin: 'Super Admin', superadmin: 'Super Admin', admin: 'Administrator',
@@ -148,8 +162,12 @@ export default function Home({ setPage }) {
   const { user: authUser, role: authRole } = useAuth();
   const role = (authRole || 'employee').toLowerCase();
   const isEmployee = role === 'employee';
+  const isSuperAdmin = role === 'super_admin' || role === 'superadmin';
   const roleLabel = ROLE_LABEL[role] || 'Employee';
-  const canSeeFinancials = ['super_admin', 'superadmin', 'admin', 'ceo', 'executive', 'manager', 'department_head', 'hr_manager', 'finance'].includes(role);
+  // Same gate as the sidebar's Finance section — a role that can't reach
+  // Finance from the menu must not get a Revenue tile that dead-ends on
+  // Unauthorized when clicked (single source of truth: menuCatalog.js).
+  const canSeeFinancials = canRoleSeeSection(role, 'Finance');
 
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -297,23 +315,25 @@ export default function Home({ setPage }) {
 
           <div className="hm-hero-r">
             {/* Management: company attendance ring + clickable KPIs.
-                Employee: personal, non-navigating counters (no company pages). */}
+                Employee: personal counters — the two approval-related ones
+                (To Action / My Requests) open the read-only My Requests page;
+                My Tasks has no employee-facing task list yet, so it stays inert. */}
             {isEmployee ? (
               <>
-                <div className="hm-kpi-card hm-kpi-ring">
+                <button className="hm-kpi-card" onClick={() => go('MyRequests')}>
                   <span className="hm-kpi-val" style={{ color: apprCount > 0 ? '#fbbf24' : '#fff' }}>
                     {loading ? '—' : apprCount}
                   </span>
                   <span className="hm-kpi-label">To Action</span>
-                </div>
+                </button>
                 <div className="hm-kpi-card hm-kpi-ring">
                   <span className="hm-kpi-val">{loading ? '—' : openTaskCt}</span>
                   <span className="hm-kpi-label">My Tasks</span>
                 </div>
-                <div className="hm-kpi-card hm-kpi-ring">
+                <button className="hm-kpi-card" onClick={() => go('MyRequests')}>
                   <span className="hm-kpi-val">{loading ? '—' : myApprovals.awaitingOthers.length}</span>
                   <span className="hm-kpi-label">My Requests</span>
-                </div>
+                </button>
               </>
             ) : (
               <>
@@ -348,6 +368,19 @@ export default function Home({ setPage }) {
           </div>
         </div>
       </div>
+
+      {/* ── Super Admin console — governance screens, not buried in the same
+             flyouts as the other ~290 pages. ── */}
+      {isSuperAdmin && (
+        <nav className="hm-quick-strip" aria-label="Super Admin console">
+          <span className="hm-console-label">Console</span>
+          {CONSOLE_LINKS.map(({ label, page, icon: Icon }) => (
+            <button key={page} className="hm-quick-chip" onClick={() => go(page)}>
+              <Icon size={12} />{label}
+            </button>
+          ))}
+        </nav>
+      )}
 
       {/* ── Attendance / quick clock-in strip — put your punch in the moment you
              open the app, no navigation needed. ── */}

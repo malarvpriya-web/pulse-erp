@@ -63,8 +63,8 @@ class ReportsService {
         COALESCE(SUM(jel.debit),  0) AS cash_in,
         COALESCE(SUM(jel.credit), 0) AS cash_out,
         COALESCE(SUM(jel.debit), 0) - COALESCE(SUM(jel.credit), 0) AS net_movement
-       FROM journal_entry_lines jel
-       JOIN journal_entries je  ON jel.journal_entry_id = je.id
+       FROM journal_lines jel
+       JOIN journal_entries je  ON jel.entry_id = je.id
        JOIN chart_of_accounts coa ON jel.account_id = coa.id
        WHERE coa.account_type = 'Asset'
          AND (coa.sub_type IN ('bank', 'cash') OR coa.code LIKE '1001%')
@@ -264,7 +264,8 @@ class ReportsService {
       // payment-batch disbursement and manual bank transactions, so it is
       // usually stale (stuck at opening balance). We instead compute cash the
       // SAME way GET /balance-sheet does — opening_balance + net posted movement
-      // from the legacy `journal_lines` ledger — so this figure agrees with the
+      // from the `journal_lines` ledger (the single canonical ledger as of the
+      // 2026-07-21 dual-ledger consolidation) — so this figure agrees with the
       // Balance Sheet. Scoped to the GL accounts linked to bank accounts.
       // current_balance is only a last resort when no GL mapping exists.
       if (await hasChartAccountLink()) {

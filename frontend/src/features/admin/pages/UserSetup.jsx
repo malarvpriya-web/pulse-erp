@@ -3,15 +3,19 @@ import { Users, Plus, Edit2, Key, Trash2, X, Check, Shield, RefreshCw, AlertTria
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 
-const ROLES = ['employee', 'manager', 'hr', 'finance', 'admin', 'super_admin'];
+// department_head sits next to manager — same manager-tier access, but scoped
+// to a lead of an operational team (warehouse/production/service) rather than
+// an office function. See ROLE_SECTION_ALLOWLIST in config/menuCatalog.js.
+const ROLES = ['employee', 'manager', 'department_head', 'hr', 'finance', 'admin', 'super_admin'];
 
 const ROLE_COLORS = {
-  super_admin: { color: '#dc2626', bg: '#fee2e2' },
-  admin:       { color: '#6B3FDB', bg: '#ede9fe' },
-  hr:          { color: '#0369a1', bg: '#e0f2fe' },
-  finance:     { color: '#16a34a', bg: '#dcfce7' },
-  manager:     { color: '#d97706', bg: '#fef3c7' },
-  employee:    { color: '#6b7280', bg: '#f3f4f6' },
+  super_admin:     { color: '#dc2626', bg: '#fee2e2' },
+  admin:           { color: '#6B3FDB', bg: '#ede9fe' },
+  hr:              { color: '#0369a1', bg: '#e0f2fe' },
+  finance:         { color: '#16a34a', bg: '#dcfce7' },
+  manager:         { color: '#d97706', bg: '#fef3c7' },
+  department_head: { color: '#d97706', bg: '#fef3c7' },
+  employee:        { color: '#6b7280', bg: '#f3f4f6' },
 };
 
 const STATUS_CFG = {

@@ -28,6 +28,33 @@ const router = express.Router();
 // Roles that can access any employee's payroll data
 const HR_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'manager', 'finance_manager'];
 
+// Self-service guard for the PayslipViewer page: HR_ROLES may look up any
+// employee's payslip; every other authenticated role (finance, employee, ...)
+// may only reach their own record. Mirrors the ownEmployeeId anti-spoof
+// pattern used by travel/service-desk self-service routes.
+async function ownPayslipOrForbidden(req, res, next) {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (HR_ROLES.includes(role)) return next();
+
+  let ownId = req.user?.employee_id ?? null;
+  if (ownId == null) {
+    const userId = req.user?.userId ?? req.user?.id;
+    if (userId) {
+      const { rows } = await pool.query('SELECT employee_id FROM users WHERE id = $1', [userId]).catch(() => ({ rows: [] }));
+      ownId = rows[0]?.employee_id ?? null;
+    }
+  }
+  if (ownId == null) return res.status(403).json({ success: false, message: 'No employee record linked to this account' });
+
+  const requestedId = req.params.id ?? req.query.employee_id ?? req.body?.employee_id ?? null;
+  if (requestedId != null && String(requestedId) !== String(ownId)) {
+    return res.status(403).json({ success: false, message: 'You may only view your own payslip' });
+  }
+  if (req.query && !req.query.employee_id) req.query.employee_id = String(ownId);
+  if (req.body && requestedId == null) req.body.employee_id = ownId;
+  next();
+}
+
 // ── Validation middleware ─────────────────────────────────────────────────────
 const validateGenerate = (req, res, next) => {
   const { month, year } = req.body;
@@ -62,9 +89,10 @@ router.get('/trend',              verifyToken, allowRoles(...HR_ROLES), getPayro
 router.get('/compliance',         verifyToken, allowRoles(...HR_ROLES), getCompliance);
 // Employee self-service: no allowRoles — controller filters by JWT userId
 router.get('/my-payslips',        verifyToken, getMyPayslips);
-// Employee-specific payslip: HR can access any, employees only own (controller enforces)
 router.get('/employee/:id',       verifyToken, allowRoles(...HR_ROLES), getEmployeePayslip);
-router.get('/payslips',           verifyToken, allowRoles(...HR_ROLES), getPayslipByQuery);
+// PayslipViewer self-service: HR_ROLES can look up any employee, everyone
+// else is scoped to their own record by ownPayslipOrForbidden.
+router.get('/payslips',           verifyToken, ownPayslipOrForbidden, getPayslipByQuery);
 router.get('/payslips/:id',       verifyToken, allowRoles(...HR_ROLES), getEmployeePayslip);
 router.get('/form16/:employeeId',   verifyToken, allowRoles(...HR_ROLES), getForm16);
 router.get('/payslip-pdf/:id',      verifyToken, allowRoles(...HR_ROLES), streamPayslipPdf);
@@ -78,14 +106,23 @@ router.post('/approve', verifyToken, allowRoles(...FINANCE_ROLES), async (req, r
   if (!month || !year) return res.status(400).json({ message: 'month and year are required' });
   const cid = req.scope?.company_id ?? null;
   try {
-    const { rowCount } = await pool.query(
-      `UPDATE payroll_runs
+    // payroll_runs has no company_id column of its own — scope through the
+    // employee it belongs to (payroll_runs.employee_id -> employees.company_id),
+    // the same pattern payroll.controller.js uses everywhere else. The previous
+    // version filtered on a nonexistent payroll_runs.company_id column, which
+    // made this endpoint fail on every call.
+    const { rows: approvedRows } = await pool.query(
+      `UPDATE payroll_runs pr
           SET status = 'approved', approved_by = $1, approved_at = NOW()
-        WHERE month = $2 AND year = $3
-          AND status = 'pending'
-          AND ($4::integer IS NULL OR company_id = $4)`,
+        WHERE pr.month = $2 AND pr.year = $3
+          AND pr.status = 'pending'
+          AND ($4::integer IS NULL OR EXISTS (
+                SELECT 1 FROM employees e WHERE e.id = pr.employee_id AND e.company_id = $4
+              ))
+        RETURNING pr.id, pr.employee_id, pr.gross, pr.net_pay, pr.employer_pf, pr.employer_esi`,
       [req.user?.userId ?? null, parseInt(month), parseInt(year), cid]
     );
+    const rowCount = approvedRows.length;
     if (rowCount === 0) return res.status(400).json({ message: 'No pending payroll records found for this period (already approved or paid).' });
     logAudit({ userId: req.user?.userId, module: 'Payroll', recordId: null, recordType: 'payroll_run', action: 'approve', newData: { month: parseInt(month), year: parseInt(year), approved_count: rowCount }, req });
     // Notify HR team (non-blocking)
@@ -98,7 +135,35 @@ router.post('/approve', verifyToken, allowRoles(...FINANCE_ROLES), async (req, r
         comments: `Payroll for ${month}/${year} approved (${rowCount} record(s))`,
       }).catch(() => {});
     }).catch(() => {});
-    res.json({ success: true, message: `${rowCount} payroll record(s) approved for ${month}/${year}`, approved_count: rowCount });
+
+    // Post the approved period to the General Ledger. Previously nothing ever
+    // called this — payroll's biggest expense line never reached the books.
+    // Non-blocking / best-effort: a GL posting failure must not undo the
+    // payroll approval that already committed above.
+    let gl = null;
+    try {
+      const { postPayrollJournal } = await import('../finance/services/payrollJournal.service.js');
+      const totals = approvedRows.reduce((acc, r) => ({
+        gross: acc.gross + parseFloat(r.gross || 0),
+        net: acc.net + parseFloat(r.net_pay || 0),
+        pf: acc.pf + parseFloat(r.employer_pf || 0),
+        esi: acc.esi + parseFloat(r.employer_esi || 0),
+      }), { gross: 0, net: 0, pf: 0, esi: 0 });
+      gl = await postPayrollJournal({
+        payroll_run_id: `${year}-${String(month).padStart(2, '0')}`,
+        payroll_month: `${year}-${String(month).padStart(2, '0')}`,
+        gross_salary: totals.gross,
+        net_salary: totals.net,
+        pf_employer: totals.pf,
+        esi_employer: totals.esi,
+        companyId: cid,
+        userId: req.user?.userId ?? null,
+      });
+    } catch (glErr) {
+      console.error('[POST /payroll/approve] GL posting skipped:', glErr.message);
+    }
+
+    res.json({ success: true, message: `${rowCount} payroll record(s) approved for ${month}/${year}`, approved_count: rowCount, gl_posting: gl });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -110,7 +175,7 @@ router.post('/run',                     verifyToken, allowRoles(...HR_ROLES), va
 router.post('/compute-slip',            verifyToken, allowRoles(...HR_ROLES), computeSlip);
 router.post('/save-slip',               verifyToken, allowRoles(...HR_ROLES), saveSlip);
 router.post('/generate-pdf-data/:id',   verifyToken, allowRoles(...HR_ROLES), generatePdfData);
-router.post('/email-payslip',           verifyToken, allowRoles(...HR_ROLES), emailPayslip);
+router.post('/email-payslip',           verifyToken, ownPayslipOrForbidden, emailPayslip);
 router.post('/bulk-generate',           verifyToken, allowRoles(...HR_ROLES), bulkGenerateSlips);
 router.post('/:id/mark-paid',           verifyToken, allowRoles(...HR_ROLES), validateMarkPaid, markPaid);
 

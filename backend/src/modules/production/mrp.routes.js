@@ -14,6 +14,7 @@ import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { nextProdOrderNumber, nextPurchaseRequestNumber } from '../../shared/docNumber.js';
 import { runMRP, computeATP } from './mrpEngine.service.js';
 import { computeCTP } from './ctpEngine.service.js';
+import { copyRoutingToProductionOperations } from './routingCopy.service.js';
 
 const router = Router();
 const actor = (req) => ({ id: req.user?.userId || req.user?.id || null, name: req.user?.name || req.user?.email || 'System' });
@@ -190,6 +191,7 @@ router.post('/planned-orders/:id/convert', requirePermission('production', 'edit
         [prodNo, po.item_id, po.item_name, po.quantity, po.bom_id, po.start_date, po.need_date,
          po.company_id, a.id, `Auto-created from MRP run #${po.run_id}`]);
       ref = prodNo; newId = prod.id;
+      await copyRoutingToProductionOperations(client, po.bom_id, prod.id);
     }
 
     const { rows: [updated] } = await client.query(
@@ -234,6 +236,7 @@ router.post('/planned-orders/convert-all', requirePermission('production', 'edit
             VALUES ($1,$2,$3,$4,$5,'planned','medium',$6,$7,$8,$9,$10) RETURNING id`,
             [prodNo, po.item_id, po.item_name, po.quantity, po.bom_id, po.start_date, po.need_date, po.company_id, a.id, `Auto-created from MRP run #${po.run_id}`]);
           ref = prodNo; newId = prod.id;
+          await copyRoutingToProductionOperations(client, po.bom_id, prod.id);
         }
         await client.query(`UPDATE mrp_planned_orders SET status='converted', converted_ref=$2, converted_id=$3 WHERE id=$1`, [po.id, ref, newId]);
         await client.query('COMMIT'); converted++;

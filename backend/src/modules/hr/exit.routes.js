@@ -471,6 +471,26 @@ router.put('/clearance/:employee_id', requireHRWrite, async (req, res) => {
       [req.params.employee_id, it_assets_returned, access_revoked, documents_collected,
        exit_interview_done, noc_it, noc_admin, noc_finance, noc_hr, noc_manager]
     );
+
+    // Actually revoke the login, not just the checklist checkbox. Previously
+    // ticking "access revoked" only wrote this flag — nothing ever set
+    // users.is_active, so a resigned/terminated employee's account stayed live.
+    if (access_revoked) {
+      const { rows: deactivated } = await pool.query(
+        `UPDATE users SET is_active = false, updated_at = NOW()
+         WHERE employee_id = $1 AND is_active = true
+         RETURNING id, email`,
+        [req.params.employee_id]
+      );
+      if (deactivated.length) {
+        logAudit({
+          userId: req.user?.userId ?? req.user?.id, module: 'hr', recordId: req.params.employee_id,
+          recordType: 'exit_clearance', action: 'access_revoked',
+          newData: { deactivated_user_ids: deactivated.map(u => u.id) }, req,
+        });
+      }
+    }
+
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -107,7 +107,7 @@ export default function CompOffPage() {
   // set. These flags drive the Employee column and the Actions column, so gating
   // on it alone stripped both from a secondary-role approver. See AuthContext.
   const isAdmin  = hasAnyRole(...ADMIN_ROLES);
-  const isManager = isAdmin || hasAnyRole('manager', 'team_lead', 'department_head', 'l2_approver');
+  const isManager = isAdmin || hasAnyRole('manager', 'department_head', 'l2_approver');
 
   const [records,  setRecords]  = useState([]);
   const [holidays, setHolidays] = useState([]);

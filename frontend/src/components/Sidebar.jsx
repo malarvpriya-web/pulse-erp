@@ -8,7 +8,10 @@ import { NAV_ITEMS } from '@/config/routes';
 import { ORPHAN_NAV_ITEMS } from '@/config/autoRouter';
 import {
   EMPLOYEE_SELF_SERVICE_PAGES, ADMIN_ONLY_PAGES, SUPER_ADMIN_ONLY_PAGES,
-  ROLE_SECTION_ALLOWLIST, roleHasSectionAllowlist,
+  ROLE_SECTION_ALLOWLIST, roleHasSectionAllowlist, HR_SCOPED_PAGES,
+  FINANCE_RESTRICTED_SECTIONS, FINANCE_SELF_SERVICE_PAGES,
+  FINANCE_ANALYTICS_SCOPED_PAGES, MANAGER_ANALYTICS_SCOPED_PAGES,
+  HR_EXEC_EXCLUDED_PAGES,
 } from '@/config/menuCatalog';
 
 // Orphan groups are named "<Label> · More". Where the label doesn't match a
@@ -137,7 +140,15 @@ export default function Sidebar() {
         const submenu = item.submenu.filter(
           sub => sub.separator || !SUPER_ADMIN_ONLY_PAGES.has(sub.page)
         );
-        if (submenu.length !== item.submenu.length) item = { ...item, submenu };
+        if (submenu.length !== item.submenu.length) {
+          const remaining = submenu.filter(sub => !sub.separator);
+          // A submenu stripped down to one surviving page reads as a broken
+          // folder (opens a flyout just to reveal a single row) — collapse it
+          // into a flat, directly-clickable item named for what's left.
+          item = remaining.length === 1
+            ? { name: remaining[0].name, icon: item.icon, page: remaining[0].page }
+            : { ...item, submenu };
+        }
       }
     }
 
@@ -145,6 +156,60 @@ export default function Sidebar() {
     if (!isAdminRole && Array.isArray(item.submenu)) {
       const submenu = item.submenu.filter(
         sub => sub.separator || !ADMIN_ONLY_PAGES.has(sub.page)
+      );
+      if (submenu.length !== item.submenu.length) item = { ...item, submenu };
+    }
+
+    // 'Analytics & AI' is a shared menu where hr/finance/manager can each
+    // reach only their own purpose-built dashboard — HR Dashboard + HR
+    // Benchmarking for hr, CFO Dashboard for finance, Executive Dashboard for
+    // manager — never the CEO/Ops/ERP-Intelligence/System-Health pages that
+    // live alongside them, and never each other's dashboard. Built as a union
+    // across every restricting role the member holds (not sequential
+    // filters), so a dual-role member (e.g. hr + finance) sees both
+    // dashboards, not their intersection. Skipped when an explicit admin
+    // override has granted the section outright (that unlocks it in full).
+    if (
+      item.name === 'Analytics & AI' && !isAdminRole &&
+      menuAccess(item.name) !== 'view' && menuAccess(item.name) !== 'edit' &&
+      Array.isArray(item.submenu) &&
+      (hasAnyRole('hr') || hasAnyRole('finance') || hasAnyRole('manager'))
+    ) {
+      const allowedPages = new Set();
+      if (hasAnyRole('hr'))      for (const p of HR_SCOPED_PAGES) allowedPages.add(p);
+      if (hasAnyRole('finance')) for (const p of FINANCE_ANALYTICS_SCOPED_PAGES) allowedPages.add(p);
+      if (hasAnyRole('manager')) for (const p of MANAGER_ANALYTICS_SCOPED_PAGES) allowedPages.add(p);
+      const submenu = item.submenu.filter(
+        sub => sub.separator || allowedPages.has(sub.page)
+      );
+      if (submenu.length !== item.submenu.length) item = { ...item, submenu };
+    }
+
+    // Finance sees only self-service items inside the shared Leaves/Attendance
+    // menus — never leave approvals, team views, or attendance admin/config
+    // screens. Its own 'Finance' section (not in FINANCE_RESTRICTED_SECTIONS)
+    // stays untouched. Mirrors the Analytics & AI scoping above.
+    if (
+      FINANCE_RESTRICTED_SECTIONS.has(item.name) && hasAnyRole('finance') && !isAdminRole &&
+      menuAccess(item.name) !== 'view' && menuAccess(item.name) !== 'edit' &&
+      Array.isArray(item.submenu)
+    ) {
+      const submenu = item.submenu.filter(
+        sub => sub.separator || FINANCE_SELF_SERVICE_PAGES.has(sub.page)
+      );
+      if (submenu.length !== item.submenu.length) item = { ...item, submenu };
+    }
+
+    // hr_exec sees the full 'HR' menu except Payroll Center — role_permissions
+    // grants it no payroll access (unlike hr_manager/payroll_admin, who hold
+    // it in full or view-only respectively).
+    if (
+      item.name === 'HR' && hasAnyRole('hr_exec') && !isAdminRole &&
+      menuAccess(item.name) !== 'view' && menuAccess(item.name) !== 'edit' &&
+      Array.isArray(item.submenu)
+    ) {
+      const submenu = item.submenu.filter(
+        sub => sub.separator || !HR_EXEC_EXCLUDED_PAGES.has(sub.page)
       );
       if (submenu.length !== item.submenu.length) item = { ...item, submenu };
     }

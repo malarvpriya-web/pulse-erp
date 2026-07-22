@@ -434,8 +434,10 @@ router.get('/tickets/:id', svcSelfService, async (req, res) => {
   try {
     const companyId = cid(req);
     const ticket = await pool.query(
-      `SELECT * FROM support_tickets
-       WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      `SELECT t.*, e.name AS assigned_to_name
+       FROM support_tickets t
+       LEFT JOIN employees e ON e.id = t.assigned_to
+       WHERE t.id = $1 AND ($2::int IS NULL OR t.company_id = $2)`,
       [req.params.id, companyId]
     );
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
@@ -485,8 +487,8 @@ router.post('/tickets', svcSelfService, async (req, res) => {
     const result = await pool.query(
       `INSERT INTO support_tickets
          (ticket_number, title, description, category, priority, status, team, requester_name, requester_email, company_id,
-          ticket_kind, project_id, site_id, customer_id, serial_number, zone, service_type, issue_category_id, complaint_id)
-       VALUES ($1,$2,$3,$4,$5,'Open',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+          ticket_kind, project_id, site_id, customer_id, serial_number, zone, service_type, issue_category_id, complaint_id, assigned_to)
+       VALUES ($1,$2,$3,$4,$5,'Open',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
       [ticket_number, title, description, category, priority||'Medium', team, requester_name, requester_email, companyId,
        kind,
        linkId(req.body.project_id),
@@ -501,7 +503,12 @@ router.post('/tickets', svcSelfService, async (req, res) => {
        // dead in practice (0/14 tickets linked). Staff-only via linkId, for the
        // same reason project_id is: a self-service requester must not be able to
        // attach their ticket to an arbitrary complaint.
-       linkId(req.body.complaint_id)]
+       linkId(req.body.complaint_id),
+       // assigned_to is an employee_id (support_tickets.assigned_to, see the
+       // my-tickets query below) — this column was previously never populated
+       // at creation time, so assignment only ever worked via a later edit
+       // (itself broken until AllTickets.jsx's dropdown fix below).
+       linkId(req.body.assigned_to)]
     );
     const ticket = result.rows[0];
     logAudit({ userId: req.user?.userId, module: 'service', recordId: ticket.id, recordType: 'support_ticket', action: 'create', newData: ticket, req });
@@ -826,7 +833,14 @@ router.post('/field-visits', svcAdmin('add'), async (req, res) => {
 router.put('/field-visits/:id', svcAdmin('edit'), async (req, res) => {
   try {
     const companyId = cid(req);
-    const { status, notes, engineer_name, visit_date, visit_time, purpose } = req.body;
+    const {
+      status, notes, engineer_name, visit_date, visit_time, purpose,
+      // Completion fields — previously accepted by the frontend's "Complete
+      // Visit" form and silently discarded here, so parts used, cost, labour,
+      // travel, signature, and completion notes never actually reached the DB.
+      completed_at, work_done, parts_used, labour_hours, travel_km, cost,
+      start_time_actual, end_time_actual, customer_signature,
+    } = req.body;
     const existing = await pool.query(
       `SELECT * FROM field_visits WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`,
       [req.params.id, companyId]
@@ -834,9 +848,18 @@ router.put('/field-visits/:id', svcAdmin('edit'), async (req, res) => {
     if (!existing.rows[0]) return res.status(404).json({ error: 'Visit not found' });
     const row = existing.rows[0];
     const result = await pool.query(
-      `UPDATE field_visits SET status=$1, notes=$2, engineer_name=$3, visit_date=$4, visit_time=$5, purpose=$6, updated_at=NOW()
-       WHERE id=$7 AND ($8::int IS NULL OR company_id = $8) RETURNING *`,
-      [status || row.status, notes ?? row.notes, engineer_name ?? row.engineer_name, visit_date || row.visit_date, visit_time ?? row.visit_time, purpose ?? row.purpose, req.params.id, companyId]
+      `UPDATE field_visits SET
+         status=$1, notes=$2, engineer_name=$3, visit_date=$4, visit_time=$5, purpose=$6,
+         completed_at=$7, work_done=$8, parts_used=$9, labour_hours=$10, travel_km=$11, cost=$12,
+         start_time_actual=$13, end_time_actual=$14, customer_signature=$15,
+         updated_at=NOW()
+       WHERE id=$16 AND ($17::int IS NULL OR company_id = $17) RETURNING *`,
+      [status || row.status, notes ?? row.notes, engineer_name ?? row.engineer_name, visit_date || row.visit_date, visit_time ?? row.visit_time, purpose ?? row.purpose,
+       completed_at ?? row.completed_at, work_done ?? row.work_done,
+       parts_used !== undefined ? JSON.stringify(parts_used) : row.parts_used,
+       labour_hours ?? row.labour_hours, travel_km ?? row.travel_km, cost ?? row.cost,
+       start_time_actual ?? row.start_time_actual, end_time_actual ?? row.end_time_actual, customer_signature ?? row.customer_signature,
+       req.params.id, companyId]
     );
     logAudit({ userId: req.user?.userId, module: 'service', recordId: req.params.id, recordType: 'field_visit', action: 'update', oldData: row, newData: result.rows[0], req });
     res.json(result.rows[0]);

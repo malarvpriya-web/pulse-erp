@@ -4,6 +4,7 @@ import { nextLifecycleNumber, nextProdOrderNumber, nextAmcNumber } from '../../s
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import * as drive from '../../services/googleDrive.service.js';
+import { copyRoutingToProductionOperations } from '../production/routingCopy.service.js';
 
 const router = Router();
 
@@ -27,11 +28,12 @@ const actor = (req) => ({
   } catch (e) { console.error('[lifecycle] migration error:', e.message); }
 })();
 
-async function createProductionOrderFromSalesOrder(client, salesOrder, req, opts = {}) {
+export async function createProductionOrderFromSalesOrder(client, salesOrder, req, opts = {}) {
   const {
     product_name,
     quantity_planned,
     bom_id,
+    project_id,
     planned_start_date,
     planned_end_date,
     priority = 'medium',
@@ -56,30 +58,15 @@ async function createProductionOrderFromSalesOrder(client, salesOrder, req, opts
 
   const createdPo = await client.query(
     `INSERT INTO production_orders
-      (production_order_no, sales_order_id, product_name, quantity_planned, priority, planned_start_date, planned_end_date, notes, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      (production_order_no, sales_order_id, bom_id, project_id, product_name, quantity_planned, priority, planned_start_date, planned_end_date, notes, created_by, company_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      RETURNING *`,
-    [orderNo, salesOrder.id, selectedProductName, selectedQty, priority, planned_start_date || null, planned_end_date || null, notes || null, a.id]
+    [orderNo, salesOrder.id, bom_id || null, project_id || null, selectedProductName, selectedQty, priority, planned_start_date || null, planned_end_date || null, notes || null, a.id, salesOrder.company_id || null]
   );
   const po = createdPo.rows[0];
 
   if (bom_id) {
-    const steps = await client.query(
-      `SELECT r.id, r.step_no, r.operation, r.work_centre_id, r.std_time_hrs, w.name AS work_centre_name
-       FROM routing_steps r
-       LEFT JOIN work_centres w ON w.id = r.work_centre_id
-       WHERE r.bom_id = $1
-       ORDER BY r.step_no, r.id`,
-      [bom_id]
-    );
-    for (const s of steps.rows) {
-      await client.query(
-        `INSERT INTO production_operations
-          (production_order_id, routing_step_id, step_no, operation, work_centre_id, work_centre_name, std_time_hrs, status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
-        [po.id, s.id, s.step_no, s.operation, s.work_centre_id || null, s.work_centre_name || null, s.std_time_hrs || 0]
-      );
-    }
+    await copyRoutingToProductionOperations(client, bom_id, po.id);
   }
 
   return po;

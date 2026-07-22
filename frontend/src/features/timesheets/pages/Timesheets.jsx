@@ -80,6 +80,20 @@ const Timesheets = () => {
 
   const fetchProjects = async () => {
     try {
+      // Non-privileged employees can only log time against projects they're
+      // actually allocated to (project_members) — previously everyone saw every
+      // active project company-wide, so hours could be booked to projects an
+      // employee had no allocation on at all.
+      if (!isPrivileged && user?.employee_id) {
+        const res = await api.get('/project-members', { params: { employee_id: user.employee_id } });
+        if (!isMounted.current) return;
+        const rows = Array.isArray(res.data) ? res.data : [];
+        const active = rows
+          .filter(r => r.project_status === 'active')
+          .map(r => ({ id: r.project_id, project_name: r.project_name, status: r.project_status }));
+        setProjects(active);
+        return;
+      }
       const res = await api.get('/projects/projects', { params: { status: 'active' } });
       if (!isMounted.current) return;
       const raw = res.data?.projects ?? res.data;

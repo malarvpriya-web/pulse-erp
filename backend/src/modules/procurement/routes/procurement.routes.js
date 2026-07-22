@@ -1073,23 +1073,43 @@ router.patch('/three-way-match/:id/approve', allowRoles('super_admin','admin','f
     `, [userId, req.params.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Match record not found' });
 
-    // Bill creation — use correct column names matching bills table schema
+    // Bill creation. Procurement's `vendors` (integer PK) and Finance's `parties`
+    // (uuid PK, what bills.supplier_id actually FKs) are separate, unbridged
+    // masters — there is no linking column between them. The previous version
+    // wrote po.supplier_id (a vendors.id integer) into bills.party_id, a dead
+    // legacy integer column SupplierBills.jsx never reads, so these bills always
+    // showed up with a blank vendor and couldn't be filtered by vendor at all.
+    // Best-effort: resolve a real parties.id by name match so linked bills work
+    // when the vendor is already a Finance party; always also store the vendor's
+    // name on party_name so the bill is never blank even when no match is found.
+    const { rows: poRows } = await pool.query(
+      `SELECT v.id AS vendor_id, v.vendor_name
+       FROM purchase_orders po JOIN vendors v ON v.id = po.supplier_id
+       WHERE po.id = $1`,
+      [rows[0].po_id]
+    );
+    const vendorName = poRows[0]?.vendor_name || null;
+    const { rows: partyRows } = vendorName
+      ? await pool.query(`SELECT id FROM parties WHERE LOWER(name) = LOWER($1) AND deleted_at IS NULL LIMIT 1`, [vendorName])
+      : { rows: [] };
+    const matchedPartyId = partyRows[0]?.id ?? null;
+
     const billRes = await pool.query(`
       INSERT INTO bills
-        (party_id, bill_number, bill_date, total_amount, subtotal, status, notes, company_id, created_by)
-      SELECT
-        po.supplier_id, $1, $2::date, $3::numeric, $3::numeric,
-        'unpaid', 'Auto-created from 3-way match approval', $4, $5
-      FROM purchase_orders po WHERE po.id = $6
+        (supplier_id, party_name, bill_number, bill_date, total_amount, subtotal, status, notes, company_id, created_by)
+      VALUES
+        ($1, $2, $3, $4::date, $5::numeric, $5::numeric,
+        'unpaid', 'Auto-created from 3-way match approval', $6, $7)
       ON CONFLICT (bill_number) DO NOTHING
       RETURNING id
     `, [
+      matchedPartyId,
+      vendorName,
       rows[0].vendor_invoice_no,
       rows[0].vendor_invoice_date,
       rows[0].vendor_invoice_amount,
       companyId,
       userId,
-      rows[0].po_id,
     ]);
 
     logAudit({

@@ -24,13 +24,16 @@ router.get('/timesheets/my-timesheet', async (req, res) => {
     const company_id = cid(req);
     const { week_start, week_end } = req.query;
 
+    // project_team_members was legacy/dropped — the live team-assignment table
+    // is project_members (role_in_project, no deleted_at column). This query
+    // always threw before, so My Timesheet permanently showed "no project
+    // assignments" regardless of actual allocation.
     const projResult = await pool.query(
       `SELECT DISTINCT p.id, p.project_code, p.project_name, p.status,
-          ptm.role AS member_role, ptm.billing_rate
-       FROM project_team_members ptm
-       JOIN projects p ON p.id = ptm.project_id
-       WHERE ptm.employee_id = $1
-         AND ptm.deleted_at IS NULL
+          pm.role_in_project AS member_role, pm.billing_rate
+       FROM project_members pm
+       JOIN projects p ON p.id = pm.project_id
+       WHERE pm.employee_id = $1
          AND p.status = 'active'
        ORDER BY p.project_name`,
       [eid]

@@ -79,6 +79,34 @@ export default function OpportunitiesKanban({ setPage } = {}) {
     setTimeout(() => setToast(null), 3000);
   };
 
+  // Previously this button just navigated to a blank Quotations page — the
+  // backend endpoint that actually creates a real, opportunity-linked draft
+  // quotation (carrying customer + expected value forward) already existed and
+  // was never called. Now it is, and we land on Quotations pre-filtered to it.
+  const [creatingQuotation, setCreatingQuotation] = useState(false);
+  const handleCreateQuotation = useCallback(async (opp) => {
+    setCreatingQuotation(true);
+    try {
+      const res = await api.post(`/crm/opportunities/${opp.id}/create-quotation`);
+      const quotationNumber = res.data?.quotation?.quotation_number;
+      setDetailOpp(null);
+      showToast(`Quotation ${quotationNumber || ''} created from "${opp.opportunity_name}"`);
+      if (typeof setPage === 'function') {
+        setPage('Quotations', quotationNumber ? { search: quotationNumber } : undefined);
+      }
+    } catch (e) {
+      if (e.response?.status === 409 && e.response?.data?.quotation_id) {
+        showToast('A quotation already exists for this opportunity — opening it.', 'error');
+        setDetailOpp(null);
+        if (typeof setPage === 'function') setPage('Quotations');
+      } else {
+        showToast(e.response?.data?.error || 'Failed to create quotation', 'error');
+      }
+    } finally {
+      setCreatingQuotation(false);
+    }
+  }, [setPage]);
+
   useEffect(() => {
     api.get('/crm/win-loss-reasons')
       .then(res => setWinLossReasons(res.data?.data ?? []))
@@ -493,13 +521,14 @@ export default function OpportunitiesKanban({ setPage } = {}) {
             {!CLOSED_STAGES.has(detailOpp.stage) && (
               <div className="ok-drawer-ft">
                 <button className="ok-btn-outline" onClick={() => setDetailOpp(null)}>Close</button>
-                {(detailOpp.stage === 'Proposal' || detailOpp.stage === 'Negotiation') && typeof setPage === 'function' && (
+                {(detailOpp.stage === 'Proposal' || detailOpp.stage === 'Negotiation') && (
                   <button
                     className="ok-btn-primary"
                     style={{ background: '#d97706' }}
-                    onClick={() => { setDetailOpp(null); setPage('Quotations'); }}
+                    disabled={creatingQuotation}
+                    onClick={() => handleCreateQuotation(detailOpp)}
                   >
-                    Create Quotation
+                    {creatingQuotation ? 'Creating…' : 'Create Quotation'}
                   </button>
                 )}
                 <button

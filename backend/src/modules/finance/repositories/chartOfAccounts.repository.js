@@ -85,8 +85,8 @@ class ChartOfAccountsRepository {
       `SELECT
          COALESCE(SUM(jel.debit),  0) AS total_debit,
          COALESCE(SUM(jel.credit), 0) AS total_credit
-       FROM journal_entry_lines jel
-       JOIN journal_entries je ON jel.journal_entry_id = je.id
+       FROM journal_lines jel
+       JOIN journal_entries je ON jel.entry_id = je.id
        WHERE jel.account_id = $1
          AND je.entry_date  BETWEEN $2 AND $3
          AND (je.is_posted = true OR je.status = 'posted')`,

@@ -313,9 +313,35 @@ router.post('/changes/:id/implement', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Only approved changes can be implemented' });
     }
+
+    // Promote any BOM version drafted under this ECN (via bom.routes.js's
+    // POST /bom/:id/version) to the live version, retiring whatever was active
+    // before. This is what makes "implement" actually change production data
+    // instead of just flipping a status flag — production keeps building to
+    // the old spec otherwise.
+    const promoted = [];
+    const { rows: draftBoms } = await client.query(
+      `SELECT * FROM bom_headers WHERE ecn_id = $1 AND status = 'draft'`,
+      [req.params.id]
+    );
+    for (const draft of draftBoms) {
+      await client.query(
+        `UPDATE bom_headers SET status='superseded', updated_at=NOW()
+         WHERE status='active' AND id <> $1
+           AND (product_name = $2 OR (product_id IS NOT NULL AND product_id = $3))
+           AND ($4::int IS NULL OR company_id = $4)`,
+        [draft.id, draft.product_name, draft.product_id, draft.company_id ?? null]
+      );
+      await client.query(`UPDATE bom_headers SET status='active', updated_at=NOW() WHERE id=$1`, [draft.id]);
+      promoted.push({ bom_id: draft.id, version: draft.version });
+    }
+    if (promoted.length) {
+      await logEvent(client, req.params.id, 'bom_promoted', req, 'Draft BOM version(s) promoted to active', { promoted });
+    }
+
     await logEvent(client, req.params.id, 'implemented', req, implementation_note || 'Engineering change implemented');
     await client.query('COMMIT');
-    res.json(rows[0]);
+    res.json({ ...rows[0], promoted_boms: promoted });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: e.message });

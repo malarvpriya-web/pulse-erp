@@ -2,7 +2,7 @@
  * LeaveApprovals.jsx — Unified role-aware leave approval page
  *
  * Tabs:
- *  L1 — Manager     : manager/team_lead roles, pending L1 queue
+ *  L1 — Manager     : manager role, pending L1 queue
  *  L2 — Dept Head   : department_head/l2_approver roles, L1-approved queue
  *  L3 — HR Final    : hr/hr_manager roles, L2-approved queue
  *  Team View        : all roles, team leave summary with filters
@@ -37,7 +37,7 @@ const QUEUES = [
     id: 'manager',
     label: 'L1 — Manager',
     description: 'Direct reports awaiting your first-level approval',
-    roles: ['manager','team_lead','admin','super_admin','hr_manager'],
+    roles: ['manager','admin','super_admin','hr_manager'],
     load: async (uid) => {
       const params = { manager_status:'pending', limit:200 };
       if (uid) params.manager_id = uid;

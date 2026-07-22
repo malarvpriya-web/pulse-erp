@@ -205,11 +205,16 @@ class BillService {
     return await billRepo.getDueSoon(days, companyId);
   }
 
-  // Look up a chart_of_accounts row by account_code, scoped to the company (falls back to global)
+  // Look up a chart_of_accounts row by code, scoped to the company (falls back to global).
+  // chart_of_accounts' code column is `code`, not `account_code` — this query
+  // always threw before, so every caller's `|| await this._findDefaultAccount(...)`
+  // fallback silently failed and the whole journal-entry attempt was swallowed
+  // by the enclosing SAVEPOINT catch (expense/AP/tax/TDS lines on bill creation,
+  // and AP/bank lines on payment, never posted).
   async _findDefaultAccount(client, companyId, codes) {
     const { rows } = await client.query(
       `SELECT id FROM chart_of_accounts
-       WHERE account_code = ANY($1)
+       WHERE code = ANY($1)
          AND (company_id = $2 OR company_id IS NULL)
          AND is_active = true
        ORDER BY company_id DESC NULLS LAST LIMIT 1`,
@@ -246,10 +251,19 @@ class PaymentService {
         remainingAmount -= allocAmount;
       }
 
-      // Try to create journal entry — use savepoint so missing accounts never roll back the payment
+      // Try to create journal entry — use savepoint so missing accounts never roll back the payment.
+      // SupplierBills.jsx never sends accounts_payable_id/bank_account_id, so this
+      // used to silently no-op on every payment recorded via the standard UI —
+      // AP payments updated the bill/subledger but never posted to the GL.
+      // Default to the standard seeded AP (2001) / Bank (1001/1002) accounts,
+      // same fallback pattern invoice.service.js uses for its revenue account.
       await client.query('SAVEPOINT je_sp');
       try {
-        if (data.accounts_payable_id && data.bank_account_id) {
+        const apAccountId = data.accounts_payable_id
+          || await billService._findDefaultAccount(client, data.company_id ?? null, ['2001']);
+        const bankAccountId = data.bank_account_id
+          || await billService._findDefaultAccount(client, data.company_id ?? null, ['1002', '1001']);
+        if (apAccountId && bankAccountId) {
           const entryNumber = await journalRepo.getNextEntryNumber();
           const journalEntry = await journalRepo.createEntry(client, {
             entry_number:   entryNumber,
@@ -263,7 +277,7 @@ class PaymentService {
 
           await journalRepo.createLine(client, {
             journal_entry_id: journalEntry.id,
-            account_id:       data.accounts_payable_id,
+            account_id:       apAccountId,
             description:      `Payment ${paymentNumber}`,
             debit:            data.amount,
             credit:           0
@@ -271,7 +285,7 @@ class PaymentService {
 
           await journalRepo.createLine(client, {
             journal_entry_id: journalEntry.id,
-            account_id:       data.bank_account_id,
+            account_id:       bankAccountId,
             description:      `Payment ${paymentNumber}`,
             debit:            0,
             credit:           data.amount

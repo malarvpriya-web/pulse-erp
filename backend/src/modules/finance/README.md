@@ -30,7 +30,7 @@ backend/src/modules/finance/
 1. **chart_of_accounts** - Account hierarchy (Asset, Liability, Equity, Revenue, Expense)
 2. **parties** - Unified customers and suppliers
 3. **journal_entries** - Transaction headers
-4. **journal_entry_lines** - Transaction details (debit/credit)
+4. **journal_lines** - Transaction details (debit/credit, cost centre, project) — the single canonical ledger; `journal_entry_lines` is a deprecated legacy table no code writes to as of 2026-07-21
 5. **invoices** - Customer invoices
 6. **invoice_items** - Invoice line items
 7. **bills** - Supplier bills

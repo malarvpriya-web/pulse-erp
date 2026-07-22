@@ -109,7 +109,7 @@ router.get('/recommendations', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT ir.*,
-         e.name AS employee_name, e.department, e.designation, e.employee_code,
+         e.name AS employee_name, e.department, e.designation, e.office_id AS employee_code,
          sub.name AS submitted_by_name,
          apv.name AS approved_by_name
        FROM increment_recommendations ir
@@ -202,7 +202,7 @@ router.patch('/recommendations/:id/approve', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Recommendation not found' });
     const rec = rows[0];
     logAudit({ userId: req.user?.userId, module: 'Performance', recordId: req.params.id, recordType: 'increment_recommendation', action: 'approve', newData: rec, req });
-    pool.query(`SELECT user_id FROM employees WHERE id=$1`, [rec.employee_id])
+    pool.query(`SELECT id AS user_id FROM users WHERE employee_id=$1`, [rec.employee_id])
       .then(({ rows: empRows }) => {
         notifyWorkflowEvent('approved', { module: 'Increment', recordId: req.params.id, submitterUserId: empRows[0]?.user_id ?? null });
       }).catch(() => {});
@@ -228,7 +228,7 @@ router.patch('/recommendations/:id/reject', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Recommendation not found' });
     const rec = rows[0];
     logAudit({ userId: req.user?.userId, module: 'Performance', recordId: req.params.id, recordType: 'increment_recommendation', action: 'reject', newData: rec, req });
-    pool.query(`SELECT user_id FROM employees WHERE id=$1`, [rec.employee_id])
+    pool.query(`SELECT id AS user_id FROM users WHERE employee_id=$1`, [rec.employee_id])
       .then(({ rows: empRows }) => {
         notifyWorkflowEvent('rejected', { module: 'Increment', recordId: req.params.id, submitterUserId: empRows[0]?.user_id ?? null });
       }).catch(() => {});
@@ -255,15 +255,36 @@ router.post('/recommendations/:id/push-payroll', async (req, res) => {
       return res.status(400).json({ error: 'Recommendation not found or not approved' });
     }
     const rec = recs[0];
-    // Update the effective CTC in the active salary structure
-    await client.query(
-      `UPDATE salary_structures SET
-         ctc               = COALESCE($2, ctc),
-         effective_date    = COALESCE($3, effective_date),
-         updated_at        = NOW()
-       WHERE employee_id = $1 AND is_active = TRUE`,
-      [rec.emp_id, rec.final_new_ctc, rec.effective_date]
+    // Write the effective new pay into the table payroll actually reads
+    // (payroll.service.js's generatePayroll COALESCEs the latest
+    // employee_salary_assignments.basic_salary with employees.basic_salary).
+    // `salary_structures` is a shared component-template table with no
+    // employee_id/ctc/effective_date/is_active columns at all — the previous
+    // version of this UPDATE always failed against that schema, so an approved
+    // increment never actually changed what an employee got paid.
+    const { rows: [latestAssignment] } = await client.query(
+      `SELECT basic_salary, structure_id FROM employee_salary_assignments
+       WHERE employee_id = $1 ORDER BY effective_from DESC NULLS LAST, created_at DESC LIMIT 1`,
+      [rec.emp_id]
     );
+    const { rows: [empRow] } = await client.query(`SELECT basic_salary FROM employees WHERE id = $1`, [rec.emp_id]);
+    const currentBasic = parseFloat(latestAssignment?.basic_salary ?? empRow?.basic_salary ?? 0);
+    const currentCtc = parseFloat(rec.current_ctc || 0);
+    const newCtc = parseFloat(rec.final_new_ctc || 0);
+    // Scale basic_salary by the same ratio as the CTC change; if we don't have
+    // enough information to compute a ratio, carry the current basic forward
+    // unchanged rather than guessing.
+    const newBasic = (currentCtc > 0 && newCtc > 0)
+      ? Math.round(currentBasic * (newCtc / currentCtc))
+      : currentBasic;
+    const effectiveFrom = rec.effective_date || new Date().toISOString().split('T')[0];
+
+    await client.query(
+      `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from, basic_salary)
+       VALUES ($1,$2,$3,$4)`,
+      [rec.emp_id, latestAssignment?.structure_id || null, effectiveFrom, newBasic]
+    );
+    await client.query(`UPDATE employees SET basic_salary = $2 WHERE id = $1`, [rec.emp_id, newBasic]);
     // Mark as processed
     await client.query(
       `UPDATE increment_recommendations SET

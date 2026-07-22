@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-20T03:33:17.381Z",
+  "generated_at": "2026-07-21T11:57:06.773Z",
   "source": "Pulse@localhost:5432",
   "migrations": [
     "20260330000000_core_schema.js",
@@ -254,6 +254,9 @@
     "20260718000005_device_push_tokens.js",
     "20260719000001_seed_role_permission_gaps.js",
     "20260719000002_service_engineer_inventory_view.js",
-    "20260719000003_access_denials.js"
+    "20260719000003_access_denials.js",
+    "20260721000001_department_head_operational_grants.js",
+    "20260721000002_granular_role_approvals_notifications_grants.js",
+    "20260721000003_seed_l2_approver_role.js"
   ]
 }

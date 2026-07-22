@@ -15,7 +15,7 @@ const cidOf = (req) => (req.scope?.company_id != null ? req.scope.company_id : n
 const num = (v) => (v === null || v === undefined || v === '' ? 0 : parseFloat(v)) || 0;
 
 /** Post a stock movement to the ledger and keep inventory_items.current_stock in sync. */
-async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId }) {
+export async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId }) {
   if (!itemId) return;
   const { rows: [bal] } = await client.query(
     `SELECT COALESCE(SUM(quantity_in - quantity_out),0) AS balance

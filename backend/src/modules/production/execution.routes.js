@@ -3,6 +3,7 @@ import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { nextProdOrderNumber } from '../../shared/docNumber.js';
 import { requirePermission, hasRole } from '../../middlewares/auth.middleware.js';
+import { postStock } from './subcontracting.routes.js';
 
 const router = Router();
 
@@ -107,12 +108,18 @@ async function backflushMaterials(client, orderId, companyId, operationId, actor
         (company_id, production_order_id, operation_id, transaction_type, item_id, item_name, quantity, unit, reservation_id, actor_id, actor_name)
       VALUES ($1,$2,$3,'complete',$4,$5,$6,$7,$8,$9,$10)
     `, [companyId, orderId, operationId, res.item_id, res.item_name, toConsume, res.unit, res.id, actorId, actorName]);
-    // Deduct from inventory_items if possible
+    // Deduct from inventory — dual-written to stock_ledger (the ledger every
+    // Inventory report/dashboard reads) and inventory_items.current_stock,
+    // instead of only the raw column. Previously this only touched current_stock,
+    // so production consumption was invisible to the ledger-driven Inventory
+    // screens the moment any batch was backflushed.
     if (res.item_id) {
-      await client.query(
-        `UPDATE inventory_items SET current_stock = GREATEST(0, current_stock - $1), updated_at=NOW() WHERE id=$2`,
-        [toConsume, res.item_id]
-      ).catch(() => {}); // non-fatal if inventory table differs
+      await postStock(client, {
+        itemId: res.item_id, outQty: toConsume, txnType: 'production_consumption',
+        refType: 'production_order', refId: orderId,
+        remarks: `Backflush consumption — order #${orderId}`,
+        createdBy: actorId, companyId,
+      }).catch(() => {}); // non-fatal if inventory table differs
     }
   }
 }
@@ -120,12 +127,16 @@ async function backflushMaterials(client, orderId, companyId, operationId, actor
 /* ── Record finished goods receipt into inventory ── */
 async function receiveFG(client, order, actorId, actorName) {
   if (!order.product_id) return;
-  await client.query(
-    `UPDATE inventory_items
-     SET current_stock = current_stock + $1, updated_at=NOW()
-     WHERE id=$2`,
-    [parseFloat(order.quantity_completed || order.quantity_planned), order.product_id]
-  ).catch(() => {}); // non-fatal
+  const fgQty = parseFloat(order.quantity_completed || order.quantity_planned);
+  // Dual-written to stock_ledger + inventory_items.current_stock (see
+  // backflushMaterials above) so finished-goods receipt is visible to the
+  // same ledger-driven Inventory reports that raw-material consumption now is.
+  await postStock(client, {
+    itemId: order.product_id, inQty: fgQty, txnType: 'production_receipt',
+    refType: 'production_order', refId: order.id,
+    remarks: `FG receipt — order #${order.id} (${order.product_name || ''})`,
+    createdBy: actorId, companyId: order.company_id,
+  }).catch(() => {}); // non-fatal
 
   await client.query(`
     INSERT INTO wip_transactions
@@ -643,10 +654,15 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
     const qty = parseFloat(produced_qty || order.quantity_planned);
 
     if (order.product_id) {
-      await client.query(
-        `UPDATE inventory_items SET current_stock = current_stock + $1, updated_at = NOW() WHERE id = $2`,
-        [qty, order.product_id]
-      ).catch(() => {});
+      // Dual-written to stock_ledger + inventory_items.current_stock (see
+      // backflushMaterials/receiveFG above) — this order-level completion path
+      // previously updated current_stock directly, bypassing the ledger.
+      await postStock(client, {
+        itemId: order.product_id, inQty: qty, txnType: 'production_receipt',
+        refType: 'production_order', refId: order.id,
+        remarks: `Order completion FG receipt — order #${order.id}`,
+        createdBy: a.id, companyId: cid,
+      }).catch(() => {});
     }
     await client.query(`
       INSERT INTO wip_transactions
@@ -662,8 +678,12 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
         for (const o of outs) {
           const outQty = parseFloat(o.qty_per_parent || 0) * qty;
           if (outQty <= 0) continue;
-          if (o.item_id) await client.query(
-            `UPDATE inventory_items SET current_stock = current_stock + $1, updated_at = NOW() WHERE id = $2`, [outQty, o.item_id]);
+          if (o.item_id) await postStock(client, {
+            itemId: o.item_id, inQty: outQty, txnType: 'production_receipt',
+            refType: 'production_order', refId: order.id,
+            remarks: `Co/by-product receipt — order #${order.id}`,
+            createdBy: a.id, companyId: cid,
+          }).catch(() => {});
           await client.query(`
             INSERT INTO wip_transactions
               (company_id, production_order_id, transaction_type, item_id, item_name, quantity, unit, actor_id, actor_name, to_location)
@@ -707,10 +727,14 @@ router.patch('/orders/:id/issue-materials', requirePermission('production', 'edi
         [rsv.id]
       );
       if (rsv.item_id) {
-        await client.query(
-          `UPDATE inventory_items SET current_stock = GREATEST(0, current_stock - $1), updated_at = NOW() WHERE id = $2`,
-          [remaining, rsv.item_id]
-        ).catch(() => {});
+        // Dual-written to stock_ledger + inventory_items.current_stock (see
+        // backflushMaterials above).
+        await postStock(client, {
+          itemId: rsv.item_id, outQty: remaining, txnType: 'production_issue',
+          refType: 'production_order', refId: req.params.id,
+          remarks: `Bulk material issue — order #${req.params.id}`,
+          createdBy: a.id, companyId: cid,
+        }).catch(() => {});
       }
       await client.query(`
         INSERT INTO wip_transactions
@@ -1072,20 +1096,22 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
       [newIssued, newStatus, reservation_id]
     );
 
-    // Deduct from inventory
-    if (res_row.item_id) {
-      await client.query(
-        `UPDATE inventory_items SET current_stock=GREATEST(0, current_stock-$1), updated_at=NOW() WHERE id=$2`,
-        [qty_issued, res_row.item_id]
-      ).catch(() => {});
-    }
-
     // Get unit cost
     const { rows: [item] } = await client.query(
       `SELECT COALESCE(standard_cost, 0) AS unit_cost FROM inventory_items WHERE id=$1`, [res_row.item_id]
     ).catch(() => ({ rows: [{ unit_cost: 0 }] }));
     const unitCost = parseFloat(item?.unit_cost || 0);
     const totalCost = unitCost * qty_issued;
+
+    // Deduct from inventory — dual-written to stock_ledger + inventory_items.current_stock.
+    if (res_row.item_id) {
+      await postStock(client, {
+        itemId: res_row.item_id, outQty: parseFloat(qty_issued), txnType: 'production_issue',
+        refType: 'production_order', refId: req.params.id, rate: unitCost,
+        remarks: remarks || `Material issue — order #${req.params.id}`,
+        createdBy: a.id, companyId: cid,
+      }).catch(() => {});
+    }
 
     // Log material issue
     await client.query(`
@@ -1230,6 +1256,15 @@ router.post('/operations/:id/complete', requirePermission('production', 'edit'),
             `Inspection Failure — ${order?.production_order_no || op.production_order_id}`,
             `Auto-raised: scrap quantity ${quantity_scrap} detected at inspection step "${op.operation}". Reason: ${scrap_reason || remarks || 'not specified'}`,
             ncrNo, a.id, op.production_order_id]);
+        // A failed inspection used to only log an NCR — nothing stopped the
+        // batch, and the order could still auto-complete and receive finished
+        // goods below even when the very last step was the one that scrapped
+        // material. Major/critical findings now actually hold the order; a
+        // real stop-ship control instead of a record nobody has to act on.
+        await client.query(
+          `UPDATE production_orders SET status='on_hold', updated_at=NOW() WHERE id=$1`,
+          [op.production_order_id]
+        );
       }
     }
 
@@ -1264,13 +1299,21 @@ router.post('/operations/:id/complete', requirePermission('production', 'edit'),
       `, [op.production_order_id, cid, machineCost]);
     }
 
-    // Check if all operations complete → close order
+    // Check if all operations complete → close order. Gated on no open NCRs —
+    // previously this fired purely on operation count, so an order could
+    // auto-complete and receive finished goods even when its last inspection
+    // step had just scrapped material and raised an NCR above.
     const pending = await client.query(
       `SELECT COUNT(*)::INT AS n FROM production_operations
        WHERE production_order_id=$1 AND status NOT IN ('completed','skipped')`,
       [op.production_order_id]
     );
-    if ((pending.rows[0]?.n || 0) === 0) {
+    const openNcr = await client.query(
+      `SELECT COUNT(*)::INT AS n FROM ncr_reports
+       WHERE reference_type='production_order' AND reference_id=$1 AND status NOT IN ('closed')`,
+      [op.production_order_id]
+    ).catch(() => ({ rows: [{ n: 0 }] }));
+    if ((pending.rows[0]?.n || 0) === 0 && (openNcr.rows[0]?.n || 0) === 0) {
       // Backflush materials
       await backflushMaterials(client, op.production_order_id, cid, op.id, a.id, a.name);
 

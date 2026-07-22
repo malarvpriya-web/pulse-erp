@@ -65,6 +65,7 @@ SET row_security = off;
 INSERT INTO public.roles VALUES
 	(44, 'Finance', 'finance', true, NULL, NULL, '2026-07-08 07:18:53.343418+05:30', NULL, NULL),
 	(45, 'Department Head', 'department_head', true, 1, NULL, '2026-07-16 21:47:50.969448+05:30', 'Department Head', 'Heads a department — manager-tier access across their function'),
+	(46, 'L2 Approver', 'l2_approver', true, 1, NULL, '2026-07-21 17:25:45.443783+05:30', 'L2 Leave Approver', 'Second-level leave approval (L1-approved queue) — the dedicated escalation tier the leave workflow treats as an alternative to department_head'),
 	(3, 'Manager', 'manager', true, 1, NULL, '2026-05-05 18:50:08.910557+05:30', NULL, NULL),
 	(4, 'HR Manager', 'hr', true, 1, NULL, '2026-05-05 18:50:08.910557+05:30', NULL, NULL),
 	(1, 'Super Administrator', 'super_admin', true, 1, NULL, '2026-05-05 18:50:08.910557+05:30', 'Super Administrator', 'Full system access — cross-company'),
@@ -94,7 +95,7 @@ INSERT INTO public.roles VALUES
 -- Name: roles_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.roles_id_seq', 45, true);
+SELECT pg_catalog.setval('public.roles_id_seq', 46, true);
 
 
 --
@@ -833,8 +834,6 @@ INSERT INTO public.role_permissions VALUES
 	(749, 45, 'projects', true, true, true, false, true, true),
 	(750, 45, 'finance', false, false, false, false, false, false),
 	(751, 45, 'payroll', false, false, false, false, false, false),
-	(752, 45, 'inventory', false, false, false, false, false, false),
-	(753, 45, 'procurement', false, false, false, false, false, false),
 	(754, 45, 'sales', false, false, false, false, false, false),
 	(755, 45, 'crm', false, false, false, false, false, false),
 	(756, 45, 'hr', false, false, false, false, false, false),
@@ -855,7 +854,6 @@ INSERT INTO public.role_permissions VALUES
 	(771, 44, 'projects', false, false, false, false, false, false),
 	(772, 44, 'sales', false, false, false, false, false, false),
 	(773, 44, 'production', false, false, false, false, false, false),
-	(774, 45, 'production', false, false, false, false, false, false),
 	(775, 3, 'production', false, false, false, false, false, false),
 	(776, 4, 'production', false, false, false, false, false, false),
 	(777, 44, 'leaves', false, false, false, false, false, false),
@@ -915,7 +913,6 @@ INSERT INTO public.role_permissions VALUES
 	(831, 26, 'iot', true, true, true, false, false, false),
 	(832, 5, 'iot', false, false, false, false, false, false),
 	(833, 44, 'servicedesk', false, false, false, false, false, false),
-	(834, 45, 'servicedesk', false, false, false, false, false, false),
 	(835, 3, 'servicedesk', true, false, false, false, false, false),
 	(836, 4, 'servicedesk', true, false, false, false, false, false),
 	(837, 44, 'procurement', false, false, false, false, false, false),
@@ -998,14 +995,56 @@ INSERT INTO public.role_permissions VALUES
 	(914, 25, 'assets', false, false, false, false, false, false),
 	(915, 26, 'assets', false, false, false, false, false, false),
 	(916, 5, 'assets', false, false, false, false, false, false),
-	(693, 26, 'inventory', true, false, false, false, false, false);
+	(693, 26, 'inventory', true, false, false, false, false, false),
+	(752, 45, 'inventory', true, true, true, false, true, true),
+	(753, 45, 'procurement', true, true, true, false, true, true),
+	(774, 45, 'production', true, true, true, false, true, true),
+	(834, 45, 'servicedesk', true, true, true, false, true, true),
+	(917, 9, 'approvals', true, true, true, false, true, false),
+	(918, 9, 'notifications', true, true, true, false, false, false),
+	(919, 11, 'approvals', true, true, true, false, true, false),
+	(920, 11, 'notifications', true, true, true, false, false, false),
+	(921, 13, 'approvals', true, true, true, false, true, false),
+	(922, 13, 'notifications', true, true, true, false, false, false),
+	(923, 14, 'approvals', true, true, true, false, true, false),
+	(924, 14, 'notifications', true, true, true, false, false, false),
+	(925, 17, 'approvals', true, true, true, false, true, false),
+	(926, 17, 'notifications', true, true, true, false, false, false),
+	(927, 19, 'approvals', true, true, true, false, true, false),
+	(928, 19, 'notifications', true, true, true, false, false, false),
+	(929, 22, 'approvals', true, true, true, false, true, false),
+	(930, 22, 'notifications', true, true, true, false, false, false),
+	(931, 23, 'approvals', true, true, true, false, true, false),
+	(932, 23, 'notifications', true, true, true, false, false, false),
+	(933, 25, 'approvals', true, true, true, false, true, false),
+	(934, 25, 'notifications', true, true, true, false, false, false),
+	(935, 10, 'approvals', true, true, false, false, false, false),
+	(936, 10, 'notifications', true, false, false, false, false, false),
+	(937, 12, 'approvals', true, true, false, false, false, false),
+	(938, 12, 'notifications', true, false, false, false, false, false),
+	(939, 15, 'approvals', true, true, false, false, false, false),
+	(940, 15, 'notifications', true, false, false, false, false, false),
+	(941, 16, 'approvals', true, true, false, false, false, false),
+	(942, 16, 'notifications', true, false, false, false, false, false),
+	(943, 18, 'approvals', true, true, false, false, false, false),
+	(944, 18, 'notifications', true, false, false, false, false, false),
+	(945, 20, 'approvals', true, true, false, false, false, false),
+	(946, 20, 'notifications', true, false, false, false, false, false),
+	(947, 21, 'approvals', true, true, false, false, false, false),
+	(948, 21, 'notifications', true, false, false, false, false, false),
+	(949, 24, 'approvals', true, true, false, false, false, false),
+	(950, 24, 'notifications', true, false, false, false, false, false),
+	(951, 26, 'approvals', true, true, false, false, false, false),
+	(952, 26, 'notifications', true, false, false, false, false, false),
+	(953, 46, 'leaves', true, true, true, false, true, false),
+	(954, 46, 'attendance', true, false, false, false, false, false);
 
 
 --
 -- Name: role_permissions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.role_permissions_id_seq', 916, true);
+SELECT pg_catalog.setval('public.role_permissions_id_seq', 954, true);
 
 
 --

@@ -139,6 +139,11 @@
 .hm-quick-refresh { margin-left: auto; }
 .hm-quick-refresh svg { color: #5B35D5; }
 .hm-quick-chip:focus-visible { outline: 2px solid #5B35D5; outline-offset: 2px; }
+.hm-console-label {
+  font-size: 10px; font-weight: 800; color: #5B35D5;
+  letter-spacing: .08em; text-transform: uppercase;
+  padding-right: 2px; flex-shrink: 0;
+}
 
 /* ── Section header (legacy) ── */
 .hm-section { margin-bottom: 28px; }

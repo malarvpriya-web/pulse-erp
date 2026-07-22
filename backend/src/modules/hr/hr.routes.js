@@ -53,7 +53,7 @@ pool.query(`
 function visibleToClause(role) {
   const r = String(role || '').toLowerCase();
   if (['admin', 'super_admin', 'hr_admin', 'hr'].includes(r)) return `'all','hr_only','managers'`;
-  if (['manager', 'team_lead'].includes(r)) return `'all','managers'`;
+  if (r === 'manager') return `'all','managers'`;
   return `'all'`;
 }
 
