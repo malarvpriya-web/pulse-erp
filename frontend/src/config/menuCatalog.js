@@ -265,10 +265,19 @@ export const ROLE_SECTION_ALLOWLIST = {
   // role (e.g. TravelAdvances.jsx's disburse button).
   // 'HR' is scoped to Employee Directory only — see MANAGER_HR_SCOPED_PAGES /
   // canManagerAccessPage above.
+  // 'Operations'/'e-Signatures' (F17 open-items pass, 2026-07-23 — see
+  // ROLE_SIDEBAR_REACHABILITY_AUDIT.md): neither carries a `module` key in
+  // routes.jsx, and neither backend route (operations/lifecycle.routes.js;
+  // documents/signatures.routes.js, documentMaster.routes.js) calls
+  // requirePermission anywhere — verifyToken only. Permission-less, same
+  // shape as QR Codes/Org Chart, so granted to manager/department_head as
+  // the existing broadest cross-departmental allowlists rather than left
+  // unreachable for every role.
   manager: [
     'Home', 'Approvals', 'Employees', 'Attendance', 'Leaves', 'Timesheets',
     'Performance', 'Projects', 'Recruitment', 'Reports', 'QR Codes',
     'Notifications', 'Org Chart', 'Analytics & AI', 'Travel Desk', 'HR',
+    'Operations', 'e-Signatures',
   ],
   // department_head = manager-tier lead of an operational team (warehouse,
   // production or service), not an office function — manager's baseline plus
@@ -276,20 +285,29 @@ export const ROLE_SECTION_ALLOWLIST = {
   // already grants department_head view/add/edit/approve/export on inventory,
   // production and servicedesk (see 20260721000001_department_head_operational_grants.js),
   // so these sections are live, not more dead links.
+  // 'Operations' — see manager comment above (F17 pass); permission-less,
+  // added for parity as the other broad cross-departmental allowlist.
   department_head: [
     'Home', 'Approvals', 'Employees', 'Attendance', 'Leaves', 'Timesheets',
     'Performance', 'Projects', 'Recruitment', 'Reports', 'QR Codes',
     'Notifications', 'Org Chart', 'Inventory', 'Production', 'Service Desk',
+    'Operations',
   ],
   // 'Travel Desk' granted in full: backend trusts hr with TRAVEL_APPROVE_ROLES
   // (approve/reject requests) and ADVANCE_MANAGER_ROLES (advance
   // manager-review) — see travel.routes.js. Not in AUDIT_ROLES, so TravelAudit
   // stays a 403 for hr at the API even though the section is now reachable;
   // that's the same shape as every other shared-section grant in this file.
+  // 'Compliance · More'/'Asset Register · More':
+  // 20260719000001_seed_role_permission_gaps.js granted hr view-only
+  // compliance ("HR owns some certification evidence") and view-only assets
+  // ("employee asset allocation") — see the procurement_manager comment below
+  // for why these are the orphans' exact names rather than a curated section.
   hr: [
     'Home', 'Approvals', 'Employees', 'HR', 'Learning Center', 'Attendance',
     'Leaves', 'Timesheets', 'Performance', 'Recruitment', 'Talent', 'Reports',
     'QR Codes', 'Notifications', 'Org Chart', 'Analytics & AI', 'Travel Desk',
+    'Compliance · More', 'Asset Register · More',
   ],
   // 'Analytics & AI' is scoped to the CFO Dashboard only — see
   // FINANCE_ANALYTICS_SCOPED_PAGES / canFinanceAccessPage above.
@@ -314,10 +332,12 @@ export const ROLE_SECTION_ALLOWLIST = {
   // recruitment/training/timesheets. 'Employees' (the manager-facing
   // dashboard) is intentionally excluded — none of the three hold that
   // permission; they work employee records through HR → Employee Directory.
+  // 'e-Signatures' (F17 pass): permission-less, see the manager comment
+  // above; hr_manager owns offer-letter/onboarding-document signing.
   hr_manager: [
     'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment', 'Talent',
     'Attendance', 'Leaves', 'Timesheets', 'Performance', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures',
   ],
   hr_exec: [
     'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment', 'Talent',
@@ -359,9 +379,19 @@ export const ROLE_SECTION_ALLOWLIST = {
   // accounts_exec above. QR Codes/Org Chart (no `module` key on either
   // NAV_ITEMS entry, so unreachable via fallback for any role) added for
   // parity with every other management-tier allowlist in this object.
+  // 'R&D · More': 20260719000001_seed_role_permission_gaps.js granted
+  // project_manager view-only rd — see the procurement_manager comment below
+  // for why orphan modules from that migration are listed by exact synthetic
+  // name instead of a curated section.
+  // 'Approvals' REMOVED (F16 role-reconciliation pass, 2026-07-22):
+  // project_manager was dropped from approvals.authz.js's APPROVER_ROLES —
+  // none of the shared Approval Center pool's categories (leave/
+  // regularization/OT/purchase request/expense/ECN/payment) are this role's
+  // domain, so the section only ever dead-ended every action button on
+  // Unauthorized. Same shape as l2_approver having no Approvals section.
   project_manager: [
-    'Home', 'Approvals', 'Projects', 'Timesheets', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Home', 'Projects', 'Timesheets', 'Reports',
+    'Notifications', 'Org Chart', 'QR Codes', 'R&D · More',
   ],
   // Phase-42 granular sales seats (20260529000001_phase42_security_roles.js).
   // CRM/Sales/Marketing are the one curated group with NO `module` key on their
@@ -379,13 +409,25 @@ export const ROLE_SECTION_ALLOWLIST = {
   // pricing-approval authority) and VA approvals/V notifications as an
   // EXEC_TIER member, but NONE on reports/analytics — Reports and Marketing
   // are intentionally excluded for it, not an oversight.
+  // 'Approvals' REMOVED from sales_manager (F16 role-reconciliation pass,
+  // 2026-07-22) — dropped from approvals.authz.js's APPROVER_ROLES, see the
+  // project_manager comment above for why.
+  // 'e-Signatures' (F17 pass): permission-less, see the manager comment
+  // above; sales_manager owns sales-contract signing.
+  // 'Tenders · More' (F17 pass): TenderWorkspace.jsx is an autoRouter.js
+  // orphan carrying `module: 'crm'` through from FOLDER_CONFIG —
+  // tenders.routes.js is gated on that same `crm` permission ("a tender IS
+  // an opportunity"). sales_manager/sales_exec already hold FULL/VAE crm
+  // respectively, but — same as every other orphan — the module-permission
+  // fallback never fires for an allowlisted role unless the exact orphan
+  // name is also listed here.
   sales_manager: [
-    'Home', 'Approvals', 'CRM', 'Sales', 'Marketing', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Home', 'CRM', 'Sales', 'Marketing', 'Reports',
+    'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures', 'Tenders · More',
   ],
   sales_exec: [
     'Home', 'Approvals', 'CRM', 'Sales',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'Tenders · More',
   ],
   // Phase-42 granular procurement seats (20260529000001_phase42_security_roles.js).
   // procurement_manager holds FULL procurement, view/add/edit/delete/approve
@@ -395,21 +437,33 @@ export const ROLE_SECTION_ALLOWLIST = {
   // notifications_grants.js], so also Approvals VAEP/Notifications VAE.
   // procurement_exec is VAE procurement + view-only inventory/warehouse, no
   // reports — EXEC_TIER (Approvals VA/Notifications V).
+  // 'Asset Register · More' (both): AssetRegister.jsx has no curated NAV_ITEMS
+  // entry, so it only exists as an autoRouter.js orphan group under this exact
+  // synthetic name (module: 'assets' carried through from FOLDER_CONFIG).
+  // 20260719000001_seed_role_permission_gaps.js seeded real 'assets'
+  // permissions for procurement_manager/procurement_exec/store_keeper two days
+  // later than that migration's own dating suggests, but none of the three
+  // could ever see it: Sidebar.jsx's isMenuVisible returns false for any
+  // allowlisted role before it reaches the hasPermission(item.module,'view')
+  // fallback, if the item's name isn't in the role's array. Listed by exact
+  // orphan name rather than folded into 'Inventory' via ORPHAN_PARENT_ALIAS,
+  // since that group is also allowlisted for department_head/production_*/
+  // qc_* roles that hold no 'assets' permission and would get a 403 link.
   procurement_manager: [
     'Home', 'Approvals', 'Procurement', 'Inventory', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
   ],
   procurement_exec: [
     'Home', 'Approvals', 'Procurement', 'Inventory',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
   ],
   // store_keeper (20260529000001_...): view/add/edit/export inventory,
   // view/add/edit warehouse, view-only procurement (GRN receipt), and —
   // unlike procurement_exec — VONLY reports. EXEC_TIER (Approvals VA/
-  // Notifications V).
+  // Notifications V). 'Asset Register · More' — see procurement_manager above.
   store_keeper: [
     'Home', 'Approvals', 'Inventory', 'Procurement', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
   ],
   // Phase-42 granular production seats. production_manager holds FULL
   // production+bom (bom has no top-level section), view/add/edit/approve/
@@ -417,43 +471,71 @@ export const ROLE_SECTION_ALLOWLIST = {
   // inventory/warehouse, VEXP reports, view-only timesheets — APPROVER_TIER.
   // production_engineer is VAE production, view-only engineering/quality/
   // inventory, VAE timesheets, no reports — EXEC_TIER.
+  // 'IoT Fleet · More'/'R&D · More'/'Compliance · More'/'Asset Register ·
+  // More': same 20260719000001_seed_role_permission_gaps.js migration as
+  // procurement_manager's Asset Register grant above — production_manager
+  // holds FULL iot, VAEPX rd, VAEDP compliance and view-only assets;
+  // production_engineer holds VAE iot/rd/compliance and view-only assets.
+  // These four modules have no curated NAV_ITEMS entry (FleetMonitor.jsx/
+  // RDHub.jsx/ComplianceRegister.jsx/AssetRegister.jsx are autoRouter.js
+  // orphans), so they're unreachable via the module-permission fallback for
+  // any allowlisted role unless listed here by exact orphan name.
   production_manager: [
     'Home', 'Approvals', 'Production', 'Engineering', 'Quality', 'Inventory',
     'Reports', 'Timesheets', 'Notifications', 'Org Chart', 'QR Codes',
+    'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
   ],
   production_engineer: [
     'Home', 'Approvals', 'Production', 'Engineering', 'Quality', 'Inventory',
     'Timesheets', 'Notifications', 'Org Chart', 'QR Codes',
+    'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
   ],
   // Phase-42 granular QC seats. qc_manager holds FULL quality + view-only
   // engineering/production/inventory + VEXP reports — APPROVER_TIER.
   // qc_engineer is VAE quality + view-only production/inventory, no reports —
-  // EXEC_TIER.
+  // EXEC_TIER. qc_manager also holds view-only iot/rd/assets and FULL
+  // compliance (20260719000001_seed_role_permission_gaps.js); qc_engineer
+  // holds only VAE compliance — see production_manager comment above for why
+  // these are listed by exact orphan name.
   qc_manager: [
     'Home', 'Approvals', 'Quality', 'Engineering', 'Production', 'Inventory',
     'Reports', 'Notifications', 'Org Chart', 'QR Codes',
+    'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
   ],
   qc_engineer: [
     'Home', 'Approvals', 'Quality', 'Production', 'Inventory',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'Compliance · More',
   ],
   // design_engineer (20260529000001_...): view/add/edit/delete engineering +
   // VAE bom (no top-level section) + view-only quality/production, no
-  // reports — EXEC_TIER.
+  // reports — EXEC_TIER. Also holds view-only iot and VAED rd
+  // (20260719000001_seed_role_permission_gaps.js) — see production_manager
+  // comment above.
   design_engineer: [
     'Home', 'Approvals', 'Engineering', 'Quality', 'Production',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More', 'R&D · More',
   ],
   // Phase-42 granular service seats. service_manager holds FULL servicedesk +
-  // VEXP reports — APPROVER_TIER. service_engineer is VAE servicedesk only,
-  // no reports — EXEC_TIER.
+  // VEXP reports. service_engineer is VAE servicedesk only, no reports —
+  // EXEC_TIER. Both also hold iot (VAEPX/VAE respectively — "device alerts
+  // raise service tickets", 20260719000001_seed_role_permission_gaps.js) —
+  // see production_manager comment above for why it's listed by exact orphan
+  // name. 'Approvals' REMOVED from service_manager (F16 role-reconciliation
+  // pass, 2026-07-22) — dropped from approvals.authz.js's APPROVER_ROLES, see
+  // the project_manager comment above for why.
+  // 'Complaints' (F17 pass): CustomerComplaintsIPCS is gated on the
+  // `servicedesk` permission, not a dedicated module (complaints.routes.js —
+  // "servicedesk, not a new complaints module, because IPCS is one half of
+  // the Service module's complaint->ticket loop"). Both roles already hold
+  // servicedesk FULL/VAE respectively; this was a missing sidebar-name entry
+  // only, same shape as the F16 pass.
   service_manager: [
-    'Home', 'Approvals', 'Service Desk', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Home', 'Service Desk', 'Complaints', 'Reports',
+    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More',
   ],
   service_engineer: [
-    'Home', 'Approvals', 'Service Desk',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Home', 'Approvals', 'Service Desk', 'Complaints',
+    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More',
   ],
   // l2_approver (20260721000003_seed_l2_approver_role.js): dedicated
   // second-level leave-approval seat — LeaveApprovals.jsx's L2 tab already
