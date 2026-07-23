@@ -225,6 +225,9 @@ import { startDeliveryFollowupCron } from "./src/jobs/deliveryFollowup.cron.js";
 import { startEsignReminderCron } from "./src/jobs/esignReminder.cron.js";
 import { startBackupCron }     from "./src/jobs/backup.cron.js";
 import { startIotMonitorCron } from "./src/jobs/iotMonitor.cron.js";
+import { startAmcRenewalCron } from "./src/jobs/amcRenewal.cron.js";
+import { startOverdueRemindersCron } from "./src/jobs/overdueReminders.cron.js";
+import { startScurveSnapshotCron } from "./src/jobs/scurveSnapshot.cron.js";
 import './src/jobs/attendance.cron.js';
 import './src/jobs/leave.cron.js';
 import { logFeatureFlags } from "./src/config/featureFlags.js";
@@ -846,6 +849,9 @@ async function startServer() {
     startEsignReminderCron();
     startBackupCron();
     startIotMonitorCron();
+    startAmcRenewalCron();
+    startOverdueRemindersCron();
+    startScurveSnapshotCron();
   });
 }
 startServer().catch(err => {
