@@ -1,7 +1,7 @@
 import pool from "../../config/db.js";
 import { notifyWorkflowEvent } from "../../services/WorkflowNotificationService.js";
 import { logAudit } from "../../services/AuditService.js";
-import { canOverride } from "./approvals.authz.js";
+import { canOverride, canClaimCategory } from "./approvals.authz.js";
 import { assertCanDecideAmount } from "../procurement/procurement.authz.js";
 import { getEmployeeApprovals } from "../../home/home.service.js";
 
@@ -910,9 +910,13 @@ export const bulkApprove = async (req, res) => {
     const centralIds = ids.filter(i => !String(i).includes(':'));
     const results    = [];
 
-    // Process source items
+    // Process source items. Category-scoped roles (APPROVER_CATEGORY_SCOPE)
+    // may only claim their own domain here — same rule canActOnApproval
+    // enforces on the single-item route. Denied ids are simply skipped (not
+    // pushed to results), surfacing in the `skipped` list below.
     for (const id of sourceIds) {
       const [prefix, sourceId] = String(id).split(':');
+      if (!canClaimCategory(req, prefix)) continue;
       await approveSourceItem(prefix, sourceId, userId, req);
       const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
       await safeQuery(
@@ -981,8 +985,11 @@ export const bulkReject = async (req, res) => {
     const centralIds = ids.filter(i => !String(i).includes(':'));
     const results    = [];
 
+    // See the matching comment in bulkApprove: category-scoped roles may only
+    // claim their own domain here.
     for (const id of sourceIds) {
       const [prefix, sourceId] = String(id).split(':');
+      if (!canClaimCategory(req, prefix)) continue;
       await rejectSourceItem(prefix, sourceId, userId, comment || '', req);
       const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
       await safeQuery(
@@ -1086,15 +1093,46 @@ async function delegateSourceItem(prefix, sourceId, newApproverId) {
         `UPDATE attendance_regularization_requests SET manager_id = $2 WHERE id = $1`,
         [sourceId, newApproverId]
       );
-      break;
+      return true;
     case 'ot':
       await safeQuery(
         `UPDATE attendance_ot_records SET approved_by = $2 WHERE id = $1`,
         [sourceId, newApproverId]
       );
-      break;
+      return true;
+    case 'leave':
+      await safeQuery(
+        `UPDATE leave_applications SET delegate_approver_id = $2 WHERE id = $1`,
+        [sourceId, newApproverId]
+      );
+      return true;
+    case 'pr':
+      await safeQuery(
+        `UPDATE purchase_requests SET approved_by = $2 WHERE id = $1`,
+        [sourceId, newApproverId]
+      );
+      return true;
+    case 'pay':
+      await safeQuery(
+        `UPDATE payment_batches SET approved_by = $2 WHERE id = $1`,
+        [sourceId, newApproverId]
+      );
+      return true;
+    case 'exp':
+      await safeQuery(
+        `UPDATE expense_claims SET approved_by = $2 WHERE id = $1`,
+        [sourceId, newApproverId]
+      );
+      return true;
+    case 'ecn':
+      await safeQuery(
+        `UPDATE engineering_changes SET approved_by = $2 WHERE id = $1`,
+        [sourceId, newApproverId]
+      );
+      return true;
     default:
-      break;
+      // Unknown source-item type — do NOT report success for a no-op.
+      return false;
   }
 }
 
@@ -1119,7 +1157,11 @@ export const delegateApprovals = async (req, res) => {
     // we log the delegation intent and note it in the audit trail
     for (const id of sourceIds) {
       const [prefix, sourceId] = String(id).split(':');
-      await delegateSourceItem(prefix, sourceId, delegate_to_user_id);
+      const applied = await delegateSourceItem(prefix, sourceId, delegate_to_user_id);
+      if (!applied) {
+        results.push({ id, delegated: false, error: `Unsupported item type "${prefix}" — delegation was not applied` });
+        continue;
+      }
       logAudit({ userId, module: 'approvals', recordId: sourceId, recordType: prefix, action: 'delegate', oldData: { approver_id: userId }, newData: { approver_id: delegate_to_user_id }, req });
       results.push({ id, delegated: true });
     }

@@ -35,6 +35,17 @@ import { rolesOf } from '../../middlewares/auth.middleware.js';
  * Explicitly NOT included: `employee`, `hr_exec`, `accounts_exec`,
  * `procurement_exec`, `sales_exec`, `store_keeper`, and the engineer grades.
  * Executor roles submit for approval; they do not grant it.
+ *
+ * Also NOT included: `project_manager`, `sales_manager`, `service_manager`.
+ * They were here until the F16 role-reconciliation pass (2026-07-22) found
+ * none of the shared pool's categories (leave/regularization/OT/purchase
+ * request/expense/ECN/payment — see approvals.controller.js's pendingXxx()
+ * functions) belong to their domain, so membership only ever let them claim
+ * work that wasn't theirs (e.g. sales_manager approving a purchase request).
+ * Same reasoning `l2_approver` was kept out for: generic Approval Center
+ * access broader than the role's actual job. If a real approval need shows up
+ * for one of these domains, add a category to APPROVER_CATEGORY_SCOPE below
+ * instead of re-granting unscoped membership.
  */
 export const APPROVER_ROLES = [
   'super_admin', 'admin',
@@ -48,10 +59,27 @@ export const APPROVER_ROLES = [
   'procurement_manager',
   'production_manager',
   'qc_manager',
-  'project_manager',
-  'sales_manager',
-  'service_manager',
 ];
+
+/**
+ * Narrows a subset of APPROVER_ROLES to specific request categories when
+ * claiming an UNASSIGNED item from the shared pool. Roles absent here (e.g.
+ * `manager`, `hr`, `finance`) are unrestricted — every category. An item
+ * already assigned to a specific person is unaffected either way; this only
+ * gates the "claim from the shared pool" path.
+ *
+ * Category values are the short prefixes this module already uses elsewhere
+ * as the canonical record type (id prefix before ':', logAudit's recordType,
+ * notifyWorkflowEvent's module — see approvals.controller.js). Central-table
+ * rows' COALESCE(module_name, reference_type) occasionally uses the long form
+ * instead ('purchase_request' not 'pr'), so both spellings are listed where
+ * that matters.
+ */
+export const APPROVER_CATEGORY_SCOPE = {
+  procurement_manager: ['pr', 'purchase_request', 'purchase'],
+  production_manager: ['ecn'],
+  qc_manager: ['ecn'],
+};
 
 /** Roles that may override another user's assigned approval. Audited. */
 export const OVERRIDE_ROLES = ['super_admin', 'admin'];
@@ -60,6 +88,22 @@ const has = (req, list) => rolesOf(req).some(r => list.includes(r));
 
 export const isApproverRole = (req) => has(req, APPROVER_ROLES);
 export const canOverride    = (req) => has(req, OVERRIDE_ROLES);
+
+/**
+ * True if `req` holds an approver role that may claim an unassigned item of
+ * `category`. A user holding both a scoped and an unscoped role is never
+ * more restricted than the unscoped role alone. `category` of `undefined`
+ * (unknowable — e.g. an id that matched no row) is intentionally NOT handled
+ * here; callers fall back to the plain isApproverRole check in that case.
+ */
+export function canClaimCategory(req, category) {
+  const cat = String(category || '').toLowerCase();
+  return rolesOf(req).some(r => {
+    if (!APPROVER_ROLES.includes(r)) return false;
+    const scope = APPROVER_CATEGORY_SCOPE[r];
+    return !scope || scope.includes(cat);
+  });
+}
 
 const deny = (res, message) => res.status(403).json({
   error: 'Forbidden',
@@ -91,7 +135,8 @@ export const canActOnApproval = async (req, res, next) => {
 
   // Source pseudo-id — no ownership record exists to check against.
   if (id.includes(':')) {
-    if (!isApproverRole(req)) {
+    const [category] = id.split(':');
+    if (!isApproverRole(req) || !canClaimCategory(req, category)) {
       return deny(res, 'Your role cannot approve or reject requests.');
     }
     return next();
@@ -101,7 +146,8 @@ export const canActOnApproval = async (req, res, next) => {
 
   try {
     const { rows } = await pool.query(
-      'SELECT approver_id, requested_by FROM approvals WHERE id = $1 LIMIT 1',
+      `SELECT approver_id, requested_by, COALESCE(module_name, reference_type) AS category
+       FROM approvals WHERE id = $1 LIMIT 1`,
       [id]
     );
 
@@ -139,9 +185,11 @@ export const canActOnApproval = async (req, res, next) => {
     const assigned = rows[0].approver_id;
 
     // Unassigned rows sit in a shared pool that the read path shows to everyone.
-    // Anyone with an approver role may claim one; an employee may not.
+    // Anyone with a matching approver role may claim one; an employee may not,
+    // and a category-scoped role (see APPROVER_CATEGORY_SCOPE) may only claim
+    // its own domain.
     if (assigned == null) {
-      if (!isApproverRole(req)) {
+      if (!isApproverRole(req) || !canClaimCategory(req, rows[0].category)) {
         return deny(res, 'Your role cannot approve or reject requests.');
       }
       return next();

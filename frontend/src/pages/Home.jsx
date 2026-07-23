@@ -14,6 +14,10 @@ import FaceClockModal, { getLocationString } from '@/components/attendance/FaceC
 import './Home.css';
 
 const CelebrationsBoard = lazy(() => import('@/components/dashboard/CelebrationsBoard'));
+// Revenue/cash/receivables/vendor-spend band — same sensitivity class as the
+// Revenue MTD hero tile, so gated behind the same canSeeFinancials check
+// rather than shown to every role.
+const HomeBusinessPulse = lazy(() => import('@/components/dashboard/HomeBusinessPulse'));
 
 // Panel B name (chosen from the provided options) — brand assets & templates.
 const BRAND_VAULT_LABEL = 'Brand Vault';
@@ -538,6 +542,15 @@ export default function Home({ setPage }) {
 
         </div>
       </div>
+
+      {/* Business Pulse — revenue/cash/receivables/vendor-spend analytics
+          band. Same gate as the Revenue MTD hero tile: hidden from any role
+          that can't reach the Finance section. */}
+      {canSeeFinancials && (
+        <Suspense fallback={null}>
+          <HomeBusinessPulse />
+        </Suspense>
+      )}
 
       {/* Face-recognition clock-in (geo/shift policy enforced server-side) */}
       {faceOpen && empId && (
