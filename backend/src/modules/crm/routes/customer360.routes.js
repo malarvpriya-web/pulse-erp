@@ -70,7 +70,7 @@ router.get('/customer360/:partyId', requirePermission('crm', 'view'), async (req
   try {
     const r = await pool.query(
       `SELECT id, invoice_number, total_amount, status, created_at, due_date
-       FROM invoices WHERE party_id = $1 ORDER BY created_at DESC`,
+       FROM invoices WHERE customer_id = $1 ORDER BY created_at DESC`,
       [partyId]
     );
     invoices = r.rows;
@@ -118,8 +118,8 @@ router.get('/customer360/:partyId', requirePermission('crm', 'view'), async (req
     crmEmails = r.rows;
   } catch (_) {}
 
-  const unpaid = invoices.filter(i => i.status !== 'paid');
-  const paid   = invoices.filter(i => i.status === 'paid');
+  const unpaid = invoices.filter(i => String(i.status).toLowerCase() !== 'paid');
+  const paid   = invoices.filter(i => String(i.status).toLowerCase() === 'paid');
   const outstanding_balance = unpaid.reduce((s, i) => s + parseFloat(i.total_amount || 0), 0);
   const total_revenue       = paid.reduce((s, i) => s + parseFloat(i.total_amount || 0), 0);
 
@@ -128,7 +128,7 @@ router.get('/customer360/:partyId', requirePermission('crm', 'view'), async (req
     const r = await pool.query(
       `SELECT ROUND(AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 86400))::int AS avg_days
        FROM invoices
-       WHERE party_id = $1 AND status = 'paid' AND updated_at > created_at`,
+       WHERE customer_id = $1 AND LOWER(status) = 'paid' AND updated_at > created_at`,
       [partyId]
     );
     avg_days_to_pay = parseInt(r.rows[0]?.avg_days || 0);
@@ -327,15 +327,29 @@ router.get('/customer360/:partyId/service', requirePermission('crm', 'view'), as
   const { partyId } = req.params;
   let tickets = [], serviceContracts = [], fieldVisits = [];
 
+  // None of these three tables has a working direct link to `parties.id`
+  // (this route's `partyId`) — all three previously queried a `customer_id`
+  // column/table that either doesn't exist or is 100% unpopulated (verified
+  // live: support_tickets.customer_id and .contact_id, accounts.party_id are
+  // all NULL on every row), so every query here threw and was silently
+  // swallowed by the catch, leaving this whole tab permanently empty.
+  // support_tickets does have a real `contact_id` FK chain
+  // (contacts.account_id -> accounts.party_id) even though it's unpopulated
+  // today; service_contracts/field_visits have no FK at all, only free-text
+  // `customer_name`, so those fall back to a best-effort name match against
+  // `parties.name` (same discipline as the vendor/bill party-match fixes
+  // elsewhere in this codebase — see [[project_enterprise_workflow_audit]]).
   try {
     const r = await pool.query(
-      `SELECT id, subject, priority, status, created_at, resolved_at, description,
-              CASE WHEN resolved_at IS NOT NULL
-                THEN EXTRACT(DAY FROM (resolved_at - created_at))::int
+      `SELECT st.id, st.subject, st.priority, st.status, st.created_at, st.resolved_at, st.description,
+              CASE WHEN st.resolved_at IS NOT NULL
+                THEN EXTRACT(DAY FROM (st.resolved_at - st.created_at))::int
                 ELSE NULL END AS resolution_days
-       FROM support_tickets
-       WHERE customer_id = $1
-       ORDER BY created_at DESC`,
+       FROM support_tickets st
+       LEFT JOIN contacts c ON c.id = st.contact_id
+       LEFT JOIN accounts a ON a.id = c.account_id
+       WHERE a.party_id = $1
+       ORDER BY st.created_at DESC`,
       [partyId]
     );
     tickets = r.rows;
@@ -343,11 +357,12 @@ router.get('/customer360/:partyId/service', requirePermission('crm', 'view'), as
 
   try {
     const r = await pool.query(
-      `SELECT id, contract_number, start_date, end_date, status,
-              contract_value, coverage_type, created_at
-       FROM service_contracts
-       WHERE customer_id = $1
-       ORDER BY created_at DESC`,
+      `SELECT sc.id, sc.contract_number, sc.start_date, sc.end_date, sc.status,
+              sc.value AS contract_value, sc.contract_type AS coverage_type, sc.created_at
+       FROM service_contracts sc
+       JOIN parties p ON LOWER(sc.customer_name) = LOWER(p.name)
+       WHERE p.id = $1
+       ORDER BY sc.created_at DESC`,
       [partyId]
     );
     serviceContracts = r.rows;
@@ -357,9 +372,10 @@ router.get('/customer360/:partyId/service', requirePermission('crm', 'view'), as
     const r = await pool.query(
       `SELECT fv.id, fv.visit_date, fv.status, fv.purpose, fv.notes,
               e.name AS engineer_name
-       FROM field_service_visits fv
+       FROM field_visits fv
+       JOIN parties p ON LOWER(fv.customer_name) = LOWER(p.name)
        LEFT JOIN employees e ON e.id = fv.engineer_id
-       WHERE fv.customer_id = $1
+       WHERE p.id = $1
        ORDER BY fv.visit_date DESC LIMIT 20`,
       [partyId]
     );
@@ -392,24 +408,39 @@ router.get('/customer360/:partyId/amc', requirePermission('crm', 'view'), async 
   let amcContracts = [], warrantyRecords = [];
 
   try {
+    // amc_contracts has no customer_id column at all (it links to a customer
+    // only indirectly, via sales_order_id/lifecycle_instance_id/project_id) —
+    // this queried columns (customer_id, coverage_type, annual_value,
+    // total_value) that don't exist on the live table, 500ing this tab on
+    // every call. lifecycle_instances.customer_id is a legacy `integer` (not
+    // parties.id uuid) so it's not usable here; resolve via sales_orders,
+    // the one linked table with a real uuid customer_id.
     const r = await pool.query(
-      `SELECT id, contract_number, start_date, end_date, renewal_date,
-              status, coverage_type, annual_value, total_value, notes, created_at
-       FROM amc_contracts
-       WHERE customer_id = $1
-       ORDER BY created_at DESC`,
+      `SELECT ac.id, ac.contract_number, ac.start_date, ac.end_date, ac.renewal_date,
+              ac.status, ac.scope_of_work AS coverage_type,
+              ac.contract_value AS annual_value, ac.contract_value AS total_value,
+              ac.coverage_notes AS notes, ac.created_at
+       FROM amc_contracts ac
+       JOIN sales_orders so ON so.id = ac.sales_order_id
+       WHERE so.customer_id = $1
+       ORDER BY ac.created_at DESC`,
       [partyId]
     );
     amcContracts = r.rows;
   } catch (_) {}
 
   try {
+    // Same class of bug as amc_contracts above: wrong table name
+    // (warranty_register -> warranty_registrations) plus a customer_id that's
+    // a legacy, 100%-unpopulated `integer` on this table — resolved instead
+    // via sales_order_id, the same real uuid link used for amc_contracts.
     const r = await pool.query(
-      `SELECT id, serial_number, product_name, warranty_start, warranty_end,
-              warranty_type, status, notes, created_at
-       FROM warranty_register
-       WHERE customer_id = $1
-       ORDER BY warranty_end ASC`,
+      `SELECT wr.id, wr.serial_number, wr.product_name, wr.warranty_start, wr.warranty_end,
+              wr.warranty_type, wr.status, wr.notes, wr.created_at
+       FROM warranty_registrations wr
+       JOIN sales_orders so ON so.id = wr.sales_order_id
+       WHERE so.customer_id = $1
+       ORDER BY wr.warranty_end ASC`,
       [partyId]
     );
     warrantyRecords = r.rows;
@@ -575,7 +606,7 @@ router.get('/customer360/:partyId/health-score', requirePermission('crm', 'view'
   let overdueCount = 0;
   try {
     const r = await pool.query(
-      `SELECT COUNT(*)::int AS cnt FROM invoices WHERE party_id = $1 AND status = 'overdue'`,
+      `SELECT COUNT(*)::int AS cnt FROM invoices WHERE customer_id = $1 AND LOWER(status) = 'overdue'`,
       [partyId]
     );
     overdueCount = r.rows[0]?.cnt || 0;
@@ -600,7 +631,7 @@ router.get('/customer360/:partyId/health-score', requirePermission('crm', 'view'
   try {
     const r = await pool.query(
       `SELECT COUNT(*)::int AS cnt FROM invoices
-       WHERE party_id = $1 AND created_at >= NOW() - INTERVAL '12 months'`,
+       WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '12 months'`,
       [partyId]
     );
     recentOrders = r.rows[0]?.cnt || 0;
@@ -657,7 +688,7 @@ router.get('/customer360/:partyId/timeline', requirePermission('crm', 'view'), a
   try {
     const r = await pool.query(
       `SELECT id, invoice_number, total_amount, status, created_at
-       FROM invoices WHERE party_id = $1 ORDER BY created_at DESC`,
+       FROM invoices WHERE customer_id = $1 ORDER BY created_at DESC`,
       [partyId]
     );
     r.rows.forEach(inv => events.push({
@@ -728,8 +759,10 @@ router.get('/customer360/:partyId/timeline', requirePermission('crm', 'view'), a
 
   try {
     const r = await pool.query(
-      `SELECT id, contract_number, start_date, status, created_at
-       FROM amc_contracts WHERE customer_id = $1 ORDER BY created_at DESC`,
+      `SELECT ac.id, ac.contract_number, ac.start_date, ac.status, ac.created_at
+       FROM amc_contracts ac
+       JOIN sales_orders so ON so.id = ac.sales_order_id
+       WHERE so.customer_id = $1 ORDER BY ac.created_at DESC`,
       [partyId]
     );
     r.rows.forEach(a => events.push({
@@ -762,9 +795,14 @@ router.get('/customer360/:partyId/tickets', requirePermission('crm', 'view'), as
 // ── GET /customer360/:partyId/payments ────────────────────────────────────────
 router.get('/customer360/:partyId/payments', requirePermission('crm', 'view'), async (req, res) => {
   try {
+    // customer_payments.party_id is a legacy `integer` — not usable against
+    // parties.id (uuid). No customer_id column exists here either; resolve
+    // via the one real link, invoice_id -> invoices.customer_id.
     const r = await pool.query(
-      `SELECT amount, mode, reference AS ref, payment_date AS date
-       FROM customer_payments WHERE party_id = $1 ORDER BY payment_date DESC`,
+      `SELECT cp.amount, cp.mode, cp.reference AS ref, cp.payment_date AS date
+       FROM customer_payments cp
+       JOIN invoices i ON i.id = cp.invoice_id
+       WHERE i.customer_id = $1 ORDER BY cp.payment_date DESC`,
       [req.params.partyId]
     );
     res.json(r.rows);
@@ -778,7 +816,7 @@ router.get('/customer360/:partyId/aging', requirePermission('crm', 'view'), asyn
   try {
     const r = await pool.query(
       `SELECT total_amount, created_at
-       FROM invoices WHERE party_id = $1 AND status IN ('overdue','pending')`,
+       FROM invoices WHERE customer_id = $1 AND LOWER(status) IN ('overdue','pending')`,
       [req.params.partyId]
     );
     const buckets = { 'Current': 0, '1–30 days': 0, '31–60 days': 0, '61–90 days': 0, '90+ days': 0 };
