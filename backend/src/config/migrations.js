@@ -314,7 +314,11 @@ async function bootstrapFromBaseline(client) {
         }
       }
 
-      await client.query(sql);
+      // Pool's global query_timeout (30s, tuned for request-path queries) isn't
+      // enough headroom for this one-time 1.2MB/44k-line DDL snapshot under
+      // first-boot contention from the racing module IIFEs above — override
+      // just for this call, not the pool default.
+      await client.query({ text: sql, query_timeout: 180000 });
       // Config rows seeded by data migrations (roles, permission matrix, …) —
       // the schema-only snapshot marks those migrations applied, so their data
       // must ride along or a fresh install fails closed on an empty matrix.
