@@ -9,7 +9,7 @@ export const swaggerSpec = {
   },
   servers: [
     { url: 'http://localhost:5000/api', description: 'Local Development' },
-    { url: 'https://pulse-erp.up.railway.app/api', description: 'Production' },
+    { url: 'https://api.manifest-tech.in/api', description: 'Production' },
   ],
   components: {
     securitySchemes: {

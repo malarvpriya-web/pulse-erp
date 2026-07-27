@@ -29,7 +29,7 @@ If the incident started within 5 minutes of a deploy completing → strong corre
 
 ### 2. Check health endpoint
 ```bash
-curl https://your-app.railway.app/api/health | jq .
+curl https://api.manifest-tech.in/api/health | jq .
 ```
 
 Look at `db.status`, `migrations.status`, and `tables.status`.
@@ -103,7 +103,7 @@ npm run migrate:rollback
 
 ```bash
 # 1. Health check
-curl https://your-app.railway.app/api/health | jq '{status, db, migrations}'
+curl https://api.manifest-tech.in/api/health | jq '{status, db, migrations}'
 
 # 2. Smoke tests
 npm run smoke:prod

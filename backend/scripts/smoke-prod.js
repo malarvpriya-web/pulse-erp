@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * smoke-prod.js — Production smoke tests against live Render URLs.
+ * smoke-prod.js — Production smoke tests against the live deployed URLs.
  *
  * Usage:
- *   BACKEND_URL=https://pulse-backend.onrender.com node scripts/smoke-prod.js
- *   BACKEND_URL=https://pulse-backend.onrender.com \
- *   FRONTEND_URL=https://pulse-frontend.onrender.com \
+ *   BACKEND_URL=https://api.manifest-tech.in node scripts/smoke-prod.js
+ *   BACKEND_URL=https://api.manifest-tech.in \
+ *   FRONTEND_URL=https://erp.manifest-tech.in \
  *     node scripts/smoke-prod.js
  *
  * Exits 0 when all checks pass, 1 on any failure.
@@ -18,7 +18,7 @@ const TIMEOUT_MS   = parseInt(process.env.SMOKE_TIMEOUT_MS || '15000');
 
 if (!BACKEND_URL) {
   console.error('❌  BACKEND_URL is required.');
-  console.error('    BACKEND_URL=https://pulse-backend.onrender.com node scripts/smoke-prod.js');
+  console.error('    BACKEND_URL=https://api.manifest-tech.in node scripts/smoke-prod.js');
   process.exit(1);
 }
 

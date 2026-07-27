@@ -66,7 +66,7 @@ For Railway/Render behind a load balancer:
 ```bash
 # Download audit logs before any remediation that might overwrite them
 curl -H "Authorization: Bearer <admin-token>" \
-  "https://your-app.railway.app/api/v1/audit?limit=1000" \
+  "https://api.manifest-tech.in/api/v1/audit?limit=1000" \
   > incident-audit-$(date +%Y%m%d-%H%M%S).json
 ```
 
@@ -77,7 +77,7 @@ curl -H "Authorization: Bearer <admin-token>" \
 ### Check audit logs for the incident window
 ```bash
 curl -H "Authorization: Bearer <admin-token>" \
-  "https://your-app.railway.app/api/v1/audit?from=2026-05-29T00:00:00Z&to=2026-05-29T06:00:00Z"
+  "https://api.manifest-tech.in/api/v1/audit?from=2026-05-29T00:00:00Z&to=2026-05-29T06:00:00Z"
 ```
 
 Look for:

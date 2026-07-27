@@ -38,7 +38,7 @@ services:
         generateValue: true
       # Frontend origin for CORS — must match the deployed pulse-frontend service URL
       - key: FRONTEND_URL
-        value: https://pulse-frontend.onrender.com
+        value: https://erp.manifest-tech.in
       # Off-host backup bucket. sync:false = must be entered in the Render
       # dashboard; the server refuses to boot in production without it (and
       # ALLOW_LOCAL_BACKUPS_ONLY is only for the self-contained compose stack).
@@ -67,7 +67,7 @@ services:
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
     envVars:
-      # Set to https://pulse-backend.onrender.com/api (no trailing slash)
+      # Set to https://api.manifest-tech.in/api (no trailing slash)
       - key: VITE_API_URL
         sync: false
     headers:

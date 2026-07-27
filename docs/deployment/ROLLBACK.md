@@ -47,13 +47,13 @@ Fastest path — Render keeps the last 5 successful deploys.
 4. Wait for "Deploying…" → "Live" (typically 60–90 s on Render free tier)
 5. Verify:
    ```bash
-   curl https://pulse-backend.onrender.com/api/health
+   curl https://api.manifest-tech.in/api/health
    # expect: {"status":"ok", ...}
    ```
 6. Run full smoke suite:
    ```bash
-   BACKEND_URL=https://pulse-backend.onrender.com \
-   FRONTEND_URL=https://pulse-frontend.onrender.com \
+   BACKEND_URL=https://api.manifest-tech.in \
+   FRONTEND_URL=https://erp.manifest-tech.in \
      npm run smoke:prod
    ```
 7. If frontend also shows breakage, roll it back the same way.
@@ -161,7 +161,7 @@ No rollback needed for env-var-only fixes.
 | Resource | URL |
 |----------|-----|
 | Render dashboard | https://dashboard.render.com |
-| Backend health | `https://pulse-backend.onrender.com/api/health` |
+| Backend health | `https://api.manifest-tech.in/api/health` |
 | Backend logs | Render dashboard → `pulse-backend` → Logs |
 | Smoke test script | `backend/scripts/smoke-prod.js` |
 | Migration runner | `npm run migrate:status` / `npm run migrate:rollback` |

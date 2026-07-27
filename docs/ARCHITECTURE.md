@@ -16,7 +16,7 @@ Browser / PWA
 ┌─────────────────────────────────────────────────────┐
 │  Frontend  (Render static)                          │
 │  React 18 + Vite — SPA + lazy-loaded pages          │
-│  baseURL: https://pulse-frontend.onrender.com       │
+│  baseURL: https://erp.manifest-tech.in               │
 └────────────────────┬────────────────────────────────┘
                      │ Axios  /api/...
                      ▼

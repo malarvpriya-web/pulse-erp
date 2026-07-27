@@ -26,7 +26,7 @@ Edit `config.json`:
 
 | field       | what to set |
 |-------------|-------------|
-| `ingestUrl` | your Pulse ingest URL, e.g. `https://pulse.<company>.com/api/v1/iot/ingest` |
+| `ingestUrl` | your Pulse ingest URL — `https://api.manifest-tech.in/api/v1/iot/ingest` |
 | `deviceUid` | the `device_uid` from step 1 |
 | `token`     | the token from step 1 |
 | `pollSecs`  | how often to read the device (default 60) |

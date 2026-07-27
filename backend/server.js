@@ -266,6 +266,19 @@ process.on('uncaughtException', (err) => {
       REQUIRED.push('BACKUP_S3_BUCKET');
     }
   }
+  // STORAGE_PROVIDER defaults to 'local' (backend/uploads/ on disk), which does
+  // not survive a redeploy on Render/Railway/most containerized hosts — the
+  // next deploy silently wipes every uploaded file. Same shape of problem as
+  // BACKUP_S3_BUCKET above, same opt-out convention: set ALLOW_LOCAL_STORAGE_ONLY=true
+  // only if 'uploads/' is mounted on a real persistent volume.
+  const storageProvider = (process.env.STORAGE_PROVIDER || 'local').toLowerCase();
+  if (process.env.NODE_ENV === 'production' && storageProvider === 'local') {
+    if (String(process.env.ALLOW_LOCAL_STORAGE_ONLY).toLowerCase() === 'true') {
+      console.warn('⚠️  ALLOW_LOCAL_STORAGE_ONLY=true — uploaded files live only on local disk.');
+    } else {
+      REQUIRED.push('STORAGE_PROVIDER=s3 or r2 (or ALLOW_LOCAL_STORAGE_ONLY=true if uploads/ is on a persistent volume)');
+    }
+  }
   // PERMISSION_FAIL_OPEN disables authorization wherever the matrix has no row.
   // It is an emergency hatch; left set, it silently restores the vulnerability
   // that made every unseeded module reachable by any logged-in user (H-2).
@@ -330,9 +343,13 @@ if (process.env.NODE_ENV === 'production' && !process.env.FRONTEND_URL) {
 
 // In dev, allow any localhost/127.0.0.1 origin regardless of port (Vite picks
 // ports dynamically and browsers treat 127.0.0.1 and localhost as distinct origins).
-// In production, FRONTEND_URL must be set explicitly (enforced above).
+// In production, FRONTEND_URL must be set explicitly (enforced above), and dev
+// origins are dropped from the allow-list entirely — a developer's local
+// frontend should not be able to make credentialed requests against prod.
 const corsOrigin = process.env.FRONTEND_URL
-  ? [process.env.FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000']
+  ? (process.env.NODE_ENV === 'production'
+      ? [process.env.FRONTEND_URL]
+      : [process.env.FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000'])
   : (origin, callback) => {
       if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
         return callback(null, true);

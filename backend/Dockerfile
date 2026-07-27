@@ -35,8 +35,10 @@ EXPOSE 5000
 
 # Uses the same endpoint the platform health checks hit (render.yaml,
 # railway.toml). Start period is generous because migrations run on boot.
+# Reads $PORT at check time — platforms like Render override the default 5000
+# (e.g. PORT=10000), and a literal port here would silently check the wrong one.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:5000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||5000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "server.js"]

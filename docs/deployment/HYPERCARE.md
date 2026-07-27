@@ -2,7 +2,7 @@
 
 **Triggered by:** Every production deployment  
 **Duration:** 48 h standard · extend to 72 h if P1 bug found in first 24 h  
-**Last updated:** 2026-04-23
+**Last updated:** 2026-07-27 — URLs updated for the manifest-tech.in cutover
 
 ---
 
@@ -19,13 +19,13 @@ Hypercare is the intensive monitoring window immediately after a go-live or majo
 - Keep the deploy engineer available with no other critical work
 - Check `/api/health` manually every **30 minutes**:
   ```bash
-  curl https://pulse-backend.onrender.com/api/health | jq '{status,db,memory,commit}'
+  curl https://api.manifest-tech.in/api/health | jq '{status,db,memory,commit}'
   ```
 - Check Render logs for unexpected 5xx bursts every 30 min (Render dashboard → `pulse-backend` → Logs)
 - Run the full smoke suite after the first 30 min to confirm warm-state health:
   ```bash
-  BACKEND_URL=https://pulse-backend.onrender.com \
-  FRONTEND_URL=https://pulse-frontend.onrender.com \
+  BACKEND_URL=https://api.manifest-tech.in \
+  FRONTEND_URL=https://erp.manifest-tech.in \
     npm run smoke:prod
   ```
 - Walk the critical user path manually: **login → payroll → invoices → journal entries**
@@ -57,12 +57,12 @@ Activated if a P1 bug was found in the first 24 h. Otherwise hypercare ends at 4
 
 ```bash
 # 1. Health endpoint
-curl -s https://pulse-backend.onrender.com/api/health | \
+curl -s https://api.manifest-tech.in/api/health | \
   jq '{status, db_latency: .db.latency_ms, mem_mb: .memory.rss_mb, pressure: .memory.pressure, commit}'
 
 # 2. Smoke tests
-BACKEND_URL=https://pulse-backend.onrender.com \
-FRONTEND_URL=https://pulse-frontend.onrender.com \
+BACKEND_URL=https://api.manifest-tech.in \
+FRONTEND_URL=https://erp.manifest-tech.in \
   npm run smoke:prod
 
 # 3. Render logs — scan for ERROR lines in the last 2 hours

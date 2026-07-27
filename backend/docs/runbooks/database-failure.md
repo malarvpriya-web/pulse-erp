@@ -18,7 +18,7 @@
 
 ### 1. Check the health endpoint
 ```bash
-curl https://your-app.railway.app/api/health | jq .
+curl https://api.manifest-tech.in/api/health | jq .
 ```
 Expected on failure:
 ```json

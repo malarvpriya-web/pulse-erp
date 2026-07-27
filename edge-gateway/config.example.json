@@ -1,5 +1,5 @@
 {
-  "ingestUrl": "https://pulse.example.com/api/v1/iot/ingest",
+  "ingestUrl": "https://api.manifest-tech.in/api/v1/iot/ingest",
   "deviceUid": "PULSE-42-AB12CD",
   "token": "paste-the-token-shown-once-at-provision-time",
   "pollSecs": 60,

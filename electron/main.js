@@ -2,6 +2,8 @@ const { app, BrowserWindow, shell } = require('electron');
 const http = require('http');
 const path = require('path');
 
+const PRODUCTION_URL = 'https://erp.manifest-tech.in';
+
 function checkPort(port) {
   return new Promise((resolve) => {
     const req = http.get(`http://localhost:${port}`, () => resolve(true));
@@ -10,7 +12,11 @@ function checkPort(port) {
   });
 }
 
+// Packaged (installed) builds always point at the real deployment — probing
+// localhost Vite ports only makes sense while running unpackaged via `electron .`
+// against a live-reload dev server.
 async function getAppUrl() {
+  if (app.isPackaged) return PRODUCTION_URL;
   for (const port of [5173, 5174, 5175, 5176]) {
     if (await checkPort(port)) return `http://localhost:${port}`;
   }

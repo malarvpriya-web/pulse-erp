@@ -3,6 +3,13 @@
 **Last updated:** 2026-04-25  
 **Target platform:** Render.com (managed PostgreSQL + Node web service + static frontend)
 
+> **2026-07-27:** Hosting platform is still undecided between Render and
+> Railway (both are fully configured in the repo — see
+> `docs/deployment/PRODUCTION_MIGRATION_REPORT.md` §0). The dashboard-click
+> steps below assume Render; if Railway is chosen instead, substitute the
+> equivalent Railway dashboard steps. Target domains (`erp.manifest-tech.in`
+> / `api.manifest-tech.in`) are fixed regardless of which platform serves them.
+
 ---
 
 ## Pre-flight: Roles
@@ -35,7 +42,7 @@ NODE_ENV=production
 PORT=10000
 DATABASE_URL          # auto-linked from pulse-db
 JWT_SECRET            # auto-generated — rotate before go-live
-FRONTEND_URL          # e.g. https://pulse-erp.onrender.com
+FRONTEND_URL          # https://erp.manifest-tech.in
 ALERT_WEBHOOK_URL     # Slack/Teams webhook for health alerts
 ALERT_THRESHOLD_MS=800
 MEMORY_ALERT_MB=450
