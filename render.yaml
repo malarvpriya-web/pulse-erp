@@ -44,6 +44,17 @@ services:
       # ALLOW_LOCAL_BACKUPS_ONLY is only for the self-contained compose stack).
       - key: BACKUP_S3_BUCKET
         sync: false
+      # No S3 bucket configured yet — explicit opt-out so the server boots.
+      # Backups live only in Render's ephemeral disk until a real bucket is
+      # set above; remove this flag once BACKUP_S3_BUCKET is filled in.
+      - key: ALLOW_LOCAL_BACKUPS_ONLY
+        value: true
+      # No object storage configured yet — explicit opt-out so the server
+      # boots. Uploaded files live only on Render's ephemeral disk and are
+      # LOST on every redeploy until STORAGE_PROVIDER=s3/r2 is set with real
+      # credentials; remove this flag once that's done.
+      - key: ALLOW_LOCAL_STORAGE_ONLY
+        value: true
       # ── Monitoring ──────────────────────────────────────────────────────────
       # Slack/Discord/PagerDuty incoming-webhook URL for operational alerts
       - key: ALERT_WEBHOOK_URL
