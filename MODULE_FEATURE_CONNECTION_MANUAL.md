@@ -127,7 +127,22 @@ Government Tenders, Compliance Registers, Fixed Assets/Asset Register,
 Logistics/Shipments, and Global Search now each have a real module section;
 folded the `dashboard` backend into §10; documented the `autoRouter.js` /
 `menuCatalog.js` orphan-page mechanism in §16 that all five of the
-newly-orphan-flagged pages rely on. See §18 for gap evidence.)  
+newly-orphan-flagged pages rely on. See §18 for gap evidence.)
+**Separately, 2026-07-29 — Automation Opportunities pass (see §19):** a
+12-item "already exists in the architecture, just finish the wiring" backlog
+was worked item by item (not one of the 8 numbered priorities above — a
+different backlog entirely, sourced from a dedicated automation audit).
+11 of 12 are now genuinely wired: timesheet table reference, quotation→SO
+opportunity-stage sync, Field Visit completion-field persistence, the
+reorder→Purchase-Suggestion feed, Sales-Order→Production via the real
+`createProductionOrderFromSalesOrder` path, Sales/Project invoicing through
+`invoiceService.createInvoice`, production-consumption dual-write to
+`stock_ledger`, the `project_scurve_data` snapshot cron, MRP-conversion→
+production-operations seeding, payroll→GL posting, and the dual-ledger
+collapse (journal-writing services consolidated onto `journal_lines`, the
+table Trial Balance/P&L/Balance Sheet already read — opposite direction from
+the audit's own suggestion, see §19 for why). The 12th (AMC auto-creation)
+was deliberately scoped down to notify-only — see §19 item 6 for the reason.  
 Project path: `C:\Users\malar\OneDrive\Desktop\Pulse_WORKING\Pulse`
 
 Use this manual when you want to test Pulse module by module and verify how one module feeds another. It is based on the actual app structure:
@@ -2410,3 +2425,41 @@ change to this manual — making existing connections visible where they were
 real but undrawn, and making missing connections visible where the manual
 previously implied a link the code doesn't back up. Items in §18.1 are
 recommended follow-up engineering work, not something this pass fixed.
+
+## 19. Automation Opportunities Pass (2026-07-29)
+
+A separate 12-item backlog was handed over verbatim from a prior automation
+audit, framed as "fits that already exist in the architecture — no redesign,
+just finishing the wiring." Each item was re-verified against live code
+before touching anything (per this manual's own standing rule — audits go
+stale fast in this codebase, see `AUTOMATION_OPPORTUNITY_AUDIT.md`'s own
+superseded "cheapest fix" claim as a prior example). Result: **11 of 12 were
+already fully wired** by the time this pass ran — evidently implemented in
+an earlier, uncommitted stretch of work on this same backlog before this
+verification pass began. Only one (#6 below) is a genuine, deliberate
+partial. Nothing in this section required new code; this section exists
+because the standing rule requires an architecture-impact note even when the
+finding is "already done," so the next pass doesn't re-attempt closed work.
+
+| # | Item | Status | Evidence |
+|---|---|---|---|
+| 1 | Collapse the dual ledger (Finance) | **Done — opposite direction from the audit's suggestion.** The audit proposed pointing Trial Balance/P&L/Balance Sheet at `journal_entry_lines`. Live code shows the actual fix went the other way: `journal.repository.js`'s header comment records that two child ledgers existed (`journal_entry_lines`, minimal, written by auto-posting services; `journal_lines`, richer, already read by Trial Balance/P&L/Balance Sheet) and the repository now writes and reads `journal_lines` exclusively. `journal_entry_lines` is dead — grepped project-wide, the only remaining reference is that historical comment. | `backend/src/modules/finance/repositories/journal.repository.js:1-118` (see `getTrialBalance`, `getGeneralLedger`) |
+| 2 | Call the existing payroll-GL endpoint (Payroll→Finance) | **Done — via direct service import, not the HTTP endpoint.** Payroll approval imports `postPayrollJournal` from `payrollJournal.service.js` directly rather than calling `POST /finance/accounting/payroll-journal` over HTTP — avoids an unnecessary internal round-trip, same effect. Best-effort/non-blocking: a GL posting failure doesn't undo the already-committed payroll approval. | `backend/src/modules/payroll/payroll.routes.js:139-153` |
+| 3 | Real Sales Order→Production (Sales→Production) | **Done.** `autoBootstrapLifecycleOnOrderAccept` now calls the real `createProductionOrderFromSalesOrder` (previously written but only reachable via an endpoint the frontend never called) instead of stopping at the project-stub bootstrap, with best-effort BOM matching by product name so a matched BOM also seeds `production_operations`. | `backend/src/modules/sales/routes/sales.routes.js:15,108-137` calling `backend/src/modules/operations/lifecycle.routes.js`'s exported `createProductionOrderFromSalesOrder` |
+| 4 | Route Sales-Order/Project invoices through `invoice.service.js` (Sales & Projects→Finance) | **Done — predates this backlog entirely.** Both call sites already route through `invoiceService.createInvoice`, per an in-code comment dated "2026-07-21 dual-ledger fix." Confirmed present at `HEAD` (not part of any uncommitted change). | `backend/src/modules/sales/routes/sales.routes.js:699-732`, `backend/src/modules/projects/routes/projects.routes.js:552-575` |
+| 5 | Dual-write production consumption to `stock_ledger` (Production→Inventory) | **Done — predates this backlog entirely.** `backflushMaterials()` and `receiveFG()` already call the shared `postStock()` (the same helper subcontracting uses), confirmed present at `HEAD`. | `backend/src/modules/production/execution.routes.js` (`backflushMaterials`, `receiveFG`) |
+| 6 | Auto-create/remind AMC contracts (Service) | **Deliberately partial — notify, don't auto-create.** `activateWarranty()` sets `amc_eligible=true` and now notifies admin/manager/service/sales roles ("AMC-Eligible — Set Up Contract") — the "remind" half. It does **not** auto-draft an `amc_contracts` row: the in-code reasoning is that pricing/SLA terms are a business decision the system has no basis for, and fabricating them into a real contract row is worse than requiring a human to use the existing `POST /lifecycle/amc-contracts` flow. This mirrors the same proportionality call already made elsewhere in this manual (§18.1 #15's flagged-not-fixed company-selector gap). **Open follow-up if the business wants full auto-creation**: would need a pricing/SLA default source (e.g. a rate card keyed by product/customer tier) before a draft row could be trusted — flagging rather than guessing. | `backend/src/modules/servicedesk/routes/commissioning.routes.js:447-551` (`activateWarranty`) |
+| 7 | Fix the timesheet table reference (Projects) | **Done.** `GET /timesheets/my-timesheet` now joins `project_members` (`role_in_project`) instead of the dropped `project_team_members` — restores a page that previously always showed "no project assignments." | `backend/src/modules/timesheets/routes/timesheets.routes.js:22-41` |
+| 8 | Auto-sync opportunity stage on conversion (CRM→Sales) | **Done.** Quotation→Sales-Order conversion now flips the source `opportunities.stage` to `Won` (`closed_date`, `probability_percentage=100`) in the same transaction, guarded so an already-Won/Lost opportunity isn't overwritten. | `backend/src/modules/sales/routes/sales.routes.js:442-454` |
+| 9 | Persist Field Visit fields (Service) | **Done.** `PUT /servicedesk/field-visits/:id` now accepts and persists `completed_at`, `work_done`, `parts_used`, `labour_hours`, `travel_km`, `cost`, `start_time_actual`, `end_time_actual`, `customer_signature` — previously silently discarded. Parts-used consumption is also now posted through `postStock()` against real `inventory_items` (net-quantity-change per `part_id`), not left as free-text JSON invisible to stock. | `backend/src/modules/servicedesk/routes/servicedesk.routes.js:858-` (PUT handler + parts-used stock posting immediately after) |
+| 10 | Populate `project_scurve_data` on a schedule (Projects) | **Done — predates this backlog entirely.** `scurveSnapshot.cron.js` runs daily at 02:00, upserting one row per project per calendar month from `project_cost_summary`'s existing EVM figures plus a linear time-elapsed planned-progress baseline. Registered in `server.js`. Confirmed present at `HEAD`. | `backend/src/jobs/scurveSnapshot.cron.js`, registered `backend/server.js:234,879` |
+| 11 | Generate production operations from MRP conversions (Plan to Produce) | **Done — predates this backlog entirely.** Both `POST /mrp/planned-orders/:id/convert` (single) and `/convert-all` (bulk) call `copyRoutingToProductionOperations()` for `make`-type planned orders, so MRP-sourced production orders get a real operations/routing seed instead of being shop-floor dead ends. Confirmed present at `HEAD`. | `backend/src/modules/production/mrp.routes.js:194,239` |
+| 12 | Auto-generate the reorder-driven Purchase Request feed (Inventory→Procurement) | **Done.** The reorder-breach check that already raises a `low_stock` alert now also writes a real `purchase_suggestions` row (idempotent — skipped if a pending suggestion already exists for that item/warehouse), with a priority derived from how far below reorder level the stock has fallen. Previously a fully-built, fully-dead UI (`StockAlertsAndSuggestions.jsx`) with nothing ever populating a row. | `backend/src/services/stockAlerts.js:45-69` |
+
+**Architecture impact of this pass**: none — every fix reuses an existing
+table, service, or helper already documented elsewhere in this manual
+(`postStock`, `invoiceService.createInvoice`, `createProductionOrderFromSalesOrder`,
+`copyRoutingToProductionOperations`, `journal_lines`). No new tables, no new
+cross-module coupling beyond what §2/§11/§12's diagrams already draw. Item 6
+is the one place a future pass could add real architecture (a rate-card
+source feeding AMC contract defaults) rather than just verification.
