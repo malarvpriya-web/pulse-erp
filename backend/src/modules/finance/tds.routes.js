@@ -620,7 +620,8 @@ router.get('/194q-tracker', async (req, res) => {
           ELSE 0 END                                      AS tds_applicable,
         COALESCE(
           (SELECT SUM(t.tds_amount) FROM tds_transactions t
-           WHERE t.party_id = b.party_id
+           JOIN bills tb ON tb.id = t.bill_id
+           WHERE tb.supplier_id = b.supplier_id
              AND t.section  = '194Q'
              AND t.financial_year = $2), 0
         )                                                  AS tds_already_deducted

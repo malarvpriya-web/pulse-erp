@@ -1,9 +1,9 @@
 import pool from '../../shared/db.js';
 import grnRepo from '../repositories/grn.repository.js';
 import poRepo from '../repositories/purchaseOrder.repository.js';
-import stockLedgerRepo from '../../inventory/repositories/stockLedger.repository.js';
 import advancedInventoryRepo from '../../inventory/repositories/advancedInventory.repository.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { postStock } from '../../production/subcontracting.routes.js';
 
 class GRNService {
   async createGRN(data, userId) {
@@ -14,12 +14,26 @@ class GRNService {
       // Get PO details to access supplier_id
       const po = await poRepo.findById(data.po_id);
 
+      // quality_settings.require_iqc_before_stock (default true — matches the
+      // column's own DB default and quality.routes.js's GET /settings fallback)
+      // decides whether accepted stock is usable immediately or held until
+      // Quality clears it via the quality_tests flow.
+      const { rows: [settings] } = await client.query(
+        'SELECT require_iqc_before_stock FROM quality_settings WHERE company_id=$1',
+        [data.company_id ?? null]
+      );
+      const holdForIqc = settings ? settings.require_iqc_before_stock !== false : true;
+
       const grnNumber = await grnRepo.getNextNumber();
       const grn = await grnRepo.create(client, {
         ...data,
         company_id: data.company_id,
         grn_number: grnNumber
       });
+
+      if (holdForIqc) {
+        await client.query(`UPDATE goods_receipt_notes SET quality_status='pending' WHERE id=$1`, [grn.id]);
+      }
 
       for (const item of data.items) {
         const acceptedQty = Math.max(0,
@@ -49,27 +63,27 @@ class GRNService {
             rate: item.rate
           });
 
-          // Stock ledger entry — only accepted quantity enters usable stock
-          await stockLedgerRepo.createEntry(client, {
-            item_id: item.item_id,
-            warehouse_id: data.warehouse_id,
-            transaction_type: 'purchase',
-            quantity_in: acceptedQty,
-            quantity_out: 0,
-            rate: item.rate,
-            reference_type: 'grn',
-            reference_id: grn.id,
-            transaction_date: data.received_date,
-            remarks: `GRN ${grnNumber}` + (item.quantity_rejected > 0 ? ` (${item.quantity_rejected} rejected)` : ''),
-            created_by: userId
-          });
-
-          // Keep inventory_items.current_stock in sync — dashboard low-stock
-          // KPIs read this column directly, not the stock_ledger balance.
-          await client.query(
-            `UPDATE inventory_items SET current_stock = COALESCE(current_stock, 0) + $2, updated_at = NOW() WHERE id = $1`,
-            [item.item_id, acceptedQty]
-          );
+          // Stock ledger entry — only accepted quantity enters usable stock,
+          // and only once Quality has cleared it (see holdForIqc above).
+          // Uses the shared postStock() helper (also updates
+          // inventory_items.current_stock and fires reorder-breach detection)
+          // instead of a separate stock-ledger-write implementation.
+          if (!holdForIqc) {
+            await postStock(client, {
+              itemId: item.item_id,
+              warehouseId: data.warehouse_id,
+              inQty: acceptedQty,
+              outQty: 0,
+              txnType: 'purchase',
+              refType: 'grn',
+              refId: grn.id,
+              remarks: `GRN ${grnNumber}` + (item.quantity_rejected > 0 ? ` (${item.quantity_rejected} rejected)` : ''),
+              rate: item.rate,
+              createdBy: userId,
+              companyId: data.company_id,
+              transactionDate: data.received_date,
+            });
+          }
         }
       }
 
@@ -128,29 +142,81 @@ class GRNService {
           [rtv.id, item.item_id, item.quantity_returned, item.rate, item.remarks || null]
         );
 
-        // Deduct returned qty from stock
-        await stockLedgerRepo.createEntry(client, {
-          item_id: item.item_id,
-          warehouse_id: data.warehouse_id,
-          transaction_type: 'return',
-          quantity_in: 0,
-          quantity_out: item.quantity_returned,
-          rate: item.rate,
-          reference_type: 'rtv',
-          reference_id: rtv.id,
-          transaction_date: data.return_date,
+        // Deduct returned qty from stock — via the shared postStock() helper
+        // (also fires reorder-breach detection, which this RTV path never
+        // triggered before since it bypassed the shared helper entirely).
+        await postStock(client, {
+          itemId: item.item_id,
+          warehouseId: data.warehouse_id,
+          inQty: 0,
+          outQty: item.quantity_returned,
+          txnType: 'return',
+          refType: 'rtv',
+          refId: rtv.id,
           remarks: `RTV ${rtvNumber}`,
-          created_by: userId
+          rate: item.rate,
+          createdBy: userId,
+          companyId: data.company_id,
+          transactionDate: data.return_date,
         });
-
-        await client.query(
-          `UPDATE inventory_items SET current_stock = COALESCE(current_stock, 0) - $2, updated_at = NOW() WHERE id = $1`,
-          [item.item_id, item.quantity_returned]
-        );
       }
 
       await client.query('COMMIT');
       return rtv;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Posts a held GRN's accepted quantities to usable stock. Called once IQC
+  // clears the GRN (quality_tests' rollup flips goods_receipt_notes.quality_status
+  // to 'passed' — see quality.routes.js's rollupQualityStatus()). Idempotent via
+  // the stock_ledger's own grn reference rather than a separate "posted" flag,
+  // so re-triggering the rollup after the GRN already passed is a safe no-op.
+  async releaseGrnStock(grnId) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: [already] } = await client.query(
+        `SELECT 1 FROM stock_ledger WHERE reference_type='grn' AND reference_id=$1 LIMIT 1`,
+        [grnId]
+      );
+      if (already) { await client.query('ROLLBACK'); return; }
+
+      const { rows: [grn] } = await client.query(
+        `SELECT id, grn_number, warehouse_id, company_id, received_date FROM goods_receipt_notes WHERE id=$1`,
+        [grnId]
+      );
+      if (!grn) { await client.query('ROLLBACK'); return; }
+
+      const { rows: items } = await client.query(
+        `SELECT item_id, quantity_received, quantity_rejected, rate FROM grn_items WHERE grn_id=$1`,
+        [grnId]
+      );
+
+      for (const item of items) {
+        const acceptedQty = Math.max(0, (item.quantity_received || 0) - (item.quantity_rejected || 0));
+        if (acceptedQty <= 0) continue;
+        await postStock(client, {
+          itemId: item.item_id,
+          warehouseId: grn.warehouse_id,
+          inQty: acceptedQty,
+          outQty: 0,
+          txnType: 'purchase',
+          refType: 'grn',
+          refId: grn.id,
+          remarks: `GRN ${grn.grn_number} (released after IQC pass)`,
+          rate: item.rate,
+          createdBy: null, // system-triggered release, not one actor's action
+          companyId: grn.company_id,
+          transactionDate: grn.received_date,
+        });
+      }
+
+      await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;

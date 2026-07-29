@@ -786,7 +786,7 @@ router.get('/sales-register', requirePermission('finance', 'view'), async (req, 
         i.total_amount,
         i.status
       FROM invoices i
-      LEFT JOIN parties p ON p.id = i.party_id
+      LEFT JOIN parties p ON p.id = i.customer_id
       WHERE DATE(i.invoice_date) BETWEEN $1 AND $2
         AND i.company_id = $3
         AND i.status NOT IN ('draft','cancelled')
@@ -869,8 +869,8 @@ router.get('/customer-outstanding', requirePermission('finance', 'view'), async 
         COALESCE(SUM(CASE WHEN i.due_date < CURRENT_DATE THEN i.total_amount - COALESCE(i.amount_paid,0) ELSE 0 END), 0) AS overdue,
         MIN(i.due_date)                                                    AS oldest_due
       FROM invoices i
-      JOIN parties p ON p.id = i.party_id
-      WHERE i.status NOT IN ('paid','cancelled','draft')
+      JOIN parties p ON p.id = i.customer_id
+      WHERE LOWER(i.status) NOT IN ('paid','cancelled','draft')
         AND i.company_id = $1
       GROUP BY p.id, p.name, p.gstin, p.phone
       HAVING SUM(i.total_amount - COALESCE(i.amount_paid, 0)) > 0

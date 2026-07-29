@@ -196,7 +196,7 @@ router.get('/parties/:id/transactions', requirePermission('finance', 'view'), as
          COALESCE(i.status, 'draft') AS status
        FROM invoices i
        WHERE i.deleted_at IS NULL
-         AND (i.party_id = $1 OR i.customer_id = $1)
+         AND i.customer_id = $1
          AND ($2::int IS NULL OR i.company_id = $2)
        ORDER BY txn_date DESC`,
       [req.params.id, companyId]
@@ -240,7 +240,7 @@ router.get('/parties/:id/ageing', requirePermission('finance', 'view'), async (r
          SUM(i.total_amount - COALESCE(i.paid_amount, 0))::NUMERIC AS amount
        FROM invoices i
        WHERE i.deleted_at IS NULL
-         AND (i.party_id = $1 OR i.customer_id = $1)
+         AND i.customer_id = $1
          AND ($2::int IS NULL OR i.company_id = $2)
          AND LOWER(COALESCE(i.status,'draft')) NOT IN ('paid','cancelled','void')
        GROUP BY 1`,
@@ -362,18 +362,21 @@ router.get('/parties/:id/statement', requirePermission('finance', 'view'), async
     );
     if (!party) return res.status(404).json({ error: 'Party not found' });
 
+    // invoices/receipts have no party_id column at all (only customer_id uuid)
+    // — this always 500'd with "column party_id does not exist", not just a
+    // silent zero-result miss.
     const [invoiceRows, receiptRows] = await Promise.all([
       pool.query(`
         SELECT 'invoice' AS type, invoice_number AS ref, invoice_date AS date,
                total_amount AS debit, 0 AS credit, status
-        FROM invoices WHERE party_id = $1 AND company_id = $2
+        FROM invoices WHERE customer_id = $1 AND company_id = $2
           AND DATE(invoice_date) BETWEEN $3 AND $4
         ORDER BY invoice_date
       `, [partyId, companyId, fromDate, toDate]),
       pool.query(`
         SELECT 'receipt' AS type, receipt_number AS ref, receipt_date AS date,
                0 AS debit, amount AS credit, 'received' AS status
-        FROM receipts WHERE party_id = $1 AND company_id = $2
+        FROM receipts WHERE customer_id = $1 AND company_id = $2
           AND DATE(receipt_date) BETWEEN $3 AND $4
         ORDER BY receipt_date
       `, [partyId, companyId, fromDate, toDate]),
@@ -797,7 +800,7 @@ const _customerOutstandingHandler = async (req, res) => {
         TO_CHAR(i.invoice_date, 'YYYY-MM-DD')                   AS invoice_date,
         TO_CHAR(i.due_date,     'YYYY-MM-DD')                   AS due_date,
         COALESCE(p.name, i.party_name)                          AS customer_name,
-        COALESCE(i.customer_id, i.party_id)                     AS customer_id,
+        i.customer_id                                           AS customer_id,
         i.total_amount::NUMERIC                                 AS total_amount,
         COALESCE(i.paid_amount, 0)::NUMERIC                     AS paid_amount,
         (i.total_amount - COALESCE(i.paid_amount, 0))::NUMERIC  AS balance,
@@ -810,7 +813,7 @@ const _customerOutstandingHandler = async (req, res) => {
           ELSE '90+'
         END AS ageing_bucket
       FROM invoices i
-      LEFT JOIN parties p ON p.id = COALESCE(i.customer_id, i.party_id)
+      LEFT JOIN parties p ON p.id = i.customer_id
       WHERE i.deleted_at IS NULL
         AND LOWER(COALESCE(i.status, 'draft')) NOT IN ('paid', 'cancelled', 'void', 'cancel')
         AND i.invoice_date <= $1

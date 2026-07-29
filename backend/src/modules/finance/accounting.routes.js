@@ -1796,7 +1796,7 @@ async function interestHandler(kind, req, res) {
                 (i.total_amount - COALESCE(i.paid_amount,0))::NUMERIC AS balance,
                 ($1::date - COALESCE(i.due_date, i.invoice_date)) AS overdue_days
          FROM invoices i
-         LEFT JOIN parties p ON p.id = COALESCE(i.customer_id, i.party_id)
+         LEFT JOIN parties p ON p.id = i.customer_id
          WHERE i.deleted_at IS NULL
            AND LOWER(COALESCE(i.status,'draft')) NOT IN ('paid','cancelled','void','draft')
            AND (i.total_amount - COALESCE(i.paid_amount,0)) > 0
