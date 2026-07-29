@@ -112,6 +112,13 @@ export default function SalesCommandCenter() {
   const [tab,           setTab]           = useState('Executive');
   const [fyYear,        setFyYear]        = useState(getFYStart());
   const [loading,       setLoading]       = useState(true);
+  // Summary powers the Executive tab (the default landing tab) and used to be
+  // bundled into the same Promise.allSettled batch as the other nine calls,
+  // so the whole page waited on the slowest of the ten before rendering
+  // anything — confirmed as the cause of "still loading ~1s after landing"
+  // even though Executive only needs this one response. Fetched and gated
+  // independently below so it can render as soon as it's ready.
+  const [summaryLoading, setSummaryLoading] = useState(true);
   const [summary,       setSummary]       = useState(null);
   const [scorecards,    setScorecards]    = useState([]);
   const [customers,     setCustomers]     = useState(null);
@@ -125,14 +132,32 @@ export default function SalesCommandCenter() {
   const abortRef = useRef(null);
   const FY_YEARS = [getFYStart() + 1, getFYStart(), getFYStart() - 1];
 
+  const summaryAbortRef = useRef(null);
+
+  const loadSummary = useCallback(async () => {
+    if (summaryAbortRef.current) summaryAbortRef.current.abort();
+    const ctrl = new AbortController();
+    summaryAbortRef.current = ctrl;
+    setSummaryLoading(true);
+    try {
+      const res = await api.get(`/sales-command-center/summary?fy_year=${fyYear}`, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setSummary(res.data);
+    } catch {
+      // leave summary as-is; the Executive tab's own `summary &&` guard keeps
+      // it from rendering on a failed fetch instead of stale/partial data.
+    } finally {
+      if (!ctrl.signal.aborted) setSummaryLoading(false);
+    }
+  }, [fyYear]);
+
   const load = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setLoading(true);
     try {
-      const [sRes, scRes, cRes, pRes, ldRes, trRes, alRes, clRes, ttRes, mRes] = await Promise.allSettled([
-        api.get(`/sales-command-center/summary?fy_year=${fyYear}`,          { signal: ctrl.signal }),
+      const [scRes, cRes, pRes, ldRes, trRes, alRes, clRes, ttRes, mRes] = await Promise.allSettled([
         api.get(`/sales-command-center/salesperson-scorecard?fy_year=${fyYear}`, { signal: ctrl.signal }),
         api.get('/sales-command-center/customer-analytics',                 { signal: ctrl.signal }),
         api.get('/sales-command-center/product-analytics',                  { signal: ctrl.signal }),
@@ -144,7 +169,6 @@ export default function SalesCommandCenter() {
         api.get(`/sales/forecasts/by-month?period_year=${fyYear}`,          { signal: ctrl.signal }),
       ]);
       if (ctrl.signal.aborted) return;
-      if (sRes.status === 'fulfilled')  setSummary(sRes.value.data);
       if (scRes.status === 'fulfilled') setScorecards(scRes.value.data || []);
       if (cRes.status === 'fulfilled')  setCustomers(cRes.value.data);
       if (pRes.status === 'fulfilled')  setProducts(pRes.value.data || []);
@@ -159,8 +183,9 @@ export default function SalesCommandCenter() {
     }
   }, [fyYear]);
 
+  useEffect(() => { loadSummary(); }, [loadSummary]);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => () => { abortRef.current?.abort(); }, []);
+  useEffect(() => () => { abortRef.current?.abort(); summaryAbortRef.current?.abort(); }, []);
 
   const criticalAlerts = alerts.filter(a => a.severity === 'critical').length;
 
@@ -194,7 +219,7 @@ export default function SalesCommandCenter() {
             style={{ padding: '7px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, outline: 'none', background: '#fff' }}>
             {FY_YEARS.map(y => <option key={y} value={y}>{fyLabel(y)}</option>)}
           </select>
-          <button onClick={load} style={{ padding: '7px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+          <button onClick={() => { loadSummary(); load(); }} style={{ padding: '7px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
             <RefreshCw size={13} /> Refresh
           </button>
         </div>
@@ -220,7 +245,9 @@ export default function SalesCommandCenter() {
         ))}
       </div>
 
-      {loading && (
+      {/* Executive only needs `summary`, which now loads independently of the
+          other nine calls — it no longer waits on the slowest of the batch. */}
+      {(tab === 'Executive' ? summaryLoading : loading) && (
         <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>
           <Activity size={32} style={{ marginBottom: 12, opacity: 0.4 }} />
           <div>Loading Sales Intelligence…</div>
@@ -228,7 +255,7 @@ export default function SalesCommandCenter() {
       )}
 
       {/* ── EXECUTIVE TAB ──────────────────────────────────────────────────────── */}
-      {!loading && tab === 'Executive' && summary && (
+      {!summaryLoading && tab === 'Executive' && summary && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
           {/* Top KPI Cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>

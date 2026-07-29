@@ -4,6 +4,7 @@ import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../shared/scope.js';
+import { authorizeManagerApproval, DENIED_MESSAGE } from './travelApprovalAuthz.js';
 
 const router = express.Router();
 
@@ -382,7 +383,12 @@ router.get('/approvals', async (req, res) => {
 });
 
 // ── Approve / Reject ─────────────────────────────────────────────────────────
-router.put('/requests/:id/status', allowRoles(...TRAVEL_APPROVE_ROLES), async (req, res) => {
+// This is the endpoint the Travel Approvals screen actually calls (not the
+// multi-level /level-approve flow above, which no frontend page uses today).
+// Approve/Reject are identity-gated (reporting manager/delegate/HR/admin —
+// see travelApprovalAuthz.js); Pending/Cancelled keep the old role-only gate
+// since those aren't the "approval" act the role-gate bug was about.
+router.put('/requests/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
     if (!VALID_TRAVEL_STATUSES.has(status)) {
@@ -390,6 +396,18 @@ router.put('/requests/:id/status', allowRoles(...TRAVEL_APPROVE_ROLES), async (r
     }
     const { rows: [old] } = await pool.query(`SELECT * FROM travel_requests WHERE id=$1`, [req.params.id]);
     if (!old) return res.status(404).json({ error: 'Request not found' });
+
+    if (status === 'Approved' || status === 'Rejected') {
+      const auth = await authorizeManagerApproval({
+        actorEmployeeId: req.user?.employee_id ?? null,
+        actorRole: req.user?.role,
+        requesterEmployeeId: old.employee_id,
+        delegateApproverId: old.delegate_approver_id,
+      });
+      if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+    } else if (!TRAVEL_APPROVE_ROLES.includes(String(req.user?.role || '').toLowerCase())) {
+      return res.status(403).json({ error: 'Insufficient role for this action' });
+    }
 
     const { rows: [updated] } = await pool.query(
       `UPDATE travel_requests SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
@@ -437,6 +455,35 @@ router.put('/requests/:id/status', allowRoles(...TRAVEL_APPROVE_ROLES), async (r
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Delegate this request's approval to another employee ──────────────────────
+// Only whoever is already authorized to approve it (the real reporting
+// manager, or an HR/admin override) can hand it off — mirrors
+// leave_applications.delegate_approver_id (leaves.routes.js POST /delegate/:id).
+router.post('/requests/:id/delegate', async (req, res) => {
+  try {
+    const { delegate_employee_id } = req.body;
+    if (!delegate_employee_id) return res.status(400).json({ error: 'delegate_employee_id is required' });
+    const { rows: [tr] } = await pool.query(`SELECT * FROM travel_requests WHERE id=$1`, [req.params.id]);
+    if (!tr) return res.status(404).json({ error: 'Not found' });
+
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: req.user?.employee_id ?? null,
+      actorRole: req.user?.role,
+      requesterEmployeeId: tr.employee_id,
+      delegateApproverId: tr.delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+
+    const { rows: [updated] } = await pool.query(
+      `UPDATE travel_requests SET delegate_approver_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
+      [delegate_employee_id, req.params.id]
+    );
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'travel', recordId: updated.id,
+      recordType: 'travel_request', action: 'delegate', newData: { delegate_employee_id }, req });
+    res.json(updated);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/requests', async (req, res) => {
@@ -596,7 +643,8 @@ router.get('/review-entries', async (req, res) => {
 //           → (finance disburse) Disbursed → (bill paid) Partially Settled / Settled
 // Finance reject → Finance Rejected → employee resubmits (fix details / upload doc) → Pending Finance
 const ADVANCE_FINANCE_ROLES = ['admin', 'super_admin', 'finance'];
-const ADVANCE_MANAGER_ROLES = ['admin', 'super_admin', 'manager', 'hr'];
+// Manager-review authorization is identity-based (travelApprovalAuthz.js), not
+// a role list — see /advances/:id/manager-review below.
 
 // Statuses an advance can hold, in workflow order — also drives the UI filter.
 const ADVANCE_STATUSES = [
@@ -786,8 +834,21 @@ router.put('/advances/:id/resubmit', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// travel_advances.employee_id actually stores users.id (see GET /advances
+// comment above), so it can't be compared against employees.reporting_manager_id
+// directly. The reliable employees.id is the parent travel_request's — fall
+// back to translating employee_id through users only if that's unavailable.
+async function resolveAdvanceRequesterEmployeeId(adv) {
+  if (adv.travel_request_id) {
+    const { rows } = await pool.query(`SELECT employee_id FROM travel_requests WHERE id=$1`, [adv.travel_request_id]);
+    if (rows[0]?.employee_id != null) return rows[0].employee_id;
+  }
+  const { rows } = await pool.query(`SELECT employee_id FROM users WHERE id=$1`, [adv.employee_id]);
+  return rows[0]?.employee_id ?? null;
+}
+
 // Step 2 — Manager review (after finance approval)
-router.put('/advances/:id/manager-review', allowRoles(...ADVANCE_MANAGER_ROLES), async (req, res) => {
+router.put('/advances/:id/manager-review', async (req, res) => {
   try {
     const { status, comments } = req.body; // 'Approved' | 'Rejected'
     const actorId = req.user?.userId ?? req.user?.id;
@@ -800,6 +861,14 @@ router.put('/advances/:id/manager-review', allowRoles(...ADVANCE_MANAGER_ROLES),
       return res.status(400).json({ error: `Advance is ${adv.status}, not awaiting manager review` });
     }
 
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: req.user?.employee_id ?? null,
+      actorRole: req.user?.role,
+      requesterEmployeeId: await resolveAdvanceRequesterEmployeeId(adv),
+      delegateApproverId: adv.delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+
     const newStatus = status === 'Approved' ? 'Approved' : 'Rejected';
     const { rows: [updated] } = await pool.query(
       `UPDATE travel_advances SET status=$1, manager_comments=$2, manager_by=$3, manager_at=NOW(), updated_at=NOW()
@@ -811,6 +880,33 @@ router.put('/advances/:id/manager-review', allowRoles(...ADVANCE_MANAGER_ROLES),
       { module: 'TravelAdvance', recordId: updated.id, submitterUserId: adv.employee_id });
     logAudit({ userId: actorId, module: 'travel', recordId: updated.id, recordType: 'travel_advance',
       action: `manager_${status.toLowerCase()}`, oldData: adv, newData: updated, req });
+    res.json(updated);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Delegate this advance's manager-review to another employee (same
+// authorization-to-delegate rule as /requests/:id/delegate above).
+router.post('/advances/:id/delegate', async (req, res) => {
+  try {
+    const { delegate_employee_id } = req.body;
+    if (!delegate_employee_id) return res.status(400).json({ error: 'delegate_employee_id is required' });
+    const { rows: [adv] } = await pool.query(`SELECT * FROM travel_advances WHERE id=$1`, [req.params.id]);
+    if (!adv) return res.status(404).json({ error: 'Advance not found' });
+
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: req.user?.employee_id ?? null,
+      actorRole: req.user?.role,
+      requesterEmployeeId: await resolveAdvanceRequesterEmployeeId(adv),
+      delegateApproverId: adv.delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+
+    const { rows: [updated] } = await pool.query(
+      `UPDATE travel_advances SET delegate_approver_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
+      [delegate_employee_id, req.params.id]
+    );
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'travel', recordId: updated.id,
+      recordType: 'travel_advance', action: 'delegate', newData: { delegate_employee_id }, req });
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1093,8 +1189,14 @@ router.post('/requests/v2', async (req, res) => {
 });
 
 // ── Multi-level approval ──────────────────────────────────────────────────────
+// Level 1 (Reporting Manager) is identity-gated — the actor must actually be
+// the requester's employees.reporting_manager_id, an assigned delegate, or an
+// HR/admin override (see travelApprovalAuthz.js). Levels 2/3 (Department
+// Head/Management) have no per-employee identity in the schema to check
+// against, so they stay role-gated as before.
 const LEVEL_NAMES = ['', 'Reporting Manager', 'Department Head', 'Management'];
-router.put('/requests/:id/level-approve', allowRoles('admin','super_admin','hr','manager'), async (req, res) => {
+const LEVEL_23_ROLES = new Set(['admin', 'super_admin', 'hr', 'manager']);
+router.put('/requests/:id/level-approve', async (req, res) => {
   try {
     const { status, remarks } = req.body; // 'Approved' | 'Rejected'
     const actorId = req.user?.userId ?? req.user?.id;
@@ -1102,6 +1204,17 @@ router.put('/requests/:id/level-approve', allowRoles('admin','super_admin','hr',
     if (!tr) return res.status(404).json({ error: 'Not found' });
 
     const nextLevel = (tr.approval_level || 0) + 1;
+    if (nextLevel === 1) {
+      const auth = await authorizeManagerApproval({
+        actorEmployeeId: req.user?.employee_id ?? null,
+        actorRole: req.user?.role,
+        requesterEmployeeId: tr.employee_id,
+        delegateApproverId: tr.delegate_approver_id,
+      });
+      if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+    } else if (!LEVEL_23_ROLES.has(String(req.user?.role || '').toLowerCase())) {
+      return res.status(403).json({ error: 'Insufficient role for this approval level' });
+    }
     if (status === 'Rejected') {
       await pool.query(`UPDATE travel_requests SET status='Rejected', updated_at=NOW() WHERE id=$1`, [req.params.id]);
       await pool.query(

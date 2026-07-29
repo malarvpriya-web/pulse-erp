@@ -3,6 +3,7 @@ import pool from '../../shared/db.js';
 import timesheetRepository from '../repositories/timesheet.repository.js';
 import projectCostRepository from '../../projects/repositories/projectCost.repository.js';
 import { companyOf } from '../../../shared/scope.js';
+import { CLOSED_PROJECT_STATUSES } from '../../projects/projectStatus.js';
 
 const router = express.Router();
 const cid = req => req.scope?.company_id ?? companyOf(req);
@@ -136,8 +137,33 @@ router.get('/timesheets/:id', async (req, res) => {
   }
 });
 
+// A closed/completed project had no guard — hours could still be logged
+// against it with no server-side check (the UI-side allocation scoping fix
+// doesn't stop a direct API call either).
+const TIMESHEET_PRIVILEGED_ROLES = ['admin', 'super_admin', 'manager', 'hr', 'HR Manager',
+                                     'Finance Manager', 'Project Manager'];
 router.post('/timesheets', async (req, res) => {
   try {
+    const { project_id, employee_id } = req.body;
+    if (project_id) {
+      const { rows } = await pool.query('SELECT status FROM projects WHERE id = $1', [project_id]);
+      if (CLOSED_PROJECT_STATUSES.includes(rows[0]?.status)) {
+        return res.status(400).json({ error: `Cannot log time — project is ${rows[0].status}` });
+      }
+    }
+    // The dropdown fix that scopes non-privileged users to their own
+    // allocation only applies client-side — a direct API call could still log
+    // hours against any project. Mirror the same allocation check server-side.
+    const role = req.user?.role ?? '';
+    if (project_id && employee_id && !TIMESHEET_PRIVILEGED_ROLES.includes(role)) {
+      const { rows } = await pool.query(
+        'SELECT 1 FROM project_members WHERE project_id = $1 AND employee_id = $2',
+        [project_id, employee_id]
+      );
+      if (!rows.length) {
+        return res.status(403).json({ error: 'You are not allocated to this project' });
+      }
+    }
     const timesheet = await timesheetRepository.create({ ...req.body, company_id: cid(req) });
     res.status(201).json(timesheet);
   } catch (error) {

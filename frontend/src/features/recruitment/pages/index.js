@@ -1,9 +1,16 @@
 export { default as RecruitmentDashboard } from './RecruitmentDashboard';
+export { default as RecruiterDashboard } from './RecruiterDashboard';
 export { default as JobOpenings } from './JobOpenings';
+export { default as Candidates } from './Candidates';
 export { default as CandidatePipeline } from './CandidatePipeline';
 export { default as CandidateDetail } from './CandidateDetail';
 export { default as AllCandidates } from './AllCandidates';
+export { default as ResumeDatabase } from './ResumeDatabase';
+export { default as TalentPools } from './TalentPools';
+export { default as TalentPoolDetail } from './TalentPoolDetail';
+export { default as RecruitmentAgencies } from './RecruitmentAgencies';
 export { default as InterviewScheduler } from './InterviewScheduler';
+export { default as InterviewQuestionBank } from './InterviewQuestionBank';
 export { default as InterviewFeedback } from './InterviewFeedback';
 export { default as EmailTemplates } from './EmailTemplates';
 export { default as HiringForecasts } from './HiringForecasts';

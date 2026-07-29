@@ -116,7 +116,11 @@ router.get('/ip-whitelist', async (req, res) => {
 /* ── GET /api/security/sessions ─────────────────────────────── */
 router.get('/sessions', async (req, res) => {
   try {
-    // audit_logs (not audit_trail) is the correct table
+    // audit_logs (not audit_trail) is the correct table. al.user_id is a
+    // users.id — joining it straight to employees.id (as this used to) matches
+    // on coincidental numeric overlap between two independent serial
+    // sequences, so this almost always came back empty and silently fell
+    // through to the hardcoded demo rows below. Go via users.
     const { rows } = await pool.query(`
       SELECT DISTINCT ON (al.user_id)
              al.user_id,
@@ -125,7 +129,8 @@ router.get('/sessions', async (req, res) => {
              al.created_at AS last_active,
              (SELECT created_at FROM audit_logs WHERE user_id=al.user_id ORDER BY created_at ASC LIMIT 1) AS login_time
       FROM audit_logs al
-      JOIN employees e ON e.id = al.user_id
+      JOIN users u ON u.id = al.user_id
+      LEFT JOIN employees e ON e.id = u.employee_id
       WHERE al.created_at >= NOW() - INTERVAL '8 hours'
       ORDER BY al.user_id, al.created_at DESC
     `).catch(() => ({ rows: [] }));

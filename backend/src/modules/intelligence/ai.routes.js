@@ -102,9 +102,12 @@ router.post('/llm-chat', async (req, res) => {
 
   let erpContext = '';
   try {
+    // employees has no user_id column — this subquery always returned zero
+    // rows, so leave-balance context never appeared in the AI chat. users
+    // already has employee_id directly, no need to go via employees at all.
     const { rows: lb } = await pool.query(
       `SELECT leave_type, balance FROM leave_balances
-       WHERE employee_id = (SELECT id FROM employees WHERE user_id = $1 LIMIT 1)`,
+       WHERE employee_id = (SELECT employee_id FROM users WHERE id = $1 LIMIT 1)`,
       [userId]
     ).catch(() => ({ rows: [] }));
 
@@ -121,7 +124,7 @@ router.post('/llm-chat', async (req, res) => {
     }
 
     const { rows: emp } = await pool.query(
-      `SELECT name FROM employees WHERE user_id = $1 LIMIT 1`, [userId]
+      `SELECT name FROM employees WHERE id = (SELECT employee_id FROM users WHERE id = $1) LIMIT 1`, [userId]
     ).catch(() => ({ rows: [] }));
     if (emp.length) erpContext += `\nCurrent user name: ${emp[0].name}.`;
   } catch (_) {}

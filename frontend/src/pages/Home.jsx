@@ -19,6 +19,28 @@ const CelebrationsBoard = lazy(() => import('@/components/dashboard/Celebrations
 // rather than shown to every role.
 const HomeBusinessPulse = lazy(() => import('@/components/dashboard/HomeBusinessPulse'));
 
+// Department dashboards that already exist and are good, but weren't the
+// landing screen for the role they were built for — the role saw the same
+// generic task/approval cards as everyone else instead. Each of these was
+// confirmed well-built for its role in the 2026-07-27/28 role-by-role audit
+// (ROLE_DAY_IN_LIFE_AUDIT.md): a store keeper's real day starts with Low
+// Stock/Pending POs, not a company-wide task list. Rendered in place of the
+// generic body grid below (hero + clock-in strip stay — every role still
+// needs those), not as a page redirect, so Home stays "Home" in the sidebar.
+const ROLE_DASHBOARD = {
+  manager:             lazy(() => import('@/pages/ExecutiveDashboard')),
+  store_keeper:        lazy(() => import('@/features/inventory/pages/InventoryDashboard')),
+  production_manager:  lazy(() => import('@/features/production/pages/ProductionDashboard')),
+  qc_manager:          lazy(() => import('@/features/quality/pages/QualityDashboard')),
+  sales_manager:       lazy(() => import('@/features/sales/pages/SalesCommandCenter')),
+  service_engineer:    lazy(() => import('@/features/servicedesk/pages/SupportDashboard')),
+  procurement_manager: lazy(() => import('@/features/procurement/pages/PurchaseRequest')),
+};
+// Only pass setPage to the dashboards that declare it (matches routes.jsx's
+// own `props: ctx => ({ setPage: ctx.setPage })` entries for these three) —
+// the other four take no props when reached from the sidebar either.
+const ROLE_DASHBOARD_NEEDS_SETPAGE = new Set(['manager', 'store_keeper', 'production_manager']);
+
 // Panel B name (chosen from the provided options) — brand assets & templates.
 const BRAND_VAULT_LABEL = 'Brand Vault';
 
@@ -172,6 +194,7 @@ export default function Home({ setPage }) {
   // Finance from the menu must not get a Revenue tile that dead-ends on
   // Unauthorized when clicked (single source of truth: menuCatalog.js).
   const canSeeFinancials = canRoleSeeSection(role, 'Finance');
+  const DeptDashboard = ROLE_DASHBOARD[role] || null;
 
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -292,7 +315,7 @@ export default function Home({ setPage }) {
   const openTaskCt  = isEmployee ? myTasks.length : (mgmt?.openTasksCount ?? 0);
 
   return (
-    <div className="hm-root">
+    <div className={DeptDashboard ? 'hm-root hm-root--dept' : 'hm-root'}>
 
       {/* ── Hero + Identity bar (always visible) ── */}
       <div className="hm-hero">
@@ -435,7 +458,20 @@ export default function Home({ setPage }) {
         </div>
       )}
 
-      {/* ── Body grid — same 6 slots for every role; content adapts ── */}
+      {/* ── Department dashboard — replaces the generic body grid below for
+             roles with a purpose-built home base (see ROLE_DASHBOARD above).
+             Hero + clock-in strip stay for every role either way. ── */}
+      {DeptDashboard && (
+        <div className="hm-dept-dash">
+          <Suspense fallback={<div className="hm-dept-dash-loading">Loading your dashboard…</div>}>
+            <DeptDashboard {...(ROLE_DASHBOARD_NEEDS_SETPAGE.has(role) ? { setPage } : {})} />
+          </Suspense>
+        </div>
+      )}
+
+      {/* ── Body grid — same 6 slots for every role without a department
+             dashboard above; content adapts ── */}
+      {!DeptDashboard && (
       <div className="hm-body">
         <div className="hm-grid">
 
@@ -542,6 +578,7 @@ export default function Home({ setPage }) {
 
         </div>
       </div>
+      )}
 
       {/* Business Pulse — revenue/cash/receivables/vendor-spend analytics
           band. Same gate as the Revenue MTD hero tile: hidden from any role

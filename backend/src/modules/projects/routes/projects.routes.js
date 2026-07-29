@@ -11,6 +11,7 @@ import { logAudit } from '../../../services/AuditService.js';
 import { recalculateProjectCost } from '../services/projectCostRollup.service.js';
 import * as drive from '../../../services/googleDrive.service.js';
 import invoiceService from '../../finance/services/invoice.service.js';
+import { CLOSED_PROJECT_STATUSES } from '../projectStatus.js';
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? null;
@@ -273,8 +274,18 @@ router.get('/tasks/:id', requirePermission('projects', 'view'), async (req, res)
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// A closed/completed project had no guard at all — tasks, timesheets, and
+// member assignments could all still be posted against it after closure.
+async function findClosedProjectStatus(projectId) {
+  if (!projectId) return null;
+  const { rows } = await pool.query('SELECT status FROM projects WHERE id = $1', [projectId]);
+  return CLOSED_PROJECT_STATUSES.includes(rows[0]?.status) ? rows[0].status : null;
+}
+
 router.post('/tasks', requirePermission('projects', 'add'), async (req, res) => {
   try {
+    const closedStatus = await findClosedProjectStatus(req.body.project_id);
+    if (closedStatus) return res.status(400).json({ error: `Cannot add a task — project is ${closedStatus}` });
     const task = await taskRepository.create({ ...req.body, created_by: await actingEmployeeId(req) });
     logAudit({ userId: uid(req), module: 'projects', recordId: task.id, recordType: 'task', action: 'create', newData: task, req });
     res.status(201).json(task);
@@ -426,6 +437,8 @@ router.post('/projects/:id/resources', requirePermission('projects', 'edit'), as
       [req.params.id, cid(req)]
     );
     if (!check.rows.length) return res.status(403).json({ error: 'Project not found in your company' });
+    const closedStatus = await findClosedProjectStatus(req.params.id);
+    if (closedStatus) return res.status(400).json({ error: `Cannot assign team members — project is ${closedStatus}` });
     const { employee_id, role, allocation_pct, billing_rate, is_billable, start_date, end_date } = req.body;
     // project_members is the canonical team table (role_in_project / allocation_pct);
     // the old `project_resources` twin was never created in this schema.
@@ -576,7 +589,7 @@ router.put('/projects/milestones/:id/complete', requirePermission('projects', 'e
             tax_rate: 0,
             amount: milestone.amount,
           }],
-        }, uid(req)).catch((e) => { console.error('[milestone] invoice creation failed:', e.message); return null; });
+        }, req.user?.employee_id ?? null).catch((e) => { console.error('[milestone] invoice creation failed:', e.message); return null; });
 
         if (createdInvoice) {
           invoice = createdInvoice;
@@ -995,15 +1008,29 @@ router.put('/projects/sat/:id', requirePermission('projects', 'edit'), async (re
 });
 
 // ── Warranties ────────────────────────────────────────────────────────────────
+// Unified Warranty Engine (Priority 3) — reads/writes warranty_registrations
+// (the same table Commissioning and Operations/Lifecycle write to) instead of
+// the old project-only `project_warranties` table, so a project's warranties
+// show up in Customer 360/AMC/the Warranty Expiry dashboards too. Column
+// names are aliased to match this page's existing contract
+// (WarrantyManagement.jsx) so the frontend needed no changes.
+const WARRANTY_SELECT = `
+  wr.id, wr.project_id, wr.company_id, wr.serial_number, wr.product_name,
+  wr.commissioning_date, wr.warranty_start AS warranty_start_date,
+  wr.warranty_end AS warranty_end_date, wr.warranty_months,
+  wr.manufacturer_warranty_months, wr.extended_warranty_months,
+  wr.warranty_type, wr.coverage_description, wr.exclusions, wr.status,
+  wr.created_at, wr.updated_at`;
+
 router.get('/projects/:id/warranties', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT pw.*,
-              CASE WHEN pw.warranty_end_date >= CURRENT_DATE THEN 'active' ELSE 'expired' END AS computed_status
-       FROM project_warranties pw
-       WHERE pw.project_id=$1
+      `SELECT ${WARRANTY_SELECT},
+              CASE WHEN wr.warranty_end >= CURRENT_DATE THEN 'active' ELSE 'expired' END AS computed_status
+       FROM warranty_registrations wr
+       WHERE wr.project_id=$1
          AND EXISTS (SELECT 1 FROM projects p WHERE p.id=$1 AND ($2::int IS NULL OR p.company_id=$2))
-       ORDER BY pw.warranty_end_date DESC`,
+       ORDER BY wr.warranty_end DESC`,
       [req.params.id, cid(req)]
     );
     res.json(rows);
@@ -1013,27 +1040,35 @@ router.get('/projects/:id/warranties', requirePermission('projects', 'view'), as
 router.post('/projects/:id/warranties', requirePermission('projects', 'edit'), async (req, res) => {
   try {
     const check = await pool.query(
-      `SELECT id FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`,
+      `SELECT id, customer_name FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`,
       [req.params.id, cid(req)]
     );
     if (!check.rows.length) return res.status(403).json({ error: 'Project not found in your company' });
     const {
-      serial_number, product_name, commissioning_date, warranty_start_date,
-      warranty_months, warranty_type, warranty_terms, exclusions,
+      serial_number, product_name, commissioning_date, warranty_start_date, warranty_end_date,
+      warranty_months, warranty_type, coverage_description, exclusions,
+      manufacturer_warranty_months, extended_warranty_months,
     } = req.body;
     const months = parseInt(warranty_months) || 12;
     const startDate = warranty_start_date || commissioning_date || new Date().toISOString().slice(0, 10);
-    const endDate = new Date(new Date(startDate).setMonth(new Date(startDate).getMonth() + months))
-      .toISOString().slice(0, 10);
+    const endDate = warranty_end_date
+      || new Date(new Date(startDate).setMonth(new Date(startDate).getMonth() + months)).toISOString().slice(0, 10);
+    const companyId = cid(req);
+    const { rows: cnt } = await pool.query(
+      `SELECT COUNT(*) FROM warranty_registrations WHERE ($1::int IS NULL OR company_id=$1)`, [companyId]
+    );
+    const warrantyNumber = `WR-${String(parseInt(cnt[0].count) + 1).padStart(5, '0')}`;
     const { rows } = await pool.query(
-      `INSERT INTO project_warranties
-         (project_id, company_id, serial_number, product_name, commissioning_date,
-          warranty_start_date, warranty_end_date, warranty_months, warranty_type,
-          warranty_terms, exclusions)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [req.params.id, cid(req), serial_number||null, product_name||null,
-       commissioning_date||null, startDate, endDate, months,
-       warranty_type||'standard', warranty_terms||null, exclusions||null]
+      `INSERT INTO warranty_registrations AS wr
+         (warranty_number, project_id, company_id, serial_number, product_name, customer_name,
+          commissioning_date, warranty_start, warranty_end, warranty_months, warranty_type,
+          coverage_description, exclusions, manufacturer_warranty_months, extended_warranty_months, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'Active')
+       RETURNING ${WARRANTY_SELECT}`,
+      [warrantyNumber, req.params.id, companyId, serial_number || null, product_name || serial_number || 'Unspecified',
+       check.rows[0].customer_name || 'Unknown', commissioning_date || null, startDate, endDate, months,
+       warranty_type || 'standard', coverage_description || null, exclusions || null,
+       parseInt(manufacturer_warranty_months) || months, parseInt(extended_warranty_months) || null]
     );
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'warranty', action: 'create', newData: rows[0], req });
     res.status(201).json(rows[0]);
@@ -1326,20 +1361,23 @@ router.get('/projects/:id/status-report', requirePermission('projects', 'view'),
 });
 
 // ── Global warranties list (all projects) ─────────────────────────────────────
+// Unified Warranty Engine — same warranty_registrations table as above, scoped
+// to rows that have a project_id (this screen is project-centric; commissioning-
+// or operations-only warranties without a project_id don't belong on this list).
 router.get('/warranties', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT pw.*,
+      `SELECT ${WARRANTY_SELECT},
               p.project_code, p.project_name,
               CASE
-                WHEN pw.status IS NOT NULL THEN pw.status
-                WHEN pw.warranty_end_date >= CURRENT_DATE THEN 'active'
+                WHEN wr.status IS NOT NULL THEN wr.status
+                WHEN wr.warranty_end >= CURRENT_DATE THEN 'active'
                 ELSE 'expired'
               END AS computed_status
-       FROM project_warranties pw
-       JOIN projects p ON p.id = pw.project_id
-       WHERE ($1::int IS NULL OR pw.company_id = $1)
-       ORDER BY pw.warranty_end_date ASC`,
+       FROM warranty_registrations wr
+       JOIN projects p ON p.id = wr.project_id
+       WHERE wr.project_id IS NOT NULL AND ($1::int IS NULL OR wr.company_id = $1)
+       ORDER BY wr.warranty_end ASC`,
       [cid(req)]
     ).catch(() => ({ rows: [] }));
     res.json({ warranties: rows });
@@ -1347,20 +1385,32 @@ router.get('/warranties', requirePermission('projects', 'view'), async (req, res
 });
 
 // ── Global warranty update ────────────────────────────────────────────────────
+// `coverage_description` used to be referenced here against `project_warranties`,
+// which never had that column (a live 500-on-edit bug — 0 rows ever existed to
+// trigger it in practice). warranty_registrations now has a real column for it.
 router.put('/warranties/:id', requirePermission('projects', 'edit'), async (req, res) => {
   try {
     const { product_name, serial_number, commissioning_date, warranty_start_date,
-            warranty_end_date, warranty_type, coverage_description, exclusions, status } = req.body;
+            warranty_end_date, warranty_type, coverage_description, exclusions, status,
+            manufacturer_warranty_months, extended_warranty_months } = req.body;
     const { rows } = await pool.query(
-      `UPDATE project_warranties
-       SET product_name=$1, serial_number=$2, commissioning_date=$3,
-           warranty_start_date=$4, warranty_end_date=$5, warranty_type=$6,
-           coverage_description=$7, exclusions=$8, status=$9, updated_at=NOW()
-       WHERE id=$10 AND ($11::int IS NULL OR company_id=$11)
-       RETURNING *`,
-      [product_name, serial_number||null, commissioning_date||null,
-       warranty_start_date||null, warranty_end_date||null, warranty_type||'comprehensive',
-       coverage_description||null, exclusions||null, status||'active',
+      `UPDATE warranty_registrations AS wr
+       SET product_name=COALESCE($1, product_name), serial_number=COALESCE($2, serial_number),
+           commissioning_date=COALESCE($3, commissioning_date),
+           warranty_start=COALESCE($4, warranty_start), warranty_end=COALESCE($5, warranty_end),
+           warranty_type=COALESCE($6, warranty_type),
+           coverage_description=COALESCE($7, coverage_description), exclusions=COALESCE($8, exclusions),
+           status=COALESCE($9, status),
+           manufacturer_warranty_months=COALESCE($10, manufacturer_warranty_months),
+           extended_warranty_months=COALESCE($11, extended_warranty_months),
+           updated_at=NOW()
+       WHERE id=$12 AND project_id IS NOT NULL AND ($13::int IS NULL OR company_id=$13)
+       RETURNING ${WARRANTY_SELECT}`,
+      [product_name||null, serial_number||null, commissioning_date||null,
+       warranty_start_date||null, warranty_end_date||null, warranty_type||null,
+       coverage_description||null, exclusions||null, status||null,
+       manufacturer_warranty_months != null ? parseInt(manufacturer_warranty_months) : null,
+       extended_warranty_months != null ? parseInt(extended_warranty_months) : null,
        req.params.id, cid(req)]
     );
     if (!rows.length) return res.status(404).json({ error: 'Warranty not found' });

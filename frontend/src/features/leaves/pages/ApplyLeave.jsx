@@ -251,15 +251,14 @@ export default function ApplyLeave({ setPage }) {
     if (form.end_date && form.start_date && form.end_date < form.start_date)
       errs.end_date = 'End date must be on or after start date';
     if (!form.reason.trim()) errs.reason = 'Reason is required';
-    if (selectedType?.requiresAttachment && !form.attachment_file && !form.attachment_url)
-      errs.attachment = 'An attachment is required for this leave type';
+    if (!form.half_day && days <= 0) errs.end_date = 'Select at least one working day for leave';
 
     if (Object.keys(errs).length) {
       setFieldErrors(errs);
       // Surface a fixed-position toast too — inline errors can be scrolled out of
       // view (e.g. the admin employee picker sits above the Submit button), which
       // makes the click look like it did nothing.
-      const firstMsg = errs.employee_id || errs.start_date || errs.end_date || errs.reason || errs.attachment;
+      const firstMsg = errs.employee_id || errs.start_date || errs.end_date || errs.reason;
       showToast(firstMsg || 'Please fix the highlighted fields before submitting.', 'error');
       return;
     }
@@ -310,7 +309,10 @@ export default function ApplyLeave({ setPage }) {
       loadBalance(empId);
     } catch (err) {
       const data = err?.response?.data;
-      showToast(data?.error || data?.message || 'Submission failed. Please try again.', 'error');
+      const validationMsg = Array.isArray(data?.errors)
+        ? data.errors.map(e => e?.message).filter(Boolean).join('; ')
+        : '';
+      showToast(validationMsg || data?.error || data?.message || 'Submission failed. Please try again.', 'error');
     } finally {
       setSubmitting(false);
     }
@@ -552,8 +554,7 @@ export default function ApplyLeave({ setPage }) {
             {/* Attachment */}
             <div className="al-field">
               <label>
-                Attachment {selectedType?.requiresAttachment && <span className="al-req">*</span>}
-                {!selectedType?.requiresAttachment && <span style={{ color:'#9ca3af', fontWeight:400, fontSize:11 }}> (optional)</span>}
+                Attachment <span style={{ color:'#9ca3af', fontWeight:400, fontSize:11 }}> (optional)</span>
               </label>
               <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                 <label style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', background:'#f9fafb', border:'1px solid #e5e7eb', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:500 }}>
@@ -569,7 +570,6 @@ export default function ApplyLeave({ setPage }) {
                   </button>
                 )}
               </div>
-              {fieldErrors.attachment && <span className="al-field-error" role="alert" style={{ color:'#ef4444', fontSize:11 }}>{fieldErrors.attachment}</span>}
               <span style={{ color:'#9ca3af', fontSize:11, marginTop:4, display:'block' }}>PDF, JPG, PNG, DOC — max 5 MB</span>
             </div>
           </div>
@@ -601,3 +601,4 @@ export default function ApplyLeave({ setPage }) {
     </div>
   );
 }
+

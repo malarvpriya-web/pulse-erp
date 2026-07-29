@@ -70,7 +70,7 @@ export default function MyTimesheet() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get('/timesheets/my-timesheet', {
+      const res = await api.get('/timesheets/timesheets/my-timesheet', {
         params: { week_start: weekStart, week_end: weekEnd },
       });
       if (!isMounted.current) return;
@@ -149,7 +149,7 @@ export default function MyTimesheet() {
     if (!clockedIn) {
       try {
         const ts = new Date().toISOString();
-        await api.post('/timesheets/clock-in', { employee_id: user.employee_id, timestamp: ts });
+        await api.post('/timesheets/timesheets/clock-in', { employee_id: user.employee_id, timestamp: ts });
         if (!isMounted.current) return;
         setClockedIn(true);
         setClockTime(new Date());
@@ -160,7 +160,7 @@ export default function MyTimesheet() {
     } else {
       try {
         const ts = new Date().toISOString();
-        await api.post('/timesheets/clock-out', {
+        await api.post('/timesheets/timesheets/clock-out', {
           employee_id: user.employee_id,
           timestamp: ts,
           clock_in_timestamp: clockTime?.toISOString(),

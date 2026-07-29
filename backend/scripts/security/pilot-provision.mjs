@@ -40,6 +40,22 @@ const ROSTER = [
   { first: 'Pilot', last: 'ServiceA',   email: 'pilot.service1@manifest.in', role: 'service_engineer',   dept: 'Service' },
   { first: 'Pilot', last: 'ServiceB',   email: 'pilot.service2@manifest.in', role: 'service_engineer',   dept: 'Service' },
   { first: 'Pilot', last: 'Management', email: 'pilot.mgmt@manifest.in',     role: 'manager',            dept: 'Management' },
+  { first: 'Pilot', last: 'QC',         email: 'pilot.qc@manifest.in',       role: 'qc_manager',         dept: 'Quality' },
+  { first: 'Pilot', last: 'Purchase',   email: 'pilot.purchase@manifest.in', role: 'procurement_manager', dept: 'Procurement' },
+  { first: 'Pilot', last: 'Project',    email: 'pilot.project@manifest.in',  role: 'project_manager',    dept: 'Projects' },
+  { first: 'Pilot', last: 'ServiceMgr', email: 'pilot.servicemgr@manifest.in', role: 'service_manager',  dept: 'Service' },
+  { first: 'Pilot', last: 'DeptHead',    email: 'pilot.depthead@manifest.in',       role: 'department_head',      dept: 'Management' },
+  { first: 'Pilot', last: 'L2Approver',  email: 'pilot.l2approver@manifest.in',     role: 'l2_approver',           dept: 'Management' },
+  { first: 'Pilot', last: 'HRMgr',       email: 'pilot.hrmgr@manifest.in',          role: 'hr_manager',            dept: 'Human Resources' },
+  { first: 'Pilot', last: 'HRExec',      email: 'pilot.hrexec@manifest.in',         role: 'hr_exec',               dept: 'Human Resources' },
+  { first: 'Pilot', last: 'Payroll',     email: 'pilot.payroll@manifest.in',        role: 'payroll_admin',         dept: 'Human Resources' },
+  { first: 'Pilot', last: 'FinanceMgr',  email: 'pilot.financemgr@manifest.in',     role: 'finance_manager',       dept: 'Finance' },
+  { first: 'Pilot', last: 'AccountsExec',email: 'pilot.accountsexec@manifest.in',   role: 'accounts_exec',         dept: 'Finance' },
+  { first: 'Pilot', last: 'SalesExec',   email: 'pilot.salesexec@manifest.in',      role: 'sales_exec',            dept: 'Sales' },
+  { first: 'Pilot', last: 'ProcExec',    email: 'pilot.procurementexec@manifest.in',role: 'procurement_exec',      dept: 'Procurement' },
+  { first: 'Pilot', last: 'ProdEng',     email: 'pilot.prodeng@manifest.in',        role: 'production_engineer',   dept: 'Production' },
+  { first: 'Pilot', last: 'QCEng',       email: 'pilot.qceng@manifest.in',          role: 'qc_engineer',           dept: 'Quality' },
+  { first: 'Pilot', last: 'DesignEng',   email: 'pilot.designeng@manifest.in',      role: 'design_engineer',       dept: 'Engineering' },
 ];
 
 const COMPANY_ID = 1;

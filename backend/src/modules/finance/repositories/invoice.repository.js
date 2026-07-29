@@ -109,7 +109,7 @@ class InvoiceRepository {
       `UPDATE invoices 
        SET paid_amount = paid_amount + $1, 
            balance = total_amount - (paid_amount + $1),
-           status = CASE WHEN total_amount - (paid_amount + $1) <= 0 THEN 'Paid' ELSE status END,
+           status = CASE WHEN total_amount - (paid_amount + $1) <= 0 THEN 'paid' ELSE status END,
            updated_at = CURRENT_TIMESTAMP 
        WHERE id = $2 RETURNING *`,
       [paidAmount, id]

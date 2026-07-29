@@ -6,8 +6,10 @@ import Login from "./pages/Login";
 import ForcePasswordChange from "./pages/ForcePasswordChange";
 import ErrorBoundary from "./components/ErrorBoundary";
 
-const SetupWizardPage = lazy(() => import('@/features/settings/pages/SetupWizard'));
-const PublicSigning   = lazy(() => import('@/features/documents/pages/PublicSigning'));
+const SetupWizardPage        = lazy(() => import('@/features/settings/pages/SetupWizard'));
+const PublicSigning          = lazy(() => import('@/features/documents/pages/PublicSigning'));
+const VendorRegistration     = lazy(() => import('@/features/procurement/pages/VendorRegistration'));
+const CustomerPortalDashboard = lazy(() => import('@/features/servicedesk/pages/CustomerPortalDashboard'));
 
 function App() {
   const { isLoggedIn, initializing, needsSetup, user } = useAuth();
@@ -52,6 +54,28 @@ function App() {
           element={
             <Suspense fallback={<div style={{ padding: '50px', textAlign: 'center' }}>Loading…</div>}>
               <PublicSigning />
+            </Suspense>
+          }
+        />
+        {/* Vendor self-registration — public, no ERP login. Was unreachable before this
+            route existed: the catch-all below redirects any unmatched path to /login
+            when !isLoggedIn, so an anonymous vendor could never reach the wizard despite
+            routes.jsx flagging it `public: true` (that flag was never consulted anywhere). */}
+        <Route
+          path="/VendorRegistration"
+          element={
+            <Suspense fallback={<div style={{ padding: '50px', textAlign: 'center' }}>Loading…</div>}>
+              <VendorRegistration />
+            </Suspense>
+          }
+        />
+        {/* Customer self-service portal — has its own login form + JWT (portal_token,
+            separate from the ERP session), same reachability gap as VendorRegistration above. */}
+        <Route
+          path="/CustomerPortalDashboard"
+          element={
+            <Suspense fallback={<div style={{ padding: '50px', textAlign: 'center' }}>Loading…</div>}>
+              <CustomerPortalDashboard />
             </Suspense>
           }
         />

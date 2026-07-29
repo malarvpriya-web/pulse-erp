@@ -122,6 +122,11 @@ export default function ExecutiveDashboard({ setPage }) {
   const [crmStats,     setCrmStats]     = useState({ conversionRate: null });
   const [attrStats,    setAttrStats]    = useState({ rate: null });
   const [pl,           setPl]           = useState({ totalRevenue: 0, totalExpenses: 0, netProfit: 0 });
+  // Roles that can open this page (e.g. `manager`) may not hold `finance:view` —
+  // the P&L call 403s for them. Rather than show a permanently-stuck "—" tile
+  // forever, drop the Net Profit card entirely when we know it's a permission
+  // denial (not a transient failure), same as the other tiles quietly degrade.
+  const [plForbidden,  setPlForbidden]  = useState(false);
   const [topCustomers, setTopCustomers] = useState([]);
   const [topVendors,   setTopVendors]   = useState([]);
   const [hcTrend,      setHcTrend]      = useState([]);
@@ -190,6 +195,8 @@ export default function ExecutiveDashboard({ setPage }) {
     if (plR.status === 'fulfilled') {
       const d = plR.value.data;
       if (d) setPl({ totalRevenue: d.total_revenue || 0, totalExpenses: d.total_expenses || 0, netProfit: d.net_profit || 0 });
+    } else if (plR.reason?.response?.status === 403) {
+      setPlForbidden(true);
     }
     if (custR.status === 'fulfilled') {
       const d = custR.value.data;
@@ -267,14 +274,14 @@ export default function ExecutiveDashboard({ setPage }) {
       sub: 'Across departments',
       page: 'ProjectsDashboard',
     },
-    {
+    ...(plForbidden ? [] : [{
       icon: netMargin != null && netMargin >= 0 ? TrendingUp : TrendingDown,
       label: 'Net Profit (YTD)',
       tint: netMargin == null ? '#f59e0b' : netMargin >= 15 ? '#10b981' : netMargin >= 0 ? '#f59e0b' : '#ef4444',
       value: loading ? null : (pl.totalRevenue > 0 ? fmt(pl.netProfit) : '—'),
       sub: netMargin != null ? `${netMargin >= 0 ? '+' : ''}${netMargin}% net margin` : 'No P&L data yet',
       page: 'FinanceDashboardNew',
-    },
+    }]),
     {
       icon: attrition > 12 ? TrendingDown : TrendingUp,
       label: 'Attrition Rate',

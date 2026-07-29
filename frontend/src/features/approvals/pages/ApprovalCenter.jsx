@@ -216,8 +216,14 @@ export default function ApprovalCenter() {
     if (!ids.length) return showToast('No approvals to delegate', 'error');
     const chosen = delegateUsers.find(u => String(u.id) === String(delegateUserId));
     try {
-      await api.post('/approvals/delegate', { ids, delegate_to_user_id: delegateUserId });
-      showToast(`${ids.length} approval(s) delegated to ${chosen?.name || 'delegate'}`);
+      const res = await api.post('/approvals/delegate', { ids, delegate_to_user_id: delegateUserId });
+      const results = Array.isArray(res.data?.approvals) ? res.data.approvals : [];
+      const failed = results.filter(r => r.delegated === false);
+      if (failed.length > 0) {
+        showToast(`${results.length - failed.length} delegated, ${failed.length} could not be delegated (unsupported item type)`, 'error');
+      } else {
+        showToast(`${ids.length} approval(s) delegated to ${chosen?.name || 'delegate'}`);
+      }
       fetchApprovals();
       setShowDelegateModal(false); setDelegateUserId(''); setDelegateSearch(''); setDelegateUsers([]);
       if (delegateScope === 'selected') setSelectedItems([]);

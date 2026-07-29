@@ -5,7 +5,7 @@ import QualityTestsPanel from '@/features/quality/components/QualityTestsPanel';
 import {
   getProductionOrder, releaseOrder,
   cancelOrder, holdOrder, resumeOrder,
-  reserveMaterials, issueMaterial,
+  reserveMaterials, issueMaterial, returnMaterial,
   startOperation, completeOperation, holdOperation,
   getTestRuns, createTestRun, getTestRun, addMeasurement, completeTestRun,
   downloadCertificate,
@@ -67,6 +67,7 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
   const [loading,       setLoading]       = useState(false);
   const [submitting,    setSubmitting]    = useState(false);
   const [issueModal,    setIssueModal]    = useState(null); // { resourceId, itemId, remaining }
+  const [returnModal,   setReturnModal]   = useState(null); // { resourceId, itemId, returnable }
 
   // Operations
   const [actionModal,   setActionModal]   = useState(null); // { type: 'start'|'complete'|'hold', op }
@@ -204,6 +205,18 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
       await loadOrder();
     } catch (e) {
       toast.error(e.response?.data?.error || 'Failed to issue material.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleReturnMaterial = async (reservationId, qty) => {
+    setSubmitting(true);
+    try {
+      await returnMaterial(order.id, { reservation_id: reservationId, qty_returned: qty });
+      await loadOrder();
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Failed to return material.');
     } finally {
       setSubmitting(false);
     }
@@ -363,6 +376,42 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
                 }}
                 style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#1e40af', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
                 Issue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {returnModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 380, boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700 }}>Return Material</h3>
+            <p style={{ margin: '0 0 12px', fontSize: 13, color: '#6b7280' }}>{returnModal.itemName} — unconsumed on shop floor: {returnModal.returnable}</p>
+            <input
+              autoFocus
+              type="number"
+              min="0.001"
+              max={returnModal.returnable}
+              step="0.001"
+              style={{ width: '100%', borderRadius: 8, border: '1px solid #d1d5db', padding: '8px 12px', fontSize: 13 }}
+              value={returnModal.qty}
+              onChange={e => setReturnModal(m => ({ ...m, qty: e.target.value }))}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  const qty = parseFloat(returnModal.qty);
+                  if (qty > 0) { handleReturnMaterial(returnModal.resourceId, qty); setReturnModal(null); }
+                }
+              }}
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button onClick={() => setReturnModal(null)} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d1d5db', background: 'transparent', cursor: 'pointer' }}>Cancel</button>
+              <button
+                onClick={() => {
+                  const qty = parseFloat(returnModal.qty);
+                  if (qty > 0) { handleReturnMaterial(returnModal.resourceId, qty); setReturnModal(null); }
+                }}
+                style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
+                Return
               </button>
             </div>
           </div>
@@ -632,6 +681,8 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
                         const canIssue = ['released', 'in_progress'].includes(order.status) &&
                           ['reserved', 'partially_issued'].includes(res.status);
                         const remaining = (res.qty_required || 0) - (res.qty_issued || 0);
+                        const returnable = ['partially_issued', 'fully_issued'].includes(res.status)
+                          ? Math.max(0, (res.qty_issued || 0) - (res.qty_consumed || 0)) : 0;
                         return (
                           <tr key={res.id} style={{ borderTop: '1px solid #f0ebff' }}>
                             <td style={{ padding: '10px 14px', fontWeight: 600, color: '#1f2937' }}>{res.item_name || res.item_id}</td>
@@ -645,14 +696,24 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
                               </span>
                             </td>
                             <td style={{ padding: '10px 14px' }}>
-                              {canIssue && remaining > 0 && (
-                                <button
-                                  onClick={() => setIssueModal({ resourceId: res.id, itemId: res.item_id, itemName: res.item_name || res.item_id, remaining, qty: String(remaining) })}
-                                  disabled={submitting}
-                                  style={{ padding: '4px 12px', background: '#dbeafe', color: '#1e40af', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
-                                  Issue
-                                </button>
-                              )}
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                {canIssue && remaining > 0 && (
+                                  <button
+                                    onClick={() => setIssueModal({ resourceId: res.id, itemId: res.item_id, itemName: res.item_name || res.item_id, remaining, qty: String(remaining) })}
+                                    disabled={submitting}
+                                    style={{ padding: '4px 12px', background: '#dbeafe', color: '#1e40af', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                                    Issue
+                                  </button>
+                                )}
+                                {returnable > 0 && (
+                                  <button
+                                    onClick={() => setReturnModal({ resourceId: res.id, itemId: res.item_id, itemName: res.item_name || res.item_id, returnable, qty: String(returnable) })}
+                                    disabled={submitting}
+                                    style={{ padding: '4px 12px', background: '#dcfce7', color: '#166534', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                                    Return
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );

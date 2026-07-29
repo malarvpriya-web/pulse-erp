@@ -78,7 +78,7 @@ const CandidateDetail = ({ setPage }) => {
     return (
       <div className="recruitment-page">
         <div className="page-header">
-          <button className="back-btn" onClick={() => setPage('AllCandidates')}>← Back</button>
+          <button className="back-btn" onClick={() => setPage('Candidates', { tab: 'all' })}>← Back</button>
         </div>
         <div style={{ textAlign: 'center', padding: '4rem 1rem', color: '#6b7280' }}>
           No candidate selected. Go back and select one.
@@ -92,7 +92,7 @@ const CandidateDetail = ({ setPage }) => {
   if (!candidate) return (
     <div className="recruitment-page">
       <div className="page-header">
-        <button className="back-btn" onClick={() => setPage('AllCandidates')}>← Back</button>
+        <button className="back-btn" onClick={() => setPage('Candidates', { tab: 'all' })}>← Back</button>
       </div>
       <div style={{ padding: 24, color: '#dc2626' }}>Failed to load candidate.</div>
     </div>
@@ -154,7 +154,7 @@ const CandidateDetail = ({ setPage }) => {
     <div className="recruitment-page">
       <div className="page-header">
         <div>
-          <button className="back-btn" onClick={() => setPage('AllCandidates')}>← Back</button>
+          <button className="back-btn" onClick={() => setPage('Candidates', { tab: 'all' })}>← Back</button>
           <h1>{candidate.full_name}</h1>
         </div>
         <div className="header-actions">

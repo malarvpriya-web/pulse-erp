@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '@/services/api/client';
 import { getPosition } from '@/mobile/native';
 import { useToast } from '@/context/ToastContext';
@@ -28,6 +28,55 @@ export default function CommissioningWorkflow() {
   const [activeSection, setActiveSection] = useState('checklist');
   const [signoffForm, setSignoffForm] = useState({ customer_sign_name:'', customer_feedback:'', customer_rating:5 });
   const [showSignoff, setShowSignoff] = useState(false);
+  // Sign-off previously only ever collected a typed name + star rating —
+  // customer_sign_data (the column the backend already accepts and stores)
+  // was never populated by any frontend path. Real canvas capture instead.
+  const sigCanvasRef = useRef(null);
+  const sigDrawing = useRef(false);
+  const [hasSignature, setHasSignature] = useState(false);
+
+  const getSigPos = (e, canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches?.[0];
+    return { x: (touch ? touch.clientX : e.clientX) - rect.left, y: (touch ? touch.clientY : e.clientY) - rect.top };
+  };
+  const sigStart = (e) => {
+    e.preventDefault();
+    const canvas = sigCanvasRef.current;
+    if (!canvas) return;
+    const { x, y } = getSigPos(e, canvas);
+    const ctx = canvas.getContext('2d');
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    sigDrawing.current = true;
+  };
+  const sigMove = (e) => {
+    if (!sigDrawing.current) return;
+    e.preventDefault();
+    const canvas = sigCanvasRef.current;
+    if (!canvas) return;
+    const { x, y } = getSigPos(e, canvas);
+    const ctx = canvas.getContext('2d');
+    ctx.strokeStyle = '#1f2937';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    setHasSignature(true);
+  };
+  const sigEnd = () => { sigDrawing.current = false; };
+  const clearSignature = () => {
+    const canvas = sigCanvasRef.current;
+    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    setHasSignature(false);
+  };
+  const openSignoff = () => {
+    setSignoffForm({ customer_sign_name:'', customer_feedback:'', customer_rating:5 });
+    setHasSignature(false);
+    setShowSignoff(true);
+    // Canvas isn't mounted yet on this same tick — clear on next paint.
+    requestAnimationFrame(clearSignature);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -90,8 +139,10 @@ export default function CommissioningWorkflow() {
 
   const doSignoff = async () => {
     if (!signoffForm.customer_sign_name) return showToast('Customer name required', 'error');
+    if (!hasSignature) return showToast('Customer signature is required', 'error');
+    const customer_sign_data = sigCanvasRef.current?.toDataURL('image/png') || null;
     try {
-      await api.post(`/commissioning/${selected}/signoff`, signoffForm);
+      await api.post(`/commissioning/${selected}/signoff`, { ...signoffForm, customer_sign_data });
       showToast('Customer sign-off recorded');
       setShowSignoff(false);
       loadDetail(selected);
@@ -161,7 +212,7 @@ export default function CommissioningWorkflow() {
                   <button onClick={handleCheckin} style={BTN('#059669')}><MapPin size={14}/>GPS Check-In</button>
                 )}
                 {detail.status === 'in_progress' && (
-                  <button onClick={() => setShowSignoff(true)} style={BTN('#d97706')}><FileText size={14}/>Customer Sign-Off</button>
+                  <button onClick={openSignoff} style={BTN('#d97706')}><FileText size={14}/>Customer Sign-Off</button>
                 )}
                 {detail.status === 'signed_off' && !detail.certificate_issued && (
                   <button onClick={issueCertificate} style={BTN('#6B3FDB')}><Award size={14}/>Issue Certificate</button>
@@ -292,6 +343,12 @@ export default function CommissioningWorkflow() {
                     <div style={{ fontSize:13, color:'#374151', marginTop:4 }}>{detail.customer_feedback}</div>
                   </div>
                 )}
+                {detail.customer_sign_data && (
+                  <div style={{ gridColumn:'1/-1', marginTop:8 }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:'#6b7280', textTransform:'uppercase' }}>Signature</div>
+                    <img src={detail.customer_sign_data} alt="Customer signature" style={{ height:80, marginTop:4, border:'1px solid #d1fae5', borderRadius:8, background:'#fff' }} />
+                  </div>
+                )}
               </div>
             ) : <div style={{ color:'#9ca3af', fontSize:13 }}>No sign-off recorded yet</div>}
           </Section>
@@ -318,6 +375,20 @@ export default function CommissioningWorkflow() {
                       style={{ width:40, height:40, borderRadius:9999, border:`2px solid ${signoffForm.customer_rating>=n?'#d97706':'#e5e7eb'}`, background:signoffForm.customer_rating>=n?'#fef3c7':'#fff', fontSize:18, cursor:'pointer' }}>⭐</button>
                   ))}
                 </div>
+              </div>
+              <div style={{ marginBottom:14 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <label style={LBL}>Customer Signature *</label>
+                  <button type="button" onClick={clearSignature} style={{ background:'none', border:'none', color:'#6B3FDB', fontSize:11, fontWeight:700, cursor:'pointer' }}>Clear</button>
+                </div>
+                <canvas
+                  ref={sigCanvasRef}
+                  width={384} height={120}
+                  style={{ width:'100%', height:120, border:'1px solid #e5e7eb', borderRadius:8, background:'#fafafa', touchAction:'none', cursor:'crosshair' }}
+                  onMouseDown={sigStart} onMouseMove={sigMove} onMouseUp={sigEnd} onMouseLeave={sigEnd}
+                  onTouchStart={sigStart} onTouchMove={sigMove} onTouchEnd={sigEnd}
+                />
+                <div style={{ fontSize:11, color:'#9ca3af', marginTop:4 }}>Sign above with mouse, stylus, or finger.</div>
               </div>
               <div style={{ marginBottom:20 }}>
                 <label style={LBL}>Customer Feedback</label>

@@ -13,6 +13,8 @@ import { calculateCommission } from '../../../services/commissionService.js';
 import { companyOf } from '../../../shared/scope.js';
 import invoiceService from '../../finance/services/invoice.service.js';
 import { createProductionOrderFromSalesOrder } from '../../operations/lifecycle.routes.js';
+import { requiresRenewalApproval, isAuthorizedRenewalApprover, RENEWAL_APPROVAL_THRESHOLD } from '../../../shared/renewalApproval.js';
+import { createInstallationRequest } from '../../servicedesk/routes/installation.routes.js';
 
 async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
   const client = await pool.connect();
@@ -142,7 +144,13 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
     return { skipped: false, lifecycle_id: lifecycleId, project_id: projectId, production_order_id: productionOrderId };
   } catch (e) {
     await client.query('ROLLBACK');
-    return { skipped: true, reason: 'error', error: e.message };
+    console.error('[autoBootstrap] full bootstrap failed (lifecycle/project/production order all rolled back):', e.message);
+    // reason:'error' shares the skipped:true shape with legitimate no-ops
+    // (sales_order_not_found/status_not_eligible/already_exists) on purpose —
+    // callers that only care about "did a production order get created"
+    // still work unchanged. But this IS a real failure, not a no-op, so it's
+    // tagged separately for callers that want to distinguish and surface it.
+    return { skipped: true, failed: true, reason: 'error', error: e.message };
   } finally {
     client.release();
   }
@@ -370,6 +378,35 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
     if (!qRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Quotation not found' }); }
     const quotation = qRes.rows[0];
     if (quotation.status === 'converted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Quotation is already converted to a Sales Order' }); }
+
+    // Credit-check gate: the built /credit-check logic existed but nothing
+    // called it before a quotation converted to a confirmed Sales Order — any
+    // quotation converted regardless of customer credit standing. Reuse the
+    // same credit_limits lookup here; only 'blocked' actually stops the
+    // conversion, matching /credit-check's own semantics ('warning' still
+    // approves, just flags high utilization).
+    if (quotation.customer_id) {
+      const clRes = await client.query(
+        `SELECT credit_hold, hold_reason, credit_limit, current_outstanding,
+                credit_limit - current_outstanding AS available_credit
+         FROM credit_limits WHERE customer_id = $1`,
+        [quotation.customer_id]
+      );
+      if (clRes.rows.length) {
+        const cl = clRes.rows[0];
+        if (cl.credit_hold) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ error: `Customer is on credit hold: ${cl.hold_reason || 'Manual hold'}` });
+        }
+        const projected = parseFloat(cl.current_outstanding) + parseFloat(quotation.total_amount || 0);
+        if (parseFloat(cl.credit_limit) > 0 && projected > parseFloat(cl.credit_limit)) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: `Converting this quotation would exceed the customer's credit limit. Available: ₹${parseFloat(cl.available_credit).toLocaleString('en-IN')}`,
+          });
+        }
+      }
+    }
 
     const items = await quotationsRepository.getItems(req.params.id);
     const orderNumber = await salesOrdersRepository.getNextOrderNumber();
@@ -630,10 +667,20 @@ router.patch('/orders/:id/confirm', requirePermission('sales', 'edit'), async (r
     const order = rows[0];
     if (!order) return res.status(404).json({ error: 'Order not found' });
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: 'confirmed' }, req });
-    await autoBootstrapLifecycleOnOrderAccept(req.params.id, req.user);
+    // autoBootstrapLifecycleOnOrderAccept swallows a failed production-order
+    // creation internally (non-fatal to the lifecycle bootstrap, by design —
+    // a confirmed order shouldn't be blocked by it) but the caller used to
+    // discard the result entirely, so nothing ever surfaced that failure to
+    // whoever confirmed the order. Surface it as a response warning instead.
+    const bootstrap = await autoBootstrapLifecycleOnOrderAccept(req.params.id, req.user);
+    let productionOrderWarning = null;
+    if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
+      productionOrderWarning = 'Order confirmed, but automatic production-order creation failed — check server logs and create it manually if needed.';
+      console.warn(`[orders/:id/confirm] production order creation failed for SO ${req.params.id}`);
+    }
     notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: req.params.id, submitterUserId: order.created_by ?? null });
     calculateCommission(req.params.id, companyOf(req));
-    res.json({ data: order });
+    res.json({ data: order, ...(productionOrderWarning ? { warning: productionOrderWarning } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -679,13 +726,18 @@ router.patch('/orders/:id/invoice', requirePermission('sales', 'edit'), async (r
         sales_order_id: req.params.id,
         company_id: companyId,
         items,
-      }, userId);
+      }, req.user?.employee_id ?? null);
       invoiceId = invoice.id;
       invoiceNumber = invoice.invoice_number;
       // sales_order_id isn't part of invoiceRepo.create's column list — set it directly.
       await pool.query(`UPDATE invoices SET sales_order_id = $1 WHERE id = $2`, [req.params.id, invoiceId]);
     } catch (invErr) {
       console.error(`[PATCH /orders/${req.params.id}/invoice] finance invoice creation failed:`, invErr.message);
+      // This used to swallow the failure and mark the order 'invoiced' anyway
+      // with invoice_id=null — for a credit-limit block that's actively
+      // misleading (dispatch would proceed believing billing succeeded).
+      // Surface it instead of silently proceeding.
+      return res.status(invErr.status || 500).json({ error: invErr.message, code: invErr.code });
     }
 
     const { rows } = await pool.query(
@@ -721,6 +773,30 @@ router.post('/orders/from-quotation/:quotationId', requirePermission('sales', 'a
     const companyId = companyOf(req);
     const quotation = await quotationsRepository.findById(req.params.quotationId);
     if (!quotation) return res.status(404).json({ error: 'Quotation not found' });
+
+    // Same credit-check gate as /quotations/:id/accept-and-convert — this is
+    // a second, alternate quotation-to-order path and was missing it too.
+    if (quotation.customer_id) {
+      const clRes = await pool.query(
+        `SELECT credit_hold, hold_reason, credit_limit, current_outstanding,
+                credit_limit - current_outstanding AS available_credit
+         FROM credit_limits WHERE customer_id = $1`,
+        [quotation.customer_id]
+      );
+      if (clRes.rows.length) {
+        const cl = clRes.rows[0];
+        if (cl.credit_hold) {
+          return res.status(409).json({ error: `Customer is on credit hold: ${cl.hold_reason || 'Manual hold'}` });
+        }
+        const projected = parseFloat(cl.current_outstanding) + parseFloat(quotation.total_amount || 0);
+        if (parseFloat(cl.credit_limit) > 0 && projected > parseFloat(cl.credit_limit)) {
+          return res.status(409).json({
+            error: `Converting this quotation would exceed the customer's credit limit. Available: ₹${parseFloat(cl.available_credit).toLocaleString('en-IN')}`,
+          });
+        }
+      }
+    }
+
     const items   = await quotationsRepository.getItems(req.params.quotationId);
     const orderNumber = await salesOrdersRepository.getNextOrderNumber();
     const order = await salesOrdersRepository.create({
@@ -761,7 +837,13 @@ router.put('/orders/:id/status', requirePermission('sales', 'edit'), async (req,
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: req.body.status }, req });
     const status = String(req.body.status || '').toLowerCase();
     if (['accepted', 'confirmed', 'won', 'approved', 'released'].includes(status)) {
-      await autoBootstrapLifecycleOnOrderAccept(req.params.id, req.user);
+      // See the matching comment in PATCH /orders/:id/confirm — surface a
+      // failed production-order auto-creation instead of discarding it.
+      const bootstrap = await autoBootstrapLifecycleOnOrderAccept(req.params.id, req.user);
+      if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
+        order.warning = 'Order status updated, but automatic production-order creation failed — check server logs and create it manually if needed.';
+        console.warn(`[orders/:id/status] production order creation failed for SO ${req.params.id}`);
+      }
       notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: req.params.id, submitterUserId: order?.created_by ?? null });
     }
     res.json(order);
@@ -772,7 +854,27 @@ router.put('/orders/:id/status', requirePermission('sales', 'edit'), async (req,
 
 router.put('/orders/:id/dispatch', requirePermission('sales', 'edit'), async (req, res) => {
   try {
-    const { carrier, tracking_number, dispatch_date } = req.body;
+    const { carrier, tracking_number, dispatch_date, force } = req.body;
+
+    // Production completion previously never reached this endpoint at all —
+    // it was a blind status flip. A signal now exists (production_completed_at
+    // on the order + notifications), but nothing enforced it. Block dispatch
+    // while any linked production order is still open; allow if none exist
+    // (e.g. a trading/service order with nothing to manufacture) or an
+    // explicit override is passed for a genuine edge case.
+    if (!force) {
+      const openProd = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM production_orders
+         WHERE sales_order_id = $1 AND status NOT IN ('completed','cancelled')`,
+        [req.params.id]
+      );
+      if ((openProd.rows[0]?.n || 0) > 0) {
+        return res.status(409).json({
+          error: 'Cannot dispatch — this order still has production in progress. Complete or cancel the linked production order(s) first, or pass force:true to override.',
+        });
+      }
+    }
+
     const dispatchedAt = dispatch_date ? new Date(dispatch_date) : new Date();
     const { rows } = await pool.query(
       `UPDATE sales_orders
@@ -783,6 +885,28 @@ router.put('/orders/:id/dispatch', requirePermission('sales', 'edit'), async (re
     const order = rows[0];
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: 'dispatched', carrier, tracking_number }, req });
     notifyWorkflowEvent('dispatched', { module: 'Sales Order', recordId: req.params.id, submitterUserId: order?.created_by ?? null });
+
+    // Installation as a First-Class Module (Priority 6) — Dispatch is the
+    // chain's entry point. Only auto-creates when a project can be resolved
+    // (via lifecycle_instances, the same bridge autoBootstrapLifecycleOnOrderAccept
+    // sets up) — a trading/service order with nothing on-site to install has
+    // no project and is correctly skipped, not force-fitted.
+    try {
+      const { rows: liRows } = await pool.query(
+        `SELECT project_id FROM lifecycle_instances WHERE sales_order_id=$1 AND project_id IS NOT NULL ORDER BY created_at DESC LIMIT 1`,
+        [req.params.id]
+      );
+      if (liRows[0]?.project_id) {
+        await createInstallationRequest(order.company_id, {
+          sales_order_id: order.id,
+          project_id: liRows[0].project_id,
+          customer_name: order.customer_name,
+        }, req.user?.employee_id ?? null);
+      }
+    } catch (instErr) {
+      console.error(`[orders/${req.params.id}/dispatch] installation request auto-creation failed (non-fatal):`, instErr.message);
+    }
+
     res.json(order);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1144,7 +1268,7 @@ router.get('/targets', requirePermission('sales', 'view'), async (req, res) => {
 router.post('/targets', requirePermission('sales', 'add'), async (req, res) => {
   try {
     const companyId = companyOf(req);
-    const createdBy = req.user?.userId ?? req.user?.id;
+    const createdBy = req.user?.employee_id ?? null;
     const target = await salesTargetsRepository.upsert({ ...req.body, created_by: createdBy }, companyId);
     res.json(target);
   } catch (error) {
@@ -1919,15 +2043,71 @@ router.patch('/subscriptions/:id/cancel', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Renewal Engine (Priority 5) — this used to just flip status back to
+// 'active' with no date advance, no payment, and no approval gate at all.
+// Now: Reminder (subscriptionRenewal.cron.js) -> Approval (finance/admin
+// sign-off required above RENEWAL_APPROVAL_THRESHOLD) -> Payment (a real
+// invoice via invoiceService, same GL-posting path Sales Order/Project
+// invoicing use) -> Renewal (next_billing_date genuinely advances by one
+// billing cycle, not just a status flip).
 router.patch('/subscriptions/:id/renew', async (req, res) => {
   try {
     const cid = companyOf(req);
-    const { rows } = await pool.query(
-      `UPDATE subscriptions SET status='active' WHERE id=$1 AND company_id=$2 RETURNING *`,
-      [req.params.id, cid]
+    const { rows: subRows } = await pool.query(
+      `SELECT * FROM subscriptions WHERE id=$1 AND company_id=$2`, [req.params.id, cid]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Not found' });
-    res.json(rows[0]);
+    if (!subRows.length) return res.status(404).json({ error: 'Not found' });
+    const sub = subRows[0];
+
+    if (requiresRenewalApproval(sub.amount) && !isAuthorizedRenewalApprover(req)) {
+      return res.status(403).json({
+        error: `Renewals above ₹${RENEWAL_APPROVAL_THRESHOLD.toLocaleString('en-IN')} require finance/admin approval`,
+      });
+    }
+
+    const base = sub.next_billing_date ? new Date(sub.next_billing_date) : new Date();
+    if (sub.billing_cycle === 'monthly')        base.setMonth(base.getMonth() + 1);
+    else if (sub.billing_cycle === 'quarterly') base.setMonth(base.getMonth() + 3);
+    else if (sub.billing_cycle === 'annual')    base.setFullYear(base.getFullYear() + 1);
+    else                                        base.setMonth(base.getMonth() + 1);
+    const newNextBilling = base.toISOString().split('T')[0];
+
+    // Invoice first — if this fails (e.g. credit limit exceeded), the
+    // renewal itself must NOT silently proceed. A prior fix elsewhere in
+    // this codebase (Sales Order dispatch) hit exactly this bug: swallowing
+    // an invoicing failure while still marking the parent record renewed/
+    // invoiced is worse than not automating it at all, since it actively
+    // misreports that billing succeeded.
+    let invoiceId = null;
+    if (sub.customer_id) {
+      try {
+        const invoice = await invoiceService.createInvoice({
+          customer_id: sub.customer_id,
+          invoice_date: new Date().toISOString().split('T')[0],
+          due_date: newNextBilling,
+          subtotal: sub.amount,
+          tax_amount: 0,
+          total_amount: sub.amount,
+          company_id: cid,
+          items: [{
+            description: `Subscription renewal — ${sub.plan_name}`,
+            quantity: 1, unit_price: sub.amount, tax_rate: 0, amount: sub.amount,
+          }],
+        }, req.user?.employee_id ?? null);
+        invoiceId = invoice.id;
+      } catch (invErr) {
+        return res.status(invErr.status || 500).json({ error: invErr.message, code: invErr.code });
+      }
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE subscriptions SET status='active', next_billing_date=$1 WHERE id=$2 AND company_id=$3 RETURNING *`,
+      [newNextBilling, req.params.id, cid]
+    );
+
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id,
+      recordType: 'subscription', action: 'renew', oldData: sub, newData: rows[0], req });
+    res.json({ ...rows[0], invoice_id: invoiceId });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

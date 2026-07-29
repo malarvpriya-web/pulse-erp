@@ -569,7 +569,10 @@ router.post('/grn', async (req, res) => {
   try {
     const grn = await grnService.createGRN(
       { ...req.body, company_id: cid(req) },
-      req.user.userId ?? req.user.id
+      // stock_ledger.created_by FKs employees(id), not users(id) — see
+      // project_stock_ledger_created_by_fk memory; a users.id here FK-violates
+      // for any actor without a matching employees row (e.g. super_admin).
+      req.user.employee_id ?? null
     );
 
     // Send notification if enabled
@@ -715,13 +718,15 @@ router.get('/rfqs', async (req, res) => {
     if (status)    { conditions.push(`r.status = $${idx++}`); params.push(status); }
     if (search)    { conditions.push(`(r.item_description ILIKE $${idx} OR r.rfq_number ILIKE $${idx})`); params.push(`%${search}%`); idx++; }
 
-    // Try with rfq_quotes join; fall back to plain rfqs if table not yet created
+    // Try with rfq_quotes/rfq_items joins; fall back to plain rfqs if those tables aren't present yet
     let rows;
     try {
       const r = await pool.query(`
-        SELECT r.*, COUNT(rq.id)::INT AS response_count, MIN(rq.unit_price) AS lowest_quote
+        SELECT r.*, COUNT(DISTINCT rq.id)::INT AS response_count, MIN(rq.unit_price) AS lowest_quote,
+               COUNT(DISTINCT ri.id)::INT AS item_count
         FROM rfqs r
         LEFT JOIN rfq_quotes rq ON rq.rfq_id = r.id
+        LEFT JOIN rfq_items  ri ON ri.rfq_id = r.id
         WHERE ${conditions.join(' AND ')}
         GROUP BY r.id
         ORDER BY r.created_at DESC
@@ -729,7 +734,7 @@ router.get('/rfqs', async (req, res) => {
       rows = r.rows;
     } catch {
       const r = await pool.query(
-        `SELECT *, 0 AS response_count, NULL AS lowest_quote FROM rfqs WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`,
+        `SELECT *, 0 AS response_count, NULL AS lowest_quote, 1 AS item_count FROM rfqs WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`,
         params
       );
       rows = r.rows;
@@ -738,17 +743,72 @@ router.get('/rfqs', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/rfqs', async (req, res) => {
+// Full detail incl. real line items + quotes (with vendor name) — the list
+// endpoint above only returns aggregates (item_count/response_count), so
+// per-line/per-quote UI (the Award modal) needs to fetch this first.
+router.get('/rfqs/:id', async (req, res) => {
   try {
-    const { item_description, quantity, unit, required_by, linked_pr_id, vendor_ids } = req.body;
+    const { rows: rfqRows } = await pool.query(`SELECT * FROM rfqs WHERE id=$1`, [req.params.id]);
+    if (!rfqRows[0]) return res.status(404).json({ error: 'RFQ not found' });
+    const { rows: items } = await pool.query(
+      `SELECT ri.*, ii.item_code FROM rfq_items ri LEFT JOIN inventory_items ii ON ii.id = ri.item_id WHERE ri.rfq_id=$1 ORDER BY ri.id`,
+      [req.params.id]
+    );
+    const { rows: quotes } = await pool.query(
+      `SELECT rq.*, v.vendor_name FROM rfq_quotes rq LEFT JOIN vendors v ON v.id=rq.vendor_id WHERE rq.rfq_id=$1 ORDER BY rq.unit_price NULLS LAST`,
+      [req.params.id]
+    );
+    res.json({ ...rfqRows[0], items, quotes });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/rfqs', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { item_description, quantity, unit, required_by, linked_pr_id, vendor_ids, items } = req.body;
+    // items[] is the real multi-line path; falling back to the header's own
+    // scalar fields keeps any older caller that still posts the single-item
+    // shape working unchanged.
+    const lineItems = Array.isArray(items) && items.length
+      ? items
+      : [{ item_id: null, item_name: item_description, quantity: quantity || 1, unit: unit || 'Nos' }];
+    if (lineItems.some(it => !String(it.item_name || it.item_description || '').trim() || !(Number(it.quantity) > 0))) {
+      return res.status(400).json({ error: 'Every item needs a description and a quantity greater than 0' });
+    }
+
+    await client.query('BEGIN');
     const rfq_number = await nextRfqNumber();
-    const { rows } = await pool.query(`
+    const first = lineItems[0];
+    const { rows } = await client.query(`
       INSERT INTO rfqs (rfq_number, pr_id, item_description, quantity, unit, required_by, vendor_ids, status, company_id)
       VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8)
       RETURNING *
-    `, [rfq_number, linked_pr_id || null, item_description, quantity || 1, unit || 'Nos', required_by || null, JSON.stringify(vendor_ids || []), cid(req)]);
-    res.status(201).json({ ...rows[0], quotes: [] });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    `, [
+      rfq_number, linked_pr_id || null,
+      first.item_name || first.item_description || '', first.quantity || 1, first.unit || 'Nos',
+      required_by || null, JSON.stringify(vendor_ids || []), cid(req),
+    ]);
+    const rfq = rows[0];
+
+    const savedItems = [];
+    for (const it of lineItems) {
+      const { rows: itemRows } = await client.query(`
+        INSERT INTO rfq_items (rfq_id, item_id, item_name, quantity, unit, required_date, remarks)
+        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *
+      `, [
+        rfq.id, it.item_id || null, it.item_name || it.item_description || '',
+        it.quantity || 1, it.unit || 'Nos', it.required_date || required_by || null, it.remarks || null,
+      ]);
+      savedItems.push(itemRows[0]);
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ ...rfq, items: savedItems, quotes: [] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
 });
 
 router.post('/rfqs/:id/send-to-vendors', async (req, res) => {
@@ -800,14 +860,72 @@ router.patch('/rfqs/:rfqId/award/:vendorId', async (req, res) => {
     );
     if (!rfqRows[0]) return res.status(404).json({ error: 'RFQ not found' });
     let po = null;
+    const client = await pool.connect();
     try {
+      await client.query('BEGIN');
       const poNum = await nextPurchaseOrderNumber();
-      const { rows: poRows } = await pool.query(`
+      const { rows: poRows } = await client.query(`
         INSERT INTO purchase_orders (po_number, supplier_id, pr_id, total_amount, status, order_date, company_id)
         VALUES ($1,$2,$3,$4,'draft',CURRENT_DATE,$5) RETURNING *
       `, [poNum, vendorId, rfqRows[0].pr_id || null, quoteRows[0]?.total_amount || 0, cid(req)]);
       po = poRows[0];
-    } catch (e) { console.warn('[award] PO auto-create skipped:', e.message); }
+
+      // Carry real line items onto the PO — an RFQ-award that only writes the
+      // header (no purchase_order_items) ships completely empty and breaks
+      // GRN's 3-way match (nothing to select as "received against"). Prefer the
+      // linked PR's real lines (same carryover convert-to-po uses above); else
+      // fall back to the RFQ's own rfq_items rows — real multi-line data since
+      // the rfq_items table was added, not the old single-scalar-field guess.
+      const prItems = rfqRows[0].pr_id ? await prRepo.getItems(rfqRows[0].pr_id, client) : [];
+      if (prItems.length) {
+        for (const it of prItems) {
+          const qty  = parseFloat(it.quantity) || 0;
+          const rate = parseFloat(it.expected_price) || 0;
+          await poRepo.createItem(client, {
+            po_id: po.id, item_id: it.item_id ?? null,
+            quantity: qty, rate, tax_rate: 0, tax_amount: 0, total_amount: qty * rate,
+          });
+        }
+      } else {
+        const { rows: rfqItemRows } = await client.query(
+          `SELECT * FROM rfq_items WHERE rfq_id=$1 ORDER BY id`, [rfqId]
+        );
+        const lineItems = rfqItemRows.length
+          ? rfqItemRows
+          : [{ item_id: null, item_name: rfqRows[0].item_description, quantity: rfqRows[0].quantity || 1 }];
+        const totalQty  = lineItems.reduce((s, it) => s + (parseFloat(it.quantity) || 0), 0) || 1;
+        const totalAmt  = parseFloat(quoteRows[0]?.total_amount) || 0;
+        const unitPrice = parseFloat(quoteRows[0]?.unit_price) || null;
+        for (const it of lineItems) {
+          const qty = parseFloat(it.quantity) || 0;
+          // A single-line RFQ can use the vendor's quoted unit_price directly.
+          // A genuine multi-line RFQ has no per-line vendor pricing anywhere in
+          // the schema (the vendor quotes one bundle total), so total_amount is
+          // apportioned across lines by a blended per-unit rate — honest given
+          // what was actually quoted, not fabricated per-line precision.
+          const rate = (lineItems.length === 1 && unitPrice) ? unitPrice : (totalQty ? totalAmt / totalQty : 0);
+          let itemId = it.item_id;
+          if (!itemId) {
+            const { rows: matchRows } = await client.query(
+              `SELECT id FROM inventory_items WHERE LOWER(item_name) = LOWER($1) OR LOWER(item_code) = LOWER($1) LIMIT 1`,
+              [it.item_name || '']
+            );
+            itemId = matchRows[0]?.id ?? null;
+          }
+          await poRepo.createItem(client, {
+            po_id: po.id, item_id: itemId,
+            quantity: qty, rate, tax_rate: 0, tax_amount: 0, total_amount: qty * rate,
+          });
+        }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.warn('[award] PO auto-create skipped:', e.message);
+      po = null;
+    } finally {
+      client.release();
+    }
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: rfqRows[0].id, recordType: 'rfq', action: 'award', oldData: null, newData: { ...rfqRows[0], awarded_vendor_id: vendorId, quote: quoteRows[0] ?? null }, req });
     res.json({ success: true, rfq: rfqRows[0], quote: quoteRows[0], po });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1660,7 +1778,7 @@ router.post('/rtv', async (req, res) => {
   try {
     const grn = await grnService.createRTV(
       { ...req.body, company_id: cid(req) },
-      req.user?.userId ?? req.user?.id
+      req.user?.employee_id ?? null
     );
     res.status(201).json(grn);
   } catch (error) { res.status(500).json({ error: error.message }); }

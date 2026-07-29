@@ -5,6 +5,8 @@ import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import * as drive from '../../services/googleDrive.service.js';
 import { copyRoutingToProductionOperations } from '../production/routingCopy.service.js';
+import invoiceService from '../finance/services/invoice.service.js';
+import { requiresRenewalApproval, isAuthorizedRenewalApprover, RENEWAL_APPROVAL_THRESHOLD } from '../../shared/renewalApproval.js';
 
 const router = Router();
 
@@ -600,7 +602,7 @@ router.put('/commissioning/:id', async (req, res) => {
 router.post('/amc-contracts', async (req, res) => {
   try {
     const {
-      lifecycle_instance_id, sales_order_id,
+      lifecycle_instance_id, sales_order_id, commissioning_workflow_id,
       start_date, end_date,
       sla_response_hours = 24,
       preventive_visits_per_year = 4,
@@ -623,13 +625,13 @@ router.post('/amc-contracts', async (req, res) => {
 
     const { rows } = await pool.query(
       `INSERT INTO amc_contracts
-        (lifecycle_instance_id, sales_order_id, contract_number, start_date, end_date,
+        (lifecycle_instance_id, sales_order_id, commissioning_workflow_id, contract_number, start_date, end_date,
          sla_response_hours, preventive_visits_per_year, status, coverage_notes,
          contract_value, billing_frequency, payment_terms, serial_number, next_renewal_date,
          created_by, created_by_name, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
        RETURNING *`,
-      [lifecycle_instance_id||null, sales_order_id||null, contractNo, start_date, end_date,
+      [lifecycle_instance_id||null, sales_order_id||null, commissioning_workflow_id||null, contractNo, start_date, end_date,
        sla_response_hours, preventive_visits_per_year, status, coverage_notes||null,
        Number(contract_value)||0, billing_frequency, payment_terms, serial_number||null,
        nextRenewal.toISOString().slice(0,10), a.id, a.name, companyId]
@@ -694,10 +696,19 @@ router.get('/amc-contracts/:id', async (req, res) => {
     const { rows } = await pool.query(
       `SELECT ac.*,
          li.lifecycle_number,
-         so.order_number
+         so.order_number,
+         wr.id AS linked_warranty_id, wr.warranty_end AS linked_warranty_end,
+         wr.status AS linked_warranty_status
        FROM amc_contracts ac
        LEFT JOIN lifecycle_instances li ON li.id = ac.lifecycle_instance_id
        LEFT JOIN sales_orders so ON so.id = ac.sales_order_id
+       LEFT JOIN LATERAL (
+         SELECT id, warranty_end, status FROM warranty_registrations w
+          WHERE w.amc_contract_id = ac.id
+             OR (w.serial_number IS NOT NULL AND w.serial_number = ac.serial_number)
+          ORDER BY (w.amc_contract_id = ac.id) DESC, w.warranty_end DESC
+          LIMIT 1
+       ) wr ON true
        WHERE ac.id = $1 AND ($2::int IS NULL OR ac.company_id = $2)`,
       [req.params.id, companyId]
     );
@@ -848,6 +859,13 @@ router.post('/amc-contracts/:id/generate-invoice', async (req, res) => {
 });
 
 // ── AMC renew ─────────────────────────────────────────────────────────────────
+// Renewal Engine (Priority 5): added an approval gate (renewals above
+// RENEWAL_APPROVAL_THRESHOLD need finance/admin sign-off — this endpoint had
+// no role check at all before) and a real Payment step (an actual invoice,
+// not just a contract-value field update), matching the same pattern applied
+// to subscription renewal (sales.routes.js). Invoice creation happens before
+// the contract is updated so a credit-limit (or other) failure blocks the
+// renewal instead of silently proceeding.
 router.post('/amc-contracts/:id/renew', async (req, res) => {
   const client = await pool.connect();
   try {
@@ -861,10 +879,51 @@ router.post('/amc-contracts/:id/renew', async (req, res) => {
     );
     if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'AMC contract not found' }); }
     const amc = rows[0];
+    const renewalValue = new_value || amc.contract_value;
+
+    if (requiresRenewalApproval(renewalValue) && !isAuthorizedRenewalApprover(req)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error: `Renewals above ₹${RENEWAL_APPROVAL_THRESHOLD.toLocaleString('en-IN')} require finance/admin approval`,
+      });
+    }
+
+    // Resolve the customer via sales_order_id -> sales_orders.customer_id —
+    // the same real uuid link customer360.routes.js already uses for this
+    // exact table, since amc_contracts has no customer_id of its own.
+    let invoiceId = null;
+    if (amc.sales_order_id) {
+      const { rows: soRows } = await client.query(
+        `SELECT customer_id FROM sales_orders WHERE id=$1`, [amc.sales_order_id]
+      );
+      const customerId = soRows[0]?.customer_id;
+      if (customerId) {
+        try {
+          const invoice = await invoiceService.createInvoice({
+            customer_id: customerId,
+            invoice_date: new Date().toISOString().split('T')[0],
+            due_date: new_end_date,
+            subtotal: renewalValue,
+            tax_amount: 0,
+            total_amount: renewalValue,
+            company_id: companyId,
+            items: [{
+              description: `AMC renewal — ${amc.contract_number}`,
+              quantity: 1, unit_price: renewalValue, tax_rate: 0, amount: renewalValue,
+            }],
+          }, req.user?.employee_id ?? null);
+          invoiceId = invoice.id;
+        } catch (invErr) {
+          await client.query('ROLLBACK');
+          return res.status(invErr.status || 500).json({ error: invErr.message, code: invErr.code });
+        }
+      }
+    }
+
     await client.query(
       `INSERT INTO amc_renewal_history (amc_contract_id, renewed_by, old_end_date, new_end_date, new_value, notes, company_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [amc.id, req.user?.name || req.user?.email || 'System', amc.end_date, new_end_date, new_value || amc.contract_value, notes || null, companyId]
+      [amc.id, req.user?.name || req.user?.email || 'System', amc.end_date, new_end_date, renewalValue, notes || null, companyId]
     );
     const nextRenewal = new Date(new_end_date);
     nextRenewal.setDate(nextRenewal.getDate() - 30);
@@ -878,7 +937,7 @@ router.post('/amc-contracts/:id/renew', async (req, res) => {
     );
     await client.query('COMMIT');
     logAudit({ userId: req.user?.userId, module: 'lifecycle', recordId: amc.id, recordType: 'amc_contract', action: 'renew', newData: { old_end_date: amc.end_date, new_end_date }, req });
-    res.json({ success: true, contract: updated[0] });
+    res.json({ success: true, contract: updated[0], invoice_id: invoiceId });
   } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ error: e.message }); }
   finally { client.release(); }
 });

@@ -185,12 +185,14 @@ export default function Sidebar() {
       if (submenu.length !== item.submenu.length) item = { ...item, submenu };
     }
 
-    // Finance sees only self-service items inside the shared Leaves/Attendance
-    // menus — never leave approvals, team views, or attendance admin/config
-    // screens. Its own 'Finance' section (not in FINANCE_RESTRICTED_SECTIONS)
-    // stays untouched. Mirrors the Analytics & AI scoping above.
+    // Finance (and the granular finance_manager/accounts_exec roles) sees
+    // only self-service items inside the shared Leaves/Attendance menus —
+    // never leave approvals, team views, or attendance admin/config screens.
+    // Its own 'Finance' section (not in FINANCE_RESTRICTED_SECTIONS) stays
+    // untouched. Mirrors the Analytics & AI scoping above.
     if (
-      FINANCE_RESTRICTED_SECTIONS.has(item.name) && hasAnyRole('finance') && !isAdminRole &&
+      FINANCE_RESTRICTED_SECTIONS.has(item.name) &&
+      hasAnyRole('finance', 'finance_manager', 'accounts_exec') && !isAdminRole &&
       menuAccess(item.name) !== 'view' && menuAccess(item.name) !== 'edit' &&
       Array.isArray(item.submenu)
     ) {

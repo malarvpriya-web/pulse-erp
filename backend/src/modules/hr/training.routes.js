@@ -404,14 +404,20 @@ router.get('/cost-trend', async (req, res) => {
 });
 
 /* ── GET /cost-by-type ───────────────────────────────────────── */
+// training_costs has no company_id column of its own (baseline.sql) — the
+// tenant anchor is the parent program, same join the /cost-trend handler
+// above already uses. Filtering on a bare `company_id` 500'd unconditionally
+// for any scoped caller (every non-super_admin role).
 router.get('/cost-by-type', async (req, res) => {
   const companyId = cid(req);
-  const sc = companyId != null ? ` AND company_id=${companyId}` : '';
+  const sc = companyId != null ? ` AND (tp.company_id IS NULL OR tp.company_id=${companyId})` : '';
   try {
     const { rows } = await pool.query(`
-      SELECT cost_type AS name, COALESCE(SUM(amount),0) AS value
-      FROM   training_costs WHERE 1=1${sc}
-      GROUP  BY cost_type ORDER BY value DESC`
+      SELECT tc.cost_type AS name, COALESCE(SUM(tc.amount),0) AS value
+      FROM   training_costs tc
+      JOIN   training_programs tp ON tp.id = tc.program_id
+      WHERE  1=1${sc}
+      GROUP  BY tc.cost_type ORDER BY value DESC`
     );
     res.json(rows.map(r => ({ name: r.name, value: parseFloat(r.value) })));
   } catch (err) { res.status(500).json({ error: err.message }); }

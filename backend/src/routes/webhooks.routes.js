@@ -132,7 +132,7 @@ router.post('/razorpay', async (req, res) => {
 
         if (pgo?.invoice_id) {
           await pool.query(
-            `UPDATE invoices SET status = 'Paid', paid_amount = total_amount, updated_at = NOW()
+            `UPDATE invoices SET status = 'paid', paid_amount = total_amount, updated_at = NOW()
              WHERE id = $1`,
             [pgo.invoice_id]
           ).catch(() => {});
@@ -160,7 +160,7 @@ router.post('/razorpay', async (req, res) => {
 
           if (pgo?.invoice_id) {
             await pool.query(
-              `UPDATE invoices SET status = 'Paid', paid_amount = total_amount, updated_at = NOW() WHERE id = $1`,
+              `UPDATE invoices SET status = 'paid', paid_amount = total_amount, updated_at = NOW() WHERE id = $1`,
               [pgo.invoice_id]
             ).catch(() => {});
             await pool.query(

@@ -88,11 +88,16 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
       const Unauthorized = ROUTES['Unauthorized'].component;
       return <Unauthorized setPage={setPage} />;
     }
-    // Finance may only reach self-service pages inside the shared Leaves/
-    // Attendance sections (leave approvals, team views, and attendance
-    // admin/config screens are blocked even via direct URL) and, inside the
-    // shared 'Analytics & AI' section, only the CFO Dashboard.
-    if (role === 'finance' && sectionAccess !== 'view' && sectionAccess !== 'edit' && !canFinanceAccessPage(page)) {
+    // Finance (and the granular finance_manager/accounts_exec roles, which
+    // now carry the same Leaves/Attendance self-service carve-out) may only
+    // reach self-service pages inside those shared sections (leave
+    // approvals, team views, and attendance admin/config screens are blocked
+    // even via direct URL) and, inside the shared 'Analytics & AI' section,
+    // only the CFO Dashboard.
+    if (
+      (role === 'finance' || role === 'finance_manager' || role === 'accounts_exec') &&
+      sectionAccess !== 'view' && sectionAccess !== 'edit' && !canFinanceAccessPage(page)
+    ) {
       const Unauthorized = ROUTES['Unauthorized'].component;
       return <Unauthorized setPage={setPage} />;
     }

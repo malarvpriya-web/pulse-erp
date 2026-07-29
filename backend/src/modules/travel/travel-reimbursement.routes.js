@@ -17,6 +17,7 @@ import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../shared/scope.js';
+import { authorizeManagerApproval, DENIED_MESSAGE } from './travelApprovalAuthz.js';
 
 const router = express.Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -306,14 +307,24 @@ router.post('/claims/:id/submit', async (req, res) => {
 });
 
 // ── PUT /reimbursement/claims/:id/manager-approve ─────────────────────────────
-router.put('/claims/:id/manager-approve',
-  allowRoles('admin','super_admin','manager','hr'), async (req, res) => {
+// Identity-gated (reporting manager/delegate/HR/admin — travelApprovalAuthz.js),
+// not a bare role check — claim.employee_id is a real employees.id here
+// (unlike travel_advances, see that file's comment).
+router.put('/claims/:id/manager-approve', async (req, res) => {
   try {
     const { status, remarks } = req.body; // 'Approved' | 'Rejected'
     const actorId = uid(req);
     const { rows: [claim] } = await pool.query(
       `SELECT * FROM expense_claims WHERE id=$1`, [req.params.id]);
     if (!claim || claim.status !== 'Submitted') return res.status(400).json({ error: 'Invalid state' });
+
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: req.user?.employee_id ?? null,
+      actorRole: req.user?.role,
+      requesterEmployeeId: claim.employee_id,
+      delegateApproverId: claim.delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
 
     const newStatus = status === 'Approved' ? 'Manager Approved' : 'Manager Rejected';
     await pool.query(`
@@ -335,6 +346,33 @@ router.put('/claims/:id/manager-approve',
       recordType: 'expense_claim', action: `manager_${status.toLowerCase()}`,
       newData: { status: newStatus, remarks } });
     res.json({ message: `Manager ${status}`, status: newStatus });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Delegate this claim's manager-approval to another employee (same
+// authorization-to-delegate rule as travel.routes.js's /requests/:id/delegate).
+router.post('/claims/:id/delegate', async (req, res) => {
+  try {
+    const { delegate_employee_id } = req.body;
+    if (!delegate_employee_id) return res.status(400).json({ error: 'delegate_employee_id is required' });
+    const { rows: [claim] } = await pool.query(`SELECT * FROM expense_claims WHERE id=$1`, [req.params.id]);
+    if (!claim) return res.status(404).json({ error: 'Claim not found' });
+
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: req.user?.employee_id ?? null,
+      actorRole: req.user?.role,
+      requesterEmployeeId: claim.employee_id,
+      delegateApproverId: claim.delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+
+    const { rows: [updated] } = await pool.query(
+      `UPDATE expense_claims SET delegate_approver_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
+      [delegate_employee_id, req.params.id]
+    );
+    logAudit({ userId: uid(req), module: 'reimbursement', recordId: updated.id,
+      recordType: 'expense_claim', action: 'delegate', newData: { delegate_employee_id } });
+    res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

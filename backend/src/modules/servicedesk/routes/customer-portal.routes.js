@@ -10,6 +10,7 @@ import pool from '../../../config/db.js';
 import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { nextTicketNumber } from '../../../shared/docNumber.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -173,7 +174,44 @@ router.post('/portal/tickets', verifyPortalToken, async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
       [req.portal.company_id, ticket_number, req.portal.portalUserId, equipment_id || null, subject, description, priority, category]
     );
-    res.status(201).json(rows[0]);
+    const portalTicket = rows[0];
+
+    // Portal and internal tickets were two disconnected universes — this FK
+    // has existed since the portal was built but nothing ever wrote it, so
+    // Service Desk staff had no way to see a customer-raised ticket at all
+    // outside this portal's own screens. Auto-create the matching internal
+    // ticket and link both directions. project_id is only set when the
+    // equipment record actually has one — no fabricated links.
+    try {
+      let projectId = null;
+      if (equipment_id) {
+        const { rows: [equip] } = await pool.query(
+          `SELECT project_id FROM customer_equipment WHERE id = $1`, [equipment_id]
+        );
+        projectId = equip?.project_id ?? null;
+      }
+      const internalTicketNumber = await nextTicketNumber();
+      const { rows: [internalTicket] } = await pool.query(
+        `INSERT INTO support_tickets
+           (ticket_number, title, description, category, priority, status, requester_name, requester_email,
+            company_id, ticket_kind, project_id)
+         VALUES ($1,$2,$3,$4,$5,'Open',$6,$7,$8,'helpdesk',$9) RETURNING id`,
+        [internalTicketNumber, subject, description || null, category || null, priority || 'medium',
+         req.portal.customer_name || null, req.portal.email || null, req.portal.company_id, projectId]
+      );
+      await pool.query(
+        `UPDATE customer_portal_tickets SET internal_ticket_id = $1 WHERE id = $2`,
+        [internalTicket.id, portalTicket.id]
+      );
+      portalTicket.internal_ticket_id = internalTicket.id;
+    } catch (linkErr) {
+      // Don't fail the customer's ticket submission if the internal mirror
+      // can't be created — log and let it be created by a nightly reconcile
+      // if one is added later; the portal ticket itself is still valid.
+      console.error('[portal ticket] internal ticket link failed:', linkErr.message);
+    }
+
+    res.status(201).json(portalTicket);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

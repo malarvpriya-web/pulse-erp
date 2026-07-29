@@ -22,6 +22,7 @@ export default function ExitManagement() {
   const [fnfData, setFnfData] = useState(null);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [clearanceData, setClearanceData] = useState({});
+  const [clearanceStatus, setClearanceStatus] = useState({});
   const [showInitiate, setShowInitiate] = useState(false);
   const [showInterview, setShowInterview] = useState(null);
   const [initiateForm, setInitiateForm] = useState({ employee_id: '', separation_type: 'resignation', last_working_date: '' });
@@ -65,6 +66,7 @@ export default function ExitManagement() {
     setSelectedEmployee(empId);
     setFnfData(null);
     setFnfEstimated(false);
+    loadClearanceStatus(empId);
     try {
       const res = await api.post(`/exit/fnf/compute/${empId}`);
       setFnfData(res.data);
@@ -104,8 +106,15 @@ export default function ExitManagement() {
       await api.post(`/exit/fnf/${id}/pay`);
       showNotice('Settlement marked as paid');
       load();
-    } catch (_) {
-      showNotice('Failed to mark settlement as paid', 'error');
+    } catch (err) {
+      const blockers = err?.response?.data?.blockers;
+      showNotice(
+        blockers?.length
+          ? `Blocked — clearance incomplete: ${blockers.map(b => b.label).join(', ')}`
+          : 'Failed to mark settlement as paid',
+        'error'
+      );
+      if (selectedEmployee) loadClearanceStatus(selectedEmployee);
     } finally { setActioning(false); }
   };
 
@@ -129,12 +138,25 @@ export default function ExitManagement() {
     } catch (_) {
       setClearanceData(p => ({ ...p, [empId]: { it_assets_returned: false, access_revoked: false, documents_collected: false, exit_interview_done: false, noc_it: false, noc_admin: false, noc_finance: false, noc_hr: false, noc_manager: false } }));
     }
+    loadClearanceStatus(empId);
+  };
+
+  // Live computed blockers (assets/travel-advances/IT-access cross-checked
+  // against their real source tables, not just the manual checkboxes above).
+  const loadClearanceStatus = async (empId) => {
+    try {
+      const res = await api.get(`/exit/clearance/${empId}/status`);
+      setClearanceStatus(p => ({ ...p, [empId]: res.data }));
+    } catch (_) {
+      setClearanceStatus(p => ({ ...p, [empId]: null }));
+    }
   };
 
   const updateClearance = async (empId, field, value) => {
     const updated = { ...(clearanceData[empId] || {}), [field]: value };
     setClearanceData(p => ({ ...p, [empId]: updated }));
     try { await api.put(`/exit/clearance/${empId}`, updated); } catch (_) {}
+    loadClearanceStatus(empId);
   };
 
   const fnfFnfId = fnfData?.id;
@@ -306,6 +328,17 @@ export default function ExitManagement() {
                 </div>
               </div>
 
+              {fnfData.status === 'approved' && clearanceStatus[selectedEmployee] && !clearanceStatus[selectedEmployee].can_settle && (
+                <div style={{ ...cardStyle, padding: 16, marginBottom: 16, background: '#fef2f2', border: '1px solid #fecaca' }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: '#991b1b', marginBottom: 8 }}>⚠ Exit clearance incomplete — settlement cannot be paid yet</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: '#991b1b' }}>
+                    {clearanceStatus[selectedEmployee].blockers.filter(b => !b.cleared).map(b => (
+                      <li key={b.key}>{b.label}{b.detail?.length ? `: ${b.detail.join(', ')}` : ''}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div style={{ ...cardStyle, padding: 24, background: 'linear-gradient(135deg, #6B3FDB 0%, #4f46e5 100%)', color: '#fff' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
@@ -323,14 +356,19 @@ export default function ExitManagement() {
                         {actioning ? 'Approving…' : 'Approve Settlement'}
                       </button>
                     )}
-                    {fnfData.status === 'approved' && (
-                      <button
-                        onClick={() => markPaid(fnfFnfId)}
-                        disabled={actioning || !fnfFnfId}
-                        style={{ padding: '10px 20px', background: '#059669', color: '#fff', border: 'none', borderRadius: 8, cursor: (actioning || !fnfFnfId) ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: (actioning || !fnfFnfId) ? 0.6 : 1 }}>
-                        {actioning ? 'Processing…' : 'Mark as Paid'}
-                      </button>
-                    )}
+                    {fnfData.status === 'approved' && (() => {
+                      const status = clearanceStatus[selectedEmployee];
+                      const blocked = status ? !status.can_settle : false;
+                      return (
+                        <button
+                          onClick={() => markPaid(fnfFnfId)}
+                          disabled={actioning || !fnfFnfId || blocked}
+                          title={blocked ? 'Exit clearance incomplete — see blockers above' : ''}
+                          style={{ padding: '10px 20px', background: '#059669', color: '#fff', border: 'none', borderRadius: 8, cursor: (actioning || !fnfFnfId || blocked) ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: (actioning || !fnfFnfId || blocked) ? 0.5 : 1 }}>
+                          {actioning ? 'Processing…' : blocked ? 'Clearance Incomplete' : 'Mark as Paid'}
+                        </button>
+                      );
+                    })()}
                     {fnfData.status === 'paid' && <span style={{ padding: '10px 20px', background: '#059669', borderRadius: 8, fontSize: 13, fontWeight: 700 }}>Paid</span>}
                   </div>
                 </div>
@@ -456,25 +494,50 @@ export default function ExitManagement() {
 
       {tab === 3 && (
         <div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 12 }}>
+            <strong>Assets / Travel Advances / IT Access</strong> are computed live from the asset register, travel advance ledger and login status — they can't be checked off by hand. <strong>Finance / Manager / HR</strong> are sign-offs. Final settlement (Mark as Paid) is blocked until all six clear.
+          </div>
           <div style={cardStyle}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr>
-                  {['Employee', 'IT Assets', 'Access Revoked', 'Documents', 'Interview', 'NOC: IT', 'NOC: Admin', 'NOC: Finance', 'NOC: HR', 'NOC: Manager', 'Status'].map(h => <th key={h} style={{ ...thStyle, fontSize: 11 }}>{h}</th>)}
+                  {['Employee', 'Assets', 'Travel Adv.', 'IT Access', 'Documents', 'Interview', 'NOC: Finance', 'NOC: Manager', 'NOC: HR', 'Clearance Status'].map(h => <th key={h} style={{ ...thStyle, fontSize: 11 }}>{h}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {activeExits.map((emp, i) => {
                   const c = clearanceData[emp.employee_id] || {};
-                  const checks = ['it_assets_returned', 'access_revoked', 'documents_collected', 'exit_interview_done', 'noc_it', 'noc_admin', 'noc_finance', 'noc_hr', 'noc_manager'];
-                  const doneCount = checks.filter(k => c[k]).length;
+                  const status = clearanceStatus[emp.employee_id];
+                  const blockerByKey = Object.fromEntries((status?.blockers || []).map(b => [b.key, b]));
+                  const autoBadge = (key) => {
+                    const b = blockerByKey[key];
+                    if (!status) return <span style={{ fontSize: 11, color: '#9ca3af' }}>…</span>;
+                    return (
+                      <span title={b?.detail?.join(', ') || ''} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: b?.cleared ? '#d1fae5' : '#fee2e2', color: b?.cleared ? '#065f46' : '#991b1b' }}>
+                        {b?.cleared ? 'Clear' : (b?.detail?.length ? b.detail.length : 'Pending')}
+                      </span>
+                    );
+                  };
+                  const manualChecks = ['documents_collected', 'exit_interview_done'];
+                  const doneCount = (status ? status.blockers.filter(b => b.cleared).length : 0) + manualChecks.filter(k => c[k]).length;
+                  const totalCount = 6 + manualChecks.length;
+                  const canSettle = !!status?.can_settle;
                   return (
                     <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
                       <td style={{ ...tdStyle, fontWeight: 600 }}>
                         <div>{emp.employee_name}</div>
                         <div style={{ fontSize: 11, color: '#6b7280' }}>{emp.department}</div>
                       </td>
-                      {checks.map(field => (
+                      <td style={{ ...tdStyle, textAlign: 'center' }}>{autoBadge('assets')}</td>
+                      <td style={{ ...tdStyle, textAlign: 'center' }}>{autoBadge('travel_advances')}</td>
+                      <td style={{ ...tdStyle, textAlign: 'center' }}>{autoBadge('it_access')}</td>
+                      {manualChecks.map(field => (
+                        <td key={field} style={{ ...tdStyle, textAlign: 'center' }}>
+                          <input type="checkbox" checked={!!c[field]} onChange={e => updateClearance(emp.employee_id, field, e.target.checked)}
+                            style={{ width: 16, height: 16, cursor: 'pointer', accentColor: '#6B3FDB' }} />
+                        </td>
+                      ))}
+                      {['noc_finance', 'noc_manager', 'noc_hr'].map(field => (
                         <td key={field} style={{ ...tdStyle, textAlign: 'center' }}>
                           <input type="checkbox" checked={!!c[field]} onChange={e => updateClearance(emp.employee_id, field, e.target.checked)}
                             style={{ width: 16, height: 16, cursor: 'pointer', accentColor: '#6B3FDB' }} />
@@ -483,11 +546,11 @@ export default function ExitManagement() {
                       <td style={tdStyle}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <div style={{ flex: 1, background: '#f0f0f4', borderRadius: 4, height: 6 }}>
-                            <div style={{ width: `${(doneCount / checks.length) * 100}%`, background: doneCount === checks.length ? '#059669' : '#6B3FDB', height: '100%', borderRadius: 4 }} />
+                            <div style={{ width: `${(doneCount / totalCount) * 100}%`, background: canSettle ? '#059669' : '#6B3FDB', height: '100%', borderRadius: 4 }} />
                           </div>
-                          <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{doneCount}/{checks.length}</span>
+                          <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{doneCount}/{totalCount}</span>
                         </div>
-                        {doneCount === checks.length && (
+                        {canSettle && (
                           <button
                             onClick={() => {
                               const win = window.open('', '_blank');

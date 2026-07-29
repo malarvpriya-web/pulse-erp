@@ -19,25 +19,27 @@ async function notifyEmployees(announcement) {
   try {
     const cid = announcement.company_id ?? null;
     let rows;
+    // employees has no user_id column — every branch here always returned
+    // zero rows, so announcements silently never notified anyone at all.
     if (announcement.target_type === 'employee') {
       const r = await pool.query(
-        `SELECT user_id FROM employees WHERE id=$1 AND user_id IS NOT NULL`,
+        `SELECT id AS user_id FROM users WHERE employee_id=$1`,
         [announcement.target_value]
       );
       rows = r.rows;
     } else if (announcement.target_type === 'department') {
       const r = await pool.query(
-        `SELECT user_id FROM employees
-          WHERE LOWER(department)=LOWER($1)
-            AND user_id IS NOT NULL
-            AND ($2::int IS NULL OR company_id = $2)`,
+        `SELECT u.id AS user_id FROM users u
+           JOIN employees e ON e.id = u.employee_id
+          WHERE LOWER(e.department)=LOWER($1)
+            AND ($2::int IS NULL OR u.company_id = $2)`,
         [announcement.target_value, cid]
       );
       rows = r.rows;
     } else {
       const r = await pool.query(
-        `SELECT user_id FROM employees
-          WHERE user_id IS NOT NULL
+        `SELECT id AS user_id FROM users
+          WHERE employee_id IS NOT NULL
             AND ($1::int IS NULL OR company_id = $1)
           LIMIT 500`,
         [cid]

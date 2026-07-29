@@ -22,6 +22,8 @@ export default function StockMovements() {
   const [form,      setForm]      = useState(emptyAdj());
   const [submitting,setSubmitting]= useState(false);
   const [toast,     setToast]     = useState(null);
+  const [pendingAdj,setPendingAdj]= useState([]);
+  const [actingId,  setActingId]  = useState(null);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -46,20 +48,51 @@ export default function StockMovements() {
     setLoading(false);
   }, [fType, search]);
 
-  useEffect(() => { load(); }, [load]);
+  const loadPending = useCallback(async () => {
+    try {
+      const res = await api.get('/inventory/stock-adjustments', { params: { status: 'pending' } });
+      setPendingAdj(Array.isArray(res.data) ? res.data : []);
+    } catch { /* silent — approval queue is a secondary view */ }
+  }, []);
+
+  useEffect(() => { load(); loadPending(); }, [load, loadPending]);
 
   const handleAdjust = async () => {
     if (!form.item_id || !form.quantity) return showToast('Item and quantity are required', 'error');
     setSubmitting(true);
     try {
       await api.post('/inventory/stock-adjustments', form);
-      showToast('Stock adjustment saved');
+      showToast('Adjustment submitted — awaiting approval before stock is affected');
       setDrawer(false);
       setForm(emptyAdj());
       load();
+      loadPending();
     } catch (e) {
       showToast(e.response?.data?.error || 'Failed to save adjustment', 'error');
     } finally { setSubmitting(false); }
+  };
+
+  const handleApprove = async (id) => {
+    setActingId(id);
+    try {
+      await api.post(`/inventory/stock-adjustments/${id}/approve`);
+      showToast('Adjustment approved — stock updated');
+      load();
+      loadPending();
+    } catch (e) {
+      showToast(e.response?.data?.error || 'Approval failed', 'error');
+    } finally { setActingId(null); }
+  };
+
+  const handleReject = async (id) => {
+    setActingId(id);
+    try {
+      await api.post(`/inventory/stock-adjustments/${id}/reject`);
+      showToast('Adjustment rejected');
+      loadPending();
+    } catch (e) {
+      showToast(e.response?.data?.error || 'Rejection failed', 'error');
+    } finally { setActingId(null); }
   };
 
   const displayed = moves.filter(m => {
@@ -96,6 +129,44 @@ export default function StockMovements() {
           )}
         </div>
       </div>
+
+      {pendingAdj.length > 0 && (
+        <div className="sm-table-wrap" style={{ marginBottom: 16, border: '1px solid #fde68a', background: '#fffbeb' }}>
+          <div style={{ padding: '10px 14px', fontWeight: 600, fontSize: 13, color: '#92400e' }}>
+            {pendingAdj.length} adjustment{pendingAdj.length === 1 ? '' : 's'} awaiting approval
+          </div>
+          <table className="sm-table">
+            <thead>
+              <tr><th>Number</th><th>Type</th><th>Warehouse</th><th>Reason</th><th>Date</th><th></th></tr>
+            </thead>
+            <tbody>
+              {pendingAdj.map(a => (
+                <tr key={a.id}>
+                  <td className="sm-mono">{a.adjustment_number}</td>
+                  <td>{a.adjustment_type === 'increase' ? '▲ Increase' : '▼ Decrease'}</td>
+                  <td>{a.warehouse_id}</td>
+                  <td className="sm-notes">{a.reason || '—'}</td>
+                  <td>{a.adjustment_date ? new Date(a.adjustment_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {!readOnly && (
+                      <>
+                        <button className="sm-btn-primary" style={{ marginRight: 6, padding: '4px 10px', fontSize: 12 }}
+                          disabled={actingId === a.id} onClick={() => handleApprove(a.id)}>
+                          {actingId === a.id ? '…' : 'Approve'}
+                        </button>
+                        <button className="sm-btn-outline" style={{ padding: '4px 10px', fontSize: 12 }}
+                          disabled={actingId === a.id} onClick={() => handleReject(a.id)}>
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* filters */}
       <div className="sm-filters">

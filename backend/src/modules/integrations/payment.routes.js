@@ -314,7 +314,7 @@ router.post('/verify', async (req, res) => {
       const cid = pgo.company_id ?? companyId;
 
       await pool.query(
-        `UPDATE invoices SET status = 'Paid', paid_amount = total_amount, updated_at = NOW()
+        `UPDATE invoices SET status = 'paid', paid_amount = total_amount, updated_at = NOW()
          WHERE id = $1`,
         [pgo.invoice_id]
       ).catch(() => {});
@@ -353,7 +353,7 @@ router.patch('/mark-paid', async (req, res) => {
     const paidAt = paid_date ? new Date(paid_date).toISOString() : new Date().toISOString();
 
     await pool.query(
-      `UPDATE invoices SET status = 'Paid', paid_amount = total_amount, updated_at = NOW() WHERE id = $1`,
+      `UPDATE invoices SET status = 'paid', paid_amount = total_amount, updated_at = NOW() WHERE id = $1`,
       [invoice_id]
     );
 

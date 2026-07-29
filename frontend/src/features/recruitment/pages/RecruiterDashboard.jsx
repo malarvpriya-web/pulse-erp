@@ -125,7 +125,7 @@ export default function RecruiterDashboard({ setPage }) {
         <button className="rd-qa-btn" onClick={() => setPage?.('OfferManagement')}>
           <Plus size={13}/> Create Offer
         </button>
-        <button className="rd-qa-btn rd-qa-btn-ghost" onClick={() => setPage?.('CandidatePipeline')}>
+        <button className="rd-qa-btn rd-qa-btn-ghost" onClick={() => setPage?.('Candidates', { tab: 'pipeline' })}>
           View Pipeline
         </button>
       </div>
@@ -285,7 +285,7 @@ export default function RecruiterDashboard({ setPage }) {
           <button
             className="rd-btn-outline"
             style={{ fontSize: 11, padding: '4px 10px' }}
-            onClick={() => navigate('/ResumeDatabase')}
+            onClick={() => setPage?.('Candidates', { tab: 'resumes' })}
           >
             View All
           </button>

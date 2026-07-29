@@ -116,18 +116,18 @@ class FinancialRatiosService {
 
   async getReceivables() {
     const result = await pool.query(
-      `SELECT COALESCE(SUM(balance), 0) as total 
-       FROM invoices 
-       WHERE status NOT IN ('Paid', 'Cancelled') AND deleted_at IS NULL`
+      `SELECT COALESCE(SUM(balance), 0) as total
+       FROM invoices
+       WHERE LOWER(status) NOT IN ('paid', 'cancelled') AND deleted_at IS NULL`
     );
     return parseFloat(result.rows[0].total);
   }
 
   async getPayables() {
     const result = await pool.query(
-      `SELECT COALESCE(SUM(balance), 0) as total 
-       FROM bills 
-       WHERE status NOT IN ('Paid', 'Cancelled') AND deleted_at IS NULL`
+      `SELECT COALESCE(SUM(balance), 0) as total
+       FROM bills
+       WHERE LOWER(status) NOT IN ('paid', 'cancelled') AND deleted_at IS NULL`
     );
     return parseFloat(result.rows[0].total);
   }

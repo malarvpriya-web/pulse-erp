@@ -2,6 +2,7 @@ import express from 'express';
 import pool from '../shared/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
+import { CLOSED_PROJECT_STATUSES } from './projectStatus.js';
 
 const router = express.Router();
 
@@ -88,10 +89,16 @@ router.post('/tasks', requirePermission('projects', 'edit'), async (req, res) =>
 
     if (project_id) {
       const check = await pool.query(
-        `SELECT id FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`,
+        `SELECT id, status FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`,
         [project_id, cid]
       );
       if (!check.rows.length) return res.status(403).json({ success: false, message: 'Project not in your company' });
+      // The closure cascade added elsewhere (task creation, timesheets,
+      // project-members) missed this second task-creation surface — Gantt
+      // writes to its own project_tasks table, not the unified tasks table.
+      if (CLOSED_PROJECT_STATUSES.includes(check.rows[0].status)) {
+        return res.status(400).json({ success: false, message: `Cannot add a task — project is ${check.rows[0].status}` });
+      }
     }
 
     const { rows } = await pool.query(

@@ -2,7 +2,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Users, ChevronDown, ChevronRight, RefreshCw, AlertCircle, Building2, List } from 'lucide-react';
 import api from '@/services/api/client';
+import { useAuth } from '@/context/AuthContext';
 import './OrgChart.css';
+
+// Mirrors backend orgchart.routes.js's HR_ROLES — only these roles can call
+// POST /orgchart/relationship, so the assignment panel is hidden for everyone
+// else instead of rendering a control that would 403 on submit.
+const HR_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec'];
 
 const DEPT_COLORS = [
   '#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444',
@@ -91,6 +97,8 @@ function nodeMatchesDept(node, dept) {
 }
 
 export default function OrgChart({ setPage, setSelectedEmployee }) {
+  const { hasAnyRole } = useAuth();
+  const canEdit = hasAnyRole(...HR_ROLES);
   const [tree, setTree]         = useState([]);
   const [employees, setEmployees] = useState([]);
   const [departments, setDepts] = useState([]);
@@ -215,29 +223,31 @@ export default function OrgChart({ setPage, setSelectedEmployee }) {
         </div>
       </div>
 
-      {/* Manual assignment panel */}
-      <div className="org-assign-panel">
-        <div className="org-assign-title"><Building2 size={14} /> Assign Reporting Manager</div>
-        <div className="org-assign-row">
-          <select className="org-select" value={selEmployee} onChange={e => setSelEmployee(e.target.value)}>
-            <option value="">Select Employee</option>
-            {employees.map(e => <option key={e.id} value={e.id}>{e.name} — {e.designation || '—'}</option>)}
-          </select>
-          <span className="org-assign-arrow">→</span>
-          <select className="org-select" value={selManager} onChange={e => setSelManager(e.target.value)}>
-            <option value="">Select Manager</option>
-            {employees.filter(e => String(e.id) !== selEmployee).map(e => (
-              <option key={e.id} value={e.id}>{e.name} — {e.designation || '—'}</option>
-            ))}
-          </select>
-          <button className="org-btn-primary" onClick={handleUpdateManager} disabled={!selEmployee || !selManager || saving}>
-            {saving ? 'Saving…' : 'Update'}
-          </button>
+      {/* Manual assignment panel — HR-only, matches backend allowRoles(...HR_ROLES) */}
+      {canEdit && (
+        <div className="org-assign-panel">
+          <div className="org-assign-title"><Building2 size={14} /> Assign Reporting Manager</div>
+          <div className="org-assign-row">
+            <select className="org-select" value={selEmployee} onChange={e => setSelEmployee(e.target.value)}>
+              <option value="">Select Employee</option>
+              {employees.map(e => <option key={e.id} value={e.id}>{e.name} — {e.designation || '—'}</option>)}
+            </select>
+            <span className="org-assign-arrow">→</span>
+            <select className="org-select" value={selManager} onChange={e => setSelManager(e.target.value)}>
+              <option value="">Select Manager</option>
+              {employees.filter(e => String(e.id) !== selEmployee).map(e => (
+                <option key={e.id} value={e.id}>{e.name} — {e.designation || '—'}</option>
+              ))}
+            </select>
+            <button className="org-btn-primary" onClick={handleUpdateManager} disabled={!selEmployee || !selManager || saving}>
+              {saving ? 'Saving…' : 'Update'}
+            </button>
+          </div>
+          {saveMsg && (
+            <div className={`org-save-msg org-save-${saveMsg.type}`}>{saveMsg.text}</div>
+          )}
         </div>
-        {saveMsg && (
-          <div className={`org-save-msg org-save-${saveMsg.type}`}>{saveMsg.text}</div>
-        )}
-      </div>
+      )}
 
       {/* Employees List */}
       <div className="org-emp-panel">

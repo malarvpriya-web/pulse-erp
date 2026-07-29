@@ -745,9 +745,11 @@ router.get('/applications', requirePermission('leaves', 'view'), async (req, res
       if (empId) {
         filters.manager_id = empId;
       } else {
-        // Fallback: look up employee_id from users.id
+        // Fallback: look up employee_id from users.id. employees has no
+        // user_id column — this always returned zero rows before.
         const { rows } = await pool.query(
-          `SELECT id FROM employees WHERE user_id = $1 AND status IS DISTINCT FROM 'Left' LIMIT 1`,
+          `SELECT e.id FROM users u JOIN employees e ON e.id = u.employee_id
+           WHERE u.id = $1 AND e.status IS DISTINCT FROM 'Left' LIMIT 1`,
           [req.user?.userId || req.user?.id]
         );
         if (rows[0]?.id) filters.manager_id = rows[0].id;
@@ -816,7 +818,13 @@ async function handleApplyLeave(req, res) {
       validate('leaves', { ...normalizedPayload, days: normalizedPayload.number_of_days })
     ).catch(() => null);
     const { valid, errors } = vres ?? { valid: true, errors: [] };
-    if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'leaves', errors });
+    const blockingErrors = valid
+      ? []
+      : (errors || []).filter(err => !(err?.field === 'reason' && normalizedPayload.reason?.trim()));
+    if (blockingErrors.length) {
+      const message = blockingErrors.map(err => err?.message).filter(Boolean).join('; ') || 'Validation failed';
+      return res.status(422).json({ error: message, code: 'VALIDATION_ERROR', module: 'leaves', errors: blockingErrors });
+    }
 
     if (!leave_type_id && leave_type) {
       leave_type_id = await resolveLeaveTypeId(leave_type, req.scope?.company_id ?? null);
@@ -892,11 +900,6 @@ async function handleApplyLeave(req, res) {
           error: `This leave type allows a maximum of ${lt.max_consecutive_days} consecutive day(s).`,
           code: 'MAX_CONSECUTIVE_EXCEEDED',
         });
-      }
-
-      // Attachment required
-      if (lt.requires_attachment && !normalizedPayload.attachment_url) {
-        return res.status(422).json({ error: 'An attachment is required for this leave type.', code: 'ATTACHMENT_REQUIRED' });
       }
 
       // Gender restriction
@@ -1479,3 +1482,4 @@ router.post('/:id/workflow/advance', requirePermission('leaves', 'approve'), asy
 });
 
 export default router;
+

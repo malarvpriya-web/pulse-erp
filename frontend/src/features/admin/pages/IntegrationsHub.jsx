@@ -108,6 +108,7 @@ const INTEGRATIONS = [
       { key: 'TALLY_GATEWAY_URL', label: 'Tally Gateway URL', type: 'text', placeholder: 'http://localhost:9000' },
       { key: 'TALLY_COMPANY',     label: 'Company Name in Tally', type: 'text', placeholder: 'Manifest Technologies' },
     ],
+    managePage: 'TallyIntegration',
   },
   {
     id: 'zoho-books',

@@ -29,7 +29,6 @@ const FOLDER_CONFIG = {
   projects:     { label: 'Projects',      icon: 'FolderKanban',          module: 'projects' },
   production:   { label: 'Production',    icon: 'Factory' },
   recruitment:  { label: 'Recruitment',   icon: 'Briefcase' },
-  talent:       { label: 'Talent',        icon: 'Star' },
   timesheets:   { label: 'Timesheets',    icon: 'Clock',                 module: 'timesheets' },
   performance:  { label: 'Performance',   icon: 'Trophy' },
   leaves:       { label: 'Leaves',        icon: 'Umbrella',              module: 'leave' },
@@ -340,7 +339,7 @@ export const AUTO_NAV_ITEMS = Object.entries(folderMap)
   .sort((a, b) => {
     // Preserve a consistent ordering matching the original NAV_ITEMS
     const ORDER = ['Finance','HR','CRM','Sales','Inventory','Procurement',
-                   'Projects','Production','Recruitment','Talent','Timesheets',
+                   'Projects','Production','Recruitment','Timesheets',
                    'Performance','Leaves','Attendance','Travel Desk','Service Desk',
                    'Operations','Marketing','Reports','Analytics','Admin','Audit',
                    'Complaints','Org Chart','Notifications','Documents','Engineering'];

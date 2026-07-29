@@ -248,7 +248,7 @@ export default function InventoryDashboard({ setPage }) {
               const rl  = parseFloat(item.reorder_level ?? 1) || 1;
               const pct = Math.min(100, Math.round((bal / rl) * 100));
               return (
-                <div key={item.id || i} className="invd-low-row">
+                <div key={`${item.id ?? i}-${item.warehouse_id ?? item.warehouse_name ?? ''}`} className="invd-low-row">
                   <div className="invd-low-info">
                     <span className="invd-low-name">{item.item_name || item.name}</span>
                     <span className="invd-low-sku">{item.item_code || item.sku} · {item.warehouse_name || item.category}</span>

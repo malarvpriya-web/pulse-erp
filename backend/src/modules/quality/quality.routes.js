@@ -3,6 +3,7 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import grnService from '../procurement/services/grn.service.js';
 
 const router = Router();
 router.use(verifyToken);
@@ -267,7 +268,7 @@ router.post('/inspect', canCreate, async (req, res) => {
         const nr = await pool.query(
           `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,'major','quality',$8) RETURNING *`,
-          [`Auto NCR - Inspection Fail (${checklist.rows[0].name})`, remarks || 'Inspection failed', ncrNum, inspector_name, reference_type, reference_id, grn_id || null, companyId]
+          [`Auto NCR - Inspection Fail (${checklist.rows[0].name})`, remarks || 'Inspection failed', ncrNum, inspector_name, resolvedRefType, resolvedRefId, grn_id || null, companyId]
         );
         autoNcr = nr.rows[0];
       }
@@ -923,7 +924,7 @@ function evaluateTestResult({ actual_value, spec_min, spec_max, expected_value }
 // Recompute the parent source's overall quality_status from its tests
 async function rollupQualityStatus({ grn_id, operation_id }) {
   const bucket = async (idCol, idVal, table, statusCol) => {
-    if (!idVal) return;
+    if (!idVal) return null;
     const { rows } = await pool.query(
       `SELECT
          COUNT(*) FILTER (WHERE result='fail') AS failed,
@@ -938,9 +939,17 @@ async function rollupQualityStatus({ grn_id, operation_id }) {
     else if (parseInt(r.done) > 0)      status = 'in_progress';
     else                                status = 'pending';
     await pool.query(`UPDATE ${table} SET ${statusCol}=$1 WHERE id=$2`, [status, idVal]).catch(() => {});
+    return status;
   };
-  await bucket('grn_id', grn_id, 'goods_receipt_notes', 'quality_status');
+  const grnStatus = await bucket('grn_id', grn_id, 'goods_receipt_notes', 'quality_status');
   await bucket('operation_id', operation_id, 'production_operations', 'quality_status');
+  // GRN.service withholds accepted stock from the ledger while IQC is
+  // pending (see grn.service.js createGRN's holdForIqc) — release it now
+  // that every test on this GRN is done and none failed. Idempotent, so a
+  // later edit that keeps the GRN at 'passed' is a safe no-op.
+  if (grn_id && grnStatus === 'passed') {
+    await grnService.releaseGrnStock(grn_id);
+  }
 }
 
 // GET /quality/tests — list with source filters
@@ -1034,7 +1043,7 @@ router.post('/tests/from-grn/:grnId', canCreate, async (req, res) => {
     const grn = await pool.query('SELECT id, grn_number FROM goods_receipt_notes WHERE id=$1', [grnId]);
     if (!grn.rows.length) return res.status(404).json({ success: false, error: 'GRN not found' });
     const items = await pool.query(
-      `SELECT gi.item_id, COALESCE(gi.item_name, ii.item_name) AS item_name
+      `SELECT gi.item_id, ii.item_name
        FROM grn_items gi LEFT JOIN inventory_items ii ON ii.id = gi.item_id WHERE gi.grn_id=$1`, [grnId]);
     const created = [];
     if (Array.isArray(customTests) && customTests.length) {

@@ -151,7 +151,8 @@ router.post('/inward', requirePermission('inventory', 'add'), async (req, res) =
              VALUES ($1, $2, 'inward', $3, 0, $4, 0, 0, 'grn', CURRENT_DATE, $5, $6)`,
             [invItem.id, warehouseId, qty, newBalance,
              `GRN: ${gr_number || 'INWARD'} — ${supplier || ''}`,
-             req.user?.userId ?? null]
+             // stock_ledger.created_by FKs employees(id), not users(id).
+             req.user?.employee_id ?? null]
           );
         }
       }
@@ -276,7 +277,7 @@ router.put('/pick-lists/:id/pick', requirePermission('inventory', 'edit'), async
                VALUES ($1, $2, 'dispatch', 0, $3, $4, 0, 0, 'pick_list', $5, CURRENT_DATE, $6, $7)`,
               [line.item_id, warehouseId, pickedQty, newBalance,
                req.params.id, `Pick List ${req.params.id}: ${line.item_name}`,
-               req.user?.userId ?? null]
+               req.user?.employee_id ?? null]
             );
           }
         }
@@ -490,7 +491,7 @@ router.post('/cycle-count/:id/submit', requirePermission('inventory', 'approve')
           newBalance,
           req.params.id,
           `Cycle Count #${req.params.id} variance: ${variance > 0 ? '+' : ''}${variance}`,
-          req.user?.userId ?? null,
+          req.user?.employee_id ?? null,
         ]
       );
     }

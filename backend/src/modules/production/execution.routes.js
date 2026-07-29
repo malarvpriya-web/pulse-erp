@@ -89,8 +89,14 @@ async function autoReserveMaterials(client, orderId, companyId, bomId, quantity,
   }
 }
 
-/* ── Backflush: consume reserved materials on operation complete ── */
-async function backflushMaterials(client, orderId, companyId, operationId, actorId, actorName) {
+/* ── Backflush: consume reserved materials on operation complete ──
+   actorId/actorName are the users.id/name shown in logs & audit trails.
+   employeeId is separate: stock_ledger.created_by FKs employees(id), not
+   users(id) (see postStock's stock_ledger insert) — passing actorId there
+   FK-violates for any user whose id isn't coincidentally also a valid
+   employees.id (e.g. every super_admin with employee_id NULL), silently
+   aborting the transaction because postStock's caller wraps it in .catch(). */
+async function backflushMaterials(client, orderId, companyId, operationId, actorId, actorName, employeeId) {
   const { rows: reservations } = await client.query(
     `SELECT * FROM material_reservations
      WHERE production_order_id = $1 AND company_id = $2 AND status IN ('reserved','partially_issued')`,
@@ -118,14 +124,14 @@ async function backflushMaterials(client, orderId, companyId, operationId, actor
         itemId: res.item_id, outQty: toConsume, txnType: 'production_consumption',
         refType: 'production_order', refId: orderId,
         remarks: `Backflush consumption — order #${orderId}`,
-        createdBy: actorId, companyId,
+        createdBy: employeeId ?? null, companyId,
       }).catch(() => {}); // non-fatal if inventory table differs
     }
   }
 }
 
 /* ── Record finished goods receipt into inventory ── */
-async function receiveFG(client, order, actorId, actorName) {
+async function receiveFG(client, order, actorId, actorName, employeeId) {
   if (!order.product_id) return;
   const fgQty = parseFloat(order.quantity_completed || order.quantity_planned);
   // Dual-written to stock_ledger + inventory_items.current_stock (see
@@ -135,7 +141,7 @@ async function receiveFG(client, order, actorId, actorName) {
     itemId: order.product_id, inQty: fgQty, txnType: 'production_receipt',
     refType: 'production_order', refId: order.id,
     remarks: `FG receipt — order #${order.id} (${order.product_name || ''})`,
-    createdBy: actorId, companyId: order.company_id,
+    createdBy: employeeId ?? null, companyId: order.company_id,
   }).catch(() => {}); // non-fatal
 
   await client.query(`
@@ -661,7 +667,7 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
         itemId: order.product_id, inQty: qty, txnType: 'production_receipt',
         refType: 'production_order', refId: order.id,
         remarks: `Order completion FG receipt — order #${order.id}`,
-        createdBy: a.id, companyId: cid,
+        createdBy: req.user?.employee_id ?? null, companyId: cid,
       }).catch(() => {});
     }
     await client.query(`
@@ -682,7 +688,7 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
             itemId: o.item_id, inQty: outQty, txnType: 'production_receipt',
             refType: 'production_order', refId: order.id,
             remarks: `Co/by-product receipt — order #${order.id}`,
-            createdBy: a.id, companyId: cid,
+            createdBy: req.user?.employee_id ?? null, companyId: cid,
           }).catch(() => {});
           await client.query(`
             INSERT INTO wip_transactions
@@ -691,6 +697,34 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
             [cid, order.id, o.item_id, `${o.item_name} (${o.output_type === 'by' ? 'by' : 'co'}-product)`, outQty, o.uom || 'pcs', a.id, a.name, 'Finished Goods Store']);
         }
       } catch (e) { /* bom_outputs optional pre-migration */ }
+    }
+
+    // Completion previously never reached back to the originating Sales Order —
+    // dispatch had no signal production was actually done. Stamp the SO
+    // (additive column, no existing order_status semantics touched) and notify
+    // sales/dispatch so it isn't a silent handoff.
+    if (order.sales_order_id) {
+      const { rows: soRows } = await client.query(
+        `UPDATE sales_orders SET production_completed_at = NOW(), updated_at = NOW()
+         WHERE id = $1 RETURNING order_number, customer_name`,
+        [order.sales_order_id]
+      ).catch(() => ({ rows: [] }));
+      const so = soRows[0];
+      if (so) {
+        const { rows: receivers } = await client.query(
+          `SELECT id FROM users WHERE is_active = true
+             AND LOWER(role) IN ('admin','super_admin','superadmin','manager','sales','sales_manager')`
+        ).catch(() => ({ rows: [] }));
+        for (const r of receivers) {
+          await client.query(
+            `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
+             VALUES ($1,$2,$3,'sales',$4,'production_completed')`,
+            [r.id, 'Production Completed — Ready to Dispatch',
+             `Sales Order ${so.order_number}${so.customer_name ? ` (${so.customer_name})` : ''} — production order #${order.id} is complete.`,
+             order.sales_order_id]
+          ).catch(() => {});
+        }
+      }
     }
 
     await client.query('COMMIT');
@@ -733,7 +767,7 @@ router.patch('/orders/:id/issue-materials', requirePermission('production', 'edi
           itemId: rsv.item_id, outQty: remaining, txnType: 'production_issue',
           refType: 'production_order', refId: req.params.id,
           remarks: `Bulk material issue — order #${req.params.id}`,
-          createdBy: a.id, companyId: cid,
+          createdBy: req.user?.employee_id ?? null, companyId: cid,
         }).catch(() => {});
       }
       await client.query(`
@@ -1109,7 +1143,7 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
         itemId: res_row.item_id, outQty: parseFloat(qty_issued), txnType: 'production_issue',
         refType: 'production_order', refId: req.params.id, rate: unitCost,
         remarks: remarks || `Material issue — order #${req.params.id}`,
-        createdBy: a.id, companyId: cid,
+        createdBy: req.user?.employee_id ?? null, companyId: cid,
       }).catch(() => {});
     }
 
@@ -1138,6 +1172,101 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
     `, [req.params.id, cid, totalCost]);
 
     await client.query('COMMIT');
+    res.json({ success: true, qty_issued: newIssued, status: newStatus });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// NEW: Return unused issued material from shop floor back to stores.
+// No path back into stock existed anywhere in the app for material issued to a
+// production order but never consumed — this closes that gap using the same
+// stock_ledger + inventory_items.current_stock dual-write as every other
+// production stock movement (postStock, shared with subcontracting).
+router.post('/orders/:id/return-material', requirePermission('production', 'edit'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
+    const cid = req.scope?.company_id;
+    const { reservation_id, qty_returned, remarks } = req.body;
+    const a = actor(req);
+    if (!reservation_id || !(qty_returned > 0))
+      return res.status(400).json({ error: 'reservation_id and a positive qty_returned are required' });
+
+    await client.query('BEGIN');
+    const { rows: [rsv] } = await client.query(
+      `SELECT * FROM material_reservations WHERE id=$1 AND production_order_id=$2 AND company_id=$3`,
+      [reservation_id, req.params.id, cid]
+    );
+    if (!rsv) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Reservation not found' }); }
+    if (!['partially_issued', 'fully_issued'].includes(rsv.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `Cannot return material for a reservation in "${rsv.status}" status` });
+    }
+
+    const returnable = Math.max(0, parseFloat(rsv.qty_issued) - parseFloat(rsv.qty_consumed || 0));
+    if (qty_returned > returnable) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `Cannot return more than the unconsumed issued quantity (${returnable})` });
+    }
+
+    const newIssued = parseFloat(rsv.qty_issued) - qty_returned;
+    const newStatus = newIssued <= 0 ? 'reserved'
+      : newIssued < parseFloat(rsv.qty_required) ? 'partially_issued'
+      : 'fully_issued';
+
+    await client.query(
+      `UPDATE material_reservations SET qty_issued=$1, status=$2, updated_at=NOW() WHERE id=$3`,
+      [newIssued, newStatus, reservation_id]
+    );
+
+    // Unit cost — mirror issue-material's lookup so the cost booking reverses symmetrically.
+    const { rows: [item] } = await client.query(
+      `SELECT COALESCE(standard_cost, 0) AS unit_cost FROM inventory_items WHERE id=$1`, [rsv.item_id]
+    ).catch(() => ({ rows: [{ unit_cost: 0 }] }));
+    const unitCost = parseFloat(item?.unit_cost || 0);
+    const totalCost = unitCost * qty_returned;
+
+    if (rsv.item_id) {
+      await postStock(client, {
+        itemId: rsv.item_id, inQty: qty_returned, txnType: 'production_return',
+        refType: 'production_order', refId: req.params.id, rate: unitCost,
+        remarks: remarks || `Material return — order #${req.params.id}`,
+        createdBy: req.user?.employee_id ?? null, companyId: cid,
+      }).catch(() => {});
+    }
+
+    // Negative row on the issue log — nets out against the original issue so
+    // genealogy's SUM(qty_issued) reflects material actually consumed, not returned.
+    await client.query(`
+      INSERT INTO material_issue_logs
+        (company_id, production_order_id, reservation_id, item_id, item_name, qty_issued, unit, unit_cost, total_cost, issued_by, issued_by_name, notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+    `, [cid, req.params.id, reservation_id, rsv.item_id, rsv.item_name,
+        -qty_returned, rsv.unit, unitCost, -totalCost, a.id, a.name, remarks || 'Return to stores']);
+
+    // 'reverse' is the wip_transactions transaction_type CHECK constraint's closest
+    // fit — the constraint's allowed set (issue/transfer/complete/scrap/reverse) has
+    // no dedicated 'return' value.
+    await client.query(`
+      INSERT INTO wip_transactions
+        (company_id, production_order_id, transaction_type, item_id, item_name, quantity, unit, unit_cost, total_cost, reservation_id, actor_id, actor_name, from_location, to_location)
+      VALUES ($1,$2,'reverse',$3,$4,$5,$6,$7,$8,$9,$10,$11,'Shop Floor','Raw Materials Store')
+    `, [cid, req.params.id, rsv.item_id, rsv.item_name, qty_returned, rsv.unit, unitCost, totalCost, reservation_id, a.id, a.name]);
+
+    await client.query(`
+      INSERT INTO production_order_costs (production_order_id, company_id, actual_material_cost, updated_at)
+      VALUES ($1,$2,$3,NOW())
+      ON CONFLICT (production_order_id) DO UPDATE
+        SET actual_material_cost = production_order_costs.actual_material_cost - $3, updated_at=NOW()
+    `, [req.params.id, cid, totalCost]);
+
+    await client.query('COMMIT');
+    logAudit({ userId: a.id, module: 'production', recordId: req.params.id, recordType: 'production_order',
+      action: 'update', oldData: { qty_issued: rsv.qty_issued }, newData: { reservation_id, qty_returned, qty_issued: newIssued, status: newStatus }, req });
     res.json({ success: true, qty_issued: newIssued, status: newStatus });
   } catch (e) {
     await client.query('ROLLBACK');
@@ -1176,6 +1305,29 @@ router.post('/operations/:id/start', requirePermission('production', 'edit'), as
     if (opRow.is_inspection && opRow.prev_status && !['completed','skipped'].includes(opRow.prev_status)) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Previous inspection step must be completed before starting this operation' });
+    }
+
+    // A QC stop-ship hold (holdProductionOrderOnQcFail in quality.routes.js) put
+    // the order on_hold, but starting ANY other operation on it used to
+    // unconditionally flip on_hold -> in_progress with no check of why it was
+    // held — silently clearing a stop-ship the moment work resumed anywhere on
+    // the order. Block instead when an open (non-closed) NCR still exists.
+    const { rows: orderRows } = await client.query(
+      `SELECT status FROM production_orders WHERE id = $1`, [opRow.production_order_id]
+    );
+    if (orderRows[0]?.status === 'on_hold') {
+      const openNcr = await client.query(
+        `SELECT COUNT(*)::INT AS n FROM ncr_reports
+         WHERE status NOT IN ('closed')
+           AND ((reference_type='production_order' AND reference_id=$1)
+             OR (reference_type='production_operation' AND reference_id IN
+                 (SELECT id FROM production_operations WHERE production_order_id=$1)))`,
+        [opRow.production_order_id]
+      ).catch(() => ({ rows: [{ n: 0 }] }));
+      if ((openNcr.rows[0]?.n || 0) > 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Order is on hold with an open NCR — resolve/close it before resuming operations' });
+      }
     }
 
     const updated = await client.query(
@@ -1308,14 +1460,22 @@ router.post('/operations/:id/complete', requirePermission('production', 'edit'),
        WHERE production_order_id=$1 AND status NOT IN ('completed','skipped')`,
       [op.production_order_id]
     );
+    // Auto-NCRs from quality.routes.js's inspection/test-fail paths are raised
+    // with reference_type='production_operation' (or 'grn'), not
+    // 'production_order' — this gate used to only ever match the NCRs raised
+    // directly above (scrap-at-inspection), so a quality-module NCR against
+    // one of this order's operations never actually blocked completion.
     const openNcr = await client.query(
       `SELECT COUNT(*)::INT AS n FROM ncr_reports
-       WHERE reference_type='production_order' AND reference_id=$1 AND status NOT IN ('closed')`,
+       WHERE status NOT IN ('closed')
+         AND ((reference_type='production_order' AND reference_id=$1)
+           OR (reference_type='production_operation' AND reference_id IN
+               (SELECT id FROM production_operations WHERE production_order_id=$1)))`,
       [op.production_order_id]
     ).catch(() => ({ rows: [{ n: 0 }] }));
     if ((pending.rows[0]?.n || 0) === 0 && (openNcr.rows[0]?.n || 0) === 0) {
       // Backflush materials
-      await backflushMaterials(client, op.production_order_id, cid, op.id, a.id, a.name);
+      await backflushMaterials(client, op.production_order_id, cid, op.id, a.id, a.name, req.user?.employee_id ?? null);
 
       const { rows: [completedOrder] } = await client.query(
         `UPDATE production_orders
@@ -1324,7 +1484,7 @@ router.post('/operations/:id/complete', requirePermission('production', 'edit'),
         [op.production_order_id]
       );
       // Receive finished goods
-      if (completedOrder) await receiveFG(client, completedOrder, a.id, a.name);
+      if (completedOrder) await receiveFG(client, completedOrder, a.id, a.name, req.user?.employee_id ?? null);
     }
 
     await client.query('COMMIT');

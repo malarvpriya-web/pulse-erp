@@ -11,7 +11,7 @@ import purchaseRequestRepo from '../../procurement/repositories/purchaseRequest.
 import advInventoryRouter from './advancedInventory.routes.js';
 import serialNumbersRouter from './serialNumbers.routes.js';
 import componentCatalogRouter from './componentCatalog.routes.js';
-import { checkAndCreateAlerts } from '../../../services/stockAlerts.js';
+import { postStock } from '../../production/subcontracting.routes.js';
 
 const router = express.Router();
 
@@ -282,102 +282,17 @@ router.get('/rm-issues/:id', requirePermission('inventory', 'view'), async (req,
 });
 
 // =====================================================
-// STOCK TRANSFERS
-// =====================================================
-router.post('/stock-transfers', requirePermission('inventory', 'add'), async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { valid, errors } = await validate('inventory', req.body);
-    if (!valid) { client.release(); return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors }); }
-    try {
-      await client.query('BEGIN');
-
-      const transferNumber = `STR${Date.now()}`;
-      const result = await client.query(
-        `INSERT INTO stock_transfers (transfer_number, from_warehouse_id, to_warehouse_id, transfer_date, transferred_by, notes) 
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [transferNumber, req.body.from_warehouse_id, req.body.to_warehouse_id, req.body.transfer_date, req.user.userId ?? req.user.id, req.body.notes]
-      );
-      const transfer = result.rows[0];
-
-      for (const item of req.body.items) {
-        // Guard: ensure sufficient stock exists in the source warehouse
-        const balRes = await client.query(
-          `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-          [item.item_id, req.body.from_warehouse_id]
-        );
-        const available = parseFloat(balRes.rows[0].balance);
-        if (available < parseFloat(item.quantity)) {
-          throw Object.assign(new Error(`Insufficient stock for item ${item.item_id}. Available: ${available}, Requested: ${item.quantity}`), { status: 422 });
-        }
-
-        await client.query(
-          `INSERT INTO stock_transfer_items (transfer_id, item_id, quantity) VALUES ($1, $2, $3)`,
-          [transfer.id, item.item_id, item.quantity]
-        );
-
-        // Stock out from source warehouse
-        await stockLedgerRepo.createEntry(client, {
-          item_id: item.item_id,
-          warehouse_id: req.body.from_warehouse_id,
-          transaction_type: 'transfer',
-          quantity_in: 0,
-          quantity_out: item.quantity,
-          rate: 0,
-          reference_type: 'transfer',
-          reference_id: transfer.id,
-          transaction_date: req.body.transfer_date,
-          remarks: `Transfer ${transferNumber} - Out`,
-          created_by: req.user?.employee_id ?? null
-        });
-
-        // Stock in to destination warehouse
-        await stockLedgerRepo.createEntry(client, {
-          item_id: item.item_id,
-          warehouse_id: req.body.to_warehouse_id,
-          transaction_type: 'transfer',
-          quantity_in: item.quantity,
-          quantity_out: 0,
-          rate: 0,
-          reference_type: 'transfer',
-          reference_id: transfer.id,
-          transaction_date: req.body.transfer_date,
-          remarks: `Transfer ${transferNumber} - In`,
-          created_by: req.user?.employee_id ?? null
-        });
-      }
-
-      await client.query('COMMIT');
-      res.status(201).json(transfer);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      res.status(error.status || 500).json({ error: error.message });
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.get('/stock-transfers', requirePermission('inventory', 'view'), async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT st.*, wf.warehouse_name as from_warehouse, wt.warehouse_name as to_warehouse 
-       FROM stock_transfers st
-       JOIN warehouses wf ON st.from_warehouse_id = wf.id
-       JOIN warehouses wt ON st.to_warehouse_id = wt.id
-       WHERE st.deleted_at IS NULL ORDER BY st.transfer_date DESC`
-    );
-    res.json(result.rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// =====================================================
 // STOCK ADJUSTMENTS
+// (the old /stock-transfers pair was dead code — zero frontend callers,
+// fully duplicated by the live, better-governed warehouse_transfers path
+// in warehouse.routes.js — removed rather than left as an unused dupe)
 // =====================================================
+// Maker-checker: creation only records the request (status='pending') and
+// never touches stock_ledger/inventory_items — a separate approver
+// (inventory:approve) posts or rejects it below. Previously this endpoint
+// posted to the ledger immediately on a single 'inventory:add' permission,
+// the only "correct the books" operation in Inventory without a second
+// approval, unlike Cycle Count's real approve-gated /submit route.
 router.post('/stock-adjustments', requirePermission('inventory', 'add'), async (req, res) => {
   // Accept both formats:
   //   Array format:  { items: [{item_id, quantity, remarks}], warehouse_id, adjustment_type, adjustment_date, reason, notes }
@@ -422,9 +337,11 @@ router.post('/stock-adjustments', requirePermission('inventory', 'add'), async (
 
     const adjustmentNumber = `ADJ${Date.now()}`;
     const result = await client.query(
-      `INSERT INTO stock_adjustments (adjustment_number, warehouse_id, adjustment_date, adjustment_type, reason, notes)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [adjustmentNumber, warehouseId, adjDate, adjType, body.reason, body.notes]
+      `INSERT INTO stock_adjustments
+         (adjustment_number, warehouse_id, adjustment_date, adjustment_type, reason, notes, status, created_by, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8) RETURNING *`,
+      [adjustmentNumber, warehouseId, adjDate, adjType, body.reason, body.notes,
+       req.user?.employee_id ?? null, req.scope?.company_id ?? null]
     );
     const adjustment = result.rows[0];
 
@@ -434,7 +351,8 @@ router.post('/stock-adjustments', requirePermission('inventory', 'add'), async (
         throw Object.assign(new Error(`Invalid quantity: ${item.quantity}`), { status: 422 });
       }
 
-      // Guard: prevent negative stock on decrease
+      // Soft pre-check only — a decrease can still be short of stock by the
+      // time this is approved, so the binding check happens at approval time.
       if (adjType === 'decrease') {
         const balRes = await client.query(
           `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
@@ -453,33 +371,133 @@ router.post('/stock-adjustments', requirePermission('inventory', 'add'), async (
         `INSERT INTO stock_adjustment_items (adjustment_id, item_id, quantity, remarks) VALUES ($1, $2, $3, $4)`,
         [adjustment.id, item.item_id, qty, item.remarks || '']
       );
-
-      await stockLedgerRepo.createEntry(client, {
-        item_id: item.item_id,
-        warehouse_id: warehouseId,
-        transaction_type: 'adjustment',
-        quantity_in:  adjType === 'increase' ? qty : 0,
-        quantity_out: adjType === 'decrease' ? qty : 0,
-        rate: 0,
-        reference_type: 'adjustment',
-        reference_id: adjustment.id,
-        transaction_date: adjDate,
-        remarks: `Adjustment ${adjustmentNumber}${item.remarks ? ': ' + item.remarks : ''}`,
-        created_by: req.user?.employee_id ?? null,
-      });
     }
 
     await client.query('COMMIT');
-
-    // Fire-and-forget: check low stock for each adjusted item
-    for (const item of rawItems) {
-      checkAndCreateAlerts(item.item_id, warehouseId);
-    }
-
-    res.status(201).json(adjustment);
+    res.status(201).json({ ...adjustment, message: 'Adjustment recorded — awaiting approval before stock is affected.' });
   } catch (error) {
     await client.query('ROLLBACK');
     res.status(error.status || 500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+router.get('/stock-adjustments', requirePermission('inventory', 'view'), async (req, res) => {
+  try {
+    const { status } = req.query;
+    const params = [];
+    let where = 'WHERE 1=1';
+    if (req.scope?.company_id != null) { params.push(req.scope.company_id); where += ` AND (sa.company_id = $${params.length} OR sa.company_id IS NULL)`; }
+    if (status) { params.push(status); where += ` AND sa.status = $${params.length}`; }
+    const { rows } = await pool.query(
+      `SELECT sa.*,
+              COALESCE(json_agg(json_build_object('item_id', sai.item_id, 'quantity', sai.quantity, 'remarks', sai.remarks))
+                FILTER (WHERE sai.id IS NOT NULL), '[]') AS items
+         FROM stock_adjustments sa
+         LEFT JOIN stock_adjustment_items sai ON sai.adjustment_id = sa.id
+         ${where} AND sa.deleted_at IS NULL
+         GROUP BY sa.id
+         ORDER BY sa.created_at DESC`,
+      params
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/stock-adjustments/:id/approve', requirePermission('inventory', 'approve'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [adj] } = await client.query(
+      `SELECT * FROM stock_adjustments WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!adj) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Adjustment not found' }); }
+    if (adj.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: `Adjustment is already ${adj.status}` });
+    }
+
+    const { rows: items } = await client.query(
+      `SELECT item_id, quantity, remarks FROM stock_adjustment_items WHERE adjustment_id = $1`,
+      [req.params.id]
+    );
+
+    for (const item of items) {
+      const qty = parseFloat(item.quantity);
+      if (adj.adjustment_type === 'decrease') {
+        const { rows: [bal] } = await client.query(
+          `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
+          [item.item_id, adj.warehouse_id]
+        );
+        if (parseFloat(bal.balance) < qty) {
+          throw Object.assign(
+            new Error(`Insufficient stock for item ${item.item_id} at approval time. Available: ${bal.balance}, Requested: ${qty}`),
+            { status: 422 }
+          );
+        }
+      }
+      await postStock(client, {
+        itemId: item.item_id,
+        warehouseId: adj.warehouse_id,
+        inQty: adj.adjustment_type === 'increase' ? qty : 0,
+        outQty: adj.adjustment_type === 'decrease' ? qty : 0,
+        txnType: 'adjustment',
+        refType: 'adjustment',
+        refId: adj.id,
+        remarks: `Adjustment ${adj.adjustment_number}${item.remarks ? ': ' + item.remarks : ''}`,
+        createdBy: req.user?.employee_id ?? null,
+        companyId: adj.company_id,
+      });
+    }
+
+    const { rows: [updated] } = await client.query(
+      `UPDATE stock_adjustments SET status='approved', approved_by=$2, approved_at=NOW() WHERE id=$1 RETURNING *`,
+      [req.params.id, req.user?.employee_id ?? null]
+    );
+    await client.query('COMMIT');
+    logAudit({ userId: req.user?.userId, module: 'inventory', recordId: adj.id, recordType: 'stock_adjustment', action: 'approve', req });
+    res.json(updated);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(error.status || 500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/stock-adjustments/:id/reject', requirePermission('inventory', 'approve'), async (req, res) => {
+  // Was a plain pool.query select-then-update with no lock, unlike /approve's
+  // FOR UPDATE — a concurrent approve could commit between this route's
+  // SELECT and UPDATE, letting a reject silently overwrite an
+  // already-approved-and-posted adjustment without reversing its ledger
+  // entry. Matches /approve's transaction + row-lock pattern now.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [adj] } = await client.query(
+      `SELECT status FROM stock_adjustments WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!adj) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Adjustment not found' }); }
+    if (adj.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: `Adjustment is already ${adj.status}` });
+    }
+
+    const { rows: [updated] } = await client.query(
+      `UPDATE stock_adjustments SET status='rejected', approved_by=$2, approved_at=NOW(), rejection_reason=$3 WHERE id=$1 RETURNING *`,
+      [req.params.id, req.user?.employee_id ?? null, req.body?.reason || null]
+    );
+    await client.query('COMMIT');
+    logAudit({ userId: req.user?.userId, module: 'inventory', recordId: req.params.id, recordType: 'stock_adjustment', action: 'reject', req });
+    res.json(updated);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: error.message });
   } finally {
     client.release();
   }

@@ -1012,11 +1012,8 @@ INSERT INTO public.role_permissions VALUES
 	(926, 17, 'notifications', true, true, true, false, false, false),
 	(927, 19, 'approvals', true, true, true, false, true, false),
 	(928, 19, 'notifications', true, true, true, false, false, false),
-	(929, 22, 'approvals', true, true, true, false, true, false),
 	(930, 22, 'notifications', true, true, true, false, false, false),
-	(931, 23, 'approvals', true, true, true, false, true, false),
 	(932, 23, 'notifications', true, true, true, false, false, false),
-	(933, 25, 'approvals', true, true, true, false, true, false),
 	(934, 25, 'notifications', true, true, true, false, false, false),
 	(935, 10, 'approvals', true, true, false, false, false, false),
 	(936, 10, 'notifications', true, false, false, false, false, false),
@@ -1037,7 +1034,10 @@ INSERT INTO public.role_permissions VALUES
 	(951, 26, 'approvals', true, true, false, false, false, false),
 	(952, 26, 'notifications', true, false, false, false, false, false),
 	(953, 46, 'leaves', true, true, true, false, true, false),
-	(954, 46, 'attendance', true, false, false, false, false, false);
+	(954, 46, 'attendance', true, false, false, false, false, false),
+	(929, 22, 'approvals', true, true, false, false, false, false),
+	(931, 23, 'approvals', true, true, false, false, false, false),
+	(933, 25, 'approvals', true, true, false, false, false, false);
 
 
 --

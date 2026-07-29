@@ -402,28 +402,27 @@ export const ROUTES = {
   TimesheetEntry:        { component: lazy(() => import('@/features/marketing/pages/TimesheetEntry')) },
   UserPerformance:       { component: lazy(() => import('@/features/marketing/pages/UserPerformance')) },
 
-  // ── Recruitment ──────────────────────────────────────────────────────────
+  // ── Recruitment (merged with former Talent module 2026-07-28) ─────────────
   RecruitmentSettings:   { component: lazy(() => import('@/features/recruitment/pages/RecruitmentSettings')), props: ctx => ({ setPage: ctx.setPage }) },
   RecruitmentDashboard:  { component: lazy(() => import('@/features/recruitment/pages/RecruitmentDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
   JobRequisitionPipeline:{ component: lazy(() => import('@/features/recruitment/pages/JobRequisitionPipeline')) },
   JobOpenings:           { component: lazy(() => import('@/features/recruitment/pages/JobOpenings')),           props: ctx => ({ setPage: ctx.setPage }) },
+  Candidates:            { component: lazy(() => import('@/features/recruitment/pages/Candidates')),         props: ctx => ({ setPage: ctx.setPage }) },
   CandidatePipeline:     { component: lazy(() => import('@/features/recruitment/pages/CandidatePipeline')),     props: ctx => ({ setPage: ctx.setPage }) },
   AllCandidates:         { component: lazy(() => import('@/features/recruitment/pages/AllCandidates')),      props: ctx => ({ setPage: ctx.setPage }) },
   CandidateDetail:       { component: lazy(() => import('@/features/recruitment/pages/CandidateDetail')),    props: ctx => ({ setPage: ctx.setPage }) },
   EmailTemplates:        { component: lazy(() => import('@/features/recruitment/pages/EmailTemplates')),     props: ctx => ({ setPage: ctx.setPage }) },
   HiringForecasts:       { component: lazy(() => import('@/features/recruitment/pages/HiringForecasts')) },
   InterviewScheduler:    { component: lazy(() => import('@/features/recruitment/pages/InterviewScheduler')), props: ctx => ({ setPage: ctx.setPage }) },
+  InterviewQuestionBank: { component: lazy(() => import('@/features/recruitment/pages/InterviewQuestionBank')) },
   OfferManagement:       { component: lazy(() => import('@/features/recruitment/pages/OfferManagement')) },
   OnboardingChecklist:   { component: lazy(() => import('@/features/recruitment/pages/OnboardingChecklist')) },
   RecruitmentReports:    { component: lazy(() => import('@/features/recruitment/pages/RecruitmentReports')) },
-
-  // ── Talent ───────────────────────────────────────────────────────────────
-  ResumeDatabase:        { component: lazy(() => import('@/features/talent/pages/ResumeDatabase')) },
-  TalentPools:           { component: lazy(() => import('@/features/talent/pages/TalentPools')),      props: ctx => ({ setPage: ctx.setPage }) },
-  TalentPoolDetail:      { component: lazy(() => import('@/features/talent/pages/TalentPoolDetail')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
-  InterviewQuestionBank: { component: lazy(() => import('@/features/talent/pages/InterviewQuestionBank')) },
-  RecruitmentAgencies:   { component: lazy(() => import('@/features/talent/pages/RecruitmentAgencies')) },
-  RecruiterDashboard:    { component: lazy(() => import('@/features/talent/pages/RecruiterDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
+  ResumeDatabase:        { component: lazy(() => import('@/features/recruitment/pages/ResumeDatabase')) },
+  TalentPools:           { component: lazy(() => import('@/features/recruitment/pages/TalentPools')),      props: ctx => ({ setPage: ctx.setPage }) },
+  TalentPoolDetail:      { component: lazy(() => import('@/features/recruitment/pages/TalentPoolDetail')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
+  RecruitmentAgencies:   { component: lazy(() => import('@/features/recruitment/pages/RecruitmentAgencies')) },
+  RecruiterDashboard:    { component: lazy(() => import('@/features/recruitment/pages/RecruiterDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
 
   // ── Service Desk ─────────────────────────────────────────────────────────
   // Hub pages — merged reviews + intelligence submenus
@@ -496,6 +495,7 @@ export const ROUTES = {
   CustomerPortalManagement: { component: lazy(() => import('@/features/servicedesk/pages/CustomerPortalManagement')) },
   CustomerPortalDashboard:  { component: lazy(() => import('@/features/servicedesk/pages/CustomerPortalDashboard')) },
   CommissioningWorkflow:    { component: lazy(() => import('@/features/servicedesk/pages/CommissioningWorkflow')) },
+  InstallationRequests:     { component: lazy(() => import('@/features/servicedesk/pages/InstallationRequests')) },
   ServiceAnalytics:         { component: lazy(() => import('@/features/servicedesk/pages/ServiceAnalytics')) },
   FailureAnalytics:         { component: lazy(() => import('@/features/servicedesk/pages/FailureAnalytics')) },
   VoiceOfCustomer:          { component: lazy(() => import('@/features/servicedesk/pages/VoiceOfCustomer')) },
@@ -536,7 +536,7 @@ export const ROUTES = {
 // ── NAV_ITEMS ──────────────────────────────────────────────────────────────
 import {
   FaHome, FaUsers, FaChartLine, FaBullhorn, FaProjectDiagram,
-  FaBox, FaFileAlt, FaCog, FaClock, FaStar, FaHandshake,
+  FaBox, FaFileAlt, FaCog, FaClock, FaHandshake,
   FaShoppingCart, FaBell, FaSitemap, FaHistory, FaCalendarCheck,
   FaUmbrellaBeach, FaBriefcase, FaHeadset, FaPlane, FaCogs,
   FaExclamationCircle, FaWrench, FaRobot,
@@ -643,38 +643,34 @@ export const NAV_ITEMS = [
     { name: 'My Payslip',            page: 'PayslipViewer' },
   ]},
 
+  // 'Talent' used to be a separate top-level menu (Resume Database/Pools/
+  // Question Bank/Agencies) but it had no `module:` key, so it was invisible
+  // to manager/department_head — who hold 'Recruitment' but not 'Talent' —
+  // and it overlapped with Recruitment's candidate views (Resume Database,
+  // Candidate Pipeline and All Candidates all rendered the same `candidates`
+  // table). Merged into this single module 2026-07-28: the three candidate
+  // views are now tabs on one 'Candidates' page, and the sourcing tools
+  // (Talent Pools/Question Bank/Agencies) live in this menu directly, all
+  // inheriting the 'recruitment' module permission.
   { name: 'Recruitment', icon: <FaBriefcase />, module: 'recruitment', submenu: [
     { name: 'Dashboard',           page: 'RecruitmentDashboard' },
-    // Recruiter's personal "my day" view (today's interviews, action-required,
-    // recent applications) — the individual-contributor counterpart to the
-    // org-wide Dashboard above. Moved from 'Talent' 2026-07-22: it was grouped
-    // with the sourcing-database tools (Resume Database/Pools/Agencies) even
-    // though nothing about it is sourcing-related, which also meant manager/
-    // department_head — who hold 'Recruitment' but not 'Talent' — could never
-    // reach it. No backend change needed: GET /talent/recruiter-dashboard
-    // carries no allowRoles restriction of its own.
     { name: 'Recruiter Dashboard', page: 'RecruiterDashboard' },
     { name: 'Job Requisitions',    page: 'JobRequisitionPipeline' },
     { name: 'Job Openings',        page: 'JobOpenings' },
-    { name: 'All Candidates',      page: 'AllCandidates' },
-    { name: 'Candidate Pipeline',  page: 'CandidatePipeline' },
+    { name: 'Candidates',          page: 'Candidates' },
     { name: 'Interview Scheduler', page: 'InterviewScheduler' },
+    { name: 'Question Bank',       page: 'InterviewQuestionBank' },
     { name: 'Offer Management',    page: 'OfferManagement' },
     { name: 'Onboarding',          page: 'OnboardingChecklist' },
+    { name: 'Reports',             page: 'RecruitmentReports' },
+    { name: 'Sourcing & Talent',   separator: true },
+    { name: 'Talent Pools',        page: 'TalentPools' },
+    { name: 'Agencies',            page: 'RecruitmentAgencies' },
+    { name: 'Admin',               separator: true },
     { name: 'Email Templates',     page: 'EmailTemplates' },
     { name: 'Hiring Forecasts',    page: 'HiringForecasts' },
     { name: 'Employee Auto-Creation', page: 'EmployeeAutoCreation' },
     { name: 'Settings',            page: 'RecruitmentSettings' },
-  ]},
-
-  // Sourcing/backstage tools, distinct from Recruitment's active-requisition
-  // pipeline: these run on /talent/* against `resumes`/`pools`/`agencies`,
-  // not the `candidates` tied to a specific job opening.
-  { name: 'Talent', icon: <FaStar />, submenu: [
-    { name: 'Resume Database',     page: 'ResumeDatabase' },
-    { name: 'Talent Pools',        page: 'TalentPools' },
-    { name: 'Question Bank',       page: 'InterviewQuestionBank' },
-    { name: 'Agencies',            page: 'RecruitmentAgencies' },
   ]},
 
   { name: 'CRM', icon: <FaHandshake />, submenu: [
@@ -863,6 +859,7 @@ export const NAV_ITEMS = [
     { name: 'Customer Complaints', page: 'CustomerComplaintsIPCS' }, // IPCS register
     { name: 'Service Catalog',   page: 'ServiceMaster' },      // rate card (was 'Service Master')
     { name: 'Customer Portal',   page: 'CustomerPortalManagement' },
+    { name: 'Installation',      page: 'InstallationRequests' },
     { name: 'Commissioning',     page: 'CommissioningWorkflow' },
     { name: 'Intelligence',      page: 'ServiceIntelligence' },   // Analytics·Failure·VoC
     { name: 'Settings',          page: 'ServiceDeskSettings' },

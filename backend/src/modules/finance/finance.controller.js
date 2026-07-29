@@ -31,10 +31,10 @@ export const getFinanceDashboard = async (req, res) => {
     ] = await Promise.all([
       // Accounts receivable — open invoices
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
-                FROM invoices WHERE status NOT IN ('paid','cancelled')`),
+                FROM invoices WHERE LOWER(status) NOT IN ('paid','cancelled')`),
       // Accounts payable — open supplier bills
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
-                FROM supplier_bills WHERE status NOT IN ('paid','cancelled')`),
+                FROM supplier_bills WHERE LOWER(status) NOT IN ('paid','cancelled')`),
       // Month revenue — invoices issued this month
       safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM invoices
                 WHERE invoice_date >= $1 AND invoice_date < $2`, [monthStart, nextMonth]),
@@ -43,14 +43,14 @@ export const getFinanceDashboard = async (req, res) => {
                 WHERE bill_date >= $1 AND bill_date < $2`, [monthStart, nextMonth]),
       // Overdue invoices count (due_date < today and not paid)
       safeRows(`SELECT COUNT(*) AS value FROM invoices
-                WHERE due_date < NOW() AND status NOT IN ('paid','cancelled')`),
+                WHERE due_date < NOW() AND LOWER(status) NOT IN ('paid','cancelled')`),
       // Overdue invoices total
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
-                FROM invoices WHERE due_date < NOW() AND status NOT IN ('paid','cancelled')`),
+                FROM invoices WHERE due_date < NOW() AND LOWER(status) NOT IN ('paid','cancelled')`),
       // Bills due in next 7 days
       safeRows(`SELECT COUNT(*) AS value FROM supplier_bills
                 WHERE due_date BETWEEN NOW() AND NOW() + INTERVAL '7 days'
-                  AND status NOT IN ('paid','cancelled')`),
+                  AND LOWER(status) NOT IN ('paid','cancelled')`),
     ]);
 
     // Cash/bank balance — primary: bank_accounts.current_balance; fallback: journal_lines
@@ -183,11 +183,11 @@ export const getInvoiceStats = async (req, res) => {
     const rows = await safeRows(`
       SELECT
         COUNT(*)                                                        AS total,
-        COUNT(*) FILTER (WHERE status = 'paid')                        AS paid,
+        COUNT(*) FILTER (WHERE LOWER(status) = 'paid')                 AS paid,
         COUNT(*) FILTER (WHERE due_date < NOW()
-                           AND status NOT IN ('paid','cancelled'))      AS overdue,
+                           AND LOWER(status) NOT IN ('paid','cancelled')) AS overdue,
         COALESCE(SUM(total_amount - COALESCE(paid_amount,0))
-          FILTER (WHERE status NOT IN ('paid','cancelled')), 0)        AS outstanding
+          FILTER (WHERE LOWER(status) NOT IN ('paid','cancelled')), 0) AS outstanding
       FROM invoices
       WHERE deleted_at IS NULL${cFilter}
     `, params);

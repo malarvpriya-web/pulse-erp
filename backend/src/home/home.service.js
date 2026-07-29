@@ -1,4 +1,5 @@
 import pool from "../config/db.js";
+import { APPROVER_ROLES, APPROVER_CATEGORY_SCOPE } from "../modules/approvals/approvals.authz.js";
 
 export const getActiveAnnouncements = async () => {
   const result = await pool.query(`
@@ -318,10 +319,27 @@ export const getEmployeeApprovals = async (userId, employeeId, companyId) => {
   };
 };
 
+// Mirrors approvals.authz.js's canClaimCategory, applied across every role the
+// caller holds (home.service.js has no req object here, only the role list).
+// Roles absent from APPROVER_ROLES entirely (project_manager, sales_manager,
+// service_manager — F16 pass) get an empty queue, not the raw company-wide
+// count: that mismatch (Home showing "7 Approvals" while ApprovalCenter shows
+// "0 Pending") was confirmed live for service_manager. Roles present in
+// APPROVER_CATEGORY_SCOPE (procurement_manager/production_manager/qc_manager)
+// get only the categories they can actually claim. A dual-role holder is never
+// more restricted than their most permissive role, same as canClaimCategory.
+const scopeApprovalQueueForCaller = (queue, roles) => {
+  const heldApprover = roles.filter(r => APPROVER_ROLES.includes(r));
+  if (!heldApprover.length) return [];
+  if (heldApprover.some(r => !APPROVER_CATEGORY_SCOPE[r])) return queue;
+  const allowedCats = new Set(heldApprover.flatMap(r => APPROVER_CATEGORY_SCOPE[r]));
+  return queue.filter(item => allowedCats.has(String(item.type || '').toLowerCase()));
+};
+
 // Company-wide management metrics + queues (non-employee roles).
 // Drives the management hero KPIs (attendance, revenue MTD, open tasks,
 // pending approvals) and the Approvals queue / Open Tasks cards.
-const getManagementMetrics = async (companyId) => {
+const getManagementMetrics = async (companyId, roles) => {
   const cf = companyId != null ? ` AND company_id = $1` : '';
   const cp = companyId != null ? [companyId] : [];
   const tf = companyId != null ? ` AND (p.company_id = $1 OR p.company_id IS NULL)` : '';
@@ -348,14 +366,15 @@ const getManagementMetrics = async (companyId) => {
   const present = Number(attRow?.[0]?.present || 0);
   const total   = Number(attRow?.[0]?.total || 0);
   const attRate = total > 0 ? Math.round((present / total) * 100) : 0;
+  const scopedQueue = scopeApprovalQueueForCaller(queue, roles || []);
 
   return {
     attendance: { rate: attRate, total, present },
     revenue:    { mtd: Number(revMtd) || 0 },
-    pendingApprovalsCount: queue.length,
+    pendingApprovalsCount: scopedQueue.length,
     openTasks:             tasks,
     openTasksCount:        Number(openTasksCount) || 0,
-    approvalsQueue:        queue.slice(0, 8),
+    approvalsQueue:        scopedQueue.slice(0, 8),
   };
 };
 
@@ -411,6 +430,6 @@ export const getHomeSummary = async (user, scope) => {
     return { ...base, myTasks, myApprovals };
   }
 
-  const management = await getManagementMetrics(companyId);
+  const management = await getManagementMetrics(companyId, roles);
   return { ...base, management };
 };

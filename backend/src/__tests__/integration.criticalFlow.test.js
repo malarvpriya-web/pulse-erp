@@ -412,6 +412,10 @@ describe('Step 8 — Dispatch Sales Order', () => {
       carrier: 'DTDC', tracking_number: 'DTDC123456',
     };
     // sales.routes.js uses pool from config/db.js (not shared/db.js)
+    // Dispatch now checks for open linked production orders before allowing
+    // the status flip (see sales.routes.js /orders/:id/dispatch) — mock that
+    // count query first, then the UPDATE.
+    configPool.query.mockResolvedValueOnce({ rows: [{ n: 0 }] }); // open-production-order count → none
     configPool.query.mockResolvedValueOnce({ rows: [dispatched] }); // UPDATE → dispatched order
 
     const res = await request(salesApp).put('/api/sales/orders/42/dispatch')

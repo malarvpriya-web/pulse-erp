@@ -5,10 +5,47 @@ import cogsService from './cogsJournal.service.js';
 import { detectGSTFromGSTIN, detectGSTFromState, validateGstSplit } from '../../../utils/gst.js';
 
 class InvoiceService {
+  // Credit-limit enforcement only ever guarded the direct manual POST
+  // /finance/invoices route (finance.routes.js). Sales-order invoicing and
+  // Project milestone invoicing were switched to call this service directly
+  // (see the 2026-07-21 dual-ledger fix), which bypassed that middleware
+  // entirely — same check, applied here so no caller can skip it.
+  async checkCreditLimit(client, { customerId, partyId, totalAmount, companyId }) {
+    const partyRef = customerId || partyId;
+    if (!partyRef || !totalAmount) return;
+    const { rows: [party] } = await client.query(
+      'SELECT credit_limit, name FROM parties WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
+      [partyRef, companyId ?? null]
+    ).catch(() => ({ rows: [] }));
+    if (!party || !party.credit_limit || parseFloat(party.credit_limit) <= 0) return;
+
+    const { rows: [arRow] } = await client.query(`
+      SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount, 0)), 0) AS outstanding
+      FROM invoices
+      WHERE customer_id = $1 AND ($2::int IS NULL OR company_id = $2)
+        AND LOWER(status) NOT IN ('paid','cancelled','draft')
+    `, [partyRef, companyId ?? null]);
+
+    const outstanding = parseFloat(arRow?.outstanding ?? 0);
+    const thisInvoice  = parseFloat(totalAmount);
+    const creditLimit  = parseFloat(party.credit_limit);
+    const projectedTotal = outstanding + thisInvoice;
+    if (projectedTotal > creditLimit) {
+      throw Object.assign(new Error(
+        `Credit limit exceeded for ${party.name}. Limit: ₹${creditLimit.toLocaleString('en-IN')}, Outstanding: ₹${outstanding.toLocaleString('en-IN')}, This Invoice: ₹${thisInvoice.toLocaleString('en-IN')}.`
+      ), { status: 422, code: 'CREDIT_LIMIT_EXCEEDED', credit_limit: creditLimit, outstanding, this_invoice: thisInvoice, projected_total: projectedTotal });
+    }
+  }
+
   async createInvoice(data, userId) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      await this.checkCreditLimit(client, {
+        customerId: data.customer_id, partyId: data.party_id,
+        totalAmount: data.total_amount, companyId: data.company_id,
+      });
 
       const invoiceNumber = await invoiceRepo.getNextNumber();
 

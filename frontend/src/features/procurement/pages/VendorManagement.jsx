@@ -274,7 +274,8 @@ const VENDOR_CATEGORIES = [
 ];
 
 const EMPTY_VENDOR = { vendor_name: '', category: 'Raw Materials', gstin: '', pan: '', bank_name: '', account_number: '', ifsc: '', contact_person: '', email: '', phone: '', city: '', state: '', address: '', lead_time_days: 14, credit_limit: 0, payment_terms_days: 30, status: 'active' };
-const EMPTY_RFQ    = { item_description: '', quantity: '', unit: 'Nos', required_by: '', linked_pr_id: '', vendor_ids: [] };
+const EMPTY_RFQ_ITEM = { item_id: null, item_description: '', quantity: '', unit: 'Nos' };
+const EMPTY_RFQ    = { items: [{ ...EMPTY_RFQ_ITEM }], required_by: '', linked_pr_id: '', vendor_ids: [] };
 const EMPTY_MATCH  = { po_id: '', grn_id: '', vendor_invoice_no: '', vendor_invoice_date: '', vendor_invoice_amount: '' };
 const EMPTY_RATING = { vendor_id: '', po_id: '', quality_score: 3, delivery_score: 3, price_score: 3, comments: '' };
 
@@ -318,6 +319,7 @@ export default function VendorManagement() {
   const [vendorForm,     setVendorForm]     = useState(EMPTY_VENDOR);
   const [rfqModal,       setRfqModal]       = useState(false);
   const [rfqForm,        setRfqForm]        = useState(EMPTY_RFQ);
+  const [openPRs,        setOpenPRs]        = useState([]);
   const [viewQuotesRfq,  setViewQuotesRfq]  = useState(null);
   const [sendVendorsRfq, setSendVendorsRfq] = useState(null);
   const [sendVendorIds,  setSendVendorIds]  = useState([]);
@@ -372,7 +374,51 @@ export default function VendorManagement() {
     } finally { if (isMounted.current) setMatchLoading(false); }
   }, []);
 
-  useEffect(() => { fetchVendors(); fetchRfqs(); fetchMatches(); }, [fetchVendors, fetchRfqs, fetchMatches]);
+  const fetchOpenPRs = useCallback(async () => {
+    try {
+      const r = await api.get('/procurement/purchase-requests');
+      if (!isMounted.current) return;
+      const rows = Array.isArray(r.data) ? r.data : [];
+      setOpenPRs(rows.filter(pr => !['rejected', 'cancelled', 'closed'].includes(String(pr.status || '').toLowerCase())));
+    } catch { if (isMounted.current) setOpenPRs([]); }
+  }, []);
+
+  useEffect(() => { fetchVendors(); fetchRfqs(); fetchMatches(); fetchOpenPRs(); }, [fetchVendors, fetchRfqs, fetchMatches, fetchOpenPRs]);
+
+  // RFQ used to only take a hand-typed "PR ID" text field with zero item-line
+  // carryover, then later only pre-filled from the PR header's own legacy
+  // item_name/quantity/unit scalars — those go unpopulated on any PR created
+  // through the current multi-line flow (real data lives in
+  // purchase_request_items). Fetch the PR's real child items and carry all
+  // of them over, not just one guessed line.
+  const applyPRToRfq = async (prId) => {
+    const pr = openPRs.find(p => String(p.id) === String(prId));
+    if (!pr) { setRfqForm(f => ({ ...f, linked_pr_id: '' })); return; }
+    try {
+      const r = await api.get(`/procurement/purchase-requests/${prId}`);
+      const prItems = r.data?.items || [];
+      setRfqForm(f => ({
+        ...f,
+        linked_pr_id: pr.request_number || pr.id,
+        items: prItems.length
+          ? prItems.map(it => ({
+              item_id: it.item_id || null,
+              item_description: it.item_name || '',
+              quantity: it.quantity || '',
+              unit: it.unit_of_measure || 'Nos',
+            }))
+          : f.items,
+      }));
+    } catch {
+      // Fall back to the PR header's own scalar fields if the detail fetch
+      // fails — still better than leaving the picker inert.
+      setRfqForm(f => ({
+        ...f,
+        linked_pr_id: pr.request_number || pr.id,
+        items: [{ item_id: null, item_description: pr.item_name || pr.notes || '', quantity: pr.quantity || '', unit: pr.unit || 'Nos' }],
+      }));
+    }
+  };
 
   const fetchScorecard = useCallback(async (vendor) => {
     setScorecardVendor(vendor); setScorecardData(null);
@@ -412,16 +458,19 @@ export default function VendorManagement() {
   }
 
   /* ── RFQ actions ── */
-  function openNewRFQ() { setRfqForm(EMPTY_RFQ); setSaveError(''); setRfqModal(true); }
+  function openNewRFQ() { setRfqForm({ ...EMPTY_RFQ, items: [{ ...EMPTY_RFQ_ITEM }] }); setSaveError(''); setRfqModal(true); }
+  function addRfqItem()    { setRfqForm(f => ({ ...f, items: [...f.items, { ...EMPTY_RFQ_ITEM }] })); }
+  function removeRfqItem(idx) { setRfqForm(f => ({ ...f, items: f.items.filter((_, i) => i !== idx) })); }
+  function updateRfqItem(idx, patch) { setRfqForm(f => ({ ...f, items: f.items.map((it, i) => i === idx ? { ...it, ...patch } : it) })); }
 
   async function saveRFQ() {
     setSaveError('');
-    if (!rfqForm.item_description?.trim()) {
-      setSaveError('Item description is required.');
+    if (!rfqForm.items.length || rfqForm.items.some(it => !it.item_description?.trim())) {
+      setSaveError('Every item needs a description.');
       return;
     }
-    if (!rfqForm.quantity || Number(rfqForm.quantity) <= 0) {
-      setSaveError('Quantity must be greater than 0.');
+    if (rfqForm.items.some(it => !it.quantity || Number(it.quantity) <= 0)) {
+      setSaveError('Every item needs a quantity greater than 0.');
       return;
     }
     try {
@@ -445,6 +494,22 @@ export default function VendorManagement() {
     } catch (e) {
       if (!isMounted.current) return;
       setSaveError(e.response?.data?.error || e.message || 'Failed to send RFQ.');
+    }
+  }
+
+  // The RFQ list only carries aggregates (response_count/lowest_quote), not
+  // the real quotes/items arrays — fetch the full detail before opening the
+  // modal, otherwise "View Quotes"/"Award Winner" always renders empty.
+  async function openViewQuotes(rfq) {
+    setSaveError('');
+    try {
+      const r = await api.get(`/procurement/rfqs/${rfq.id}`);
+      if (!isMounted.current) return;
+      setViewQuotesRfq(r.data);
+    } catch (e) {
+      if (!isMounted.current) return;
+      setViewQuotesRfq({ ...rfq, items: [], quotes: [] });
+      setSaveError(e.response?.data?.error || e.message || 'Failed to load RFQ detail.');
     }
   }
 
@@ -659,7 +724,14 @@ export default function VendorManagement() {
                     return (
                       <tr key={r.id}>
                         <td style={{ ...TD, fontWeight: 600, color: '#6B3FDB' }}>{r.rfq_number}</td>
-                        <td style={TD}>{r.item_description}</td>
+                        <td style={TD}>
+                          {r.item_description}
+                          {r.item_count > 1 && (
+                            <span style={{ marginLeft: 6, fontSize: 11, color: '#6B3FDB', background: '#f5f3ff', padding: '1px 6px', borderRadius: 6 }}>
+                              +{r.item_count - 1} more
+                            </span>
+                          )}
+                        </td>
                         <td style={TD}>{r.quantity} {r.unit}</td>
                         <td style={TD}>{r.required_by ? new Date(r.required_by).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                         <td style={TD}>{r.response_count ?? (r.quotes || []).length}</td>
@@ -673,12 +745,12 @@ export default function VendorManagement() {
                               </button>
                             )}
                             {(r.status === 'sent' || r.status === 'responses_received') && (
-                              <button style={{ ...btn('ghost'), fontSize: 11, padding: '3px 8px' }} onClick={() => setViewQuotesRfq(r)}>
+                              <button style={{ ...btn('ghost'), fontSize: 11, padding: '3px 8px' }} onClick={() => openViewQuotes(r)}>
                                 {r.status === 'responses_received' ? 'Award Winner' : 'View Quotes'}
                               </button>
                             )}
                             {r.status === 'closed' && (
-                              <button style={{ ...btn('ghost'), fontSize: 11, padding: '3px 8px' }} onClick={() => setViewQuotesRfq(r)}>View</button>
+                              <button style={{ ...btn('ghost'), fontSize: 11, padding: '3px 8px' }} onClick={() => openViewQuotes(r)}>View</button>
                             )}
                           </div>
                         </td>
@@ -918,19 +990,47 @@ export default function VendorManagement() {
       {/* New RFQ */}
       {rfqModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: 600, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#1f2937' }}>New RFQ</h2>
               <button style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6b7280' }} onClick={() => setRfqModal(false)}>×</button>
             </div>
             {saveError && <div style={{ marginBottom: 12, padding: '10px 14px', background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, fontSize: 13, color: '#991b1b' }}>{saveError}</div>}
-            {fieldRow('Item Description *', <input style={inp} value={rfqForm.item_description} onChange={e => setRfqForm(f => ({ ...f, item_description: e.target.value }))} />)}
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
-              {fieldRow('Quantity', <input style={inp} type="number" value={rfqForm.quantity} onChange={e => setRfqForm(f => ({ ...f, quantity: e.target.value }))} />)}
-              {fieldRow('Unit', <input style={inp} value={rfqForm.unit} onChange={e => setRfqForm(f => ({ ...f, unit: e.target.value }))} placeholder="kg / pcs" />)}
-            </div>
+            {fieldRow('Create from Purchase Request (optional)', (
+              <select style={inp} value="" onChange={e => applyPRToRfq(e.target.value)}>
+                <option value="">-- Start from scratch --</option>
+                {openPRs.map(pr => (
+                  <option key={pr.id} value={pr.id}>
+                    {pr.request_number || `PR-${pr.id}`} · {pr.status}
+                  </option>
+                ))}
+              </select>
+            ))}
+            {fieldRow('Items *', (
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 70px 70px 22px', gap: 6, marginBottom: 4, fontSize: 11, color: '#9ca3af', fontWeight: 600 }}>
+                  <span>Description</span><span>Qty</span><span>Unit</span><span />
+                </div>
+                {rfqForm.items.map((it, idx) => (
+                  <div key={idx} style={{ display: 'grid', gridTemplateColumns: '2fr 70px 70px 22px', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                    <input style={inp} placeholder="Item description" value={it.item_description}
+                      onChange={e => updateRfqItem(idx, { item_description: e.target.value })} />
+                    <input style={inp} type="number" value={it.quantity}
+                      onChange={e => updateRfqItem(idx, { quantity: e.target.value })} />
+                    <input style={inp} value={it.unit} placeholder="Nos"
+                      onChange={e => updateRfqItem(idx, { unit: e.target.value })} />
+                    <button type="button" title="Remove item" disabled={rfqForm.items.length === 1}
+                      style={{ background: 'none', border: 'none', fontSize: 16, cursor: rfqForm.items.length === 1 ? 'not-allowed' : 'pointer', color: rfqForm.items.length === 1 ? '#d1d5db' : '#ef4444' }}
+                      onClick={() => removeRfqItem(idx)}>×</button>
+                  </div>
+                ))}
+                <button type="button" style={{ ...btn('ghost'), fontSize: 12, padding: '4px 10px', marginTop: 2 }} onClick={addRfqItem}>+ Add Item</button>
+              </div>
+            ))}
             {fieldRow('Required By', <input style={inp} type="date" value={rfqForm.required_by} onChange={e => setRfqForm(f => ({ ...f, required_by: e.target.value }))} />)}
-            {fieldRow('Linked PR ID (optional)', <input style={inp} value={rfqForm.linked_pr_id} onChange={e => setRfqForm(f => ({ ...f, linked_pr_id: e.target.value }))} placeholder="PR0001" />)}
+            {rfqForm.linked_pr_id && (
+              <p style={{ fontSize: 12, color: '#059669', margin: '2px 0 10px' }}>Linked to {rfqForm.linked_pr_id}</p>
+            )}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
               <button style={btn('ghost')} onClick={() => setRfqModal(false)}>Cancel</button>
               <button style={btn('primary')} onClick={saveRFQ}>Create RFQ</button>
@@ -947,7 +1047,10 @@ export default function VendorManagement() {
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#1f2937' }}>Send RFQ to Vendors</h2>
               <button style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6b7280' }} onClick={() => setSendVendorsRfq(null)}>×</button>
             </div>
-            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>{sendVendorsRfq.rfq_number} · {sendVendorsRfq.item_description}</p>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>
+              {sendVendorsRfq.rfq_number} · {sendVendorsRfq.item_description}
+              {sendVendorsRfq.item_count > 1 && ` +${sendVendorsRfq.item_count - 1} more`}
+            </p>
             {saveError && <div style={{ marginBottom: 12, padding: '10px 14px', background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, fontSize: 13, color: '#991b1b' }}>{saveError}</div>}
             <div style={{ border: '1px solid #e9e4ff', borderRadius: 8, padding: 10, maxHeight: 200, overflowY: 'auto' }}>
               {vendors.filter(v => v.status === 'active').map(v => (
@@ -980,7 +1083,18 @@ export default function VendorManagement() {
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#1f2937' }}>Quotes — {viewQuotesRfq.rfq_number}</h2>
               <button style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6b7280' }} onClick={() => setViewQuotesRfq(null)}>×</button>
             </div>
-            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>{viewQuotesRfq.item_description} · {viewQuotesRfq.quantity} {viewQuotesRfq.unit}</p>
+            {(viewQuotesRfq.items || []).length > 1 ? (
+              <div style={{ border: '1px solid #f0f0f4', borderRadius: 8, padding: '8px 12px', marginBottom: 16 }}>
+                {viewQuotesRfq.items.map(it => (
+                  <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#374151', padding: '2px 0' }}>
+                    <span>{it.item_name}</span>
+                    <span style={{ color: '#9ca3af' }}>{it.quantity} {it.unit}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>{viewQuotesRfq.item_description} · {viewQuotesRfq.quantity} {viewQuotesRfq.unit}</p>
+            )}
             {(() => {
               const quotes = viewQuotesRfq.quotes || [];
               if (!quotes.length) return <div style={{ textAlign: 'center', padding: 24, color: '#9ca3af' }}>No quotes received yet.</div>;

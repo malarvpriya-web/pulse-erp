@@ -686,33 +686,43 @@ router.get('/team-targets', requirePermission('sales', 'view'), async (req, res)
     const fyFrom  = `${fyStart}-04-01`;
     const fyTo    = `${fyStart + 1}-03-31`;
 
+    // sales_orders carries no salesperson/region/business_unit of its own —
+    // those live on the opportunity that produced the order, reached via
+    // quotation_id → quotations.opportunity_id → opportunities. There is no
+    // employee/team-name mapping in the schema, so 'team' targets can't be
+    // attributed to orders and always show 0 achieved.
     const { rows } = await pool.query(
-      `SELECT
+      `WITH order_attrib AS (
+         SELECT so.id, so.total_amount, o.region, o.business_unit
+         FROM sales_orders so
+         JOIN quotations   q ON q.id = so.quotation_id
+         JOIN opportunities o ON o.id = q.opportunity_id
+         WHERE so.order_status NOT IN ('cancelled','draft')
+           AND so.deleted_at IS NULL
+           AND so.order_date BETWEEN $2 AND $3
+       )
+       SELECT
          st.target_type,
          COALESCE(st.team_name, st.region, st.business_unit, 'Default') AS group_name,
          st.region,
          st.business_unit,
          SUM(st.target_amount)::numeric AS target_revenue,
          SUM(st.target_orders)::int AS target_orders,
-         COALESCE(SUM(so.total_amount),0) AS achieved_revenue,
-         COALESCE(COUNT(so.id),0)::int AS achieved_orders,
+         COALESCE(SUM(oa.total_amount),0) AS achieved_revenue,
+         COALESCE(COUNT(oa.id),0)::int AS achieved_orders,
          CASE WHEN SUM(st.target_amount) > 0
-           THEN ROUND(COALESCE(SUM(so.total_amount),0)/SUM(st.target_amount)*100,1) ELSE 0 END AS achievement_pct
+           THEN ROUND(COALESCE(SUM(oa.total_amount),0)/SUM(st.target_amount)*100,1) ELSE 0 END AS achievement_pct
        FROM sales_targets st
-       LEFT JOIN sales_orders so ON so.order_status NOT IN ('cancelled','draft')
-         AND so.deleted_at IS NULL AND so.order_date BETWEEN $2 AND $3
-         AND (
-           (st.target_type='team' AND so.salesperson_name ILIKE '%' || st.team_name || '%')
-           OR (st.target_type='regional' AND so.region = st.region)
-           OR (st.target_type='bu' AND so.business_unit = st.business_unit)
-         )
+       LEFT JOIN order_attrib oa ON
+         (st.target_type='regional' AND oa.region = st.region)
+         OR (st.target_type='bu' AND oa.business_unit = st.business_unit)
        WHERE st.period_type='annual' AND st.period_year=$4
          AND st.target_type IN ('team','regional','bu')
          AND ($1::int IS NULL OR st.company_id=$1)
        GROUP BY st.target_type, st.team_name, st.region, st.business_unit
        ORDER BY target_revenue DESC`,
       [company, fyFrom, fyTo, fyStart]
-    ).catch(() => ({ rows: [] }));
+    );
 
     res.json(rows.map(r => ({
       ...r,
@@ -743,7 +753,7 @@ router.post('/team-targets', requirePermission('sales', 'add'), async (req, res)
        VALUES ($1,$2,$3,$4,$5,'annual',$6,$6,$7,$8,$9)
        RETURNING *`,
       [company, target_type, team_name||null, region||null, business_unit||null,
-       fyYear, parseFloat(target_amount), parseInt(target_orders||0), req.user?.userId||req.user?.id||null]
+       fyYear, parseFloat(target_amount), parseInt(target_orders||0), req.user?.employee_id||null]
     );
     res.status(201).json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }

@@ -6,10 +6,12 @@ import ConfirmDialog from '@/components/core/ConfirmDialog';
 const P = '#6B3FDB';
 
 const STATUS_STYLE = {
-  allocated: { bg: '#dbeafe', color: '#1e40af' },
-  returned:  { bg: '#d1fae5', color: '#065f46' },
-  lost:      { bg: '#fee2e2', color: '#991b1b' },
-  damaged:   { bg: '#fef3c7', color: '#92400e' },
+  allocated:         { bg: '#dbeafe', color: '#1e40af' },
+  returned:          { bg: '#d1fae5', color: '#065f46' },
+  under_maintenance: { bg: '#fef3c7', color: '#92400e' },
+  disposed:          { bg: '#e5e7eb', color: '#374151' },
+  lost:              { bg: '#fee2e2', color: '#991b1b' },
+  damaged:           { bg: '#fef3c7', color: '#92400e' },
 };
 function Badge({ status }) {
   const s = STATUS_STYLE[status?.toLowerCase()] || { bg: '#f3f4f6', color: '#6b7280' };
@@ -33,6 +35,14 @@ export default function EmployeeAssets() {
   const [filterType,  setFilterType]  = useState('');
   const [returnModal, setReturnModal] = useState(null);
   const [returnForm,  setReturnForm]  = useState({ return_date: new Date().toISOString().split('T')[0], condition_out: 'good', notes: '' });
+  const [transferModal, setTransferModal] = useState(null);
+  const [transferForm,  setTransferForm]  = useState({ to_employee_id: '', notes: '' });
+  const [maintModal,    setMaintModal]    = useState(null);
+  const [maintForm,     setMaintForm]     = useState({ expected_return_date: '', notes: '' });
+  const [completeModal, setCompleteModal] = useState(null);
+  const [completeForm,  setCompleteForm]  = useState({ condition_in: 'good', notes: '' });
+  const [disposeModal,  setDisposeModal]  = useState(null);
+  const [disposeForm,   setDisposeForm]   = useState({ reason: '', notes: '' });
   const [pendingHandleDelete, setPendingHandleDelete] = useState(null);
   const abortRef = useRef(null);
 
@@ -104,6 +114,64 @@ export default function EmployeeAssets() {
     }
   }
 
+  async function handleTransfer(e) {
+    e.preventDefault();
+    if (!transferForm.to_employee_id) return flash('Select an employee to transfer to', 'error');
+    setSaving(true);
+    try {
+      await api.post(`/employee-assets/${transferModal.id}/transfer`, transferForm);
+      flash('Asset transferred successfully');
+      setTransferModal(null);
+      setTransferForm({ to_employee_id: '', notes: '' });
+      load();
+    } catch (e) {
+      flash(e.response?.data?.message || 'Failed to transfer asset', 'error');
+    } finally { setSaving(false); }
+  }
+
+  async function handleSendToMaintenance(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post(`/employee-assets/${maintModal.id}/maintenance`, maintForm);
+      flash('Asset sent to maintenance');
+      setMaintModal(null);
+      setMaintForm({ expected_return_date: '', notes: '' });
+      load();
+    } catch (e) {
+      flash(e.response?.data?.message || 'Failed to send asset to maintenance', 'error');
+    } finally { setSaving(false); }
+  }
+
+  async function handleCompleteMaintenance(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post(`/employee-assets/${completeModal.id}/maintenance/complete`, completeForm);
+      flash('Asset back in service');
+      setCompleteModal(null);
+      setCompleteForm({ condition_in: 'good', notes: '' });
+      load();
+    } catch (e) {
+      flash(e.response?.data?.message || 'Failed to complete maintenance', 'error');
+    } finally { setSaving(false); }
+  }
+
+  async function handleDispose(e) {
+    e.preventDefault();
+    if (!disposeForm.reason) return flash('A disposal reason is required', 'error');
+    setSaving(true);
+    try {
+      await api.patch(`/employee-assets/${disposeModal.id}/dispose`, disposeForm);
+      flash('Asset disposed');
+      setDisposeModal(null);
+      setDisposeForm({ reason: '', notes: '' });
+      load();
+    } catch (e) {
+      flash(e.response?.data?.message || 'Failed to dispose asset', 'error');
+    } finally { setSaving(false); }
+  }
+
   async function handleDelete() {
     if (!pendingHandleDelete) return;
     const id = pendingHandleDelete;
@@ -118,9 +186,11 @@ export default function EmployeeAssets() {
   }
 
   // Summary counts
-  const totalAllocated = assets.filter(a => a.status === 'allocated').length;
-  const totalReturned  = assets.filter(a => a.status === 'returned').length;
-  const totalLost      = assets.filter(a => a.status === 'lost').length;
+  const totalAllocated  = assets.filter(a => a.status === 'allocated').length;
+  const totalMaint      = assets.filter(a => a.status === 'under_maintenance').length;
+  const totalReturned   = assets.filter(a => a.status === 'returned').length;
+  const totalDisposed   = assets.filter(a => a.status === 'disposed').length;
+  const totalLost       = assets.filter(a => a.status === 'lost').length;
 
   const inp = { width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 
@@ -158,7 +228,9 @@ export default function EmployeeAssets() {
         {[
           { label: 'Total Assets', value: assets.length, accent: P },
           { label: 'Currently Allocated', value: totalAllocated, accent: '#2563eb' },
+          { label: 'Under Maintenance', value: totalMaint, accent: '#d97706' },
           { label: 'Returned', value: totalReturned, accent: '#059669' },
+          { label: 'Disposed', value: totalDisposed, accent: '#6b7280' },
           { label: 'Lost / Damaged', value: totalLost, accent: '#dc2626' },
         ].map(k => (
           <div key={k.label} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 20px', minWidth: 140 }}>
@@ -177,7 +249,9 @@ export default function EmployeeAssets() {
         <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ ...inp, width: 140 }}>
           <option value="">All Statuses</option>
           <option value="allocated">Allocated</option>
+          <option value="under_maintenance">Under Maintenance</option>
           <option value="returned">Returned</option>
+          <option value="disposed">Disposed</option>
           <option value="lost">Lost</option>
           <option value="damaged">Damaged</option>
         </select>
@@ -231,10 +305,24 @@ export default function EmployeeAssets() {
                         </td>
                         <td style={{ padding: '10px 14px' }}><Badge status={a.status} /></td>
                         <td style={{ padding: '10px 14px' }}>
-                          <div style={{ display: 'flex', gap: 6 }}>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                             {a.status === 'allocated' && (
-                              <button onClick={() => setReturnModal(a)}
-                                style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #059669', background: 'transparent', color: '#059669', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Return</button>
+                              <>
+                                <button onClick={() => setReturnModal(a)}
+                                  style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #059669', background: 'transparent', color: '#059669', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Return</button>
+                                <button onClick={() => setTransferModal(a)}
+                                  style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #2563eb', background: 'transparent', color: '#2563eb', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Transfer</button>
+                                <button onClick={() => setMaintModal(a)}
+                                  style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #d97706', background: 'transparent', color: '#d97706', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Maintenance</button>
+                              </>
+                            )}
+                            {a.status === 'under_maintenance' && (
+                              <button onClick={() => setCompleteModal(a)}
+                                style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #059669', background: 'transparent', color: '#059669', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Back in Service</button>
+                            )}
+                            {['allocated', 'returned', 'under_maintenance'].includes(a.status) && (
+                              <button onClick={() => setDisposeModal(a)}
+                                style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #6b7280', background: 'transparent', color: '#6b7280', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Dispose</button>
                             )}
                             <button onClick={() => setPendingHandleDelete(a.id)}
                               style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #fca5a5', background: 'transparent', color: '#dc2626', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Delete</button>
@@ -350,6 +438,149 @@ export default function EmployeeAssets() {
                 <button type="button" onClick={() => setReturnModal(null)} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600, color: '#374151' }}>Cancel</button>
                 <button type="submit" disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#059669', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>
                   {saving ? 'Processing…' : 'Confirm Return'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Transfer Modal */}
+      {transferModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: '100%', maxWidth: 420, boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#111827' }}>Transfer Asset</h2>
+              <button onClick={() => setTransferModal(null)} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#9ca3af' }}>×</button>
+            </div>
+            <div style={{ background: '#f9fafb', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 }}>
+              <strong>{transferModal.asset_name}</strong> — currently with {transferModal.employee_name}
+            </div>
+            <form onSubmit={handleTransfer}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Transfer To *</label>
+                  <select value={transferForm.to_employee_id} onChange={e => setTransferForm(f => ({ ...f, to_employee_id: e.target.value }))} style={inp} required>
+                    <option value="">— Select employee —</option>
+                    {employees.filter(e => String(e.id) !== String(transferModal.employee_id)).map(e => (
+                      <option key={e.id} value={e.id}>{e.first_name} {e.last_name || ''} ({e.office_id || e.id})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Notes</label>
+                  <textarea value={transferForm.notes} onChange={e => setTransferForm(f => ({ ...f, notes: e.target.value }))} style={{ ...inp, height: 56, resize: 'vertical' }} placeholder="Reason for transfer…" />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
+                <button type="button" onClick={() => setTransferModal(null)} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600, color: '#374151' }}>Cancel</button>
+                <button type="submit" disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#2563eb', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>
+                  {saving ? 'Transferring…' : 'Confirm Transfer'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Send to Maintenance Modal */}
+      {maintModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: '100%', maxWidth: 420, boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#111827' }}>Send to Maintenance</h2>
+              <button onClick={() => setMaintModal(null)} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#9ca3af' }}>×</button>
+            </div>
+            <div style={{ background: '#f9fafb', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 }}>
+              <strong>{maintModal.asset_name}</strong> — {maintModal.employee_name}
+            </div>
+            <form onSubmit={handleSendToMaintenance}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Expected Return Date</label>
+                  <input type="date" value={maintForm.expected_return_date} onChange={e => setMaintForm(f => ({ ...f, expected_return_date: e.target.value }))} style={inp} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Notes</label>
+                  <textarea value={maintForm.notes} onChange={e => setMaintForm(f => ({ ...f, notes: e.target.value }))} style={{ ...inp, height: 56, resize: 'vertical' }} placeholder="Issue being serviced…" />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
+                <button type="button" onClick={() => setMaintModal(null)} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600, color: '#374151' }}>Cancel</button>
+                <button type="submit" disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#d97706', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>
+                  {saving ? 'Saving…' : 'Send to Maintenance'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Complete Maintenance Modal */}
+      {completeModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: '100%', maxWidth: 420, boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#111827' }}>Back in Service</h2>
+              <button onClick={() => setCompleteModal(null)} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#9ca3af' }}>×</button>
+            </div>
+            <div style={{ background: '#f9fafb', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 }}>
+              <strong>{completeModal.asset_name}</strong> — {completeModal.employee_name}
+            </div>
+            <form onSubmit={handleCompleteMaintenance}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Condition</label>
+                  <select value={completeForm.condition_in} onChange={e => setCompleteForm(f => ({ ...f, condition_in: e.target.value }))} style={inp}>
+                    {['new', 'good', 'fair', 'poor'].map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Notes</label>
+                  <textarea value={completeForm.notes} onChange={e => setCompleteForm(f => ({ ...f, notes: e.target.value }))} style={{ ...inp, height: 56, resize: 'vertical' }} placeholder="Repair/service summary…" />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
+                <button type="button" onClick={() => setCompleteModal(null)} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600, color: '#374151' }}>Cancel</button>
+                <button type="submit" disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#059669', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>
+                  {saving ? 'Saving…' : 'Confirm'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Dispose Modal */}
+      {disposeModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: '100%', maxWidth: 420, boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#111827' }}>Dispose Asset</h2>
+              <button onClick={() => setDisposeModal(null)} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#9ca3af' }}>×</button>
+            </div>
+            <div style={{ background: '#f9fafb', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 }}>
+              <strong>{disposeModal.asset_name}</strong> — {disposeModal.employee_name}
+              <div style={{ marginTop: 4, color: '#991b1b', fontSize: 12 }}>This is terminal — the asset will no longer count against anyone's exit clearance.</div>
+            </div>
+            <form onSubmit={handleDispose}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Reason *</label>
+                  <select value={disposeForm.reason} onChange={e => setDisposeForm(f => ({ ...f, reason: e.target.value }))} style={inp} required>
+                    <option value="">— Select reason —</option>
+                    {['End of life', 'Beyond repair', 'Lost', 'Stolen', 'Obsolete', 'Other'].map(r => <option key={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Notes</label>
+                  <textarea value={disposeForm.notes} onChange={e => setDisposeForm(f => ({ ...f, notes: e.target.value }))} style={{ ...inp, height: 56, resize: 'vertical' }} placeholder="Additional detail…" />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
+                <button type="button" onClick={() => setDisposeModal(null)} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600, color: '#374151' }}>Cancel</button>
+                <button type="submit" disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#6b7280', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>
+                  {saving ? 'Disposing…' : 'Confirm Disposal'}
                 </button>
               </div>
             </form>

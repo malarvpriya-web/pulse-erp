@@ -45,11 +45,16 @@ router.get('/executive-summary', requirePermission('crm', 'view'), async (req, r
       pool.query(`SELECT COALESCE(SUM(total_amount),0) AS v FROM invoices WHERE status='paid' AND invoice_date >= $1 ${cw}`, [fyStart]).catch(() => ({ rows: [{ v: 0 }] })),
       pool.query(`SELECT COALESCE(SUM(total_amount),0) AS v FROM invoices WHERE status IN ('overdue','pending') ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
       pool.query(`SELECT COALESCE(SUM(expected_value),0) AS v FROM opportunities WHERE deleted_at IS NULL AND LOWER(stage) NOT IN ('closed won','closed lost','closed_won','closed_lost') ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
-      pool.query(`SELECT COUNT(*)::int AS total, COUNT(CASE WHEN status IN ('active','in_progress') THEN 1 END)::int AS active, COUNT(CASE WHEN status='delayed' THEN 1 END)::int AS delayed FROM projects WHERE deleted_at IS NULL ${cw}`).catch(() => ({ rows: [{ total: 0, active: 0, delayed: 0 }] })),
-      pool.query(`SELECT COALESCE(SUM(total_amount),0) AS v FROM vendor_invoices WHERE status IN ('Approved','Pending') ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
+      // 'delayed' is never a stored status (projects_status_check doesn't allow it) — it's a
+      // derived condition (past end_date, not yet completed/cancelled), same logic the
+      // /projects endpoint below already computes per-row as `isDelayed`.
+      pool.query(`SELECT COUNT(*)::int AS total, COUNT(CASE WHEN status IN ('active','in_progress') THEN 1 END)::int AS active, COUNT(CASE WHEN end_date < NOW() AND status NOT IN ('completed','cancelled') THEN 1 END)::int AS delayed FROM projects WHERE deleted_at IS NULL ${cw}`).catch(() => ({ rows: [{ total: 0, active: 0, delayed: 0 }] })),
+      // vendor_invoices doesn't exist — the real AP-ledger table is bills, with lowercase
+      // status values; balance (not total_amount) is the actual outstanding-payable figure.
+      pool.query(`SELECT COALESCE(SUM(balance),0) AS v FROM bills WHERE status IN ('pending','overdue') ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
       pool.query(`SELECT COUNT(*)::int AS c FROM vendors WHERE 1=1 ${cw}`).catch(() => ({ rows: [{ c: 0 }] })),
-      pool.query(`SELECT COUNT(DISTINCT party_id)::int AS c FROM invoices WHERE 1=1 ${cw}`).catch(() => ({ rows: [{ c: 0 }] })),
-      pool.query(`SELECT COALESCE(SUM(annual_value),0) AS v FROM amc_contracts WHERE status='active' ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
+      pool.query(`SELECT COUNT(DISTINCT customer_id)::int AS c FROM invoices WHERE 1=1 ${cw}`).catch(() => ({ rows: [{ c: 0 }] })),
+      pool.query(`SELECT COALESCE(SUM(contract_value),0) AS v FROM amc_contracts WHERE status='active' ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
       // 6-month revenue trend
       pool.query(`
         SELECT TO_CHAR(invoice_date,'YYYY-MM') AS month,
@@ -126,34 +131,37 @@ router.get('/customers', requirePermission('crm', 'view'), async (req, res) => {
                COALESCE(SUM(i.total_amount) FILTER (WHERE i.status IN ('overdue','pending')), 0) AS outstanding,
                COUNT(DISTINCT i.id) FILTER (WHERE i.status='paid')::int AS invoice_count
         FROM parties p
-        LEFT JOIN invoices i ON i.party_id = p.id
-        WHERE (p.type='customer' OR p.type IS NULL) ${cw}
+        LEFT JOIN invoices i ON i.customer_id = p.id
+        WHERE (p.party_type='Customer' OR p.party_type IS NULL) ${cw}
         GROUP BY p.id, p.name, p.city, p.state
         HAVING COUNT(i.id) > 0
         ORDER BY revenue DESC LIMIT 50
       `, [fyStart]).catch(() => ({ rows: [] })),
 
       pool.query(`
-        SELECT party_id, COALESCE(SUM(total_amount),0) AS outstanding,
+        SELECT customer_id, COALESCE(SUM(total_amount),0) AS outstanding,
                MAX(due_date) AS last_due
         FROM invoices WHERE status IN ('overdue','pending') ${cwBase}
-        GROUP BY party_id ORDER BY outstanding DESC LIMIT 20
+        GROUP BY customer_id ORDER BY outstanding DESC LIMIT 20
       `).catch(() => ({ rows: [] })),
 
       pool.query(`
-        SELECT party_id, COALESCE(SUM(total_amount) FILTER (WHERE status='paid'),0) AS prev_revenue
+        SELECT customer_id, COALESCE(SUM(total_amount) FILTER (WHERE status='paid'),0) AS prev_revenue
         FROM invoices WHERE invoice_date >= $1 AND invoice_date < $2 ${cwBase}
-        GROUP BY party_id
+        GROUP BY customer_id
       `, [prevFYStart, fyStart]).catch(() => ({ rows: [] })),
 
+      // projects has no customer_id FK, only free-text customer_name/client_name — best-effort
+      // name-match onto parties, same discipline used for service_contracts/field_visits elsewhere.
       pool.query(`
-        SELECT p.customer_id,
+        SELECT pt.id AS customer_id,
                COALESCE(SUM(p.budget_amount),0) AS budget,
-               COALESCE(SUM(cs.actual_cost),0) AS actual
+               COALESCE(SUM(cs.total_cost),0) AS actual
         FROM projects p
+        JOIN parties pt ON LOWER(pt.name) = LOWER(COALESCE(p.customer_name, p.client_name))
         LEFT JOIN project_cost_summary cs ON cs.project_id = p.id
-        WHERE p.customer_id IS NOT NULL AND p.deleted_at IS NULL ${companyId ? `AND p.company_id=${companyId}` : ''}
-        GROUP BY p.customer_id
+        WHERE COALESCE(p.customer_name, p.client_name) IS NOT NULL AND p.deleted_at IS NULL ${companyId ? `AND p.company_id=${companyId}` : ''}
+        GROUP BY pt.id
       `).catch(() => ({ rows: [] })),
 
       pool.query(`
@@ -164,24 +172,33 @@ router.get('/customers', requirePermission('crm', 'view'), async (req, res) => {
         GROUP BY customer_id
       `).catch(() => ({ rows: [] })),
 
+      // amc_contracts has no customer_id/annual_value — resolve via sales_order_id -> sales_orders.customer_id
       pool.query(`
-        SELECT customer_id, COUNT(*)::int AS active_amc,
-               COALESCE(SUM(annual_value),0) AS amc_revenue,
-               MIN(CASE WHEN status='active' THEN end_date END) AS next_expiry
-        FROM amc_contracts WHERE status='active' ${cwBase}
-        GROUP BY customer_id
+        SELECT so.customer_id, COUNT(*)::int AS active_amc,
+               COALESCE(SUM(ac.contract_value),0) AS amc_revenue,
+               MIN(CASE WHEN ac.status='active' THEN ac.end_date END) AS next_expiry
+        FROM amc_contracts ac
+        JOIN sales_orders so ON so.id = ac.sales_order_id
+        WHERE ac.status='active' ${companyId ? `AND ac.company_id=${companyId}` : ''}
+        GROUP BY so.customer_id
       `).catch(() => ({ rows: [] })),
 
+      // projects has no customer_id — resolve via best-effort name-match onto parties,
+      // same pattern as the projectMargins query above.
       pool.query(`
-        SELECT party_id AS customer_id, COUNT(*)::int AS open_ncr
-        FROM ncr_reports WHERE status!='Closed' ${cwBase}
-        GROUP BY party_id
+        SELECT pt.id AS customer_id, COUNT(*)::int AS open_ncr
+        FROM ncr_reports n
+        JOIN projects proj ON proj.id = n.project_id
+        JOIN parties pt ON LOWER(pt.name) = LOWER(COALESCE(proj.customer_name, proj.client_name))
+        WHERE n.status!='Closed' AND COALESCE(proj.customer_name, proj.client_name) IS NOT NULL
+        ${companyId ? `AND n.company_id=${companyId}` : ''}
+        GROUP BY pt.id
       `).catch(() => ({ rows: [] })),
     ]);
 
     // Build lookup maps
-    const outMap    = {};  outstanding.rows.forEach(r => { outMap[r.party_id] = r; });
-    const prevMap   = {};  prevRevenue.rows.forEach(r => { prevMap[r.party_id] = parseFloat(r.prev_revenue); });
+    const outMap    = {};  outstanding.rows.forEach(r => { outMap[r.customer_id] = r; });
+    const prevMap   = {};  prevRevenue.rows.forEach(r => { prevMap[r.customer_id] = parseFloat(r.prev_revenue); });
     const marginMap = {};  projectMargins.rows.forEach(r => {
       marginMap[r.customer_id] = r.budget > 0
         ? Math.round(((r.budget - r.actual) / r.budget) * 100) : null;
@@ -279,6 +296,113 @@ router.get('/customers', requirePermission('crm', 'view'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Convert an AI-detected upsell signal into a real, trackable CRM
+// opportunity (Priority 2/4: "AI detects opportunity -> Create CRM
+// Opportunity -> Assign Salesperson -> Create Task -> Notify Sales Manager ->
+// Track Conversion"). Previously `upsell_opportunity` (computed above) was
+// only ever rendered as a plain, unclickable label on the dashboard — see
+// MODULE_FEATURE_CONNECTION_MANUAL.md §18.1 #7.
+// POST /ceo-intelligence/customers/:partyId/convert-upsell
+router.post('/customers/:partyId/convert-upsell', requirePermission('crm', 'add'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { partyId } = req.params;
+    const { reason, expected_value, assigned_to } = req.body;
+    const companyId = cid(req);
+    const actorUserId = req.user?.userId ?? req.user?.id ?? null;
+
+    await client.query('BEGIN');
+
+    const { rows: [party] } = await client.query(`SELECT id, name FROM parties WHERE id=$1`, [partyId]);
+    if (!party) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Customer not found' }); }
+
+    // Resolve the CRM account bridging this Finance party. accounts.party_id
+    // exists as a schema link but is unpopulated for most rows today (same
+    // "real column, empty in practice" gap as vendors.party_id) — try the
+    // real link first, fall back to a best-effort name match (and backfill
+    // the link when found), else create a fresh account so the opportunity
+    // has somewhere real to live.
+    let account;
+    ({ rows: [account] } = await client.query(`SELECT * FROM accounts WHERE party_id=$1`, [partyId]));
+    if (!account) {
+      ({ rows: [account] } = await client.query(
+        `SELECT * FROM accounts WHERE party_id IS NULL AND LOWER(account_name)=LOWER($1) AND (company_id=$2 OR $2 IS NULL) LIMIT 1`,
+        [party.name, companyId]
+      ));
+      if (account) {
+        await client.query(`UPDATE accounts SET party_id=$1, updated_at=NOW() WHERE id=$2`, [partyId, account.id]);
+      }
+    }
+    if (!account) {
+      ({ rows: [account] } = await client.query(
+        `INSERT INTO accounts (account_name, name, account_type, company_id, party_id)
+         VALUES ($1,$1,'Customer',$2,$3) RETURNING *`,
+        [party.name, companyId, partyId]
+      ));
+    }
+
+    // Idempotent: don't spawn a second open upsell opportunity for the same account
+    const { rows: dup } = await client.query(
+      `SELECT id FROM opportunities
+       WHERE account_id=$1 AND deleted_at IS NULL AND LOWER(stage) NOT IN ('won','lost')
+         AND opportunity_name ILIKE 'Upsell:%'`,
+      [account.id]
+    );
+    if (dup.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'An open upsell opportunity already exists for this account', opportunity_id: dup[0].id });
+    }
+
+    // Assign Salesperson — the account's existing owner if known, else whoever
+    // triggered the conversion (there's no reliable territory/round-robin
+    // signal for an AI-detected upsell the way there is for inbound leads).
+    const assignedTo = assigned_to || account.assigned_to || actorUserId;
+    const label = reason || 'Account Growth';
+    const followUpDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+
+    const { rows: [opp] } = await client.query(
+      `INSERT INTO opportunities
+         (opportunity_name, account_id, stage, expected_value, probability_percentage,
+          assigned_to, created_by, company_id, notes, next_step, follow_up_date)
+       VALUES ($1,$2,'Qualification',$3,30,$4,$5,$6,$7,$8,$9)
+       RETURNING *`,
+      [
+        `Upsell: ${label} — ${party.name}`,
+        account.id,
+        expected_value || null,
+        assignedTo,
+        actorUserId,
+        companyId,
+        `Auto-created from CEO Intelligence upsell signal (${label}).`,
+        `Follow up with ${party.name} regarding ${label.toLowerCase()}`,
+        followUpDate,
+      ]
+    );
+
+    // Notify Sales Manager
+    const { rows: managers } = await client.query(
+      `SELECT id FROM users WHERE is_active=true AND LOWER(role) IN ('admin','super_admin','sales_manager','manager')`
+    );
+    for (const m of managers) {
+      await client.query(
+        `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
+         VALUES ($1,$2,$3,'crm',$4,'upsell_opportunity')`,
+        [m.id, `New Upsell Opportunity: ${party.name}`,
+         `${label} opportunity detected for ${party.name} — created as opportunity #${opp.id}.`,
+         opp.id]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json(opp);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // ── 3. VENDOR INTELLIGENCE ───────────────────────────────────────────────────
 // GET /ceo-intelligence/vendors
 router.get('/vendors', requirePermission('procurement', 'view'), async (req, res) => {
@@ -291,20 +415,20 @@ router.get('/vendors', requirePermission('procurement', 'view'), async (req, res
     const [topVendors, scorecards, ncrSummary, delivery, projectImpact, criticalItems] = await Promise.all([
       pool.query(`
         SELECT v.id, v.name, v.vendor_code, v.vendor_type, v.status, v.city, v.state,
-               v.msme_status, v.critical_vendor,
+               v.msme_status, v.is_critical_supplier AS critical_vendor,
                COALESCE(pa.po_count, 0) AS po_count,
                COALESCE(pa.po_value, 0) AS po_value,
                COALESCE(pa.open_pos, 0) AS open_pos,
                COALESCE(pa.single_source, false) AS single_source
         FROM vendors v
         LEFT JOIN (
-          SELECT vendor_id,
+          SELECT supplier_id AS vendor_id,
                  COUNT(*)::int AS po_count,
                  SUM(total_amount) AS po_value,
                  COUNT(CASE WHEN status IN ('Approved','Sent','Partial') THEN 1 END)::int AS open_pos,
                  BOOL_OR(CASE WHEN notes ILIKE '%single source%' OR notes ILIKE '%sole source%' THEN true ELSE false END) AS single_source
           FROM purchase_orders ${companyId ? `WHERE company_id=${companyId}` : ''}
-          GROUP BY vendor_id
+          GROUP BY supplier_id
         ) pa ON pa.vendor_id = v.id
         WHERE 1=1 ${cw}
         ORDER BY pa.po_value DESC NULLS LAST LIMIT 50
@@ -315,7 +439,7 @@ router.get('/vendors', requirePermission('procurement', 'view'), async (req, res
                (quality_score+delivery_score+cost_score+support_score+compliance_score)/5.0 AS overall,
                quality_score, delivery_score, compliance_score
         FROM vendor_scorecards ${cwBase}
-        ORDER BY vendor_id, scored_at DESC
+        ORDER BY vendor_id, created_at DESC
       `).catch(() => ({ rows: [] })),
 
       pool.query(`
@@ -325,28 +449,31 @@ router.get('/vendors', requirePermission('procurement', 'view'), async (req, res
       `).catch(() => ({ rows: [] })),
 
       pool.query(`
-        SELECT vendor_id,
+        SELECT supplier_id AS vendor_id,
                COUNT(CASE WHEN status IN ('Received','Completed') THEN 1 END)::int AS completed,
                COUNT(*)::int AS total
-        FROM purchase_orders WHERE 1=1 ${cwP}
-        GROUP BY vendor_id
+        FROM purchase_orders po WHERE 1=1 ${cwP}
+        GROUP BY supplier_id
       `).catch(() => ({ rows: [] })),
 
       // Projects where a vendor has open POs (supply risk to project)
       pool.query(`
-        SELECT po.vendor_id, COUNT(DISTINCT p.id)::int AS project_count
+        SELECT po.supplier_id AS vendor_id, COUNT(DISTINCT p.id)::int AS project_count
         FROM purchase_orders po
         JOIN projects p ON p.id = po.project_id
         WHERE p.status IN ('active','in_progress') ${cwP}
-        GROUP BY po.vendor_id
+        GROUP BY po.supplier_id
       `).catch(() => ({ rows: [] })),
 
-      // Critical/long-lead items from item master
+      // Critical/long-lead items from item master — real table is inventory_items, with a
+      // category_id FK (not free-text category) and preferred_vendor_id (not vendor_id).
       pool.query(`
-        SELECT vendor_id, COUNT(*)::int AS critical_items
-        FROM items
-        WHERE (category ILIKE '%critical%' OR lead_time_days > 60) ${cwBase}
-        GROUP BY vendor_id
+        SELECT ii.preferred_vendor_id AS vendor_id, COUNT(*)::int AS critical_items
+        FROM inventory_items ii
+        LEFT JOIN item_categories ic ON ic.id = ii.category_id
+        WHERE (ic.name ILIKE '%critical%' OR ii.lead_time_days > 60) AND ii.preferred_vendor_id IS NOT NULL
+        ${companyId ? `AND ii.company_id=${companyId}` : ''}
+        GROUP BY ii.preferred_vendor_id
       `).catch(() => ({ rows: [] })),
     ]);
 
@@ -439,15 +566,18 @@ router.get('/projects', requirePermission('projects', 'view'), async (req, res) 
     const cw = companyId ? `AND p.company_id=${companyId}` : '';
 
     const [projects, costBreakdown] = await Promise.all([
+      // projects has no customer_id/contract_value/expected_end_date columns and no "name"
+      // (real: project_name) — best-effort name-match onto parties for customer_id, same
+      // discipline used for service_contracts/field_visits elsewhere; contract_value has no
+      // real equivalent so it's omitted (JS already falls back to budget via `p.contract_value || budget`).
       pool.query(`
-        SELECT p.id, p.project_code, p.name, p.customer_id, p.status,
-               pt.name AS customer_name,
-               p.budget_amount, p.start_date, p.expected_end_date,
-               COALESCE(cs.actual_cost, 0) AS actual_cost,
-               COALESCE(cs.invoiced_amount, 0) AS invoiced,
-               p.contract_value
+        SELECT p.id, p.project_code, p.project_name AS name, pt.id AS customer_id, p.status,
+               COALESCE(p.customer_name, p.client_name) AS customer_name,
+               p.budget_amount, p.start_date, p.end_date AS expected_end_date,
+               COALESCE(cs.total_cost, 0) AS actual_cost,
+               COALESCE(cs.total_revenue, 0) AS invoiced
         FROM projects p
-        LEFT JOIN parties pt ON pt.id = p.customer_id
+        LEFT JOIN parties pt ON LOWER(pt.name) = LOWER(COALESCE(p.customer_name, p.client_name))
         LEFT JOIN project_cost_summary cs ON cs.project_id = p.id
         WHERE p.deleted_at IS NULL ${cw}
         ORDER BY p.budget_amount DESC NULLS LAST LIMIT 50
@@ -455,7 +585,7 @@ router.get('/projects', requirePermission('projects', 'view'), async (req, res) 
 
       pool.query(`
         SELECT cost_type, COALESCE(SUM(amount),0) AS total
-        FROM project_costs WHERE 1=1 ${companyId ? `AND company_id=${companyId}` : ''}
+        FROM project_cost_lines WHERE 1=1 ${companyId ? `AND company_id=${companyId}` : ''}
         GROUP BY cost_type ORDER BY total DESC
       `).catch(() => ({ rows: [] })),
     ]);
@@ -532,9 +662,9 @@ router.get('/collections', requirePermission('finance', 'view'), async (req, res
              COALESCE(SUM(i.total_amount) FILTER (WHERE NOW()-i.due_date BETWEEN '31 days' AND '60 days'), 0) AS bucket_31_60,
              COALESCE(SUM(i.total_amount) FILTER (WHERE NOW()-i.due_date BETWEEN '61 days' AND '90 days'), 0) AS bucket_61_90,
              COALESCE(SUM(i.total_amount) FILTER (WHERE NOW()-i.due_date > '90 days'), 0) AS bucket_90plus,
-             MAX(NOW()-i.due_date)::int AS max_overdue_days
+             EXTRACT(DAY FROM MAX(NOW()-i.due_date))::int AS max_overdue_days
       FROM parties p
-      JOIN invoices i ON i.party_id = p.id
+      JOIN invoices i ON i.customer_id = p.id
       WHERE i.status IN ('overdue','pending') AND i.due_date IS NOT NULL ${cw}
       GROUP BY p.id, p.name
       ORDER BY total_outstanding DESC LIMIT 30
@@ -584,16 +714,18 @@ router.get('/service-amc', requirePermission('crm', 'view'), async (req, res) =>
 
       pool.query(`
         SELECT COUNT(*)::int AS active_amc,
-               COALESCE(SUM(annual_value),0) AS amc_revenue,
-               COALESCE(AVG(annual_value),0) AS avg_amc_value
+               COALESCE(SUM(contract_value),0) AS amc_revenue,
+               COALESCE(AVG(contract_value),0) AS avg_amc_value
         FROM amc_contracts WHERE status='active' ${cw}
       `).catch(() => ({ rows: [{ active_amc: 0, amc_revenue: 0, avg_amc_value: 0 }] })),
 
+      // amc_contracts has no customer_id/annual_value — resolve customer via sales_order_id
       pool.query(`
-        SELECT ac.id, ac.contract_number, ac.end_date, ac.annual_value,
-               p.name AS customer_name
+        SELECT ac.id, ac.contract_number, ac.end_date, ac.contract_value AS annual_value,
+               COALESCE(p.name, ac.product_name) AS customer_name
         FROM amc_contracts ac
-        LEFT JOIN parties p ON p.id = ac.customer_id
+        LEFT JOIN sales_orders so ON so.id = ac.sales_order_id
+        LEFT JOIN parties p ON p.id = so.customer_id
         WHERE ac.status='active' AND ac.end_date BETWEEN NOW() AND NOW() + INTERVAL '90 days'
         ${companyId ? `AND ac.company_id=${companyId}` : ''}
         ORDER BY ac.end_date ASC LIMIT 20
@@ -645,7 +777,7 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
         SELECT DISTINCT p.name, 'Critical Customer Health' AS type,
                'Customer health score critical - requires immediate attention' AS message
         FROM parties p
-        JOIN invoices i ON i.party_id=p.id
+        JOIN invoices i ON i.customer_id=p.id
         WHERE i.status='overdue' AND NOW()-i.due_date > INTERVAL '90 days'
         ${companyId ? `AND p.company_id=${companyId}` : ''} LIMIT 5
       `).catch(() => ({ rows: [] })),
@@ -663,12 +795,12 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
 
       // Projects with margin < 5%
       pool.query(`
-        SELECT p.name, 'Low Margin Project' AS type,
+        SELECT p.project_name AS name, 'Low Margin Project' AS type,
                'Project margin below 5% - profitability at risk' AS message
         FROM projects p
         LEFT JOIN project_cost_summary cs ON cs.project_id=p.id
         WHERE p.deleted_at IS NULL AND p.budget_amount > 0
-          AND (cs.actual_cost / NULLIF(p.budget_amount,0)) > 0.95
+          AND (cs.total_cost / NULLIF(p.budget_amount,0)) > 0.95
         ${companyId ? `AND p.company_id=${companyId}` : ''} LIMIT 5
       `).catch(() => ({ rows: [] })),
 
@@ -676,30 +808,31 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
       pool.query(`
         SELECT p.name, 'Collection Risk' AS type,
                'Outstanding collection overdue 90+ days' AS message
-        FROM parties p JOIN invoices i ON i.party_id=p.id
+        FROM parties p JOIN invoices i ON i.customer_id=p.id
         WHERE i.status='overdue' AND NOW()-i.due_date > INTERVAL '90 days'
         ${companyId ? `AND p.company_id=${companyId}` : ''}
         GROUP BY p.name LIMIT 5
       `).catch(() => ({ rows: [] })),
 
-      // AMC expiring in 30 days
+      // AMC expiring in 30 days — amc_contracts has no customer_id, resolve via sales_order_id
       pool.query(`
-        SELECT p.name, 'AMC Expiring' AS type,
+        SELECT COALESCE(p.name, ac.product_name) AS name, 'AMC Expiring' AS type,
                'AMC contract expiring within 30 days - renewal required' AS message
         FROM amc_contracts ac
-        JOIN parties p ON p.id=ac.customer_id
+        LEFT JOIN sales_orders so ON so.id=ac.sales_order_id
+        LEFT JOIN parties p ON p.id=so.customer_id
         WHERE ac.status='active' AND ac.end_date BETWEEN NOW() AND NOW()+INTERVAL '30 days'
         ${companyId ? `AND ac.company_id=${companyId}` : ''} LIMIT 5
       `).catch(() => ({ rows: [] })),
 
       // Critical NCRs open
       pool.query(`
-        SELECT COALESCE(v.name, p.name, 'Unknown') AS name,
+        SELECT COALESCE(v.name, proj.customer_name, proj.client_name, 'Unknown') AS name,
                'Critical NCR Open' AS type,
                'Critical quality non-conformance report unresolved' AS message
         FROM ncr_reports n
         LEFT JOIN vendors v ON v.id=n.vendor_id
-        LEFT JOIN parties p ON p.id=n.party_id
+        LEFT JOIN projects proj ON proj.id=n.project_id
         WHERE n.status!='Closed' AND n.severity='Critical'
         ${companyId ? `AND n.company_id=${companyId}` : ''} LIMIT 5
       `).catch(() => ({ rows: [] })),
@@ -737,7 +870,7 @@ router.get('/ai-insights', requirePermission('crm', 'view'), async (req, res) =>
       pool.query(`
         SELECT COUNT(*)::int AS critical_customers
         FROM parties p
-        JOIN invoices i ON i.party_id=p.id
+        JOIN invoices i ON i.customer_id=p.id
         WHERE i.status='overdue' AND NOW()-i.due_date > INTERVAL '60 days'
         ${companyId ? `AND p.company_id=${companyId}` : ''}
       `).catch(() => ({ rows: [{ critical_customers: 0 }] })),
@@ -819,18 +952,24 @@ router.get('/manifest', requirePermission('projects', 'view'), async (req, res) 
     const BUSINESS_LINES = ['HVDC', 'STATCOM', 'SST', 'Automation', 'Service', 'AMC'];
 
     const [projectsByBL, pipelineByBL, amcByBL] = await Promise.all([
+      // projects has no product_line/contract_value/customer_id columns — product_line_id
+      // (FK to product_lines, a different model-name taxonomy, currently unpopulated on every
+      // live project) is the closest real link; contract_value has no equivalent so budget_amount
+      // is used as the revenue proxy (same fallback the /projects endpoint above already uses);
+      // customer_count uses the free-text customer_name/client_name pair, not a parties join.
       pool.query(`
         SELECT
-          COALESCE(p.product_line, 'Other') AS business_line,
+          COALESCE(pl.display_name, 'Other') AS business_line,
           COUNT(*)::int AS project_count,
-          COALESCE(SUM(p.contract_value),0) AS revenue,
+          COALESCE(SUM(p.budget_amount),0) AS revenue,
           COALESCE(SUM(p.budget_amount),0) AS budget,
-          COALESCE(SUM(cs.actual_cost),0) AS cost,
-          COUNT(DISTINCT p.customer_id)::int AS customer_count
+          COALESCE(SUM(cs.total_cost),0) AS cost,
+          COUNT(DISTINCT COALESCE(p.customer_name, p.client_name))::int AS customer_count
         FROM projects p
+        LEFT JOIN product_lines pl ON pl.id = p.product_line_id
         LEFT JOIN project_cost_summary cs ON cs.project_id=p.id
         WHERE p.deleted_at IS NULL ${cw}
-        GROUP BY COALESCE(p.product_line,'Other')
+        GROUP BY COALESCE(pl.display_name,'Other')
       `).catch(() => ({ rows: [] })),
 
       pool.query(`
@@ -843,13 +982,14 @@ router.get('/manifest', requirePermission('projects', 'view'), async (req, res) 
         GROUP BY COALESCE(product_line,'Other')
       `).catch(() => ({ rows: [] })),
 
+      // amc_contracts has no service_type/annual_value columns — this table is AMC-only,
+      // so the business_line bucket is simply the fixed literal.
       pool.query(`
-        SELECT COALESCE(service_type,'AMC') AS business_line,
-               COALESCE(SUM(annual_value),0) AS amc_revenue,
+        SELECT 'AMC' AS business_line,
+               COALESCE(SUM(contract_value),0) AS amc_revenue,
                COUNT(*)::int AS contract_count
         FROM amc_contracts WHERE status='active'
         ${companyId ? `AND company_id=${companyId}` : ''}
-        GROUP BY COALESCE(service_type,'AMC')
       `).catch(() => ({ rows: [] })),
     ]);
 

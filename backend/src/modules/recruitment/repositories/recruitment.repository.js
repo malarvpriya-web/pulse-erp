@@ -114,7 +114,8 @@ const recruitmentRepository = {
       SELECT jo.*,
              jr.job_title AS req_job_title, jr.department AS req_department,
              jr.number_of_positions, jr.employment_type AS req_employment_type,
-             jr.location AS req_location, jr.salary_range
+             jr.location AS req_location, jr.salary_range,
+             (SELECT COUNT(*)::int FROM candidates c WHERE c.applied_job_id = jo.id AND c.deleted_at IS NULL) AS applicants_count
       FROM job_openings jo
       LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
       WHERE jo.deleted_at IS NULL`;
@@ -136,7 +137,8 @@ const recruitmentRepository = {
               jr.job_title AS req_job_title, jr.department AS req_department,
               jr.number_of_positions, jr.employment_type AS req_employment_type,
               jr.location AS req_location, jr.salary_range,
-              jr.job_description, jr.skills_required, jr.experience_required
+              jr.job_description, jr.skills_required, jr.experience_required,
+              (SELECT COUNT(*)::int FROM candidates c WHERE c.applied_job_id = jo.id AND c.deleted_at IS NULL) AS applicants_count
        FROM job_openings jo
        LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
        WHERE jo.id = $1 AND jo.deleted_at IS NULL${extra}`,
@@ -290,7 +292,7 @@ const recruitmentRepository = {
 
   async getCandidateStageHistory(candidate_id) {
     const result = await pool.query(
-      `SELECT csh.*, e.name AS moved_by_name
+      `SELECT csh.*, TRIM(CONCAT(e.first_name, ' ', COALESCE(e.last_name, ''))) AS moved_by_name
        FROM candidate_stage_history csh
        LEFT JOIN employees e ON csh.moved_by = e.id
        WHERE csh.candidate_id = $1
@@ -709,6 +711,25 @@ const recruitmentRepository = {
        cand.department, cand.job_title]
     );
     const employee = empResult.rows[0];
+
+    // 4b. Auto-enroll into payroll — same pattern as employee.service.js's
+    // addEmployee (direct HR "Add Employee" flow already does this). This is
+    // the recruitment→hire flow, the more common path new hires actually
+    // come through; without this, payroll.service.js's LEFT JOIN LATERAL
+    // returns NULL basic_salary/structure_id for every recruitment-sourced
+    // hire until someone manually adds a salary assignment.
+    try {
+      const { rows: defStruct } = await client.query(
+        `SELECT id FROM salary_structures WHERE is_default = true ORDER BY id LIMIT 1`
+      );
+      await client.query(
+        `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from)
+         VALUES ($1, $2, $3)`,
+        [employee.id, defStruct[0]?.id ?? null, employee.joining_date || new Date().toISOString().slice(0, 10)]
+      );
+    } catch (e) {
+      console.error('[hireCandidate] payroll auto-enrollment failed:', e.message);
+    }
 
     // 5. Mark candidate as hired
     await client.query(

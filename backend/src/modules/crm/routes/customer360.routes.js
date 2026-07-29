@@ -341,7 +341,7 @@ router.get('/customer360/:partyId/service', requirePermission('crm', 'view'), as
   // elsewhere in this codebase — see [[project_enterprise_workflow_audit]]).
   try {
     const r = await pool.query(
-      `SELECT st.id, st.subject, st.priority, st.status, st.created_at, st.resolved_at, st.description,
+      `SELECT st.id, st.title AS subject, st.priority, st.status, st.created_at, st.resolved_at, st.description,
               CASE WHEN st.resolved_at IS NOT NULL
                 THEN EXTRACT(DAY FROM (st.resolved_at - st.created_at))::int
                 ELSE NULL END AS resolution_days
@@ -434,12 +434,19 @@ router.get('/customer360/:partyId/amc', requirePermission('crm', 'view'), async 
     // (warranty_register -> warranty_registrations) plus a customer_id that's
     // a legacy, 100%-unpopulated `integer` on this table — resolved instead
     // via sales_order_id, the same real uuid link used for amc_contracts.
+    // Unified Warranty Engine (Priority 3): commissioning-activated warranties
+    // carry equipment_id, not sales_order_id — added a second path through
+    // customer_equipment.crm_account_id -> accounts.party_id (the same bridge
+    // Priority 2's upsell-to-opportunity work uses) so those show up here too,
+    // deduplicated since a row could theoretically satisfy both paths.
     const r = await pool.query(
-      `SELECT wr.id, wr.serial_number, wr.product_name, wr.warranty_start, wr.warranty_end,
+      `SELECT DISTINCT wr.id, wr.serial_number, wr.product_name, wr.warranty_start, wr.warranty_end,
               wr.warranty_type, wr.status, wr.notes, wr.created_at
        FROM warranty_registrations wr
-       JOIN sales_orders so ON so.id = wr.sales_order_id
-       WHERE so.customer_id = $1
+       LEFT JOIN sales_orders so ON so.id = wr.sales_order_id
+       LEFT JOIN customer_equipment ce ON ce.id = wr.equipment_id
+       LEFT JOIN accounts a ON a.id = ce.crm_account_id
+       WHERE so.customer_id = $1 OR a.party_id = $1
        ORDER BY wr.warranty_end ASC`,
       [partyId]
     );
@@ -699,8 +706,11 @@ router.get('/customer360/:partyId/timeline', requirePermission('crm', 'view'), a
 
   try {
     const r = await pool.query(
-      `SELECT id, subject, priority, status, created_at
-       FROM support_tickets WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 20`,
+      `SELECT st.id, st.title AS subject, st.priority, st.status, st.created_at
+       FROM support_tickets st
+       LEFT JOIN contacts c ON c.id = st.contact_id
+       LEFT JOIN accounts a ON a.id = c.account_id
+       WHERE a.party_id = $1 ORDER BY st.created_at DESC LIMIT 20`,
       [partyId]
     );
     r.rows.forEach(t => events.push({
@@ -779,11 +789,14 @@ router.get('/customer360/:partyId/timeline', requirePermission('crm', 'view'), a
 router.get('/customer360/:partyId/tickets', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT id, subject, priority, status, created_at, resolved_at,
-              CASE WHEN resolved_at IS NOT NULL
-                THEN EXTRACT(DAY FROM (resolved_at - created_at))::int
+      `SELECT st.id, st.title AS subject, st.priority, st.status, st.created_at, st.resolved_at,
+              CASE WHEN st.resolved_at IS NOT NULL
+                THEN EXTRACT(DAY FROM (st.resolved_at - st.created_at))::int
                 ELSE NULL END AS resolution_days
-       FROM support_tickets WHERE customer_id = $1 ORDER BY created_at DESC`,
+       FROM support_tickets st
+       LEFT JOIN contacts c ON c.id = st.contact_id
+       LEFT JOIN accounts a ON a.id = c.account_id
+       WHERE a.party_id = $1 ORDER BY st.created_at DESC`,
       [req.params.partyId]
     );
     res.json(r.rows);

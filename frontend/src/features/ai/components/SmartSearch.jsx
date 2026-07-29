@@ -16,7 +16,7 @@ const SEARCH_RULES = [
   { pattern: /purchase|procurement/i,         page: 'PurchaseOrders',      label: 'Purchase Orders' },
   { pattern: /travel|trip/i,                  page: 'TravelRequests',      label: 'Travel' },
   { pattern: /complaint/i,                    page: 'CustomerComplaintsIPCS', label: 'Complaints' },
-  { pattern: /recruit|candidate|hire/i,       page: 'CandidatePipeline',   label: 'Recruitment' },
+  { pattern: /recruit|candidate|hire/i,       page: 'Candidates',          label: 'Recruitment' },
   { pattern: /inventory|stock/i,              page: 'StockSummary',        label: 'Inventory' },
   { pattern: /approval/i,                     page: 'ApprovalCenter',      label: 'Approvals' },
   { pattern: /announcement/i,                 page: 'Announcements',       label: 'Announcements' },

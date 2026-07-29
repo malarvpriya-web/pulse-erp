@@ -660,3 +660,28 @@
   .hm-card { height: auto; min-height: 200px; max-height: 66vh; }
   .hm-snap-grid { height: auto; }
 }
+
+/* ══════════════════════════════════════════
+   DEPARTMENT DASHBOARD (added 2026-07-29) — additive only, nothing above
+   this point was changed. Applies only when Home.jsx renders a role's own
+   department dashboard (ROLE_DASHBOARD) instead of the generic body grid.
+   Those pages are full, independently-scrolling views taller than one
+   viewport, so the no-scroll .hm-root contract is relaxed *only* on this
+   path via the extra --dept modifier class; every role still on the
+   generic grid keeps the original fixed-height, non-scrolling behaviour
+   untouched.
+══════════════════════════════════════════ */
+.hm-root.hm-root--dept {
+  height: auto;
+  min-height: calc(100vh - 64px);
+  overflow: visible;
+}
+.hm-dept-dash {
+  flex: 1;
+}
+.hm-dept-dash-loading {
+  padding: 60px 24px;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 14px;
+}

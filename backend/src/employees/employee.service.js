@@ -1,4 +1,4 @@
-import pool from "../config/db.js";
+﻿import pool from "../config/db.js";
 import bcrypt from "bcryptjs";
 import { validatePAN } from "../utils/gst.js";
 import { syncPrimaryRole } from "../services/userRoles.js";
@@ -14,12 +14,15 @@ function toIntOrNull(val) {
 
 /**
  * Creates a login account (users row) for a freshly-added employee so they can
- * sign in with their company email. Runs inside the caller's transaction.
- * Skips silently if the employee has no company_email or an account already
- * exists for that email. Returns the login descriptor (or null when skipped).
+ * sign in. Runs inside the caller's transaction. Prefers personal_email (which
+ * the Add Employee form leaves optional) but falls back to company_email (the
+ * one email field that's actually required) so an employee who was only given
+ * a company email still gets a usable login. Skips silently if neither email
+ * is present or an account already exists for that email. Returns the login
+ * descriptor (or null when skipped).
  */
 async function createEmployeeLogin(client, emp) {
-  const email = (emp.company_email || "").trim();
+  const email = (emp.personal_email || emp.company_email || "").trim().toLowerCase();
   if (!email) return null;
 
   const { rows: existing } = await client.query(
@@ -155,7 +158,7 @@ export const addEmployee = async (data) => {
     await client.query("BEGIN");
 
     // Advisory lock serialises all concurrent addEmployee calls so no two
-    // transactions can race to claim the same office_id — whether auto-generated
+    // transactions can race to claim the same office_id â€” whether auto-generated
     // or caller-supplied.
     await client.query("SELECT pg_advisory_xact_lock(88001)");
     let office_id = providedOfficeId;
@@ -279,9 +282,29 @@ export const addEmployee = async (data) => {
     const emp = result.rows[0];
 
     // Auto-provision a login account so the employee can sign in with their
-    // company email. Kept in the same transaction so an employee is never left
+    // personal email. Kept in the same transaction so an employee is never left
     // without a usable login.
     const login = await createEmployeeLogin(client, emp);
+
+    // New hires were invisible to payroll until HR remembered to add a salary
+    // assignment by hand â€” payroll.service.js's LEFT JOIN LATERAL just returns
+    // NULL basic_salary/structure_id for anyone with no row here. Auto-enroll
+    // on the company's default salary_structures template (if one is marked
+    // is_default); basic_salary is left to the column's own default (30000) â€”
+    // HR/payroll adjusts the real figure via the Salary Structure screen, same
+    // as increments already do post-hire.
+    try {
+      const { rows: defStruct } = await client.query(
+        `SELECT id FROM salary_structures WHERE is_default = true ORDER BY id LIMIT 1`
+      );
+      await client.query(
+        `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from)
+         VALUES ($1, $2, $3)`,
+        [emp.id, defStruct[0]?.id ?? null, joining_date || new Date().toISOString().slice(0, 10)]
+      );
+    } catch (e) {
+      console.error('[addEmployee] payroll auto-enrollment failed:', e.message);
+    }
 
     await client.query("COMMIT");
     return login ? { ...emp, login } : emp;
@@ -309,10 +332,10 @@ function maskPII(emp, role, isSelf = false) {
   if (out.pan_number)     out.pan_number     = `XXXXXX${String(out.pan_number).slice(-4)}`;
   // Bank account: mask all but last 4
   if (out.account_number) out.account_number = `XXXX${String(out.account_number).slice(-4)}`;
-  // Address PII — redact for non-HR callers
+  // Address PII â€” redact for non-HR callers
   if (out.current_address)   out.current_address   = '[RESTRICTED]';
   if (out.permanent_address) out.permanent_address = '[RESTRICTED]';
-  // Salary — strip for non-salary-role callers
+  // Salary â€” strip for non-salary-role callers
   if (!SALARY_ROLES.includes(role)) {
     delete out.basic_salary;
     delete out.bank_name;
@@ -340,8 +363,8 @@ async function validateMasterValue(value, table) {
   if (!needle) return;
   try {
     const countRes = await pool.query(`SELECT COUNT(*) AS n FROM ${table} WHERE is_active = true`);
-    if (!countRes?.rows?.[0]) return; // table or pool not available — skip
-    if (parseInt(countRes.rows[0].n, 10) === 0) return; // master not yet configured — skip
+    if (!countRes?.rows?.[0]) return; // table or pool not available â€” skip
+    if (parseInt(countRes.rows[0].n, 10) === 0) return; // master not yet configured â€” skip
     // Case/whitespace-insensitive match so trivial differences don't block a save.
     const { rows } = await pool.query(
       `SELECT id FROM ${table} WHERE LOWER(TRIM(name)) = $1 AND is_active = true`,
@@ -370,7 +393,7 @@ async function validateMasterValue(value, table) {
     throw new Error(`"${value}" is not a valid ${table.replace('master_', '')}. Select a value from the master list.`);
   } catch (err) {
     if (err.message?.includes('is not a valid')) throw err; // re-throw our own validation errors
-    // DB / table-not-found / mock errors — skip validation silently
+    // DB / table-not-found / mock errors â€” skip validation silently
   }
 }
 
@@ -387,7 +410,7 @@ export const getEmployees = async ({ status, department, designation, employment
   if (status) {
     const statusLower = String(status).trim().toLowerCase();
     if (statusLower === 'all') {
-      // Explicit "all" — no status filter; return every employee regardless of status
+      // Explicit "all" â€” no status filter; return every employee regardless of status
     } else if (statusLower === "probation") {
       // For probation, include either explicit status or contract/employment type.
       values.push(statusLower);
@@ -401,7 +424,7 @@ export const getEmployees = async ({ status, department, designation, employment
       conditions.push(`LOWER(COALESCE(status,'')) = $${i++}`);
     }
   } else {
-    // BUG 2 fix: default to active employees — exclude ex-employees from all non-scoped queries
+    // BUG 2 fix: default to active employees â€” exclude ex-employees from all non-scoped queries
     conditions.push(`LOWER(COALESCE(status,'active')) NOT IN ('left','terminated','resigned','inactive','ex-employee','notice_period','notice period')`);
   }
 
@@ -752,7 +775,7 @@ export const deleteEmployee = async (id, company_id = null) => {
 };
 
 export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}) => {
-  // Scope filter — applied to every query on the employees table.
+  // Scope filter â€” applied to every query on the employees table.
   // When company_id is null (single-tenant), no filter is added.
   const hasCid = company_id != null;
   const cidPar = hasCid ? [company_id] : [];
@@ -782,7 +805,7 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
     avgTenure: parseFloat(row.avg_tenure) || 0,
   };
 
-  // Status breakdown — group raw statuses into 3 logical buckets for the donut chart
+  // Status breakdown â€” group raw statuses into 3 logical buckets for the donut chart
   const statusRes = await pool.query(`
     SELECT
       CASE
@@ -798,7 +821,7 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
   `, cidPar);
   const statusBreakdown = statusRes.rows.map(r => ({ status: r.status, count: parseInt(r.count) }));
 
-  // Gender breakdown — current employees only
+  // Gender breakdown â€” current employees only
   const genderRes = await pool.query(`
     SELECT COALESCE(NULLIF(gender,''), 'Not specified') AS gender, COUNT(*) AS count
     FROM employees
@@ -807,7 +830,7 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
   `, cidPar);
   const genderBreakdown = genderRes.rows.map(r => ({ gender: r.gender, count: parseInt(r.count) }));
 
-  // Skill type breakdown — current employees only
+  // Skill type breakdown â€” current employees only
   const skillRes = await pool.query(`
     SELECT COALESCE(NULLIF(skill_type,''), 'Not specified') AS skill, COUNT(*) AS count
     FROM employees
@@ -816,14 +839,14 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
   `, cidPar);
   const skillBreakdown = skillRes.rows.map(r => ({ skill: r.skill, count: parseInt(r.count) }));
 
-  // Tenure buckets — current employees only
+  // Tenure buckets â€” current employees only
   const tenureRes = await pool.query(`
     SELECT
       CASE
-        WHEN EXTRACT(YEAR FROM AGE(NOW(), joining_date)) < 1  THEN '0–1 yr'
-        WHEN EXTRACT(YEAR FROM AGE(NOW(), joining_date)) < 3  THEN '1–3 yrs'
-        WHEN EXTRACT(YEAR FROM AGE(NOW(), joining_date)) < 5  THEN '3–5 yrs'
-        WHEN EXTRACT(YEAR FROM AGE(NOW(), joining_date)) < 10 THEN '5–10 yrs'
+        WHEN EXTRACT(YEAR FROM AGE(NOW(), joining_date)) < 1  THEN '0â€“1 yr'
+        WHEN EXTRACT(YEAR FROM AGE(NOW(), joining_date)) < 3  THEN '1â€“3 yrs'
+        WHEN EXTRACT(YEAR FROM AGE(NOW(), joining_date)) < 5  THEN '3â€“5 yrs'
+        WHEN EXTRACT(YEAR FROM AGE(NOW(), joining_date)) < 10 THEN '5â€“10 yrs'
         ELSE '10+ yrs'
       END AS bucket,
       COUNT(*) AS count
@@ -833,7 +856,7 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
     GROUP BY bucket
     ORDER BY MIN(joining_date)
   `, cidPar);
-  const bucketOrder = ['0–1 yr','1–3 yrs','3–5 yrs','5–10 yrs','10+ yrs'];
+  const bucketOrder = ['0â€“1 yr','1â€“3 yrs','3â€“5 yrs','5â€“10 yrs','10+ yrs'];
   const tenureMap = {};
   tenureRes.rows.forEach(r => { tenureMap[r.bucket] = parseInt(r.count); });
   const tenureGroups = bucketOrder.map(b => ({ bucket: b, count: tenureMap[b] || 0 }));
@@ -854,7 +877,7 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
     active: parseInt(r.active),
   }));
 
-  // New hires — scoped to FY if provided, else last 12 months
+  // New hires â€” scoped to FY if provided, else last 12 months
   const hiresStart = fy_start || null;
   const hiresEnd   = fy_end   || null;
   let hiresRes;
@@ -881,7 +904,7 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
   }
   const newHiresMonthly = hiresRes.rows.map(r => ({ month: r.month, hires: parseInt(r.hires) }));
 
-  // Exits by month — employees who left in the last 12 months
+  // Exits by month â€” employees who left in the last 12 months
   // Uses exit_date when present, falls back to updated_at for older records
   const exitsRes = await pool.query(`
     SELECT TO_CHAR(DATE_TRUNC('month', COALESCE(exit_date, updated_at)), 'Mon YY') AS month,
@@ -906,3 +929,6 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
     attritionMonthly,
   };
 };
+
+
+

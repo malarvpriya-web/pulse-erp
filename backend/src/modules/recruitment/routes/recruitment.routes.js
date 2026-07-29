@@ -21,10 +21,19 @@ const notify = (userId, module, recordId, message) => {
 const router = express.Router();
 
 // Bootstrap: create interview_schedules and offer_letters tables if they don't exist
+//
+// candidate_id/job_opening_id were originally typed UUID here, but
+// candidates.id and job_openings.id are both `integer` — every INSERT
+// (createOffer, interview scheduling) that passed a real candidate/job id
+// would fail immediately with "invalid input syntax for type uuid", and
+// every JOIN against candidates.id (e.g. the auto-creation-trigger
+// endpoint's own offer lookup) would throw "operator does not exist: uuid =
+// integer" instead. In practice this meant offer letters and interview
+// schedules could never actually be created against a real candidate.
 pool.query(`
   CREATE TABLE IF NOT EXISTS interview_schedules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    candidate_id UUID,
+    candidate_id INTEGER,
     interview_date DATE NOT NULL DEFAULT CURRENT_DATE,
     interview_time TIME,
     interview_mode VARCHAR(20),
@@ -39,8 +48,8 @@ pool.query(`
   );
   CREATE TABLE IF NOT EXISTS offer_letters (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    candidate_id UUID,
-    job_opening_id UUID,
+    candidate_id INTEGER,
+    job_opening_id INTEGER,
     offered_salary DECIMAL(15,2) DEFAULT 0,
     joining_date DATE DEFAULT CURRENT_DATE,
     offer_status VARCHAR(20) DEFAULT 'draft',
@@ -53,6 +62,20 @@ pool.query(`
     deleted_at TIMESTAMP
   );
 `).catch(() => {});
+
+// Migrate any already-created copies of the two tables above off the wrong
+// UUID typing. Both tables were (per the CREATE statements' own IF NOT
+// EXISTS) never successfully written to with a real candidate/job id, so
+// these columns should be empty/unused wherever this has already run —
+// each ALTER is independently caught so one succeeding or failing never
+// blocks the others.
+for (const stmt of [
+  `ALTER TABLE interview_schedules ALTER COLUMN candidate_id TYPE INTEGER USING NULLIF(candidate_id::text, '')::integer`,
+  `ALTER TABLE offer_letters ALTER COLUMN candidate_id TYPE INTEGER USING NULLIF(candidate_id::text, '')::integer`,
+  `ALTER TABLE offer_letters ALTER COLUMN job_opening_id TYPE INTEGER USING NULLIF(job_opening_id::text, '')::integer`,
+]) {
+  pool.query(stmt).catch(() => {});
+}
 
 const ALLOWED_RESUME_TYPES = new Set([
   'application/pdf',
@@ -231,7 +254,7 @@ router.post('/candidates', upload.single('resume'), async (req, res) => {
     const candidate = await recruitmentRepository.createCandidate(data);
 
     // Notify recruiter of new application
-    notify(req.user?.user_id, 'recruitment', candidate.id,
+    notify(req.user?.userId ?? req.user?.id, 'recruitment', candidate.id,
       `New application: ${candidate.full_name} applied`);
     triggerEmail('application_received', {
       candidate_name:  candidate.full_name,
@@ -331,7 +354,7 @@ router.post('/candidates/:id/hire', async (req, res) => {
     await client.query('COMMIT');
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'candidate', action: 'hire', newData: { employee_id: employeeId }, req });
     // Notify HR of new hire
-    notify(req.user?.user_id, 'recruitment', parseInt(req.params.id),
+    notify(req.user?.userId ?? req.user?.id, 'recruitment', parseInt(req.params.id),
       `${employee.first_name} ${employee.last_name} has been hired and added as employee ${employeeId}`);
     triggerEmail('hired_welcome', {
       candidate_email: employee.company_email || '',
@@ -407,7 +430,9 @@ router.post('/interviews', async (req, res) => {
     });
     // Notify interviewer
     if (interview.interviewer_id) {
-      const empRes = await pool.query('SELECT user_id FROM employees WHERE id = $1', [interview.interviewer_id]).catch(() => ({ rows: [] }));
+      // employees has no user_id column — this always returned zero rows, so
+      // notify() below silently no-op'd on every interview scheduled.
+      const empRes = await pool.query('SELECT id AS user_id FROM users WHERE employee_id = $1', [interview.interviewer_id]).catch(() => ({ rows: [] }));
       const interviewerUserId = empRes.rows[0]?.user_id;
       notify(interviewerUserId, 'recruitment', interview.id,
         `Interview scheduled on ${interview.interview_date} — check your calendar`);
@@ -493,7 +518,9 @@ router.post('/interviews/:id/submit-feedback', async (req, res) => {
       await recruitmentRepository.moveCandidateStage(
         schedule.candidate_id,
         nextStage,
-        req.user?.userId ?? req.user?.id,
+        // candidate_stage_history.moved_by FKs employees(id), not users(id) —
+        // getCandidateStageHistory's own read joins on employees.
+        req.user?.employee_id ?? null,
         rejection_reason || `Interview outcome: ${outcome}`
       );
       moveResumeOnStageChange(String(schedule.candidate_id), nextStage).catch(err =>
@@ -509,10 +536,10 @@ router.post('/interviews/:id/submit-feedback', async (req, res) => {
         rejection_reason,
       }, cid(req));
     } else if (nextStage === '2nd_level') {
-      notify(req.user?.user_id, 'recruitment', parseInt(schedule.candidate_id),
+      notify(req.user?.userId ?? req.user?.id, 'recruitment', parseInt(schedule.candidate_id),
         `${candidate.full_name} passed L1 — schedule 2nd Level Interview`);
     } else if (nextStage === 'offer') {
-      notify(req.user?.user_id, 'recruitment', parseInt(schedule.candidate_id),
+      notify(req.user?.userId ?? req.user?.id, 'recruitment', parseInt(schedule.candidate_id),
         `${candidate.full_name} passed L2 — create offer letter`);
     }
 
@@ -624,7 +651,7 @@ router.put('/offers/:id', async (req, res) => {
     const offer = await recruitmentRepository.updateOffer(req.params.id, req.body);
     // Notify when offer is sent
     if (req.body.offer_status === 'sent') {
-      notify(req.user?.user_id, 'recruitment', offer.id,
+      notify(req.user?.userId ?? req.user?.id, 'recruitment', offer.id,
         `Offer letter sent to ${offer.candidate_name || 'candidate'}`);
       triggerEmail('offer_sent', {
         candidate_email: offer.candidate_email || '',
@@ -853,6 +880,34 @@ router.post('/auto-creation/:candidateId/trigger', async (req, res) => {
 
       employee_id = empRows[0].id;
 
+      // Auto-enroll into payroll — same pattern as employee.service.js's
+      // addEmployee and recruitment.repository.js's hireCandidate (the other
+      // two employee-creation paths). This was the one of three still
+      // missing it, so recruitment-sourced auto-created employees were
+      // payroll-invisible until someone manually added an assignment.
+      // c.offered_salary (already fetched above from the accepted offer
+      // letter, previously unused in this handler) seeds a real basic_salary
+      // instead of the column default when one exists.
+      let payrollEnrolled = false;
+      try {
+        const { rows: defStruct } = await pool.query(
+          `SELECT id FROM salary_structures WHERE is_default = true ORDER BY id LIMIT 1`
+        );
+        const offeredSalary = parseFloat(c.offered_salary);
+        const params = [employee_id, defStruct[0]?.id ?? null, c.joining_date || new Date().toISOString().split('T')[0]];
+        let sql = `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from`;
+        if (Number.isFinite(offeredSalary) && offeredSalary > 0) {
+          params.push(offeredSalary);
+          sql += `, basic_salary) VALUES ($1,$2,$3,$${params.length})`;
+        } else {
+          sql += `) VALUES ($1,$2,$3)`;
+        }
+        await pool.query(sql, params);
+        payrollEnrolled = true;
+      } catch (e) {
+        console.error('[auto-creation/trigger] payroll auto-enrollment failed:', e.message);
+      }
+
       // Build auto-creation checklist
       const checklist_items = [
         { task: 'Employee record created', done: true, note: `Code: ${emp_code}` },
@@ -860,7 +915,7 @@ router.post('/auto-creation/:candidateId/trigger', async (req, res) => {
         { task: 'Onboarding checklist to be created', done: false },
         { task: 'Attendance profile to be configured', done: false },
         { task: 'Leave profile to be configured', done: false },
-        { task: 'Payroll profile to be configured', done: false },
+        { task: 'Payroll profile configured', done: payrollEnrolled },
         { task: 'Document folder to be created', done: false },
         { task: 'Org chart node to be added', done: false },
       ];

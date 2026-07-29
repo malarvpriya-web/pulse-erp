@@ -47,8 +47,13 @@ class ExpenseRepository {
     }
 
     if (filters.status) {
+      // Writes here capitalize (Approved/Rejected/Paid — see approve/reject/
+      // markPaid below) while the rest of the app filters/dashboards compare
+      // lowercase ('pending','approved','paid') — an exact-match filter
+      // silently returned zero rows for any caller using the app's usual
+      // lowercase convention.
       params.push(filters.status);
-      query += ` AND ec.status = $${params.length}`;
+      query += ` AND LOWER(ec.status) = LOWER($${params.length})`;
     }
 
     if (filters.employee_id) {

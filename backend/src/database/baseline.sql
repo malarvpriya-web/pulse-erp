@@ -279,6 +279,7 @@ CREATE TABLE public.amc_contracts (
     renewal_amount numeric(15,2) DEFAULT 0,
     scope_of_work text,
     exclusions text,
+    commissioning_workflow_id integer,
     CONSTRAINT chk_amc_contracts_status CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'active'::character varying, 'expired'::character varying, 'cancelled'::character varying])::text[])))
 );
 
@@ -2549,13 +2550,47 @@ ALTER SEQUENCE public.calibration_sessions_id_seq OWNED BY public.calibration_se
 
 
 --
+-- Name: candidate_stage_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.candidate_stage_history (
+    id integer NOT NULL,
+    candidate_id integer NOT NULL,
+    stage character varying(50) NOT NULL,
+    moved_by integer,
+    notes text,
+    moved_date timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: candidate_stage_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.candidate_stage_history_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: candidate_stage_history_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.candidate_stage_history_id_seq OWNED BY public.candidate_stage_history.id;
+
+
+--
 -- Name: candidates; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.candidates (
     id integer NOT NULL,
     opening_id integer,
-    first_name character varying(100) NOT NULL,
+    first_name character varying(100),
     last_name character varying(100),
     email character varying(255),
     phone character varying(30),
@@ -2595,6 +2630,7 @@ CREATE TABLE public.candidates (
     applied_job_id integer,
     current_stage character varying(100) DEFAULT 'applied'::character varying,
     overall_status character varying(30) DEFAULT 'active'::character varying,
+    resume_file_url character varying(500),
     CONSTRAINT candidates_current_stage_check CHECK (((current_stage)::text = ANY ((ARRAY['applied'::character varying, 'screening'::character varying, '1st_level'::character varying, '2nd_level'::character varying, 'offer'::character varying, 'hired'::character varying, 'not_suitable'::character varying, 'maybe'::character varying, 'future_use'::character varying, 'rejected'::character varying])::text[])))
 );
 
@@ -6176,7 +6212,15 @@ CREATE TABLE public.employee_asset_allocations (
     allocated_by integer,
     returned_to integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    transferred_from integer,
+    transferred_at timestamp with time zone,
+    maintenance_started_at timestamp with time zone,
+    maintenance_expected_return date,
+    maintenance_notes text,
+    disposed_at timestamp with time zone,
+    disposal_reason character varying(255),
+    disposed_by integer
 );
 
 
@@ -7217,7 +7261,10 @@ CREATE TABLE public.exit_clearance (
     noc_finance boolean DEFAULT false,
     noc_hr boolean DEFAULT false,
     noc_manager boolean DEFAULT false,
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    finance_noc_by integer,
+    manager_noc_by integer,
+    hr_noc_by integer
 );
 
 
@@ -7503,6 +7550,7 @@ CREATE TABLE public.expense_claims (
     net_payable numeric(12,2),
     borne_by character varying(10) DEFAULT 'company'::character varying,
     created_by integer,
+    delegate_approver_id integer,
     CONSTRAINT chk_ec_borne_by CHECK (((borne_by)::text = ANY ((ARRAY['company'::character varying, 'personal'::character varying])::text[])))
 );
 
@@ -9195,6 +9243,61 @@ ALTER SEQUENCE public.installation_reports_id_seq OWNED BY public.installation_r
 
 
 --
+-- Name: installation_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.installation_requests (
+    id integer NOT NULL,
+    company_id integer,
+    installation_number character varying(30),
+    sales_order_id integer,
+    project_id integer,
+    equipment_id integer,
+    customer_name character varying(255),
+    site_address text,
+    status character varying(30) DEFAULT 'requested'::character varying NOT NULL,
+    requested_date date DEFAULT CURRENT_DATE,
+    engineer_id integer,
+    engineer_assigned_at timestamp with time zone,
+    travel_request_id integer,
+    scheduled_date date,
+    actual_start_at timestamp with time zone,
+    actual_end_at timestamp with time zone,
+    completion_notes text,
+    commissioning_workflow_id integer,
+    customer_accepted boolean DEFAULT false,
+    customer_accepted_by character varying(255),
+    customer_accepted_at timestamp with time zone,
+    customer_acceptance_notes text,
+    notes text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT chk_installation_requests_status CHECK (((status)::text = ANY ((ARRAY['requested'::character varying, 'engineer_assigned'::character varying, 'travel_planned'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[])))
+);
+
+
+--
+-- Name: installation_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.installation_requests_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: installation_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.installation_requests_id_seq OWNED BY public.installation_requests.id;
+
+
+--
 -- Name: interview_questions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -9239,7 +9342,7 @@ ALTER SEQUENCE public.interview_questions_id_seq OWNED BY public.interview_quest
 
 CREATE TABLE public.interview_schedules (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    candidate_id uuid,
+    candidate_id integer,
     interview_date date DEFAULT CURRENT_DATE NOT NULL,
     interview_time time without time zone,
     interview_mode character varying(20),
@@ -9843,7 +9946,8 @@ CREATE TABLE public.job_openings (
     updated_at timestamp with time zone DEFAULT now(),
     company_id integer,
     gdrive_folder_id character varying(200),
-    gdrive_folder_structure jsonb
+    gdrive_folder_structure jsonb,
+    positions_filled integer DEFAULT 0 NOT NULL
 );
 
 
@@ -12206,8 +12310,8 @@ ALTER SEQUENCE public.nps_responses_id_seq OWNED BY public.nps_responses.id;
 
 CREATE TABLE public.offer_letters (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    candidate_id uuid,
-    job_opening_id uuid,
+    candidate_id integer,
+    job_opening_id integer,
     offered_salary numeric(15,2) DEFAULT 0,
     joining_date date DEFAULT CURRENT_DATE,
     offer_status character varying(20) DEFAULT 'draft'::character varying,
@@ -16395,6 +16499,43 @@ ALTER SEQUENCE public.revoked_tokens_id_seq OWNED BY public.revoked_tokens.id;
 
 
 --
+-- Name: rfq_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rfq_items (
+    id integer NOT NULL,
+    rfq_id integer NOT NULL,
+    item_id integer,
+    item_name character varying(300),
+    quantity numeric(12,2) DEFAULT 1 NOT NULL,
+    unit character varying(20) DEFAULT 'Nos'::character varying,
+    required_date date,
+    remarks text,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: rfq_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.rfq_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: rfq_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.rfq_items_id_seq OWNED BY public.rfq_items.id;
+
+
+--
 -- Name: rfq_quotes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -16983,6 +17124,9 @@ CREATE TABLE public.sales_orders (
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     supply_type character varying(10) DEFAULT 'intra'::character varying,
+    production_completed_at timestamp with time zone,
+    dispatched_at timestamp with time zone,
+    delivered_at timestamp with time zone,
     CONSTRAINT sales_orders_supply_type_check CHECK (((supply_type)::text = ANY ((ARRAY['intra'::character varying, 'inter'::character varying])::text[])))
 );
 
@@ -18858,7 +19002,14 @@ CREATE TABLE public.stock_adjustments (
     reason text,
     notes text,
     created_at timestamp with time zone DEFAULT now(),
-    deleted_at timestamp with time zone
+    deleted_at timestamp with time zone,
+    status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    created_by integer,
+    approved_by integer,
+    approved_at timestamp with time zone,
+    rejection_reason text,
+    company_id integer,
+    CONSTRAINT chk_stock_adjustments_status CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[])))
 );
 
 
@@ -20923,7 +21074,8 @@ CREATE TABLE public.travel_advances (
     payment_ref character varying(100),
     payment_date date,
     disbursed_by integer,
-    disbursed_at timestamp with time zone
+    disbursed_at timestamp with time zone,
+    delegate_approver_id integer
 );
 
 
@@ -21222,7 +21374,8 @@ CREATE TABLE public.travel_requests (
     payment_date date,
     payment_ref character varying(100),
     company_id integer,
-    request_number character varying(50)
+    request_number character varying(50),
+    delegate_approver_id integer
 );
 
 
@@ -22253,7 +22406,8 @@ CREATE TABLE public.vendors (
     is_long_lead boolean DEFAULT false,
     registration_id integer,
     deleted_at timestamp with time zone,
-    name text GENERATED ALWAYS AS (vendor_name) STORED
+    name text GENERATED ALWAYS AS (vendor_name) STORED,
+    party_id uuid
 );
 
 
@@ -22671,7 +22825,17 @@ CREATE TABLE public.warranty_registrations (
     notes text,
     company_id integer,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    project_id integer,
+    commissioning_workflow_id integer,
+    equipment_id integer,
+    amc_contract_id integer,
+    commissioning_date date,
+    manufacturer_warranty_months integer,
+    extended_warranty_months integer,
+    coverage_description text,
+    warranty_months integer,
+    exclusions text
 );
 
 
@@ -23616,6 +23780,13 @@ ALTER TABLE ONLY public.calibration_records ALTER COLUMN id SET DEFAULT nextval(
 --
 
 ALTER TABLE ONLY public.calibration_sessions ALTER COLUMN id SET DEFAULT nextval('public.calibration_sessions_id_seq'::regclass);
+
+
+--
+-- Name: candidate_stage_history id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidate_stage_history ALTER COLUMN id SET DEFAULT nextval('public.candidate_stage_history_id_seq'::regclass);
 
 
 --
@@ -24652,6 +24823,13 @@ ALTER TABLE ONLY public.inspection_reports ALTER COLUMN id SET DEFAULT nextval('
 --
 
 ALTER TABLE ONLY public.installation_reports ALTER COLUMN id SET DEFAULT nextval('public.installation_reports_id_seq'::regclass);
+
+
+--
+-- Name: installation_requests id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_requests ALTER COLUMN id SET DEFAULT nextval('public.installation_requests_id_seq'::regclass);
 
 
 --
@@ -25758,6 +25936,13 @@ ALTER TABLE ONLY public.review_cycles ALTER COLUMN id SET DEFAULT nextval('publi
 --
 
 ALTER TABLE ONLY public.revoked_tokens ALTER COLUMN id SET DEFAULT nextval('public.revoked_tokens_id_seq'::regclass);
+
+
+--
+-- Name: rfq_items id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfq_items ALTER COLUMN id SET DEFAULT nextval('public.rfq_items_id_seq'::regclass);
 
 
 --
@@ -27359,6 +27544,14 @@ ALTER TABLE ONLY public.calibration_records
 
 ALTER TABLE ONLY public.calibration_sessions
     ADD CONSTRAINT calibration_sessions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: candidate_stage_history candidate_stage_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidate_stage_history
+    ADD CONSTRAINT candidate_stage_history_pkey PRIMARY KEY (id);
 
 
 --
@@ -29071,6 +29264,14 @@ ALTER TABLE ONLY public.inspection_reports
 
 ALTER TABLE ONLY public.installation_reports
     ADD CONSTRAINT installation_reports_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: installation_requests installation_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_requests
+    ADD CONSTRAINT installation_requests_pkey PRIMARY KEY (id);
 
 
 --
@@ -30858,11 +31059,27 @@ ALTER TABLE ONLY public.revoked_tokens
 
 
 --
+-- Name: rfq_items rfq_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfq_items
+    ADD CONSTRAINT rfq_items_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: rfq_quotes rfq_quotes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.rfq_quotes
     ADD CONSTRAINT rfq_quotes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: rfq_quotes rfq_quotes_rfq_vendor_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfq_quotes
+    ADD CONSTRAINT rfq_quotes_rfq_vendor_unique UNIQUE (rfq_id, vendor_id);
 
 
 --
@@ -32630,6 +32847,13 @@ CREATE INDEX idx_accrual_log_emp_year ON public.leave_accrual_log USING btree (e
 
 
 --
+-- Name: idx_amc_contracts_commissioning; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_amc_contracts_commissioning ON public.amc_contracts USING btree (commissioning_workflow_id);
+
+
+--
 -- Name: idx_amc_project_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -33201,6 +33425,13 @@ CREATE INDEX idx_calibration_adj_session ON public.calibration_adjustments USING
 --
 
 CREATE INDEX idx_calibration_sessions_company ON public.calibration_sessions USING btree (company_id);
+
+
+--
+-- Name: idx_candidate_stage_history_candidate; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_candidate_stage_history_candidate ON public.candidate_stage_history USING btree (candidate_id);
 
 
 --
@@ -34916,6 +35147,27 @@ CREATE INDEX idx_increment_reco_employee ON public.increment_recommendations USI
 --
 
 CREATE INDEX idx_inspection_reports_stage ON public.inspection_reports USING btree (stage);
+
+
+--
+-- Name: idx_installation_requests_project; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_installation_requests_project ON public.installation_requests USING btree (project_id);
+
+
+--
+-- Name: idx_installation_requests_so; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_installation_requests_so ON public.installation_requests USING btree (sales_order_id);
+
+
+--
+-- Name: idx_installation_requests_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_installation_requests_status ON public.installation_requests USING btree (status);
 
 
 --
@@ -36816,6 +37068,13 @@ CREATE INDEX idx_review_cycles_company ON public.review_cycles USING btree (comp
 
 
 --
+-- Name: idx_rfq_items_rfq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rfq_items_rfq ON public.rfq_items USING btree (rfq_id);
+
+
+--
 -- Name: idx_rfq_quotes_rfq; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -38034,6 +38293,13 @@ CREATE INDEX idx_vendors_name ON public.vendors USING btree (name);
 
 
 --
+-- Name: idx_vendors_party; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_vendors_party ON public.vendors USING btree (party_id);
+
+
+--
 -- Name: idx_vendors_risk_rating; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -38290,6 +38556,34 @@ CREATE INDEX idx_warranty_reg_end ON public.warranty_registrations USING btree (
 --
 
 CREATE INDEX idx_warranty_reg_serial ON public.warranty_registrations USING btree (serial_number, company_id);
+
+
+--
+-- Name: idx_warranty_registrations_amc_contract; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_warranty_registrations_amc_contract ON public.warranty_registrations USING btree (amc_contract_id);
+
+
+--
+-- Name: idx_warranty_registrations_commiss_wf; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_warranty_registrations_commiss_wf ON public.warranty_registrations USING btree (commissioning_workflow_id);
+
+
+--
+-- Name: idx_warranty_registrations_equipment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_warranty_registrations_equipment ON public.warranty_registrations USING btree (equipment_id);
+
+
+--
+-- Name: idx_warranty_registrations_project; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_warranty_registrations_project ON public.warranty_registrations USING btree (project_id);
 
 
 --
@@ -38559,6 +38853,13 @@ CREATE UNIQUE INDEX uq_device_alerts_open ON public.device_alerts USING btree (e
 
 
 --
+-- Name: uq_installation_requests_so_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_installation_requests_so_active ON public.installation_requests USING btree (sales_order_id) WHERE ((status)::text <> 'cancelled'::text);
+
+
+--
 -- Name: uq_item_categories_name; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -38754,6 +39055,14 @@ ALTER TABLE ONLY public.accounting_periods
 
 ALTER TABLE ONLY public.accounts
     ADD CONSTRAINT accounts_party_id_fkey FOREIGN KEY (party_id) REFERENCES public.parties(id) ON DELETE SET NULL;
+
+
+--
+-- Name: amc_contracts amc_contracts_commissioning_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.amc_contracts
+    ADD CONSTRAINT amc_contracts_commissioning_workflow_id_fkey FOREIGN KEY (commissioning_workflow_id) REFERENCES public.commissioning_workflows(id);
 
 
 --
@@ -39298,6 +39607,22 @@ ALTER TABLE ONLY public.calibration_sessions
 
 ALTER TABLE ONLY public.calibration_sessions
     ADD CONSTRAINT calibration_sessions_facilitator_id_fkey FOREIGN KEY (facilitator_id) REFERENCES public.employees(id);
+
+
+--
+-- Name: candidate_stage_history candidate_stage_history_candidate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidate_stage_history
+    ADD CONSTRAINT candidate_stage_history_candidate_id_fkey FOREIGN KEY (candidate_id) REFERENCES public.candidates(id) ON DELETE CASCADE;
+
+
+--
+-- Name: candidate_stage_history candidate_stage_history_moved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidate_stage_history
+    ADD CONSTRAINT candidate_stage_history_moved_by_fkey FOREIGN KEY (moved_by) REFERENCES public.employees(id) ON DELETE SET NULL;
 
 
 --
@@ -39973,6 +40298,14 @@ ALTER TABLE ONLY public.employee_asset_allocations
 
 
 --
+-- Name: employee_asset_allocations employee_asset_allocations_disposed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_asset_allocations
+    ADD CONSTRAINT employee_asset_allocations_disposed_by_fkey FOREIGN KEY (disposed_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
 -- Name: employee_asset_allocations employee_asset_allocations_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -39986,6 +40319,14 @@ ALTER TABLE ONLY public.employee_asset_allocations
 
 ALTER TABLE ONLY public.employee_asset_allocations
     ADD CONSTRAINT employee_asset_allocations_returned_to_fkey FOREIGN KEY (returned_to) REFERENCES public.employees(id);
+
+
+--
+-- Name: employee_asset_allocations employee_asset_allocations_transferred_from_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_asset_allocations
+    ADD CONSTRAINT employee_asset_allocations_transferred_from_fkey FOREIGN KEY (transferred_from) REFERENCES public.employees(id) ON DELETE SET NULL;
 
 
 --
@@ -40293,6 +40634,30 @@ ALTER TABLE ONLY public.eway_bills
 
 
 --
+-- Name: exit_clearance exit_clearance_finance_noc_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exit_clearance
+    ADD CONSTRAINT exit_clearance_finance_noc_by_fkey FOREIGN KEY (finance_noc_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: exit_clearance exit_clearance_hr_noc_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exit_clearance
+    ADD CONSTRAINT exit_clearance_hr_noc_by_fkey FOREIGN KEY (hr_noc_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: exit_clearance exit_clearance_manager_noc_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exit_clearance
+    ADD CONSTRAINT exit_clearance_manager_noc_by_fkey FOREIGN KEY (manager_noc_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
 -- Name: exit_interviews exit_interviews_exit_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -40314,6 +40679,14 @@ ALTER TABLE ONLY public.exit_requests
 
 ALTER TABLE ONLY public.expense_claim_items
     ADD CONSTRAINT expense_claim_items_expense_claim_id_fkey FOREIGN KEY (expense_claim_id) REFERENCES public.expense_claims(id) ON DELETE CASCADE;
+
+
+--
+-- Name: expense_claims expense_claims_delegate_approver_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expense_claims
+    ADD CONSTRAINT expense_claims_delegate_approver_id_fkey FOREIGN KEY (delegate_approver_id) REFERENCES public.employees(id) ON DELETE SET NULL;
 
 
 --
@@ -40802,6 +41175,54 @@ ALTER TABLE ONLY public.increment_recommendations
 
 ALTER TABLE ONLY public.inspection_reports
     ADD CONSTRAINT inspection_reports_checklist_id_fkey FOREIGN KEY (checklist_id) REFERENCES public.inspection_checklists(id);
+
+
+--
+-- Name: installation_requests installation_requests_commissioning_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_requests
+    ADD CONSTRAINT installation_requests_commissioning_workflow_id_fkey FOREIGN KEY (commissioning_workflow_id) REFERENCES public.commissioning_workflows(id) ON DELETE SET NULL;
+
+
+--
+-- Name: installation_requests installation_requests_engineer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_requests
+    ADD CONSTRAINT installation_requests_engineer_id_fkey FOREIGN KEY (engineer_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: installation_requests installation_requests_equipment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_requests
+    ADD CONSTRAINT installation_requests_equipment_id_fkey FOREIGN KEY (equipment_id) REFERENCES public.customer_equipment(id) ON DELETE SET NULL;
+
+
+--
+-- Name: installation_requests installation_requests_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_requests
+    ADD CONSTRAINT installation_requests_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id) ON DELETE SET NULL;
+
+
+--
+-- Name: installation_requests installation_requests_sales_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_requests
+    ADD CONSTRAINT installation_requests_sales_order_id_fkey FOREIGN KEY (sales_order_id) REFERENCES public.sales_orders(id) ON DELETE SET NULL;
+
+
+--
+-- Name: installation_requests installation_requests_travel_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_requests
+    ADD CONSTRAINT installation_requests_travel_request_id_fkey FOREIGN KEY (travel_request_id) REFERENCES public.travel_requests(id) ON DELETE SET NULL;
 
 
 --
@@ -43301,6 +43722,22 @@ ALTER TABLE ONLY public.review_cycles
 
 
 --
+-- Name: rfq_items rfq_items_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfq_items
+    ADD CONSTRAINT rfq_items_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.inventory_items(id);
+
+
+--
+-- Name: rfq_items rfq_items_rfq_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfq_items
+    ADD CONSTRAINT rfq_items_rfq_id_fkey FOREIGN KEY (rfq_id) REFERENCES public.rfqs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: rfq_quotes rfq_quotes_rfq_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -44213,6 +44650,22 @@ ALTER TABLE ONLY public.training_sessions
 
 
 --
+-- Name: travel_advances travel_advances_delegate_approver_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.travel_advances
+    ADD CONSTRAINT travel_advances_delegate_approver_id_fkey FOREIGN KEY (delegate_approver_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: travel_requests travel_requests_delegate_approver_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.travel_requests
+    ADD CONSTRAINT travel_requests_delegate_approver_id_fkey FOREIGN KEY (delegate_approver_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
 -- Name: travel_requests travel_requests_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -44349,6 +44802,14 @@ ALTER TABLE ONLY public.vendor_scorecards
 
 
 --
+-- Name: vendors vendors_party_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vendors
+    ADD CONSTRAINT vendors_party_id_fkey FOREIGN KEY (party_id) REFERENCES public.parties(id);
+
+
+--
 -- Name: voc_responses voc_responses_survey_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -44405,11 +44866,43 @@ ALTER TABLE ONLY public.warranty_claims
 
 
 --
+-- Name: warranty_registrations warranty_registrations_amc_contract_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_registrations
+    ADD CONSTRAINT warranty_registrations_amc_contract_id_fkey FOREIGN KEY (amc_contract_id) REFERENCES public.amc_contracts(id) ON DELETE SET NULL;
+
+
+--
 -- Name: warranty_registrations warranty_registrations_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.warranty_registrations
     ADD CONSTRAINT warranty_registrations_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES public.assets_register(id);
+
+
+--
+-- Name: warranty_registrations warranty_registrations_commissioning_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_registrations
+    ADD CONSTRAINT warranty_registrations_commissioning_workflow_id_fkey FOREIGN KEY (commissioning_workflow_id) REFERENCES public.commissioning_workflows(id) ON DELETE SET NULL;
+
+
+--
+-- Name: warranty_registrations warranty_registrations_equipment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_registrations
+    ADD CONSTRAINT warranty_registrations_equipment_id_fkey FOREIGN KEY (equipment_id) REFERENCES public.customer_equipment(id) ON DELETE SET NULL;
+
+
+--
+-- Name: warranty_registrations warranty_registrations_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_registrations
+    ADD CONSTRAINT warranty_registrations_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id) ON DELETE SET NULL;
 
 
 --

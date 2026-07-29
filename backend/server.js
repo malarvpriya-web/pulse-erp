@@ -173,6 +173,7 @@ import complaintsRoutes       from "./src/modules/complaints/complaints.routes.j
 // ── Phase 51 — Customer Portal, Commissioning, Service Analytics ──────────────
 import customerPortalRoutes   from "./src/modules/servicedesk/routes/customer-portal.routes.js";
 import commissioningRoutes    from "./src/modules/servicedesk/routes/commissioning.routes.js";
+import installationRoutes     from "./src/modules/servicedesk/routes/installation.routes.js";
 import serviceAnalyticsRoutes from "./src/modules/servicedesk/routes/service-analytics.routes.js";
 import failureAnalyticsRoutes from "./src/modules/servicedesk/routes/failure-analytics.routes.js";
 import vocRoutes              from "./src/modules/servicedesk/routes/voc.routes.js";
@@ -226,6 +227,9 @@ import { startEsignReminderCron } from "./src/jobs/esignReminder.cron.js";
 import { startBackupCron }     from "./src/jobs/backup.cron.js";
 import { startIotMonitorCron } from "./src/jobs/iotMonitor.cron.js";
 import { startAmcRenewalCron } from "./src/jobs/amcRenewal.cron.js";
+import { startSubscriptionRenewalCron } from "./src/jobs/subscriptionRenewal.cron.js";
+import { startWarrantyExpiryCron } from "./src/jobs/warrantyExpiry.cron.js";
+import { registerEventReactions } from "./src/shared/eventReactions.js";
 import { startOverdueRemindersCron } from "./src/jobs/overdueReminders.cron.js";
 import { startScurveSnapshotCron } from "./src/jobs/scurveSnapshot.cron.js";
 import './src/jobs/attendance.cron.js';
@@ -628,6 +632,7 @@ v1Router.use("/complaints",      verifyToken, complaintsRoutes);
 // Phase 51 — Customer Portal (mixed auth), Commissioning, Service/Failure Analytics, VOC
 v1Router.use("/customer-portal",    customerPortalRoutes);      // mixed: /auth/login public, /portal/* portal-token, /accounts/* verifyToken
 v1Router.use("/commissioning",      verifyToken, commissioningRoutes);
+v1Router.use("/installation-requests", verifyToken, installationRoutes);
 v1Router.use("/service-analytics",  verifyToken, serviceAnalyticsRoutes);
 v1Router.use("/failure-analytics",  verifyToken, failureAnalyticsRoutes);
 v1Router.use("/voc",                vocRoutes);                  // POST /responses is public (portal submit)
@@ -860,6 +865,7 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`✅ Pulse ERP on port ${PORT}`);
     logFeatureFlags();
+    registerEventReactions();
     startProbationCron();
     startHealthMonitor(pool);
     startDeliveryFollowupCron();
@@ -867,6 +873,8 @@ async function startServer() {
     startBackupCron();
     startIotMonitorCron();
     startAmcRenewalCron();
+    startSubscriptionRenewalCron();
+    startWarrantyExpiryCron();
     startOverdueRemindersCron();
     startScurveSnapshotCron();
   });

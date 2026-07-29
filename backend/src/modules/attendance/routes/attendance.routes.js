@@ -3371,9 +3371,10 @@ router.post('/late-arrivals/warning', requireAttendanceOperator, async (req, res
       RETURNING *
     `, [companyId, employee_id, employee_name, department, issuedBy, month, late_count, warning_text]);
 
-    // Notify the employee (fire-and-forget)
+    // Notify the employee (fire-and-forget). employees has no user_id column —
+    // this always returned zero rows, so the warning notification never sent.
     pool.query(
-      `SELECT user_id FROM employees WHERE id = $1 AND user_id IS NOT NULL`,
+      `SELECT id AS user_id FROM users WHERE employee_id = $1`,
       [employee_id]
     ).then(r => {
       if (!r.rows[0]?.user_id) return;

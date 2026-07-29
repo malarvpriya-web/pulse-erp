@@ -103,12 +103,15 @@ const SEARCHABLE_PAGES = [
   { page: 'TeamPerformance',     label: 'Team Performance',           category: 'Performance' },
   // Recruitment
   { page: 'RecruitmentDashboard',label: 'Recruitment Dashboard',      category: 'Recruitment' },
+  { page: 'RecruiterDashboard',  label: 'Recruiter Dashboard',        category: 'Recruitment' },
   { page: 'JobOpenings',         label: 'Job Openings',               category: 'Recruitment' },
-  { page: 'CandidatePipeline',   label: 'Candidate Pipeline',         category: 'Recruitment' },
+  { page: 'Candidates',          label: 'Candidates',                 category: 'Recruitment' },
   { page: 'InterviewScheduler',  label: 'Interview Scheduler',        category: 'Recruitment' },
+  { page: 'InterviewQuestionBank', label: 'Question Bank',            category: 'Recruitment' },
   { page: 'OfferManagement',     label: 'Offer Management',           category: 'Recruitment' },
   { page: 'OnboardingChecklist', label: 'Onboarding Checklist',       category: 'Recruitment' },
-  { page: 'AllCandidates',       label: 'All Candidates',             category: 'Recruitment' },
+  { page: 'TalentPools',         label: 'Talent Pools',               category: 'Recruitment' },
+  { page: 'RecruitmentAgencies', label: 'Agencies',                   category: 'Recruitment' },
   // Travel
   { page: 'TravelDashboard',     label: 'Travel Dashboard',           category: 'Travel' },
   { page: 'TravelRequests',      label: 'Travel Requests',            category: 'Travel' },

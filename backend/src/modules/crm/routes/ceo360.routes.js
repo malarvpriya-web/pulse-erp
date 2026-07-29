@@ -22,8 +22,8 @@ router.get('/customers', requirePermission('crm', 'view'), async (req, res) => {
                COALESCE(SUM(i.total_amount) FILTER (WHERE i.status!='paid'), 0) AS outstanding,
                COUNT(i.id)::int AS invoice_count
         FROM parties p
-        LEFT JOIN invoices i ON i.party_id = p.id
-        WHERE (p.type='customer' OR p.type IS NULL) ${cc}
+        LEFT JOIN invoices i ON i.customer_id = p.id
+        WHERE (p.party_type='Customer' OR p.party_type IS NULL) ${cc}
         GROUP BY p.id, p.name, p.city, p.state, p.gstin
         HAVING COUNT(i.id) > 0
         ORDER BY revenue DESC LIMIT 20
@@ -34,8 +34,8 @@ router.get('/customers', requirePermission('crm', 'view'), async (req, res) => {
         SELECT p.id, p.name,
                COALESCE(SUM(i.total_amount) FILTER (WHERE i.status IN ('overdue','pending')), 0) AS outstanding
         FROM parties p
-        LEFT JOIN invoices i ON i.party_id = p.id
-        WHERE (p.type='customer' OR p.type IS NULL) ${cc}
+        LEFT JOIN invoices i ON i.customer_id = p.id
+        WHERE (p.party_type='Customer' OR p.party_type IS NULL) ${cc}
         GROUP BY p.id, p.name
         HAVING COALESCE(SUM(i.total_amount) FILTER (WHERE i.status IN ('overdue','pending')), 0) > 0
         ORDER BY outstanding DESC LIMIT 10
@@ -43,20 +43,23 @@ router.get('/customers', requirePermission('crm', 'view'), async (req, res) => {
 
       // Overdue invoice count per customer
       pool.query(`
-        SELECT party_id, COUNT(*)::int AS overdue_count
+        SELECT customer_id, COUNT(*)::int AS overdue_count
         FROM invoices WHERE status='overdue'
-        GROUP BY party_id
+        GROUP BY customer_id
       `).catch(() => ({ rows: [] })),
 
-      // Project margin per customer
+      // Project margin per customer — projects has no customer_id FK, only a free-text
+      // customer_name/client_name (see projects.routes.js's own COALESCE pattern); best-effort
+      // name-match onto parties, same discipline used for service_contracts/field_visits elsewhere.
       pool.query(`
-        SELECT p.customer_id,
+        SELECT pt.id AS customer_id,
                COALESCE(SUM(p.budget_amount), 0) AS total_budget,
-               COALESCE(SUM(cs.actual_cost), 0) AS total_actual
+               COALESCE(SUM(cs.total_cost), 0) AS total_actual
         FROM projects p
+        JOIN parties pt ON LOWER(pt.name) = LOWER(COALESCE(p.customer_name, p.client_name))
         LEFT JOIN project_cost_summary cs ON cs.project_id = p.id
-        WHERE p.customer_id IS NOT NULL AND p.deleted_at IS NULL
-        GROUP BY p.customer_id
+        WHERE COALESCE(p.customer_name, p.client_name) IS NOT NULL AND p.deleted_at IS NULL
+        GROUP BY pt.id
       `).catch(() => ({ rows: [] })),
 
       // Open critical tickets per customer
@@ -67,18 +70,22 @@ router.get('/customers', requirePermission('crm', 'view'), async (req, res) => {
         GROUP BY customer_id
       `).catch(() => ({ rows: [] })),
 
-      // Active AMC per customer
+      // Active AMC per customer — amc_contracts has no customer_id/annual_value columns;
+      // resolve customer via its real sales_order_id -> sales_orders.customer_id link
+      // (same pattern already used for customer360.routes.js's /amc endpoint).
       pool.query(`
-        SELECT customer_id, COUNT(*)::int AS active_amc,
-               COALESCE(SUM(annual_value), 0) AS amc_revenue
-        FROM amc_contracts WHERE status='active'
-        GROUP BY customer_id
+        SELECT so.customer_id, COUNT(*)::int AS active_amc,
+               COALESCE(SUM(ac.contract_value), 0) AS amc_revenue
+        FROM amc_contracts ac
+        JOIN sales_orders so ON so.id = ac.sales_order_id
+        WHERE ac.status='active'
+        GROUP BY so.customer_id
       `).catch(() => ({ rows: [] })),
     ]);
 
     // Build lookup maps
     const overdueMap = {};
-    healthInputs.rows.forEach(r => { overdueMap[r.party_id] = r.overdue_count; });
+    healthInputs.rows.forEach(r => { overdueMap[r.customer_id] = r.overdue_count; });
 
     const marginMap = {};
     projectMargins.rows.forEach(r => {
@@ -161,12 +168,12 @@ router.get('/vendors', requirePermission('procurement', 'view'), async (req, res
                COALESCE(po_agg.open_pos, 0) AS open_pos
         FROM vendors v
         LEFT JOIN (
-          SELECT vendor_id,
+          SELECT supplier_id AS vendor_id,
                  COUNT(*)::int AS po_count,
                  SUM(total_amount) AS po_value,
                  COUNT(CASE WHEN status IN ('Approved','Sent','Partial') THEN 1 END)::int AS open_pos
           FROM purchase_orders ${companyId ? `WHERE company_id=${companyId}` : ''}
-          GROUP BY vendor_id
+          GROUP BY supplier_id
         ) po_agg ON po_agg.vendor_id = v.id
         WHERE 1=1 ${cc}
         ORDER BY po_value DESC NULLS LAST LIMIT 20
@@ -178,7 +185,7 @@ router.get('/vendors', requirePermission('procurement', 'view'), async (req, res
                quality_score, delivery_score
         FROM vendor_scorecards
         ${companyId ? `WHERE company_id=${companyId}` : ''}
-        ORDER BY vendor_id, scored_at DESC
+        ORDER BY vendor_id, created_at DESC
       `).catch(() => ({ rows: [] })),
 
       pool.query(`
@@ -190,11 +197,11 @@ router.get('/vendors', requirePermission('procurement', 'view'), async (req, res
       `).catch(() => ({ rows: [] })),
 
       pool.query(`
-        SELECT vendor_id,
+        SELECT supplier_id AS vendor_id,
                COUNT(CASE WHEN status IN ('Received','Completed') THEN 1 END)::int AS completed,
                COUNT(*)::int AS total
-        FROM purchase_orders WHERE 1=1 ${ccPO}
-        GROUP BY vendor_id
+        FROM purchase_orders po WHERE 1=1 ${ccPO}
+        GROUP BY supplier_id
       `).catch(() => ({ rows: [] })),
     ]);
 
@@ -258,11 +265,13 @@ router.get('/summary', requirePermission('crm', 'view'), async (req, res) => {
     const cc = companyId ? `AND company_id=${companyId}` : '';
 
     const [customerCount, vendorCount, totalRevenue, totalOutstanding, totalPayable, openNcrs] = await Promise.all([
-      pool.query(`SELECT COUNT(DISTINCT party_id)::int AS c FROM invoices WHERE 1=1 ${cc}`).catch(() => ({ rows: [{ c: 0 }] })),
+      pool.query(`SELECT COUNT(DISTINCT customer_id)::int AS c FROM invoices WHERE 1=1 ${cc}`).catch(() => ({ rows: [{ c: 0 }] })),
       pool.query(`SELECT COUNT(*)::int AS c FROM vendors WHERE 1=1 ${cc}`).catch(() => ({ rows: [{ c: 0 }] })),
       pool.query(`SELECT COALESCE(SUM(total_amount),0) AS v FROM invoices WHERE status='paid' ${cc}`).catch(() => ({ rows: [{ v: 0 }] })),
       pool.query(`SELECT COALESCE(SUM(total_amount),0) AS v FROM invoices WHERE status IN ('overdue','pending') ${cc}`).catch(() => ({ rows: [{ v: 0 }] })),
-      pool.query(`SELECT COALESCE(SUM(total_amount),0) AS v FROM vendor_invoices WHERE status IN ('Approved','Pending') ${cc}`).catch(() => ({ rows: [{ v: 0 }] })),
+      // vendor_invoices doesn't exist — the real AP-ledger table is bills, with lowercase
+      // status values; balance (not total_amount) is the actual outstanding-payable figure.
+      pool.query(`SELECT COALESCE(SUM(balance),0) AS v FROM bills WHERE status IN ('pending','overdue') ${cc}`).catch(() => ({ rows: [{ v: 0 }] })),
       pool.query(`SELECT COUNT(*)::int AS c FROM ncr_reports WHERE status!='Closed' ${cc}`).catch(() => ({ rows: [{ c: 0 }] })),
     ]);
 

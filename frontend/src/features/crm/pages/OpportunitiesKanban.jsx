@@ -56,23 +56,36 @@ export default function OpportunitiesKanban({ setPage } = {}) {
   const [detailOpp,         setDetailOpp]         = useState(null);
   const [creatingLifecycle, setCreatingLifecycle] = useState(false);
 
+  // Previously this only created an Operations `lifecycle_instances` stub
+  // (project_id always null) — no row ever landed in `projects`, so Sales saw
+  // a success toast while Projects/Finance had nothing to actually work with.
+  // Now calls the endpoint that creates a real project via the opportunity_id
+  // bridge column (see Project Master) and still sets up lifecycle tracking,
+  // correctly linked to that new project this time.
   const handleCreateLifecycle = useCallback(async (opp) => {
     setCreatingLifecycle(true);
     try {
-      await api.post('/lifecycle/instances', {
-        customer_id: opp.lead_id || null,
-        stage_notes: `Created from opportunity: ${opp.opportunity_name}`,
-      });
+      const res = await api.post(`/crm/opportunities/${opp.id}/convert-to-project`);
+      const project = res.data?.project;
       setDetailOpp(null);
-      setToast({ msg: `Lifecycle project created for "${opp.opportunity_name}". Go to Operations › Lifecycle Tracker to manage it.`, type: 'success' });
+      setToast({
+        msg: res.data?.already_existed
+          ? `Project ${project?.project_number || ''} already exists for "${opp.opportunity_name}".`
+          : `Project ${project?.project_number || ''} created for "${opp.opportunity_name}".`,
+        type: 'success',
+      });
       setTimeout(() => setToast(null), 4000);
+      if (project?.id && typeof setPage === 'function') {
+        sessionStorage.setItem('selectedProjectId', project.id);
+        setPage('ProjectDetail', { id: project.id });
+      }
     } catch (e) {
-      setToast({ msg: e.response?.data?.error || 'Failed to create lifecycle instance', type: 'error' });
+      setToast({ msg: e.response?.data?.error || 'Failed to create project', type: 'error' });
       setTimeout(() => setToast(null), 3000);
     } finally {
       setCreatingLifecycle(false);
     }
-  }, []);
+  }, [setPage]);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });

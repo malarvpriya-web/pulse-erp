@@ -9,6 +9,7 @@ import { PROJECT_TYPES } from '../../../shared/projectTypes.js';
 import { pageParams } from '../../../shared/pagination.js';
 import { validateOptionalMobile } from '../../../shared/validators.js';
 import { companyOf } from '../../../shared/scope.js';
+import { postStock } from '../../production/subcontracting.routes.js';
 
 const router = express.Router();
 
@@ -539,6 +540,30 @@ router.put('/tickets/:id', svcAdmin('edit'), async (req, res) => {
     const nowClosed = status === 'Closed';
     const nowResolved = status === 'Resolved';
 
+    // Gate: a Commissioning-type ticket could be closed with no commissioning
+    // sign-off and no signature on file — dispatch/warranty proceeded blind.
+    // Only gates tickets explicitly tagged service_type='Commissioning' with a
+    // linked project that has an actual (incomplete) commissioning workflow;
+    // unrelated tickets on the same project are untouched.
+    if (nowClosed) {
+      const effProjectId    = project_id || oldRows[0].project_id;
+      const effServiceType  = PROJECT_TYPES.includes(service_type) ? service_type : oldRows[0].service_type;
+      if (effServiceType === 'Commissioning' && effProjectId) {
+        const { rows: cwRows } = await pool.query(
+          `SELECT id, status FROM commissioning_workflows
+             WHERE project_id = $1 AND ($2::int IS NULL OR company_id = $2)
+             ORDER BY id DESC LIMIT 1`,
+          [effProjectId, companyId]
+        );
+        const cw = cwRows[0];
+        if (cw && !['signed_off', 'completed'].includes(cw.status)) {
+          return res.status(400).json({
+            error: `Cannot close this ticket — commissioning workflow #${cw.id} has no customer sign-off yet (status: ${cw.status})`,
+          });
+        }
+      }
+    }
+
     const result = await pool.query(
       `UPDATE support_tickets
        SET title=$1, description=$2, status=$3, priority=$4, category=$5, team=$6,
@@ -831,6 +856,7 @@ router.post('/field-visits', svcAdmin('add'), async (req, res) => {
 });
 
 router.put('/field-visits/:id', svcAdmin('edit'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const companyId = cid(req);
     const {
@@ -841,13 +867,15 @@ router.put('/field-visits/:id', svcAdmin('edit'), async (req, res) => {
       completed_at, work_done, parts_used, labour_hours, travel_km, cost,
       start_time_actual, end_time_actual, customer_signature,
     } = req.body;
-    const existing = await pool.query(
-      `SELECT * FROM field_visits WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`,
+
+    await client.query('BEGIN');
+    const existing = await client.query(
+      `SELECT * FROM field_visits WHERE id=$1 AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`,
       [req.params.id, companyId]
     );
-    if (!existing.rows[0]) return res.status(404).json({ error: 'Visit not found' });
+    if (!existing.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Visit not found' }); }
     const row = existing.rows[0];
-    const result = await pool.query(
+    const result = await client.query(
       `UPDATE field_visits SET
          status=$1, notes=$2, engineer_name=$3, visit_date=$4, visit_time=$5, purpose=$6,
          completed_at=$7, work_done=$8, parts_used=$9, labour_hours=$10, travel_km=$11, cost=$12,
@@ -861,9 +889,59 @@ router.put('/field-visits/:id', svcAdmin('edit'), async (req, res) => {
        start_time_actual ?? row.start_time_actual, end_time_actual ?? row.end_time_actual, customer_signature ?? row.customer_signature,
        req.params.id, companyId]
     );
+
+    // Parts used on a field visit were pure free-text JSON with no link to
+    // inventory_items, so consumption never touched stock_ledger/current_stock
+    // — the app showed parts as "used" while the warehouse still counted them
+    // as in stock. Now that the picker sends a real part_id, post the NET
+    // quantity change (new total − previously-saved total per part_id) through
+    // the same postStock() production uses, so repeat saves of an unchanged
+    // parts list don't double-decrement, and removing/reducing a line returns
+    // stock instead of just editing a JSON blob.
+    if (parts_used !== undefined) {
+      const sumByPart = (list) => {
+        const m = new Map();
+        for (const p of (Array.isArray(list) ? list : [])) {
+          if (!p?.part_id) continue;
+          const key = String(p.part_id);
+          m.set(key, (m.get(key) || 0) + (parseFloat(p.qty) || 0));
+        }
+        return m;
+      };
+      const oldQty = sumByPart(row.parts_used);
+      const newQty = sumByPart(parts_used);
+      const rateByPart = new Map();
+      for (const p of (Array.isArray(parts_used) ? parts_used : [])) {
+        if (p?.part_id) rateByPart.set(String(p.part_id), parseFloat(p.unit_cost) || 0);
+      }
+      const allPartIds = new Set([...oldQty.keys(), ...newQty.keys()]);
+      for (const partId of allPartIds) {
+        const delta = (newQty.get(partId) || 0) - (oldQty.get(partId) || 0);
+        if (!delta) continue;
+        await postStock(client, {
+          itemId: partId,
+          outQty: delta > 0 ? delta : 0,
+          inQty: delta < 0 ? -delta : 0,
+          txnType: 'service_issue',
+          refType: 'field_visit',
+          refId: req.params.id,
+          rate: rateByPart.get(partId) || 0,
+          remarks: `Service part used — field visit #${req.params.id}`,
+          createdBy: req.user?.employee_id ?? null,
+          companyId,
+        });
+      }
+    }
+
+    await client.query('COMMIT');
     logAudit({ userId: req.user?.userId, module: 'service', recordId: req.params.id, recordType: 'field_visit', action: 'update', oldData: row, newData: result.rows[0], req });
     res.json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
 });
 
 // ── service contracts ──────────────────────────────────────────────────────────

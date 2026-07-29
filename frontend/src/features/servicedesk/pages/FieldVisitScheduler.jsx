@@ -40,6 +40,7 @@ const MONTH_NAMES = [
 export default function FieldVisitScheduler() {
   const [visits,       setVisits]       = useState([]);
   const [engineers,    setEngineers]    = useState([]);
+  const [items,        setItems]        = useState([]);
   const [loading,      setLoading]      = useState(false);
   const [showForm,     setShowForm]     = useState(false);
   const [form,         setForm]         = useState(EMPTY_FORM);
@@ -49,7 +50,7 @@ export default function FieldVisitScheduler() {
   const [statusFilter, setStatusFilter] = useState('');
   const [completing,   setCompleting]   = useState(null);
   const [completeData, setCompleteData] = useState(EMPTY_COMPLETE);
-  const [partLine,     setPartLine]     = useState({ name: '', qty: 1, unit_cost: 0 });
+  const [partLine,     setPartLine]     = useState({ part_id: '', name: '', qty: 1, unit_cost: 0 });
   const [view,         setView]         = useState('list');
   const [calMonth,     setCalMonth]     = useState(() => new Date().toISOString().slice(0, 7));
   const isMounted = useRef(true);
@@ -65,10 +66,12 @@ export default function FieldVisitScheduler() {
     Promise.allSettled([
       api.get('/servicedesk/field-visits', { params: { limit: 200 } }),
       api.get('/servicedesk/engineers'),
-    ]).then(([visitsRes, engRes]) => {
+      api.get('/inventory/items'),
+    ]).then(([visitsRes, engRes, itemsRes]) => {
       if (!isMounted.current) return;
       setVisits(visitsRes.status === 'fulfilled' ? (Array.isArray(visitsRes.value?.data) ? visitsRes.value.data : []) : []);
       if (engRes.status === 'fulfilled') setEngineers(engRes.value?.data || []);
+      if (itemsRes.status === 'fulfilled') setItems(itemsRes.value?.data?.items || itemsRes.value?.data || []);
     }).finally(() => { if (isMounted.current) setLoading(false); });
   }, []);
 
@@ -105,9 +108,9 @@ export default function FieldVisitScheduler() {
   };
 
   const addPartLine = () => {
-    if (!partLine.name) return;
+    if (!partLine.part_id || !partLine.qty) return;
     setCompleteData(d => ({ ...d, parts_used: [...(d.parts_used || []), { ...partLine }] }));
-    setPartLine({ name: '', qty: 1, unit_cost: 0 });
+    setPartLine({ part_id: '', name: '', qty: 1, unit_cost: 0 });
   };
 
   const removePartLine = (idx) => {
@@ -593,14 +596,26 @@ export default function FieldVisitScheduler() {
                   </div>
                 ))}
                 <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                  <input value={partLine.name} onChange={e => setPartLine(p => ({ ...p, name: e.target.value }))}
-                    placeholder="Part name" style={{ ...inputStyle, flex: 3 }} />
+                  <select value={partLine.part_id} onChange={e => {
+                      const it = items.find(i => String(i.id) === e.target.value);
+                      setPartLine(p => ({
+                        ...p, part_id: e.target.value, name: it?.item_name || '',
+                        unit_cost: it?.standard_cost ?? p.unit_cost,
+                      }));
+                    }} style={{ ...inputStyle, flex: 3 }}>
+                    <option value="">Select part from inventory…</option>
+                    {items.map(it => (
+                      <option key={it.id} value={it.id}>
+                        {it.item_name} ({it.item_code}) — {it.current_stock ?? 0} in stock
+                      </option>
+                    ))}
+                  </select>
                   <input type="number" value={partLine.qty} onChange={e => setPartLine(p => ({ ...p, qty: e.target.value }))}
                     placeholder="Qty" min="1" style={{ ...inputStyle, flex: 1 }} />
                   <input type="number" value={partLine.unit_cost} onChange={e => setPartLine(p => ({ ...p, unit_cost: e.target.value }))}
                     placeholder="₹/unit" style={{ ...inputStyle, flex: 1 }} />
-                  <button onClick={addPartLine}
-                    style={{ padding: '9px 14px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap' }}>
+                  <button onClick={addPartLine} disabled={!partLine.part_id}
+                    style={{ padding: '9px 14px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, cursor: partLine.part_id ? 'pointer' : 'not-allowed', fontSize: 13, whiteSpace: 'nowrap', opacity: partLine.part_id ? 1 : 0.6 }}>
                     + Add
                   </button>
                 </div>

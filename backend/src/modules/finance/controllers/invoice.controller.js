@@ -5,7 +5,10 @@ import { logAudit } from '../../../services/AuditService.js';
 class InvoiceController {
   async create(req, res) {
     try {
-      const invoice = await invoiceService.createInvoice({ ...req.body, company_id: req.scope?.company_id ?? null }, req.user.userId ?? req.user.id);
+      // createInvoice's 2nd arg ends up in stock_ledger.created_by (via COGS
+      // posting for physical-goods lines), which FKs employees(id), not
+      // users(id) — see project_stock_ledger_created_by_fk memory.
+      const invoice = await invoiceService.createInvoice({ ...req.body, company_id: req.scope?.company_id ?? null }, req.user.employee_id ?? null);
       logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'finance', recordId: invoice.id, recordType: 'invoice', action: 'create', newData: invoice, req });
       const ruleResults = await evaluateRules('finance', invoice).catch(() => []);
       const ruleAlerts = ruleResults.filter(r => r.triggered);

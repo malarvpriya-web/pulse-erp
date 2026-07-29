@@ -55,7 +55,8 @@ function EmptyState({ icon: Icon, title, sub, action }) {
 const healthOf = p => {
   const today = new Date();
   const end = p.end_date ? new Date(p.end_date) : null;
-  const pct = p.total_tasks ? Math.round((p.completed_tasks / p.total_tasks) * 100) : 0;
+  const totalTasksN = parseInt(p.total_tasks) || 0;
+  const pct = totalTasksN ? Math.round((parseInt(p.completed_tasks) || 0) / totalTasksN * 100) : 0;
   const budgetPct = p.budget_amount ? Math.round((p.actual_cost / p.budget_amount) * 100) : 0;
   if (p.status === 'completed') return 'On Track';
   if (end && end < today && pct < 100) return 'Delayed';
@@ -117,15 +118,21 @@ export default function ProjectsDashboard({ setPage }) {
   const totalTasks = projects.reduce((s, p) => s + (parseInt(p.total_tasks) || 0), 0);
   const overdue    = projects.filter(p => {
     const end = p.end_date ? new Date(p.end_date) : null;
-    const pct = p.total_tasks ? (p.completed_tasks / p.total_tasks) : 1;
+    const totalTasksN = parseInt(p.total_tasks) || 0;
+    const pct = totalTasksN ? (parseInt(p.completed_tasks) || 0) / totalTasksN : 1;
     return end && end < new Date() && pct < 1 && p.status !== 'completed';
   }).length;
   const totalBudget = projects.reduce((s, p) => s + parseFloat(p.budget_amount || 0), 0);
   const totalActual = projects.reduce((s, p) => s + parseFloat(p.actual_cost || 0), 0);
   const budgetUtil  = totalBudget ? Math.round((totalActual / totalBudget) * 100) : 0;
 
+  // Same status filter as the project-card list below (`status !== 'completed'
+  // && status !== 'cancelled'`) — this used to filter to `status === 'active'`
+  // only, a narrower set, so any project shown as a card (e.g. 'planning') was
+  // silently dropped from this aggregate, producing totals that didn't match
+  // the sum of the individual card badges on the same screen.
   const healthCounts = { 'On Track': 0, 'At Risk': 0, 'Delayed': 0 };
-  projects.filter(p => p.status === 'active').forEach(p => { healthCounts[healthOf(p)]++; });
+  projects.filter(p => p.status !== 'completed' && p.status !== 'cancelled').forEach(p => { healthCounts[healthOf(p)]++; });
   const healthData = Object.entries(healthCounts).map(([name, count]) => ({ name, count }));
 
   const healthChart = (h) => (
@@ -196,7 +203,8 @@ export default function ProjectsDashboard({ setPage }) {
             ) : null}
             {projects.filter(p => p.status !== 'completed' && p.status !== 'cancelled').map(p => {
               const s = sm(p.status);
-              const pct = p.total_tasks ? Math.round((p.completed_tasks / p.total_tasks) * 100) : 0;
+              const totalTasksN = parseInt(p.total_tasks) || 0;
+              const pct = totalTasksN ? Math.round((parseInt(p.completed_tasks) || 0) / totalTasksN * 100) : 0;
               const budPct = p.budget_amount ? Math.min(100, Math.round((p.actual_cost / p.budget_amount) * 100)) : 0;
               const h = healthOf(p);
               return (

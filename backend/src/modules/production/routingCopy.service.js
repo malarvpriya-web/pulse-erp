@@ -7,7 +7,7 @@
 export async function copyRoutingToProductionOperations(client, bomId, productionOrderId) {
   if (!bomId || !productionOrderId) return 0;
   const steps = await client.query(
-    `SELECT r.id, r.step_no, r.operation, r.work_centre_id, r.std_time_hrs, w.name AS work_centre_name
+    `SELECT r.id, r.step_no, r.operation, r.work_centre_id, r.std_time_hrs, r.is_inspection, w.name AS work_centre_name
      FROM routing_steps r
      LEFT JOIN work_centres w ON w.id = r.work_centre_id
      WHERE r.bom_id = $1
@@ -15,11 +15,16 @@ export async function copyRoutingToProductionOperations(client, bomId, productio
     [bomId]
   );
   for (const s of steps.rows) {
+    // is_inspection was previously dropped here (column default is false) —
+    // this is the routing-copy path both MRP-convert and the Sales-Order
+    // auto-bootstrap use, so any inspection step on those orders silently
+    // lost its flag: the "previous inspection must complete" start-gate and
+    // the auto-NCR-on-scrap-at-inspection trigger never fired for them.
     await client.query(
       `INSERT INTO production_operations
-        (production_order_id, routing_step_id, step_no, operation, work_centre_id, work_centre_name, std_time_hrs, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
-      [productionOrderId, s.id, s.step_no, s.operation, s.work_centre_id || null, s.work_centre_name || null, s.std_time_hrs || 0]
+        (production_order_id, routing_step_id, step_no, operation, work_centre_id, work_centre_name, std_time_hrs, is_inspection, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending')`,
+      [productionOrderId, s.id, s.step_no, s.operation, s.work_centre_id || null, s.work_centre_name || null, s.std_time_hrs || 0, s.is_inspection || false]
     );
   }
   return steps.rows.length;

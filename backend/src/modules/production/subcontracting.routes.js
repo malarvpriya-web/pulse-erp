@@ -8,6 +8,7 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { checkAndCreateAlerts } from '../../services/stockAlerts.js';
 
 const router = Router();
 const actor = (req) => ({ id: req.user?.userId || req.user?.id || null, name: req.user?.name || req.user?.email || 'System' });
@@ -15,7 +16,7 @@ const cidOf = (req) => (req.scope?.company_id != null ? req.scope.company_id : n
 const num = (v) => (v === null || v === undefined || v === '' ? 0 : parseFloat(v)) || 0;
 
 /** Post a stock movement to the ledger and keep inventory_items.current_stock in sync. */
-export async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId }) {
+export async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId, transactionDate = null }) {
   if (!itemId) return;
   const { rows: [bal] } = await client.query(
     `SELECT COALESCE(SUM(quantity_in - quantity_out),0) AS balance
@@ -26,12 +27,23 @@ export async function postStock(client, { itemId, warehouseId = null, inQty = 0,
     `INSERT INTO stock_ledger
        (item_id, warehouse_id, transaction_type, quantity_in, quantity_out, balance_qty,
         rate, value, reference_type, reference_id, transaction_date, remarks, created_by, company_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_DATE,$11,$12,$13)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($14::date, CURRENT_DATE),$11,$12,$13)`,
     [itemId, warehouseId, txnType, inQty, outQty, newBalance, rate,
-     Math.round((inQty + outQty) * rate * 100) / 100, refType, refId, remarks, createdBy, companyId]);
+     Math.round((inQty + outQty) * rate * 100) / 100, refType, refId, remarks, createdBy, companyId, transactionDate]);
   await client.query(
     `UPDATE inventory_items SET current_stock = COALESCE(current_stock,0) + $2, updated_at = NOW() WHERE id = $1`,
     [itemId, inQty - outQty]);
+
+  // Reorder-breach detection previously only ran off two legacy call sites
+  // (manual inventory adjustment, GRN receipt) — every other stock-decreasing
+  // path in the app (production consumption/backflush, service field-visit
+  // issue, subcontracting issue, returns) uses this shared helper and never
+  // triggered a check at all. Fire-and-forget like the other call sites (runs
+  // on the pool, not this transaction's client, so it never blocks or risks
+  // this write; self-corrects on the next movement if this one rolls back).
+  if (outQty > inQty) {
+    checkAndCreateAlerts(itemId, warehouseId).catch(() => {});
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,7 +184,7 @@ router.post('/orders/:id/issue', requirePermission('production', 'edit'), async 
       await postStock(client, {
         itemId: m.item_id, warehouseId: ord.warehouse_id, outQty: toIssue, txnType: 'sc_issue',
         refType: 'subcontract', refId: ord.id, rate: num(m.unit_cost),
-        remarks: `SC issue ${ord.sc_number} → ${ord.vendor_name || 'vendor'}`, createdBy: a.id, companyId: ord.company_id,
+        remarks: `SC issue ${ord.sc_number} → ${ord.vendor_name || 'vendor'}`, createdBy: req.user?.employee_id ?? null, companyId: ord.company_id,
       });
       await client.query(`UPDATE subcontract_materials SET qty_issued = qty_required WHERE id = $1`, [m.id]);
       await client.query(`
@@ -208,7 +220,7 @@ router.post('/orders/:id/receive', requirePermission('production', 'edit'), asyn
       await postStock(client, {
         itemId: ord.item_id, warehouseId: ord.warehouse_id, inQty: qty, txnType: 'sc_receipt',
         refType: 'subcontract', refId: ord.id, rate: unitValue,
-        remarks: `SC receipt ${ord.sc_number} from ${ord.vendor_name || 'vendor'}`, createdBy: a.id, companyId: ord.company_id,
+        remarks: `SC receipt ${ord.sc_number} from ${ord.vendor_name || 'vendor'}`, createdBy: req.user?.employee_id ?? null, companyId: ord.company_id,
       });
     }
     await client.query(`

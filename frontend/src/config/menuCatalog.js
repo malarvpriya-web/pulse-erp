@@ -113,13 +113,16 @@ export function canEmployeeAccessPage(page) {
   return true;
 }
 
-// ── Finance scoping within the shared 'Leaves'/'Attendance' menus ─────────
+// ── Finance scoping within the shared 'Leaves'/'Attendance'/'Timesheets' menus ──
 // Finance gets its own domain in full (the entire 'Finance' section), but
-// when its allowlist below also grants it the shared Leaves/Attendance
-// sections, it may reach only the self-service pages inside them — never
-// leave approvals, team views, or attendance admin/config screens. Mirrors
-// the employee self-service pattern above.
-export const FINANCE_RESTRICTED_SECTIONS = new Set(['Leaves', 'Attendance']);
+// when its allowlist below also grants it the shared Leaves/Attendance/
+// Timesheets sections, it may reach only the self-service pages inside them —
+// never leave approvals, team views, attendance admin/config, or timesheet
+// approval/utilization/settings screens. Mirrors the employee self-service
+// pattern above. Also governs the granular finance_manager/accounts_exec
+// roles now that their allowlists below carry 'Leaves'/'Attendance' too —
+// same restriction, same self-service page set, no separate constant needed.
+export const FINANCE_RESTRICTED_SECTIONS = new Set(['Leaves', 'Attendance', 'Timesheets']);
 
 export const FINANCE_SELF_SERVICE_PAGES = new Set([
   // Leaves ('Leave Approvals'/'Team Leaves'/'All Leaves'/'Leave Reports'/
@@ -128,12 +131,16 @@ export const FINANCE_SELF_SERVICE_PAGES = new Set([
   // Attendance ('Live Workforce'/'Team Attendance'/'Shift Calendar'/
   // 'Regularization'/'Overtime'/etc. intentionally excluded)
   'AttendanceDashboard', 'QRAttendance',
+  // Timesheets ('All Timesheets'/'Approvals'/'Utilization Report'/
+  // 'Weekly Report'/'Settings' intentionally excluded)
+  'MyTimesheet', 'MyAnalytics',
 ]);
 
-// True if the finance role may render `page`. Pages inside a shared
-// (restricted) menu are allowed only when they are self-service; pages
-// outside those menus (including the whole 'Finance' section) are governed
-// by the normal section allowlist / module gates.
+// True if the finance role (or a granular finance_manager/accounts_exec
+// holder) may render `page`. Pages inside a shared (restricted) menu are
+// allowed only when they are self-service; pages outside those menus
+// (including the whole 'Finance' section) are governed by the normal
+// section allowlist / module gates.
 export function canFinanceAccessPage(page) {
   const section = getSectionForPage(page);
   if (section === 'Analytics & AI') {
@@ -287,11 +294,19 @@ export const ROLE_SECTION_ALLOWLIST = {
   // so these sections are live, not more dead links.
   // 'Operations' — see manager comment above (F17 pass); permission-less,
   // added for parity as the other broad cross-departmental allowlist.
+  // 'Complaints' (2026-07-29): CustomerComplaintsIPCS is registered under BOTH
+  // the 'Complaints' and 'Service Desk' NAV_ITEMS groups (routes.jsx), and
+  // getSectionForPage() resolves a shared page key to whichever group appears
+  // first in the array — 'Complaints', not 'Service Desk'. department_head
+  // held 'Service Desk' but not 'Complaints', so the "Customer Complaints" row
+  // rendered as a clickable link inside their visible Service Desk submenu but
+  // route-guarded to Unauthorized on click. Granted here, same shape as
+  // service_manager/service_engineer holding both sections already.
   department_head: [
     'Home', 'Approvals', 'Employees', 'Attendance', 'Leaves', 'Timesheets',
     'Performance', 'Projects', 'Recruitment', 'Reports', 'QR Codes',
     'Notifications', 'Org Chart', 'Inventory', 'Production', 'Service Desk',
-    'Operations',
+    'Operations', 'Complaints',
   ],
   // 'Travel Desk' granted in full: backend trusts hr with TRAVEL_APPROVE_ROLES
   // (approve/reject requests) and ADVANCE_MANAGER_ROLES (advance
@@ -305,7 +320,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   // for why these are the orphans' exact names rather than a curated section.
   hr: [
     'Home', 'Approvals', 'Employees', 'HR', 'Learning Center', 'Attendance',
-    'Leaves', 'Timesheets', 'Performance', 'Recruitment', 'Talent', 'Reports',
+    'Leaves', 'Timesheets', 'Performance', 'Recruitment', 'Reports',
     'QR Codes', 'Notifications', 'Org Chart', 'Analytics & AI', 'Travel Desk',
     'Compliance · More', 'Asset Register · More',
   ],
@@ -318,12 +333,19 @@ export const ROLE_SECTION_ALLOWLIST = {
   // action stays a 403 for finance at the API even though the section is now
   // reachable.
   finance: [
-    'Home', 'Approvals', 'Finance', 'Leaves', 'Attendance', 'Reports',
-    'QR Codes', 'Notifications', 'Org Chart', 'Analytics & AI', 'Travel Desk',
+    'Home', 'Approvals', 'Finance', 'Leaves', 'Attendance', 'Timesheets',
+    'Reports', 'QR Codes', 'Notifications', 'Org Chart', 'Analytics & AI',
+    'Travel Desk',
   ],
+  // 'Notifications'/'Org Chart' — same permission-less shape as QR Codes (see
+  // manager comment above): neither backend route requires more than
+  // verifyToken for reads, and OrgChart.jsx now hides its HR-only "Assign
+  // Reporting Manager" panel from non-HR roles, so both are safe self-service
+  // reads for employee too (2026-07-28, closing the gap a stale pasted
+  // UX-audit note flagged — see project_nav_module_gating_audit memory).
   employee: [
     'Home', 'Attendance', 'Leaves', 'Travel Desk', 'Service Desk', 'HR',
-    'Timesheets', 'QR Codes', 'Performance',
+    'Timesheets', 'QR Codes', 'Performance', 'Notifications', 'Org Chart',
   ],
   // Phase-42 granular HR seats (20260529000001_phase42_security_roles.js).
   // Scoped from what role_permissions actually grants each code: hr_manager
@@ -335,12 +357,12 @@ export const ROLE_SECTION_ALLOWLIST = {
   // 'e-Signatures' (F17 pass): permission-less, see the manager comment
   // above; hr_manager owns offer-letter/onboarding-document signing.
   hr_manager: [
-    'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment', 'Talent',
+    'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment',
     'Attendance', 'Leaves', 'Timesheets', 'Performance', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures',
   ],
   hr_exec: [
-    'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment', 'Talent',
+    'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment',
     'Attendance', 'Leaves', 'Timesheets', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes',
   ],
@@ -359,12 +381,17 @@ export const ROLE_SECTION_ALLOWLIST = {
   // APPROVER_ROLES member, accounts_exec VA/V as an executor). Listed here
   // too — redundant with the fallback but harmless — so the grant stays
   // visible without cross-referencing role_permissions.
+  // 'Leaves'/'Attendance' (2026-07-28): mirrors the self-service carve-out
+  // the coarse `finance` role already had — these two granular roles never
+  // got it, so a finance_manager/accounts_exec had no menu path to apply for
+  // their own leave. Scoped to self-service only via FINANCE_RESTRICTED_
+  // SECTIONS / FINANCE_SELF_SERVICE_PAGES, same as `finance`.
   finance_manager: [
-    'Home', 'Approvals', 'Finance', 'Reports',
+    'Home', 'Approvals', 'Finance', 'Reports', 'Leaves', 'Attendance',
     'Notifications', 'Org Chart', 'QR Codes',
   ],
   accounts_exec: [
-    'Home', 'Approvals', 'Finance', 'Reports',
+    'Home', 'Approvals', 'Finance', 'Reports', 'Leaves', 'Attendance',
     'Notifications', 'Org Chart', 'QR Codes',
   ],
   // Phase-42 project-delivery seat (20260529000001_phase42_security_roles.js
@@ -602,7 +629,7 @@ export function canRoleOpenPage(role, page, { menuAccess } = {}) {
 
   if (role === 'employee' && !canEmployeeAccessPage(page)) return false;
   if (role === 'hr' && !canHrAccessPage(page)) return false;
-  if (role === 'finance' && !canFinanceAccessPage(page)) return false;
+  if ((role === 'finance' || role === 'finance_manager' || role === 'accounts_exec') && !canFinanceAccessPage(page)) return false;
   if (role === 'hr_exec' && !canHrExecAccessPage(page)) return false;
   if (role === 'manager' && !canManagerAccessPage(page)) return false;
   if (!canRoleAccessAdminOnlyPage(role, page)) return false;

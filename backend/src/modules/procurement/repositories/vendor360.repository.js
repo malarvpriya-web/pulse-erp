@@ -311,12 +311,19 @@ export const Vendor360Repo = {
   },
 
   // ── FINANCE ──────────────────────────────────────────────────────────────────
+  // bills.supplier_id is uuid (Finance's parties.id) while vendorId here is the
+  // procurement vendors.id (integer) — the two masters had no join key at all
+  // until vendors.party_id was added (GSTIN-matched backfill). Resolve through
+  // it rather than comparing vendorId to supplier_id directly (that used to
+  // throw "operator does not exist: uuid = integer" — Vendor 360's Finance tab,
+  // cost score, and financial risk were all silently broken).
   async billsData(vendorId, companyId) {
     const { rows } = await q(
       `SELECT id, bill_number, bill_date, due_date, total_amount, balance,
               net_payable, status, approval_status, payment_terms, tds_amount
        FROM bills
-       WHERE supplier_id = $1 AND company_id = $2
+       WHERE supplier_id = (SELECT party_id FROM vendors WHERE id = $1)
+         AND company_id = $2
        ORDER BY bill_date DESC
        LIMIT 50`,
       [vendorId, companyId]
@@ -341,7 +348,8 @@ export const Vendor360Repo = {
          ), 0)::numeric(6,1)                                                            AS avg_payment_terms_days,
          COALESCE(SUM(tds_amount), 0)::numeric                                          AS total_tds
        FROM bills
-       WHERE supplier_id = $1 AND company_id = $2`,
+       WHERE supplier_id = (SELECT party_id FROM vendors WHERE id = $1)
+         AND company_id = $2`,
       [vendorId, companyId],
       { total_spend: 0, paid_amount: 0, outstanding_amount: 0, total_bills: 0,
         pending_bills: 0, avg_payment_terms_days: 0, total_tds: 0 }

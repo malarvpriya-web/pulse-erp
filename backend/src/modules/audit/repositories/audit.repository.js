@@ -31,6 +31,10 @@ const auditRepository = {
       conditions.push(`LOWER(al.action_type) = LOWER($${p++})`);
       params.push(filters.action_type);
     }
+    // audit_logs.user_id is a users.id, not an employees.id — joining it
+    // directly to employees.id (as this used to) matched on coincidental
+    // numeric overlap between two independent serial sequences, silently
+    // showing the wrong name on most rows rather than erroring. Go via users.
     if (filters.search) {
       conditions.push(`(
         al.module_name    ILIKE $${p} OR
@@ -59,14 +63,16 @@ const auditRepository = {
         SELECT al.*,
                NULLIF(TRIM(CONCAT(e.first_name,' ',e.last_name)),'') AS user_name
         FROM audit_logs al
-        LEFT JOIN employees e ON al.user_id = e.id
+        LEFT JOIN users u ON u.id = al.user_id
+        LEFT JOIN employees e ON e.id = u.employee_id
         ${where}
         ORDER BY al.created_at DESC
         LIMIT ${limit} OFFSET ${offset}
       `, params),
       pool.query(`
         SELECT COUNT(*) FROM audit_logs al
-        LEFT JOIN employees e ON al.user_id = e.id
+        LEFT JOIN users u ON u.id = al.user_id
+        LEFT JOIN employees e ON e.id = u.employee_id
         ${where}
       `, params),
     ]);
@@ -137,7 +143,8 @@ const auditRepository = {
     const result = await pool.query(
       `SELECT al.*, NULLIF(TRIM(CONCAT(e.first_name,' ',e.last_name)),'') AS user_name
        FROM audit_logs al
-       LEFT JOIN employees e ON al.user_id = e.id
+       LEFT JOIN users u ON u.id = al.user_id
+       LEFT JOIN employees e ON e.id = u.employee_id
        WHERE al.reference_id = $1 AND al.reference_type = $2
        ORDER BY al.created_at DESC`,
       [reference_id, reference_type]

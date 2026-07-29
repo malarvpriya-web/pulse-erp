@@ -30,7 +30,7 @@ const salesTargetsRepository = {
         )                                                                     AS achievement_pct
       FROM sales_targets st
       JOIN employees e ON e.id = st.owner_id
-        AND e.status IN ('active', 'probation')
+        AND LOWER(e.status) IN ('active', 'probation')
       ${where}
       ORDER BY achievement_pct DESC NULLS LAST
     `, params);

@@ -7,6 +7,8 @@ import pool from '../../../config/db.js';
 import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { dependencyBlocked } from '../../../shared/workflowDependency.js';
+import { emitEvent } from '../../../shared/eventBus.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -87,48 +89,55 @@ router.get('/', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Shared creation logic — also called from installation.routes.js when an
+// Installation Request completes (Priority 6: Installation -> Commissioning
+// handoff), so the two flows don't maintain separate copies of the default
+// checklist/readings seeding.
+export async function createCommissioningWorkflow(companyId, data) {
+  const {
+    project_id, equipment_id, customer_name, site_name, site_address,
+    engineer_id, engineer_name, fat_reference, sat_reference, scheduled_date, notes,
+  } = data;
+  const workflow_number = await nextWfNo(companyId);
+
+  const { rows } = await pool.query(
+    `INSERT INTO commissioning_workflows
+       (company_id, workflow_number, project_id, equipment_id, customer_name, site_name, site_address,
+        engineer_id, engineer_name, fat_reference, sat_reference, scheduled_date, notes, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending')
+     RETURNING *`,
+    [companyId, workflow_number, project_id, equipment_id, customer_name, site_name, site_address,
+     engineer_id, engineer_name, fat_reference, sat_reference, scheduled_date, notes]
+  );
+  const wf = rows[0];
+
+  for (const item of DEFAULT_CHECKLIST) {
+    await pool.query(
+      `INSERT INTO commissioning_checklist_items (company_id, workflow_id, category, item_text, is_mandatory, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [companyId, wf.id, item.category, item.item_text, item.is_mandatory, item.sort_order]
+    );
+  }
+
+  for (const r of DEFAULT_READINGS) {
+    await pool.query(
+      `INSERT INTO commissioning_readings (workflow_id, company_id, parameter, unit, set_value)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [wf.id, companyId, r.parameter, r.unit, r.set_value]
+    );
+  }
+
+  return wf;
+}
+
 // POST /commissioning — create workflow
 router.post('/', verifyToken, async (req, res) => {
   try {
-    const {
-      project_id, equipment_id, customer_name, site_name, site_address,
-      engineer_id, engineer_name, fat_reference, sat_reference, scheduled_date, notes
-    } = req.body;
-    if (!customer_name || !scheduled_date) {
+    if (!req.body.customer_name || !req.body.scheduled_date) {
       return res.status(400).json({ error: 'customer_name and scheduled_date are required' });
     }
-    const workflow_number = await nextWfNo(cid(req));
-
-    const { rows } = await pool.query(
-      `INSERT INTO commissioning_workflows
-         (company_id, workflow_number, project_id, equipment_id, customer_name, site_name, site_address,
-          engineer_id, engineer_name, fat_reference, sat_reference, scheduled_date, notes, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending')
-       RETURNING *`,
-      [cid(req), workflow_number, project_id, equipment_id, customer_name, site_name, site_address,
-       engineer_id, engineer_name, fat_reference, sat_reference, scheduled_date, notes]
-    );
-    const wf = rows[0];
-
-    // Insert default checklist
-    for (const item of DEFAULT_CHECKLIST) {
-      await pool.query(
-        `INSERT INTO commissioning_checklist_items (company_id, workflow_id, category, item_text, is_mandatory, sort_order)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [cid(req), wf.id, item.category, item.item_text, item.is_mandatory, item.sort_order]
-      );
-    }
-
-    // Insert default readings
-    for (const r of DEFAULT_READINGS) {
-      await pool.query(
-        `INSERT INTO commissioning_readings (workflow_id, company_id, parameter, unit, set_value)
-         VALUES ($1,$2,$3,$4,$5)`,
-        [wf.id, cid(req), r.parameter, r.unit, r.set_value]
-      );
-    }
-
-    await logAudit(pool, { userId: uid(req), company_id: cid(req), action: 'CREATE', module: 'Commissioning', record_id: wf.id, description: `Commissioning workflow created: ${workflow_number}` });
+    const wf = await createCommissioningWorkflow(cid(req), req.body);
+    logAudit({ userId: uid(req), company_id: cid(req), action: 'create', module: 'Commissioning', recordId: wf.id, recordType: 'commissioning_workflow', newData: wf, req });
     res.status(201).json(wf);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -211,7 +220,7 @@ router.post('/:id/checkin', verifyToken, async (req, res) => {
       [lat, lng, address, req.params.id, cid(req)]
     );
     if (!rows.length) return res.status(404).json({ error: 'Workflow not found' });
-    await logAudit(pool, { userId: uid(req), company_id: cid(req), action: 'UPDATE', module: 'Commissioning', record_id: rows[0].id, description: `Engineer checked in at ${address || `${lat},${lng}`}` });
+    logAudit({ userId: uid(req), company_id: cid(req), action: 'update', module: 'Commissioning', recordId: rows[0].id, recordType: 'commissioning_workflow', newData: { checkin_address: address || `${lat},${lng}` }, req });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -359,7 +368,7 @@ router.post('/:id/signoff', verifyToken, async (req, res) => {
       [customer_sign_name, customer_sign_data, customer_feedback, customer_rating, req.params.id, cid(req)]
     );
     if (!rows.length) return res.status(404).json({ error: 'Workflow not found' });
-    await logAudit(pool, { userId: uid(req), company_id: cid(req), action: 'UPDATE', module: 'Commissioning', record_id: rows[0].id, description: `Customer sign-off received from ${customer_sign_name}` });
+    logAudit({ userId: uid(req), company_id: cid(req), action: 'update', module: 'Commissioning', recordId: rows[0].id, recordType: 'commissioning_workflow', newData: { customer_sign_name }, req });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -379,6 +388,33 @@ router.post('/:id/issue-certificate', verifyToken, async (req, res) => {
     if (wf[0].status !== 'signed_off') return res.status(400).json({ error: 'Customer sign-off required before issuing certificate' });
     if (wf[0].certificate_issued) return res.status(400).json({ error: 'Certificate already issued' });
 
+    // Workflow Dependency Engine (Priority 7): Dispatch -> Installation ->
+    // Commissioning -> Warranty. Only checks projects that actually have an
+    // Installation Request tracked (installation.routes.js) — commissioning
+    // for work that never went through a formal Installation Request (a
+    // small retrofit, a pre-Priority-6 legacy project) is unaffected. Matches
+    // by equipment_id when this workflow has one (a project can have several
+    // pieces of equipment at different installation stages); falls back to
+    // project_id when it doesn't.
+    if (wf[0].project_id) {
+      const { rows: openInstall } = await pool.query(
+        `SELECT installation_number FROM installation_requests
+          WHERE status NOT IN ('completed','cancelled')
+            AND (
+              ($1::int IS NOT NULL AND equipment_id=$1)
+              OR ($1::int IS NULL AND project_id=$2)
+            )
+          LIMIT 1`,
+        [wf[0].equipment_id, wf[0].project_id]
+      );
+      if (openInstall.length) {
+        return dependencyBlocked(res, {
+          label: 'Installation',
+          reason: `Installation Request ${openInstall[0].installation_number} for this project is not yet completed`,
+        });
+      }
+    }
+
     const cert_number = await nextCertNo(cid(req));
     const { rows } = await pool.query(
       `UPDATE commissioning_workflows
@@ -388,46 +424,139 @@ router.post('/:id/issue-certificate', verifyToken, async (req, res) => {
       [cert_number, req.params.id, cid(req)]
     );
 
-    await logAudit(pool, { userId: uid(req), company_id: cid(req), action: 'UPDATE', module: 'Commissioning', record_id: rows[0].id, description: `Commissioning certificate issued: ${cert_number}` });
+    logAudit({ userId: uid(req), company_id: cid(req), action: 'update', module: 'Commissioning', recordId: rows[0].id, recordType: 'commissioning_workflow', newData: { certificate_number: cert_number }, req });
+
+    // Business Event Bus (Priority 8): "Commissioning completed -> Activate
+    // warranty" was previously two separate manual clicks with no link
+    // between them. commissioning.routes.js doesn't need to know who (if
+    // anyone) reacts to this — see eventReactions.js for the listener.
+    emitEvent('commissioning.certificate_issued', {
+      workflowId: rows[0].id, companyId: cid(req), actorUserId: uid(req),
+    });
+
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// Shared activation logic — called both from the manual endpoint below and
+// from the `commissioning.certificate_issued` event reaction (Priority 8:
+// Business Event Bus), so certificate issuance can auto-activate warranty
+// with a sensible default instead of requiring a guaranteed-separate manual
+// click, while the manual endpoint stays available for a non-default term
+// (extended warranty) or a deliberate re-activation.
+export async function activateWarranty(companyId, workflowId, warranty_months, actorUserId) {
+  const { rows: wf } = await pool.query(
+    `SELECT * FROM commissioning_workflows WHERE id = $1 AND company_id = $2`,
+    [workflowId, companyId]
+  );
+  if (!wf.length) throw Object.assign(new Error('Workflow not found'), { status: 404 });
+  if (!wf[0].certificate_issued) throw Object.assign(new Error('Certificate must be issued before activating warranty'), { status: 400 });
+
+  const { rows } = await pool.query(
+    `UPDATE commissioning_workflows
+        SET warranty_activated = true, warranty_activated_at = NOW(),
+            amc_eligible = true, updated_at = NOW()
+      WHERE id = $1 AND company_id = $2 RETURNING *`,
+    [workflowId, companyId]
+  );
+
+  const startDate = new Date();
+  const expiry = new Date();
+  expiry.setMonth(expiry.getMonth() + warranty_months);
+  const expiryStr = expiry.toISOString().split('T')[0];
+
+  // Update equipment warranty dates if linked — kept as a fast-read mirror
+  // for the Customer Portal (customer-portal.routes.js reads this directly
+  // in 5+ places); the Unified Warranty Engine row below is the source of
+  // truth, this stays in sync with it rather than being independent.
+  if (wf[0].equipment_id) {
+    await pool.query(
+      `UPDATE customer_equipment
+          SET warranty_status = 'active', warranty_expiry = $1,
+              last_service_date = CURRENT_DATE, updated_at = NOW()
+        WHERE id = $2`,
+      [expiryStr, wf[0].equipment_id]
+    );
+  }
+
+  // Unified Warranty Engine (Priority 3) — every commissioning-activated
+  // warranty is now a real warranty_registrations row, so Customer 360,
+  // the Warranty Expiry dashboards, and AMC all see it. Idempotent on
+  // commissioning_workflow_id so re-activating (e.g. a retry, or the new
+  // certificate-issued event reaction firing alongside a manual call) doesn't
+  // create a duplicate row.
+  const { rows: equip } = wf[0].equipment_id
+    ? await pool.query(`SELECT * FROM customer_equipment WHERE id=$1`, [wf[0].equipment_id])
+    : { rows: [] };
+  const equipment = equip[0];
+  const { rows: cnt } = await pool.query(
+    `SELECT COUNT(*) FROM warranty_registrations WHERE company_id=$1`, [companyId]
+  );
+  const warrantyNumber = `WR-${String(parseInt(cnt[0].count) + 1).padStart(5, '0')}`;
+  // serial_number is NOT NULL on warranty_registrations — a commissioning
+  // workflow with no linked equipment_id (or equipment with no serial number
+  // recorded) has no real one to give it. Bug found live while testing the
+  // event-bus auto-activation path (Priority 8): this INSERT has silently
+  // 500'd for any such workflow since Priority 3 built it, undetected because
+  // every earlier live test happened to use equipment with a serial number.
+  const serialNumber = equipment?.serial_number || wf[0].workflow_number || `WF-${wf[0].id}`;
+  const { rows: existingWr } = await pool.query(
+    `SELECT id FROM warranty_registrations WHERE commissioning_workflow_id=$1`, [wf[0].id]
+  );
+  if (existingWr.length) {
+    await pool.query(
+      `UPDATE warranty_registrations
+          SET warranty_end=$1, warranty_months=$2, manufacturer_warranty_months=$2, updated_at=NOW()
+        WHERE id=$3`,
+      [expiryStr, warranty_months, existingWr[0].id]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO warranty_registrations
+         (warranty_number, project_id, commissioning_workflow_id, equipment_id, serial_number,
+          product_name, customer_name, warranty_start, warranty_end, warranty_months,
+          manufacturer_warranty_months, commissioning_date, status, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,'Active',$12)`,
+      [
+        warrantyNumber, wf[0].project_id, wf[0].id, wf[0].equipment_id,
+        serialNumber, equipment?.equipment_name || 'Commissioned equipment',
+        wf[0].customer_name || 'Unknown',
+        startDate.toISOString().split('T')[0], expiryStr, warranty_months,
+        wf[0].completed_date || startDate.toISOString().split('T')[0], companyId,
+      ]
+    );
+  }
+
+  // amc_eligible was set above but nothing ever read it — no renewal or AMC
+  // contract ever got created off the back of a commissioning sign-off.
+  // Notify service/sales so a human sets up the AMC contract (the existing
+  // POST /lifecycle/amc-contracts flow); it can't be auto-created here since
+  // pricing/SLA terms need a business decision the system doesn't have.
+  const { rows: receivers } = await pool.query(
+    `SELECT id FROM users WHERE is_active = true
+       AND LOWER(role) IN ('admin','super_admin','superadmin','manager','service_manager','sales','sales_manager')`
+  ).catch(() => ({ rows: [] }));
+  for (const r of receivers) {
+    await pool.query(
+      `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
+       VALUES ($1,$2,$3,'service',$4,'amc_eligible')`,
+      [r.id, 'AMC-Eligible — Set Up Contract',
+       `${rows[0].customer_name || 'Customer'}'s warranty is active (workflow ${rows[0].workflow_number || rows[0].id}) — eligible for an AMC contract.`,
+       rows[0].id]
+    ).catch(() => {});
+  }
+
+  logAudit({ userId: actorUserId, company_id: companyId, action: 'update', module: 'Commissioning', recordId: rows[0].id, recordType: 'commissioning_workflow', newData: { warranty_months } });
+  return rows[0];
+}
 
 // POST /commissioning/:id/activate-warranty
 router.post('/:id/activate-warranty', verifyToken, async (req, res) => {
   try {
     const { warranty_months = 12 } = req.body;
-    const { rows: wf } = await pool.query(
-      `SELECT * FROM commissioning_workflows WHERE id = $1 AND company_id = $2`,
-      [req.params.id, cid(req)]
-    );
-    if (!wf.length) return res.status(404).json({ error: 'Workflow not found' });
-    if (!wf[0].certificate_issued) return res.status(400).json({ error: 'Certificate must be issued before activating warranty' });
-
-    const { rows } = await pool.query(
-      `UPDATE commissioning_workflows
-          SET warranty_activated = true, warranty_activated_at = NOW(),
-              amc_eligible = true, updated_at = NOW()
-        WHERE id = $1 AND company_id = $2 RETURNING *`,
-      [req.params.id, cid(req)]
-    );
-
-    // Update equipment warranty dates if linked
-    if (wf[0].equipment_id) {
-      const expiry = new Date();
-      expiry.setMonth(expiry.getMonth() + warranty_months);
-      await pool.query(
-        `UPDATE customer_equipment
-            SET warranty_status = 'active', warranty_expiry = $1,
-                last_service_date = CURRENT_DATE, updated_at = NOW()
-          WHERE id = $2`,
-        [expiry.toISOString().split('T')[0], wf[0].equipment_id]
-      );
-    }
-
-    await logAudit(pool, { userId: uid(req), company_id: cid(req), action: 'UPDATE', module: 'Commissioning', record_id: rows[0].id, description: `Warranty activated for ${warranty_months} months` });
-    res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const updated = await activateWarranty(cid(req), req.params.id, warranty_months, uid(req));
+    res.json(updated);
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
 // =============================================================================

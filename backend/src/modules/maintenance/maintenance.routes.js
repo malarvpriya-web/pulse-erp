@@ -3,6 +3,7 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
+import { postStock } from '../production/subcontracting.routes.js';
 
 const router = Router();
 const cid = (req) => req.scope?.company_id ?? null;
@@ -15,6 +16,33 @@ async function recordMovement(client, { part_id, type, qty, stockBefore, stockAf
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
     [part_id, type, qty, ref_type || null, ref_id || null, unit_cost || 0, (qty * (unit_cost || 0)), stockBefore, stockAfter, remarks || null, done_by || null, company_id || null]
   );
+}
+
+// Maintenance runs its own spare_parts catalog, fully disconnected from
+// inventory_items.current_stock — every other stock-moving path in the app
+// (production consumption, service field-visit issue, GRN, returns) uses the
+// shared postStock() ledger; maintenance movements never did. No FK links the
+// two catalogs, so this is a best-effort match (part_number/barcode against
+// inventory_items.item_code, else an exact case-insensitive name match) —
+// when nothing matches, the movement still succeeds in spare_parts alone,
+// same as before this fix.
+async function mirrorToInventory(client, part, { inQty = 0, outQty = 0, txnType, refId, remarks, companyId, employeeId }) {
+  const { rows: [item] } = await client.query(
+    `SELECT id FROM inventory_items
+     WHERE deleted_at IS NULL
+       AND ((item_code IS NOT NULL AND item_code IN ($1, $2)) OR LOWER(item_name) = LOWER($3))
+     LIMIT 1`,
+    [part.part_number || null, part.barcode || null, part.name]
+  );
+  if (!item) return;
+  // stock_ledger.created_by FKs employees(id), not users(id) — must be an
+  // employee id (or null), never req.user.userId/id, or this FK-violates and
+  // (since nothing here catches it) rolls back the whole spare-parts movement,
+  // not just the mirror.
+  await postStock(client, {
+    itemId: item.id, inQty, outQty, txnType, refType: 'spare_part', refId: refId ?? part.id,
+    remarks, rate: parseFloat(part.unit_cost) || 0, createdBy: employeeId ?? null, companyId,
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -422,6 +450,11 @@ router.post('/spare-parts/receive', requirePermission('maintenance', 'add'), asy
         remarks: remarks || (po_number ? `PO: ${po_number}` : `Received from ${supplier_name||'supplier'}`),
         done_by: req.user?.name || req.user?.email, company_id: companyId
       });
+      await mirrorToInventory(client, part, {
+        inQty: parseFloat(qty), txnType: 'maintenance_receipt',
+        remarks: remarks || `Spare part receipt: ${part.name}`,
+        companyId, employeeId: req.user?.employee_id ?? null,
+      });
 
       await client.query('COMMIT');
       logAudit({ userId: req.user?.userId, module: 'maintenance', recordId: part_id, recordType: 'spare_part', action: 'receipt', newData: { part_id, qty, stockAfter }, req });
@@ -457,6 +490,11 @@ router.post('/spare-parts/adjust', requirePermission('maintenance', 'edit'), asy
         part_id, type: 'adjustment', qty: Math.abs(diff), stockBefore, stockAfter,
         remarks: remarks || `Manual adjustment: ${stockBefore} → ${stockAfter}`,
         done_by: req.user?.name || req.user?.email, company_id: companyId
+      });
+      await mirrorToInventory(client, part, {
+        inQty: diff > 0 ? diff : 0, outQty: diff < 0 ? -diff : 0, txnType: 'maintenance_adjustment',
+        remarks: remarks || `Spare part adjustment: ${stockBefore} → ${stockAfter}`,
+        companyId, employeeId: req.user?.employee_id ?? null,
       });
 
       await client.query('COMMIT');
@@ -495,6 +533,11 @@ router.post('/spare-parts/issue', requirePermission('maintenance', 'edit'), asyn
         unit_cost: parseFloat(part.unit_cost)||0, ref_type: log_id ? 'maintenance_log' : null,
         ref_id: log_id||null, remarks: remarks || null,
         done_by: req.user?.name || req.user?.email, company_id: companyId
+      });
+      await mirrorToInventory(client, part, {
+        outQty: parseFloat(qty), txnType: 'maintenance_issue', refId: log_id || null,
+        remarks: remarks || `Spare part issued: ${part.name}`,
+        companyId, employeeId: req.user?.employee_id ?? null,
       });
 
       if (log_id) {

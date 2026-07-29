@@ -326,6 +326,23 @@ function CustomerTable({ customers }) {
 }
 
 function CustomerGrowthView({ growth }) {
+  const [converting, setConverting] = useState(null);
+  const [converted,  setConverted]  = useState({});
+  const [convertErr, setConvertErr] = useState({});
+
+  const convert = async (c) => {
+    setConverting(c.id);
+    setConvertErr(p => ({ ...p, [c.id]: null }));
+    try {
+      const res = await api.post(`/ceo-intelligence/customers/${c.id}/convert-upsell`, { reason: c.upsell_opportunity });
+      setConverted(p => ({ ...p, [c.id]: res.data }));
+    } catch (err) {
+      setConvertErr(p => ({ ...p, [c.id]: err?.response?.data?.error || 'Failed to create opportunity' }));
+    } finally {
+      setConverting(null);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <SectionHeader title="Fastest Growing Customers" sub="Year-over-year revenue growth leaders" />
@@ -352,9 +369,27 @@ function CustomerGrowthView({ growth }) {
                 <span style={{ fontSize: 11, fontWeight: 700, color: c.health_color }}>{c.health_label}</span>
               </div>
             </div>
-            {c.upsell_opportunity && (
-              <div style={{ marginTop: 8, padding: '4px 8px', background: '#f0fdf4', borderRadius: 6, fontSize: 11, color: C.green, fontWeight: 600 }}>
-                Opportunity: {c.upsell_opportunity}
+            {c.upsell_opportunity && !converted[c.id] && (
+              <button
+                onClick={() => convert(c)}
+                disabled={converting === c.id}
+                title="Create a real CRM opportunity from this signal"
+                style={{
+                  marginTop: 8, width: '100%', padding: '6px 8px', background: '#f0fdf4',
+                  border: 'none', borderRadius: 6, fontSize: 11, color: C.green, fontWeight: 600,
+                  cursor: converting === c.id ? 'not-allowed' : 'pointer', textAlign: 'left',
+                }}>
+                {converting === c.id ? 'Creating opportunity…' : `Opportunity: ${c.upsell_opportunity} — Convert →`}
+              </button>
+            )}
+            {converted[c.id] && (
+              <div style={{ marginTop: 8, padding: '4px 8px', background: '#eff6ff', borderRadius: 6, fontSize: 11, color: C.blue, fontWeight: 600 }}>
+                ✓ Opportunity #{converted[c.id].id} created
+              </div>
+            )}
+            {convertErr[c.id] && (
+              <div style={{ marginTop: 8, padding: '4px 8px', background: '#fef2f2', borderRadius: 6, fontSize: 11, color: C.red, fontWeight: 600 }}>
+                {convertErr[c.id]}
               </div>
             )}
           </div>

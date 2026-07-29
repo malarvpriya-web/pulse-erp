@@ -7,6 +7,7 @@ import { requirePermission, allowRoles } from '../../../middlewares/auth.middlew
 import * as drive from '../../../services/googleDrive.service.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { nextProjectCode, nextLifecycleNumber } from '../../../shared/docNumber.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -1208,7 +1209,7 @@ router.post('/opportunities/:id/create-quotation', requirePermission('sales', 'a
        FROM opportunities o
        LEFT JOIN accounts a ON a.id = o.account_id
        WHERE o.id=$1 AND o.deleted_at IS NULL AND ($2::int IS NULL OR o.company_id=$2)
-       FOR UPDATE`,
+       FOR UPDATE OF o`,
       [req.params.id, cid_val]
     );
     if (!oppRes.rows[0]) {
@@ -1261,6 +1262,86 @@ router.post('/opportunities/:id/create-quotation', requirePermission('sales', 'a
     }).catch(() => {});
 
     res.status(201).json({ quotation: qRows[0], opportunity_id: opp.id });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { client.release(); }
+});
+
+// POST /opportunities/:id/convert-to-project — "Convert to Project" on a Won
+// opportunity previously only created an Operations `lifecycle_instances` stub
+// (project_id always null) — no row was ever written to `projects`, so Sales
+// saw a success toast but nothing existed for Projects/Finance to act on. Now
+// creates a real `projects` row via the `opportunity_id` bridge column (see
+// Project Master / delivery-tracker), then still creates the lifecycle
+// instance for Operations tracking — but linked to the new project this time.
+router.post('/opportunities/:id/convert-to-project', requirePermission('projects', 'add'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cid_val = companyOf(req);
+    const userId  = req.user?.userId ?? req.user?.id ?? null;
+
+    const oppRes = await client.query(
+      `SELECT o.*, COALESCE(a.name, a.account_name) AS customer_name
+       FROM opportunities o
+       LEFT JOIN accounts a ON a.id = o.account_id
+       WHERE o.id=$1 AND o.deleted_at IS NULL AND ($2::int IS NULL OR o.company_id=$2)
+       FOR UPDATE OF o`,
+      [req.params.id, cid_val]
+    );
+    if (!oppRes.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Opportunity not found' });
+    }
+    const opp = oppRes.rows[0];
+
+    // Idempotent — re-clicking (or a race) must not spawn a second project.
+    const existingRes = await client.query(
+      `SELECT * FROM projects WHERE opportunity_id=$1 AND deleted_at IS NULL LIMIT 1`,
+      [opp.id]
+    );
+    if (existingRes.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(200).json({ project: existingRes.rows[0], already_existed: true });
+    }
+
+    // projects.created_by FKs employees(id), not users(id) — resolve like
+    // projects.routes.js's actingEmployeeId does.
+    let createdByEmployeeId = req.user?.employee_id ?? null;
+    if (createdByEmployeeId == null && req.user?.email) {
+      const empRes = await client.query(
+        `SELECT id FROM employees WHERE company_email=$1 AND deleted_at IS NULL LIMIT 1`,
+        [req.user.email]
+      );
+      createdByEmployeeId = empRes.rows[0]?.id ?? null;
+    }
+
+    const projectCode = await nextProjectCode(client);
+    const { rows: pRows } = await client.query(
+      `INSERT INTO projects
+         (project_code, project_name, customer_name, start_date, status, budget_amount,
+          description, created_by, company_id, opportunity_id)
+       VALUES ($1,$2,$3,CURRENT_DATE,'planning',$4,$5,$6,$7,$8) RETURNING *`,
+      [projectCode, opp.opportunity_name, opp.customer_name || null, opp.expected_value || 0,
+       `Converted from opportunity ${opp.opportunity_number || opp.id}`,
+       createdByEmployeeId, cid_val, opp.id]
+    );
+    const project = pRows[0];
+
+    const lifecycleNumber = await nextLifecycleNumber(client);
+    await client.query(
+      `INSERT INTO lifecycle_instances
+        (lifecycle_number, project_id, customer_id, current_stage, status, stage_notes, created_by, created_by_name, company_id)
+       VALUES ($1,$2,$3,'order','active',$4,$5,$6,$7)`,
+      [lifecycleNumber, project.id, opp.account_id || null,
+       `Created from opportunity: ${opp.opportunity_name}`, userId, req.user?.name || null, cid_val]
+    ).catch(() => {}); // best-effort — Operations tracking is secondary to the project record itself
+
+    await client.query('COMMIT');
+
+    logAudit({ userId, module: 'CRM', recordId: opp.id, recordType: 'opportunity', action: 'convert_to_project', newData: { project_id: project.id, project_code: project.project_code }, req });
+    res.status(201).json({ project });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });

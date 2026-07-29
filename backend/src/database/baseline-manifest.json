@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-21T11:57:06.773Z",
+  "generated_at": "2026-07-29T02:47:19.858Z",
   "source": "Pulse@localhost:5432",
   "migrations": [
     "20260330000000_core_schema.js",
@@ -257,6 +257,22 @@
     "20260719000003_access_denials.js",
     "20260721000001_department_head_operational_grants.js",
     "20260721000002_granular_role_approvals_notifications_grants.js",
-    "20260721000003_seed_l2_approver_role.js"
+    "20260721000003_seed_l2_approver_role.js",
+    "20260722000001_scope_granular_manager_approvals.js",
+    "20260722000002_missing_integrations_bridges.js",
+    "20260723000001_stock_adjustments_maker_checker.js",
+    "20260724000001_candidate_stage_history.js",
+    "20260724000002_job_openings_positions_filled.js",
+    "20260727000001_candidates_resume_url_first_name.js",
+    "20260728000001_rfq_items.js",
+    "20260728000002_rfq_quotes_unique_constraint.js",
+    "20260728000003_exit_clearance_noc_audit.js",
+    "20260728000004_travel_approval_delegate.js",
+    "20260728000005_employee_asset_lifecycle.js",
+    "20260728000006_unified_warranty_engine.js",
+    "20260728000007_warranty_registrations_months_column.js",
+    "20260728000008_warranty_registrations_exclusions_column.js",
+    "20260729000001_installation_requests.js",
+    "20260729000002_sales_orders_dispatch_columns_drift_fix.js"
   ]
 }

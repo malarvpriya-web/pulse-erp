@@ -3,6 +3,7 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { CLOSED_PROJECT_STATUSES } from './projectStatus.js';
 
 const router = express.Router();
 
@@ -46,6 +47,10 @@ router.post('/', allowRoles(...MANAGER_ROLES), async (req, res) => {
   if (!project_id || !employee_id) return res.status(400).json({ message: 'project_id and employee_id required' });
   const cid = req.scope?.company_id ?? null;
   try {
+    const projRes = await pool.query('SELECT status FROM projects WHERE id = $1', [project_id]);
+    if (CLOSED_PROJECT_STATUSES.includes(projRes.rows[0]?.status)) {
+      return res.status(400).json({ message: `Cannot assign a member — project is ${projRes.rows[0].status}` });
+    }
     const { rows } = await pool.query(
       `INSERT INTO project_members
          (company_id, project_id, employee_id, role_in_project, allocation_pct,

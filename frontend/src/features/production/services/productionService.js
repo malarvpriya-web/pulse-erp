@@ -48,6 +48,9 @@ export const reserveMaterials = (id) =>
 export const issueMaterial = (id, data) =>
   api.post(`/production/orders/${id}/issue-material`, data).then(r => r.data);
 
+export const returnMaterial = (id, data) =>
+  api.post(`/production/orders/${id}/return-material`, data).then(r => r.data);
+
 export const recordScrap = (id, data) =>
   api.post(`/production/orders/${id}/scrap`, data).then(r => r.data);
 

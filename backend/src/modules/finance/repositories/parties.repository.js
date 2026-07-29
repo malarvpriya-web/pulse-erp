@@ -50,7 +50,7 @@ class PartiesRepository {
               COALESCE((
                 SELECT SUM(i.balance) FROM invoices i
                 WHERE i.customer_id = p.id
-                  AND i.status NOT IN ('Paid','Cancelled')
+                  AND LOWER(i.status) NOT IN ('paid','cancelled')
                   AND (i.deleted_at IS NULL)
               ), 0) AS outstanding_balance
        FROM parties p
@@ -66,7 +66,7 @@ class PartiesRepository {
              COALESCE((
                SELECT SUM(i.balance) FROM invoices i
                WHERE i.customer_id = p.id
-                 AND i.status NOT IN ('Paid','Cancelled')
+                 AND LOWER(i.status) NOT IN ('paid','cancelled')
                  AND (i.deleted_at IS NULL)
              ), 0) AS outstanding_balance
       FROM parties p
@@ -157,12 +157,17 @@ class PartiesRepository {
     return result.rows[0];
   }
 
+  // invoices.party_id / bills.party_id are dead legacy integer columns — the
+  // parties_schema_hardening backfill skips them (type mismatch against
+  // parties.id uuid), so they're always NULL and this always returned 0 for
+  // every party. Same bug class already fixed elsewhere for bills.supplier_id
+  // (see [[project_tally_parity_finance]]) but missed here.
   async getOutstandingBalance(partyId, partyType) {
     if (partyType !== 'Supplier') {
       const result = await pool.query(
         `SELECT COALESCE(SUM(balance), 0) AS outstanding
          FROM invoices
-         WHERE party_id = $1 AND status NOT IN ('Paid','Cancelled')
+         WHERE customer_id = $1 AND LOWER(status) NOT IN ('paid','cancelled')
            AND (deleted_at IS NULL)`,
         [partyId]
       );
@@ -171,7 +176,7 @@ class PartiesRepository {
       const result = await pool.query(
         `SELECT COALESCE(SUM(balance), 0) AS outstanding
          FROM bills
-         WHERE party_id = $1 AND status NOT IN ('Paid','Cancelled')
+         WHERE supplier_id = $1 AND LOWER(status) NOT IN ('paid','cancelled')
            AND (deleted_at IS NULL)`,
         [partyId]
       );

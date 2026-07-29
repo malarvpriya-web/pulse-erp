@@ -128,6 +128,108 @@ router.patch('/:id/return', allowRoles(...HR_ROLES), async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+/* ─── POST /employee-assets/:id/transfer — reassign a currently-allocated
+   asset to a different employee, preserving its identity (same row/id,
+   same history via audit log) instead of a blind return+re-create. ───── */
+router.post('/:id/transfer', allowRoles(...HR_ROLES), async (req, res) => {
+  const { to_employee_id, notes } = req.body;
+  if (!to_employee_id) return res.status(400).json({ message: 'to_employee_id is required' });
+  try {
+    const old = await pool.query(`SELECT * FROM employee_asset_allocations WHERE id=$1`, [req.params.id]);
+    if (!old.rows.length) return res.status(404).json({ message: 'Not found' });
+    if (old.rows[0].status !== 'allocated') {
+      return res.status(400).json({ message: `Cannot transfer an asset that is ${old.rows[0].status}, not allocated` });
+    }
+    const { rows } = await pool.query(
+      `UPDATE employee_asset_allocations SET
+         transferred_from = employee_id,
+         employee_id      = $1,
+         transferred_at    = NOW(),
+         notes             = COALESCE($2, notes),
+         updated_at        = NOW()
+       WHERE id=$3 RETURNING *`,
+      [to_employee_id, notes, req.params.id]
+    );
+    logAudit({ userId: req.user?.id, module: 'employee_assets', recordId: rows[0].id, recordType: 'asset_allocation', action: 'transfer', oldData: old.rows[0], newData: rows[0], req });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+/* ─── POST /employee-assets/:id/maintenance — pull an allocated asset out of
+   service temporarily (repair, servicing) without a full return. ───────── */
+router.post('/:id/maintenance', allowRoles(...HR_ROLES), async (req, res) => {
+  const { notes, expected_return_date } = req.body;
+  try {
+    const old = await pool.query(`SELECT * FROM employee_asset_allocations WHERE id=$1`, [req.params.id]);
+    if (!old.rows.length) return res.status(404).json({ message: 'Not found' });
+    if (old.rows[0].status !== 'allocated') {
+      return res.status(400).json({ message: `Cannot send to maintenance from status ${old.rows[0].status}` });
+    }
+    const { rows } = await pool.query(
+      `UPDATE employee_asset_allocations SET
+         status                       = 'under_maintenance',
+         maintenance_started_at        = NOW(),
+         maintenance_expected_return   = $1,
+         maintenance_notes             = $2,
+         updated_at                    = NOW()
+       WHERE id=$3 RETURNING *`,
+      [expected_return_date || null, notes || null, req.params.id]
+    );
+    logAudit({ userId: req.user?.id, module: 'employee_assets', recordId: rows[0].id, recordType: 'asset_allocation', action: 'maintenance_start', oldData: old.rows[0], newData: rows[0], req });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+/* ─── POST /employee-assets/:id/maintenance/complete — back in service. ─ */
+router.post('/:id/maintenance/complete', allowRoles(...HR_ROLES), async (req, res) => {
+  const { condition_in, notes } = req.body;
+  try {
+    const old = await pool.query(`SELECT * FROM employee_asset_allocations WHERE id=$1`, [req.params.id]);
+    if (!old.rows.length) return res.status(404).json({ message: 'Not found' });
+    if (old.rows[0].status !== 'under_maintenance') {
+      return res.status(400).json({ message: `Asset is ${old.rows[0].status}, not under maintenance` });
+    }
+    const { rows } = await pool.query(
+      `UPDATE employee_asset_allocations SET
+         status         = 'allocated',
+         condition_in   = COALESCE($1, condition_in),
+         maintenance_notes = COALESCE($2, maintenance_notes),
+         updated_at     = NOW()
+       WHERE id=$3 RETURNING *`,
+      [condition_in || null, notes || null, req.params.id]
+    );
+    logAudit({ userId: req.user?.id, module: 'employee_assets', recordId: rows[0].id, recordType: 'asset_allocation', action: 'maintenance_complete', oldData: old.rows[0], newData: rows[0], req });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+/* ─── PATCH /employee-assets/:id/dispose — terminal state; scrapped/written
+   off, no longer anyone's responsibility (so Exit Clearance stops blocking
+   on it — see exit.routes.js computeClearanceBlockers). ────────────────── */
+router.patch('/:id/dispose', allowRoles(...HR_ROLES), async (req, res) => {
+  const { reason, notes } = req.body;
+  try {
+    const old = await pool.query(`SELECT * FROM employee_asset_allocations WHERE id=$1`, [req.params.id]);
+    if (!old.rows.length) return res.status(404).json({ message: 'Not found' });
+    if (old.rows[0].status === 'disposed') {
+      return res.status(400).json({ message: 'Asset is already disposed' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE employee_asset_allocations SET
+         status           = 'disposed',
+         disposed_at      = NOW(),
+         disposal_reason  = $1,
+         disposed_by      = $2,
+         notes            = COALESCE($3, notes),
+         updated_at       = NOW()
+       WHERE id=$4 RETURNING *`,
+      [reason || null, req.user?.employee_id ?? null, notes || null, req.params.id]
+    );
+    logAudit({ userId: req.user?.id, module: 'employee_assets', recordId: rows[0].id, recordType: 'asset_allocation', action: 'dispose', oldData: old.rows[0], newData: rows[0], req });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 /* ─── DELETE /employee-assets/:id ───────────────────────────── */
 router.delete('/:id', allowRoles(...HR_ROLES), async (req, res) => {
   const cid = req.scope?.company_id ?? null;

@@ -208,7 +208,7 @@ export default function JobOpenings({ setPage }) {
                 </div>
                 {job.salary_range && <div className="jo-salary">{job.salary_range}</div>}
                 <div className="jo-card-actions">
-                  <button className="jo-pipeline-btn" onClick={() => { setSelectedJobId(job.id); setPage && setPage('CandidatePipeline'); }}>
+                  <button className="jo-pipeline-btn" onClick={() => { setSelectedJobId(job.id); setPage && setPage('Candidates', { tab: 'pipeline' }); }}>
                     View Pipeline <ChevronRight size={13} />
                   </button>
                   <div style={{ display:'flex', gap:6 }}>

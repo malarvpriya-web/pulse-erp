@@ -50,9 +50,12 @@ async function testZKDevice(ipAddress, port = 4370) {
 async function resolveEmployeeId(deviceUserId, deviceUserName, companyId) {
   const cidClause = companyId != null ? `AND (e.company_id = ${parseInt(companyId)} OR e.company_id IS NULL)` : '';
 
-  // 1. Match employee_id code (e.g. "EMP001" or numeric "1")
+  // 1. Match employee code (e.g. "EMP001" or numeric "1") — employees has no
+  // employee_id column (real column is office_id, see project_org_setup_members
+  // in memory); this always silently returned zero rows before, falling
+  // through to strategy 2 every time regardless of match quality.
   const byCode = await pool.query(
-    `SELECT id FROM employees WHERE LOWER(TRIM(employee_id)) = LOWER(TRIM($1)) ${cidClause} LIMIT 1`,
+    `SELECT id FROM employees WHERE LOWER(TRIM(office_id)) = LOWER(TRIM($1)) ${cidClause} LIMIT 1`,
     [String(deviceUserId)]
   ).catch(() => ({ rows: [] }));
   if (byCode.rows[0]) return byCode.rows[0].id;

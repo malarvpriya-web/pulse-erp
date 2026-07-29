@@ -46,6 +46,74 @@ async function assertEmployeeScope(client, employeeId, companyId) {
   if (!rows.length) throw Object.assign(new Error('Employee not found'), { status: 404 });
 }
 
+// ── Clearance blockers — Exit Clearance Engine ────────────────────────────────
+// Final settlement (fnf/:id/pay) is gated on all six of these clearing. The
+// first three are computed live from the actual source-of-truth tables (an
+// employee can't fake "assets returned" by ticking a checkbox that's
+// disconnected from employee_asset_allocations) — only the last three are
+// genuine human sign-offs with no system of record to compute them from.
+async function computeClearanceBlockers(employeeId) {
+  const [assetsRes, advancesRes, accessRes, clearanceRes] = await Promise.allSettled([
+    pool.query(
+      // 'disposed' (Asset Lifecycle — employee-assets.routes.js) means the
+      // asset is written off, no longer anyone's responsibility, so it
+      // doesn't block exit the way an unreturned/under-maintenance one does.
+      `SELECT id, asset_name, asset_tag FROM employee_asset_allocations
+       WHERE employee_id=$1 AND status NOT IN ('returned', 'disposed')`,
+      [employeeId]
+    ),
+    pool.query(
+      // travel_advances.employee_id actually stores users.id, not employees.id
+      // (see travel.routes.js's GET /advances comment) — resolve through users
+      // first, same pattern that route already uses for employee self-scoping,
+      // plus a direct employees.id fallback for any legacy row.
+      `SELECT COALESCE(SUM(amount - COALESCE(settled_amount,0)), 0) AS outstanding
+       FROM travel_advances
+       WHERE status NOT IN ('Settled','Rejected','Cancelled')
+         AND (
+           employee_id IN (SELECT id FROM users WHERE employee_id = $1)
+           OR created_by IN (SELECT id FROM users WHERE employee_id = $1)
+           OR employee_id = $1
+         )`,
+      [employeeId]
+    ),
+    pool.query(
+      `SELECT id, email FROM users WHERE employee_id=$1 AND is_active=true`,
+      [employeeId]
+    ),
+    pool.query(`SELECT * FROM exit_clearance WHERE employee_id=$1`, [employeeId]),
+  ]);
+
+  const pendingAssets = assetsRes.status === 'fulfilled' ? assetsRes.value.rows : [];
+  const outstandingAdvance = advancesRes.status === 'fulfilled'
+    ? parseFloat(advancesRes.value.rows[0]?.outstanding || 0) : 0;
+  const activeLogins = accessRes.status === 'fulfilled' ? accessRes.value.rows : [];
+  const clearance = clearanceRes.status === 'fulfilled' ? (clearanceRes.value.rows[0] || {}) : {};
+
+  const blockers = [
+    {
+      key: 'assets', label: 'Assets pending return',
+      cleared: pendingAssets.length === 0,
+      detail: pendingAssets.map(a => a.asset_name + (a.asset_tag ? ` (${a.asset_tag})` : '')),
+    },
+    {
+      key: 'travel_advances', label: 'Travel advances not settled',
+      cleared: outstandingAdvance <= 0,
+      detail: outstandingAdvance > 0 ? [`₹${outstandingAdvance.toLocaleString('en-IN')} outstanding`] : [],
+    },
+    {
+      key: 'it_access', label: 'IT access not revoked',
+      cleared: activeLogins.length === 0,
+      detail: activeLogins.map(u => u.email).filter(Boolean),
+    },
+    { key: 'finance', label: 'Finance clearance pending', cleared: !!clearance.noc_finance, detail: [] },
+    { key: 'manager', label: 'Reporting manager approval pending', cleared: !!clearance.noc_manager, detail: [] },
+    { key: 'hr', label: 'HR approval pending', cleared: !!clearance.noc_hr, detail: [] },
+  ];
+
+  return { employee_id: employeeId, blockers, can_settle: blockers.every(b => b.cleared) };
+}
+
 // ── GET /requests ─────────────────────────────────────────────────────────────
 router.get('/requests', async (req, res) => {
   try {
@@ -78,9 +146,24 @@ router.post('/requests', requireHRWrite, async (req, res) => {
 });
 
 // ── PUT /requests/:id ─────────────────────────────────────────────────────────
+// Workflow Dependency Engine (Priority 7) — this generic status-update
+// endpoint could previously mark an exit request 'closed' directly, which
+// GET /active treats as "done" (WHERE status NOT IN ('closed','paid')) —
+// completely bypassing computeClearanceBlockers and the F&F pay gate that
+// 'closed' is supposed to mean. Only POST /fnf/:id/pay may set 'closed' now;
+// other statuses (pending/active/rejected/cancelled) are untouched.
 router.put('/requests/:id', requireHRWrite, async (req, res) => {
   try {
     const { status, remarks } = req.body;
+    if (status === 'closed') {
+      const { rows: cur } = await pool.query(`SELECT fnf_status FROM exit_requests WHERE id=$1`, [req.params.id]);
+      if (!cur.length) return res.status(404).json({ error: 'Not found' });
+      if (cur[0].fnf_status !== 'paid') {
+        return res.status(409).json({
+          error: "Cannot close an exit request until F&F is paid — use POST /fnf/:id/pay, which enforces exit clearance first",
+        });
+      }
+    }
     const { rows } = await pool.query(
       `UPDATE exit_requests SET status=COALESCE($1,status), remarks=COALESCE($2,remarks), updated_at=NOW()
        WHERE id=$3 RETURNING *`,
@@ -395,8 +478,11 @@ router.put('/fnf/:id/approve', requireHRWrite, async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const updatedRecord = rows[0];
     logAudit({ userId: req.user?.userId, module: 'HR', recordId: req.params.id, recordType: 'fnf_settlement', action: 'approve', oldData: oldRecord, newData: updatedRecord, req });
-    // Look up the employee's userId for workflow notification
-    pool.query(`SELECT user_id FROM employees WHERE id=$1`, [updatedRecord.employee_id])
+    // Look up the employee's userId for workflow notification. employees has
+    // no user_id column (this always 500'd silently into the .catch below,
+    // so the F&F-approval notification never fired) — resolve via the
+    // reverse FK instead, same fix as promotions.routes.js/increments.routes.js.
+    pool.query(`SELECT id AS user_id FROM users WHERE employee_id=$1`, [updatedRecord.employee_id])
       .then(({ rows: empRows }) => {
         notifyWorkflowEvent('approved', { module: 'HR', recordId: req.params.id, submitterUserId: empRows[0]?.user_id ?? null });
       }).catch(() => {});
@@ -409,6 +495,21 @@ router.post('/fnf/:id/pay', requireHRWrite, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const { rows: erRows } = await client.query(`SELECT employee_id FROM exit_requests WHERE id=$1`, [req.params.id]);
+    if (!erRows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
+
+    // Exit Clearance Engine gate — final settlement cannot be disbursed while
+    // any of assets/travel-advances/IT-access/finance/manager/HR clearance is
+    // still outstanding. See computeClearanceBlockers above.
+    const clearanceStatus = await computeClearanceBlockers(erRows[0].employee_id);
+    if (!clearanceStatus.can_settle) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Cannot mark F&F as paid — exit clearance is incomplete',
+        blockers: clearanceStatus.blockers.filter(b => !b.cleared),
+      });
+    }
+
     const { rows } = await client.query(
       `UPDATE exit_requests SET fnf_status='paid', status='closed', updated_at=NOW() WHERE id=$1 RETURNING *`,
       [req.params.id]
@@ -452,6 +553,18 @@ router.get('/clearance/:employee_id', async (req, res) => {
   }
 });
 
+// ── GET /clearance/:employee_id/status — computed blockers for the Clearance
+// Status dashboard. Unlike GET /clearance above (raw stored flags), this
+// cross-checks the three system-of-record tables so a stale/never-updated
+// checkbox can't misreport an employee as clear. ─────────────────────────────
+router.get('/clearance/:employee_id/status', async (req, res) => {
+  const empId = Number(req.params.employee_id);
+  if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'Invalid employee id' });
+  try {
+    res.json(await computeClearanceBlockers(empId));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── PUT /clearance/:employee_id ───────────────────────────────────────────────
 router.put('/clearance/:employee_id', requireHRWrite, async (req, res) => {
   try {
@@ -459,17 +572,30 @@ router.put('/clearance/:employee_id', requireHRWrite, async (req, res) => {
       it_assets_returned, access_revoked, documents_collected, exit_interview_done,
       noc_it, noc_admin, noc_finance, noc_hr, noc_manager,
     } = req.body;
+    // Who's granting the NOC — only stamped when the flag is actually being
+    // set true this call, so an existing sign-off isn't overwritten by a
+    // later PUT that leaves the flag unchanged (COALESCE keeps prior value).
+    const actorEmployeeId = req.user?.employee_id ?? null;
+    const financeNocBy = noc_finance ? actorEmployeeId : null;
+    const managerNocBy = noc_manager ? actorEmployeeId : null;
+    const hrNocBy      = noc_hr ? actorEmployeeId : null;
     const { rows } = await pool.query(
       `INSERT INTO exit_clearance
          (employee_id, it_assets_returned, access_revoked, documents_collected, exit_interview_done,
-          noc_it, noc_admin, noc_finance, noc_hr, noc_manager, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+          noc_it, noc_admin, noc_finance, noc_hr, noc_manager,
+          finance_noc_by, manager_noc_by, hr_noc_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
        ON CONFLICT (employee_id) DO UPDATE SET
          it_assets_returned=$2, access_revoked=$3, documents_collected=$4, exit_interview_done=$5,
-         noc_it=$6, noc_admin=$7, noc_finance=$8, noc_hr=$9, noc_manager=$10, updated_at=NOW()
+         noc_it=$6, noc_admin=$7, noc_finance=$8, noc_hr=$9, noc_manager=$10,
+         finance_noc_by = CASE WHEN $8  THEN COALESCE(exit_clearance.finance_noc_by, $11) ELSE NULL END,
+         manager_noc_by = CASE WHEN $10 THEN COALESCE(exit_clearance.manager_noc_by, $12) ELSE NULL END,
+         hr_noc_by      = CASE WHEN $9  THEN COALESCE(exit_clearance.hr_noc_by, $13) ELSE NULL END,
+         updated_at=NOW()
        RETURNING *`,
       [req.params.employee_id, it_assets_returned, access_revoked, documents_collected,
-       exit_interview_done, noc_it, noc_admin, noc_finance, noc_hr, noc_manager]
+       exit_interview_done, noc_it, noc_admin, noc_finance, noc_hr, noc_manager,
+       financeNocBy, managerNocBy, hrNocBy]
     );
 
     // Actually revoke the login, not just the checklist checkbox. Previously
