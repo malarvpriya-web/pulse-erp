@@ -44,17 +44,25 @@ services:
       # ALLOW_LOCAL_BACKUPS_ONLY is only for the self-contained compose stack).
       - key: BACKUP_S3_BUCKET
         sync: false
-      # No S3 bucket configured yet — explicit opt-out so the server boots.
-      # Backups live only in Render's ephemeral disk until a real bucket is
-      # set above; remove this flag once BACKUP_S3_BUCKET is filled in.
-      - key: ALLOW_LOCAL_BACKUPS_ONLY
-        value: true
-      # No object storage configured yet — explicit opt-out so the server
-      # boots. Uploaded files live only on Render's ephemeral disk and are
-      # LOST on every redeploy until STORAGE_PROVIDER=s3/r2 is set with real
-      # credentials; remove this flag once that's done.
-      - key: ALLOW_LOCAL_STORAGE_ONLY
-        value: true
+      # ── Object storage (file uploads) ─────────────────────────────────────────
+      # Real AWS S3 bucket — uploads persist across redeploys instead of living
+      # on ephemeral disk. Bucket/region/credentials entered in the Render
+      # dashboard (sync: false), same as BACKUP_S3_BUCKET above.
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: AWS_BUCKET_NAME
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      # Backups (BACKUP_S3_BUCKET above) reuse these same AWS_ACCESS_KEY_ID /
+      # AWS_SECRET_ACCESS_KEY credentials — no separate backup-only keys needed.
+      # Defaults to ap-south-1 if unset.
+      - key: BACKUP_S3_REGION
+        sync: false
       # ── Monitoring ──────────────────────────────────────────────────────────
       # Slack/Discord/PagerDuty incoming-webhook URL for operational alerts
       - key: ALERT_WEBHOOK_URL

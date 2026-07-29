@@ -4,13 +4,22 @@
 **Date:** 2026-07-25 (audit) · **Implementation started 2026-07-27** · **Second sweep 2026-07-27** (caught 6 doc files the first pass missed — item 12b)
 **Scope:** Infrastructure, configuration, networking, URLs, deployment settings only. No business logic reviewed or changed.
 
-> **Implementation status (2026-07-27):** every platform-agnostic item below is
-> done (marked ✅). What's left needs a human decision or real credentials this
-> report can't supply on its own: **hosting platform** (Render vs. Railway),
-> **file storage backend** (S3/R2 bucket, or confirm a persistent volume is
-> mounted), **Google OAuth client** (only if Sign-In ships), **DNS records**
-> (needs the exact CNAME target from whichever platform's dashboard), and
-> **mobile push credentials** (`google-services.json`/APNs, only if push ships).
+> **Implementation status (2026-07-27, storage/backups updated 2026-07-29):**
+> every platform-agnostic item below is done (marked ✅). **Hosting platform is
+> now de facto decided: Render** — `render.yaml` was deliberately hand-tuned
+> (commit `43dc997`) to boot on Render specifically. **File storage backend is
+> now decided too: AWS S3** — `render.yaml` declares `STORAGE_PROVIDER=s3` plus
+> `AWS_BUCKET_NAME`/`AWS_REGION`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
+> `BACKUP_S3_BUCKET`/`BACKUP_S3_REGION` as `sync: false` placeholders; the
+> `ALLOW_LOCAL_STORAGE_ONLY`/`ALLOW_LOCAL_BACKUPS_ONLY` ephemeral opt-outs were
+> removed from `render.yaml` in the same change. What's left needs a human
+> action this report can't supply on its own: **entering the actual bucket
+> name/region/IAM credentials in the Render dashboard**, **verifying `pg_dump`
+> is actually present in Render's native Node build image** (the backup cron
+> shells out to it; nothing in the repo proves it's on `PATH` there — see item
+> #5), **Google OAuth client** (only if Sign-In ships), **DNS records** (needs
+> the exact CNAME target from the Render dashboard), and **mobile push
+> credentials** (`google-services.json`/APNs, only if push ships).
 
 **Target domains:**
 
@@ -55,7 +64,7 @@ Since the target architecture is **two separate subdomains** (`erp.manifest-tech
 | 2 | `Pulse/render.yaml` (line ~41) | ✅ **Done** — `FRONTEND_URL` now `https://erp.manifest-tech.in`. | **Critical** — drives backend CORS allow-list and every e-sign email link. |
 | 3 | `Pulse/render.yaml` (line ~70, comment + Render dashboard value) | ✅ **Comment done.** Dashboard `sync: false` value still needs to be entered manually once a Render service exists. | **Critical** — same as #1 but for whichever platform actually builds the frontend. |
 | 4 | Backend production env (`.env.production` or platform dashboard) | ✅ **Done** — `FRONTEND_URL` now `https://erp.manifest-tech.in`. | **Critical** — duplicate of #2, whichever file/dashboard is actually live. |
-| 5 | File storage configuration (`STORAGE_PROVIDER`) | ✅ **Partially done** — `server.js` now refuses to boot in production with `STORAGE_PROVIDER=local` unless `ALLOW_LOCAL_STORAGE_ONLY=true` is explicitly set (mirrors the existing `BACKUP_S3_BUCKET`/`ALLOW_LOCAL_BACKUPS_ONLY` pattern). This converts the failure from silent data loss to a loud startup error — it does **not** pick a backend for you. **Still needs a human decision:** either provision an S3/R2 bucket and set `STORAGE_PROVIDER`+`AWS_*` credentials, or confirm a persistent volume is mounted over `uploads/` and set `ALLOW_LOCAL_STORAGE_ONLY=true`. | **Critical** — real credentials/infra decision, can't be scripted. |
+| 5 | File storage + backups (`STORAGE_PROVIDER`, `BACKUP_S3_BUCKET`) | ✅ **Decided and wired 2026-07-29** — real AWS S3, not a persistent volume. `render.yaml` now declares `STORAGE_PROVIDER=s3` (literal) plus `AWS_BUCKET_NAME`/`AWS_REGION`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`BACKUP_S3_REGION` as `sync: false` (alongside the pre-existing `BACKUP_S3_BUCKET`); the `ALLOW_LOCAL_STORAGE_ONLY`/`ALLOW_LOCAL_BACKUPS_ONLY` ephemeral opt-outs were removed in the same change. Backups reuse the same `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` as uploads (`db-backup.js`/`backup.cron.js` use the default AWS SDK credential chain, no separate backup-only keys). **Still open:** (a) enter the real bucket name/region/IAM key pair in the Render dashboard — `render.yaml` only declares the var names, not values; (b) verify `pg_dump` is actually on `PATH` in Render's native Node build image — `backup.cron.js` shells out to it via `spawnSync`, `render.yaml` uses `runtime: node` with a bare `npm ci` build (no `apt-get postgresql-client` step), and this exact gap was previously seen on a local dev machine (`PHASE4_DEVOPS.md`) — unverified against the actual Render container. If `pg_dump` turns out to be missing, the fix is most likely switching `pulse-backend` to `runtime: docker` using the existing `backend/Dockerfile` rather than trying to install packages into Render's native Node image. Note: if R2 (not S3) is ever chosen instead, `db-backup.js`/`backup.cron.js` need a code patch first — they're hardcoded to plain `S3Client({ region })` with no endpoint override, so they don't work against R2 as-is (uploads via `StorageService.js` already support R2's endpoint override). | **Critical** — real credentials/infra decision, can't be scripted. |
 | 6 | `Pulse/electron/main.js` | ✅ **Done** — packaged builds (`app.isPackaged`) now default to `https://erp.manifest-tech.in`; the localhost port-probe only runs for unpackaged dev runs. `PULSE_URL` still overrides either way. | **High** — was: desktop build fails to load anything in production. |
 | 7 | Google OAuth (backend env + Google Cloud Console) | Not done — needs real credentials. `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are now documented in both `.env.example` files (with the redirect-URI note), but the actual values must come from a Google Cloud Console OAuth client only you can create. | **High if Google Sign-In is used** — informational only otherwise. |
 | 8 | `Pulse/backend/Dockerfile` (only relevant if Path C is used) | ✅ **Done** — healthcheck now reads `process.env.PORT` instead of a literal `5000`. | **Medium** — was: silently misreports health if the platform overrides `PORT`. |
@@ -106,7 +115,9 @@ Since the target architecture is **two separate subdomains** (`erp.manifest-tech
 **Pre-cutover**
 - [ ] Decide hosting platform: Render vs. Railway (both fully configured; pick one — see §0). Docker Compose/nginx stays demo/CI-only per repo's own documentation.
 - [ ] Decide production database: Render-managed Postgres vs. an external managed Postgres (the repo's `.env.production` currently references a stale Neon.tech placeholder — resolve this as part of the hosting decision).
-- [ ] Decide file storage: attach a persistent volume/disk to the chosen platform, **or** provision an S3/R2 bucket and set `STORAGE_PROVIDER=s3`/`r2` with credentials (item #5 — do this before the first real user uploads a file).
+- [x] Decide file storage: **AWS S3 chosen** (item #5, 2026-07-29) — `render.yaml` now declares `STORAGE_PROVIDER=s3` and the `AWS_*`/`BACKUP_S3_*` var names as `sync: false`.
+- [ ] Enter the real `AWS_BUCKET_NAME`/`AWS_REGION`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`BACKUP_S3_BUCKET`/`BACKUP_S3_REGION` values in the Render dashboard (item #5 — do this before the first real user uploads a file).
+- [ ] Verify `pg_dump` is present on `PATH` in Render's native Node build image before trusting the backup cron (item #5) — switch `pulse-backend` to `runtime: docker` if it isn't.
 - [ ] Decide whether Google Sign-In ships at launch; if yes, create a Google Cloud OAuth 2.0 Client ID (see §11) and set `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`VITE_GOOGLE_CLIENT_ID`.
 - [ ] Delete or freeze `Pulse/docs/deployment/render.yaml` (stale duplicate) and rewrite/remove `Pulse/docs/deployment/DEPLOYMENT.md` (describes an abandoned stack).
 - [ ] Delete stray duplicate frontend files (item #18).
@@ -155,7 +166,7 @@ Since the target architecture is **two separate subdomains** (`erp.manifest-tech
 | `JWT_SECRET` | dev-only value (in `.env`, git-ignored) | unique staging secret | unique production secret, ≥32 chars, generated fresh |
 | `ENCRYPTION_KEY` | dev-only value | unique staging key | unique production key, generated fresh |
 | `TRUST_PROXY_HOPS` | `0` | `1` (or `2` if Cloudflare-proxied) | `1` (or `2` if Cloudflare-proxied) |
-| `STORAGE_PROVIDER` | `local` | `s3`/`r2` (recommended, matches prod) | `s3`/`r2` **or** platform persistent disk — must not be bare `local` on ephemeral hosts |
+| `STORAGE_PROVIDER` | `local` | `s3` (recommended, matches prod) | `s3` — decided 2026-07-29 (AWS S3), declared in `render.yaml`; must not be bare `local` on ephemeral hosts |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | *(unset — feature disabled)* | staging OAuth client | production OAuth client (register redirect URI, §11) |
 | `TALLY_GATEWAY_URL` | `http://localhost:9000` | customer's on-prem gateway (per deployment) | customer's on-prem gateway (per deployment) — unrelated to this migration |
 | `FCM_*` / `APNS_*` | unset | unset (or test project) | set only if push notifications ship |
