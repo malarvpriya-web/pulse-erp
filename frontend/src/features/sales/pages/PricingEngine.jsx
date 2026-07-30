@@ -802,22 +802,30 @@ function ApprovalsTab() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: LIGHT }}>
-                {['Sales Rep', 'Rule', 'Order Value', 'Req. Discount', 'Net Impact', 'Requested At', 'Actions'].map(h => (
+                {['Sales Rep', 'Quotation', 'Rule', 'Order Value', 'Req. Discount', 'Net Impact', 'Requested At', 'Actions'].map(h => (
                   <th key={h} style={{ padding: '12px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>Loading...</td></tr>
+                <tr><td colSpan={8} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>Loading...</td></tr>
               ) : pending.length === 0 ? (
-                <tr><td colSpan={7} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>No pending approvals</td></tr>
+                <tr><td colSpan={8} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>No pending approvals</td></tr>
               ) : pending.map((a, i) => {
                 const orderVal = a.order_value || 0;
                 const netImpact = (orderVal * a.requested_discount_pct) / 100;
                 return (
                   <tr key={a.id} style={{ borderTop: i > 0 ? '1px solid #f0f0f4' : 'none', verticalAlign: 'top' }}>
                     <td style={{ padding: '12px 14px', fontWeight: 600, color: '#1a1a2e' }}>{a.requested_by}</td>
+                    <td style={{ padding: '12px 14px', fontSize: 13 }}>
+                      {a.quotation_number ? (
+                        <>
+                          <div style={{ fontWeight: 600, color: '#1a1a2e' }}>{a.quotation_number}</div>
+                          <div style={{ color: '#9ca3af', fontSize: 12 }}>{a.quotation_customer_name}</div>
+                        </>
+                      ) : <span style={{ color: '#9ca3af' }}>—</span>}
+                    </td>
                     <td style={{ padding: '12px 14px', fontSize: 13, color: '#6b7280' }}>{a.rule_name}</td>
                     <td style={{ padding: '12px 14px' }}>{formatINR(orderVal)}</td>
                     <td style={{ padding: '12px 14px' }}>

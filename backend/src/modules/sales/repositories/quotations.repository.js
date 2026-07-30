@@ -4,7 +4,7 @@ import { nextQuotationNumber } from '../../../shared/docNumber.js';
 const QUOTATION_COLUMNS = new Set([
   'company_id', 'customer_id', 'customer_name', 'opportunity_id',
   'quotation_date', 'validity_date', 'status', 'notes',
-  'subtotal', 'tax_amount', 'total_amount',
+  'subtotal', 'tax_amount', 'total_amount', 'discount_pct',
 ]);
 
 const quotationsRepository = {
@@ -15,16 +15,17 @@ const quotationsRepository = {
       status = 'draft', notes = null, created_by,
       version = 1, parent_id = null, original_id = null,
       subtotal = 0, tax_amount = 0, total_amount = 0,
+      discount_pct = 0,
     } = data;
     const result = await pool.query(
       `INSERT INTO quotations
          (quotation_number, company_id, customer_id, customer_name, opportunity_id,
           quotation_date, validity_date, status, notes, created_by,
-          version, parent_id, original_id, subtotal, tax_amount, total_amount)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+          version, parent_id, original_id, subtotal, tax_amount, total_amount, discount_pct)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
       [quotation_number, company_id, customer_id, customer_name, opportunity_id,
        quotation_date, validity_date, status, notes, created_by,
-       version, parent_id, original_id, subtotal, tax_amount, total_amount]
+       version, parent_id, original_id, subtotal, tax_amount, total_amount, discount_pct || 0]
     );
     return result.rows[0];
   },
@@ -44,12 +45,17 @@ const quotationsRepository = {
       SELECT q.*,
              COALESCE(p.name, q.customer_name) AS customer_name,
              f.total_revisions,
-             COALESCE(q.version, 1)             AS version
+             COALESCE(q.version, 1)             AS version,
+             da.status                          AS discount_approval_status
       FROM quotations q
       JOIN family f
         ON  COALESCE(q.original_id, q.id) = f.family_id
         AND COALESCE(q.version, 1)        = f.max_ver
       LEFT JOIN parties p ON q.customer_id = p.id
+      LEFT JOIN LATERAL (
+        SELECT status FROM discount_approvals
+        WHERE quotation_id = q.id ORDER BY requested_at DESC LIMIT 1
+      ) da ON true
       WHERE q.deleted_at IS NULL
     `;
     const params = [];
@@ -72,9 +78,14 @@ const quotationsRepository = {
 
   async findById(id, company_id = null) {
     const result = await pool.query(
-      `SELECT q.*, p.name AS customer_name, COALESCE(q.version, 1) AS version
+      `SELECT q.*, p.name AS customer_name, COALESCE(q.version, 1) AS version,
+              da.status AS discount_approval_status, da.reason AS discount_approval_reason
        FROM quotations q
        LEFT JOIN parties p ON q.customer_id = p.id
+       LEFT JOIN LATERAL (
+         SELECT status, reason FROM discount_approvals
+         WHERE quotation_id = q.id ORDER BY requested_at DESC LIMIT 1
+       ) da ON true
        WHERE q.id = $1 AND q.deleted_at IS NULL
          AND ($2::int IS NULL OR q.company_id = $2)`,
       [id, company_id ?? null]
@@ -111,13 +122,14 @@ const quotationsRepository = {
       INSERT INTO quotations
         (quotation_number, customer_id, quotation_date, validity_date,
          status, notes, version, parent_id, original_id, created_by,
-         subtotal, tax_amount, total_amount)
-      VALUES ($1,$2,CURRENT_DATE,$3,'draft',$4,$5,$6,$7,$8,$9,$10,$11)
+         subtotal, tax_amount, total_amount, discount_pct)
+      VALUES ($1,$2,CURRENT_DATE,$3,'draft',$4,$5,$6,$7,$8,$9,$10,$11,$12)
       RETURNING *
     `, [
       newNumber, current.customer_id, current.validity_date,
       current.notes, newVersion, current.id, familyId, userId,
       current.subtotal || 0, current.tax_amount || 0, current.total_amount || 0,
+      current.discount_pct || 0,
     ]);
     const newQ = result.rows[0];
 

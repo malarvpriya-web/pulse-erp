@@ -495,6 +495,31 @@ Manual checks:
 - Approve/reject/escalate/delegate all produce an audit log entry.
 - The requester receives a notification on decision.
 
+**Nav-reachability fixed 2026-07-30.** `getPendingApprovals` (the read path
+`ApprovalCenter.jsx` actually calls) has no role gate — it shows every
+company-wide *unassigned* Leave/OT/PR/Expense/ECN/Payment item to any
+authenticated user (`approver_id == null || approver_id === userId`, no role
+check). Those 6 categories never populate `approver_id` before a decision is
+made, so they always land in the "unassigned" bucket. Acting on an unassigned
+item requires `approvals.authz.js`'s `APPROVER_ROLES` membership — so any role
+holding the sidebar's `'Approvals'` section without that membership got a
+populated-looking queue where every Approve/Reject 403s, surfaced by
+`ApprovalCenter.jsx` as a generic "Failed to approve — try again" toast that
+can never succeed. Found 9 such roles (`hr_exec`, `accounts_exec`,
+`sales_exec`, `procurement_exec`, `store_keeper`, `production_engineer`,
+`qc_engineer`, `design_engineer`, `service_engineer`) — removed `'Approvals'`
+from their `ROLE_SECTION_ALLOWLIST` entries in `menuCatalog.js`, same pattern
+as the existing F16 fix for `project_manager`/`sales_manager`/
+`service_manager`. Regularization/probation items assigned by identity
+(reporting-manager hierarchy / name lookup, not role) still reach these roles
+via notifications regardless of this allowlist entry — the ownership check in
+`canActOnApproval` requires no role membership, only `approver_id === me`.
+**Separately found, not fixed:** `GET /approvals` (`getAllApprovals`) has no
+role or `approver_id` scoping at all (company-scoped only) — unused by the
+frontend (`ApprovalCenter.jsx` only calls `/approvals/pending`) but reachable
+by any authenticated user via direct API call. Fits the existing tracked
+authz-coverage gap; flagged, not yet closed.
+
 ### Global Search
 
 Frontend: `frontend/src/components/GlobalSearch.jsx`, mounted from
@@ -2463,3 +2488,166 @@ table, service, or helper already documented elsewhere in this manual
 cross-module coupling beyond what §2/§11/§12's diagrams already draw. Item 6
 is the one place a future pass could add real architecture (a rate-card
 source feeding AMC contract defaults) rather than just verification.
+
+## 20. Home Dashboard → Per-Role Department Dashboard Embed (2026-07-30)
+
+A cross-role UX audit (the "Role Experience Audit" — see project memory, not committed to this
+repo) flagged that `Home.jsx` landed 25 of 26 roles on the same generic company-wide widget grid
+(Open Tasks/Approvals/Announcements/Policies/Brand Vault/Celebrations) instead of the domain
+dashboard each role actually needed to start their day with. A `ROLE_DASHBOARD` map already
+existed in `Home.jsx` doing exactly this for 7 roles (manager, store_keeper, production_manager,
+qc_manager, sales_manager, service_engineer, procurement_manager) — this pass extended it to 15
+more, reusing each role's existing sidebar-landing dashboard component with no new pages built:
+
+| Role(s) | Embedded dashboard | Component |
+|---|---|---|
+| hr, hr_manager, hr_exec, payroll_admin | HR Dashboard | `pages/HRDashboard.jsx` |
+| finance, finance_manager, accounts_exec | Finance Dashboard | `features/finance/pages/FinanceDashboard.jsx` |
+| project_manager | Projects Dashboard | `features/projects/pages/ProjectsDashboard.jsx` |
+| production_engineer | Production Dashboard | `features/production/pages/ProductionDashboard.jsx` (shared with production_manager) |
+| sales_exec | Sales Command Center | `features/sales/pages/SalesCommandCenter.jsx` (shared with sales_manager) |
+| procurement_exec | Purchase Request | `features/procurement/pages/PurchaseRequest.jsx` (shared with procurement_manager) |
+| qc_engineer | Quality Dashboard | `features/quality/pages/QualityDashboard.jsx` (shared with qc_manager) |
+| design_engineer | Engineering Dashboard | `features/engineering/pages/EngineeringDashboard.jsx` |
+| service_manager | Support Dashboard | `features/servicedesk/pages/SupportDashboard.jsx` (shared with service_engineer) |
+
+Also re-scoped `HomeBusinessPulse` (the Revenue Trend/Receivables Aging/Top Customers band) from
+`canSeeFinancials` to `canSeeFinancials && !DeptDashboard` — without this, finance/finance_manager/
+accounts_exec would see their new embedded Finance Dashboard's own Revenue vs Expenses/Receivables
+content duplicated by the generic band directly below it. Never mattered for the original 7 roles
+(none had Finance section access), so this collision was latent until this pass.
+
+**Deliberately NOT added — `department_head`.** Initially mapped to `ExecutiveDashboard` (same as
+`manager`), but browser verification with a minted `department_head` token hit a hard "Access
+Restricted" screen: `ExecutiveDashboard.jsx:352` gates its whole body behind
+`<RequireRole roles={['super_admin','admin','manager']}>` (`components/auth/RequireRole.jsx`,
+checks the singular `role` claim, not the `roles` array), and `department_head` was never added to
+that list. Also confirmed `department_head`'s own `ROLE_SECTION_ALLOWLIST` entry in
+`menuCatalog.js` has no `'Analytics & AI'` section, so this 403 is currently unreachable via normal
+navigation too — not a live dead link today, just a landmine this pass avoided stepping on.
+Deciding whether department_head *should* get Executive Dashboard access is a product decision, not
+a wiring fix, so it was left alone; `department_head` stays on the generic grid, same as
+`l2_approver` (no matching domain dashboard exists for either).
+
+## 21. Discount-Approval Gate at Quotation → Sales Order (2026-07-30)
+
+The Lead-to-Cash Enterprise Workflow Audit had repeatedly flagged one standing, deliberately-deferred
+gap across 7+ passes: no approval gate between Quotation and Sales Order for discounted quotations,
+because `discount_approvals` had no FK to a quotation (only loose `lead_id`/`order_id`). Picking this
+item up surfaced a deeper root cause and three unrelated, previously-undiscovered live bugs — found
+only because this was the first time anyone actually drove the full request→approve→convert cycle
+against a real Postgres instance rather than re-reading the code shape.
+
+**Root cause was bigger than "no FK": quotations never persisted a discount at all.**
+`Quotations.jsx`'s builder already has a header "Discount %" field, computed into `subtotal`/`total_amount`
+client-side and sent to the backend as `discount`, but `quotations` had no matching column —
+`quotationsRepository.create()` never destructured it, so the number was silently dropped on every
+save. Added `quotations.discount_pct` (migration `20260729000003_discount_approval_gate.js`, same
+migration also adds `discount_approvals.quotation_id UUID→INTEGER REFERENCES quotations(id)`); the
+frontend now sends it explicitly as `discount_pct` instead of the unmapped `discount` key.
+
+**The gate itself reuses two already-built-but-disconnected systems rather than inventing new ones**
+(same "check for existing infrastructure before building" discipline as the GRN quality-gate fix
+elsewhere in this file): `discount_rules.requires_approval`/`approval_threshold_pct` (a real per-rule
+policy already configurable from `PricingEngine.jsx`'s Discount Rules tab, never read anywhere) and
+`discount_approvals`'s full request/pending/approved/rejected workflow with its own live UI
+(`PricingEngine.jsx`'s Approvals tab, `PUT /pricing/discount-approvals/:id`) that nothing had ever
+triggered. New `checkDiscountApprovalGate()` in `sales.routes.js`: if a quotation's `discount_pct`
+meets or exceeds the lowest `approval_threshold_pct` among the company's active
+`requires_approval=true` rules, it auto-creates a pending `discount_approvals` row (mirrors the
+credit-check gate's auto-detecting style — no separate "request approval" click required) and blocks
+with 409; a pending or rejected request keeps blocking; an approved one clears it. Wired into **all
+three** live quotation→order conversion endpoints (`PATCH /quotations/:id/accept-and-convert`,
+`PATCH /quotations/:id/convert-to-order`, `POST /orders/from-quotation/:quotationId`) — the second of
+those had neither this gate nor the pre-existing credit-check gate at all until now, despite being a
+real, reachable button (`Quotations.jsx`'s "Convert to Sales Order" for `accepted`-status quotations).
+Also added `requirePermission('sales','approve')` to the approve/reject endpoint, previously
+unguarded — `role_permissions` already seeds `sales_manager: can_approve=true` /
+`sales_exec: can_approve=false` for the `sales` module (the role's own seed description says "full
+access including pricing approval" / "no pricing approval"), it just was never enforced on this route.
+
+**Three unrelated, previously-undiscovered live bugs found while verifying end-to-end, all fixed:**
+1. **`credit_limits.customer_id` was a legacy `integer`, never migrated to match `parties.id` (uuid)** —
+   every quotation-to-order conversion gate's credit-check (`SELECT ... FROM credit_limits WHERE
+   customer_id=$1`, passing a real uuid) has been throwing `invalid input syntax for type integer`
+   unconditionally on every quotation with a real customer attached, silently caught and reported as a
+   generic 500. `finance/routes/extended.routes.js`'s own `GET /credit-limits` already joined
+   `cl.customer_id = p.id` against `parties`, confirming uuid was always the intended type. Fixed via
+   direct `ALTER COLUMN ... TYPE uuid` (migration `20260730000001`) — safe as a straight type change,
+   not an additive bridge column, since the table had 0 live rows and neither of its write endpoints
+   has any frontend caller anywhere in the app.
+2. **`quotation_items` never got the columns `quotationsRepository.addItem()`/`getItems()` actually
+   use** (`item_description`/`rate`/`tax_percentage`/`tax_amount`/`total`) — `POST
+   /quotations/:id/items` 500'd on every real call. Root cause: migration `20260609000001` (June 9)
+   tried to ALTER these onto `quotation_items`, but the table wasn't `CREATE TABLE`'d until migration
+   `20260620000002` (June 20) — a migration-ordering inversion. The June 9 migration wraps every ALTER
+   in a savepoint with try/catch+`console.warn` (to survive drift across environments), so "relation
+   does not exist" was silently swallowed and logged instead of failing the migration — it shows
+   cleanly "applied" in the ledger despite every quotation_items statement inside it having no-op'd.
+   Fixed via a new additive migration (`20260730000002`) re-applying the same `ADD COLUMN IF NOT
+   EXISTS` statements — safe and idempotent regardless of what the ledger believes already ran, same
+   pattern as `20260729000002_sales_orders_dispatch_columns_drift_fix.js`.
+3. **`accept-and-convert` had an application-level self-deadlock on every single call, discount-related
+   or not** — its `SELECT * FROM quotations ... FOR UPDATE` holds a row lock on `client`'s connection
+   for the rest of the request, but `salesOrdersRepository.create()`/`.addItem()`/`.updateTotals()`
+   ran on the default `pool` (a *different* connection). `sales_orders.quotation_id` and
+   `sales_order_items.order_id` both carry real FK constraints back to the locked/uncommitted rows;
+   Postgres's FK check needs a lock the `FOR UPDATE` holder won't release until this same request's
+   own JS code — blocked awaiting that exact call — moves on. Not a DB-detectable deadlock cycle
+   (each connection is only waiting on the other's *application* progress, not a reciprocal DB lock),
+   so it just hangs until `query_timeout` (30s) fires and reports a generic "Query read timeout".
+   **This means the "atomic accept + convert" endpoint — independently scored 83/100 and later
+   90/100 as part of Lead-to-Cash across 7+ audit passes — had likely never actually completed
+   successfully for any quotation in this environment**, since nobody had previously driven it
+   against a real Postgres instance with the lock genuinely held end-to-end; every prior "verified"
+   claim re-read the code shape (gate exists, transaction wraps it) without confirming the transaction
+   could actually commit. Fixed by threading the transactional `client` through all three calls
+   (`create(data, client)`, `addItem(data, client)`, `updateTotals(order_id, client)` — all default to
+   `pool` when no client is passed, so every other caller of these same repository methods elsewhere
+   in the app is unaffected).
+4. `PUT /pricing/discount-approvals/:id`'s UPDATE reused `$1` both as a plain column assignment
+   (`SET status=$1`) and inside `CASE WHEN $1='approved'` — Postgres couldn't deduce one consistent
+   type for the repeated parameter ("inconsistent types deduced for parameter $1"), a live 500 on
+   every real call, never caught before because nothing had ever created a real `discount_approvals`
+   row for this endpoint to act on until this gate started creating them. Fixed with an explicit
+   `$1::varchar` cast in the `CASE` branch. Also fixed `approved_by` always landing `NULL` in practice
+   — `PricingEngine.jsx`'s Approvals tab never sends it — now resolved server-side from the acting
+   user, same convention as the gate's own `requested_by`.
+
+**Verified via a full live-HTTP round trip** against an isolated second backend instance (not a
+rolled-back transaction — `accept-and-convert` and the approve endpoint each commit their own
+transactions): created a real 15%-discount quotation against a temporary `requires_approval` rule
+(threshold 10%), confirmed the first conversion attempt 409s and auto-creates exactly one pending
+`discount_approvals` row (idempotent on retry, no duplicate), approved it via the real endpoint,
+confirmed the retried conversion now succeeds (201, real `sales_orders`/`sales_order_items` rows);
+separately confirmed `convert-to-order` (previously fully ungated) now blocks the same way, a
+rejected request keeps blocking with the rejection reason surfaced, and a below-threshold discount
+(5%) converts straight through with zero `discount_approvals` row created. All throwaway rows deleted
+after. Full backend suite green throughout (549 passed/9 skipped, no regressions).
+
+**Still deliberately open, unchanged:** `POST /discount-rules/request-approval` (the pre-existing
+manual request-creation endpoint) still has no frontend caller — superseded by the automatic gate,
+not wired to a UI button, since requiring a salesperson to remember a separate "request approval"
+click before the automatic gate already does it for them would be redundant, not complementary.
+
+**Architecture impact**: none — no new components, tables, or endpoints; every embed reuses a
+dashboard + backend already documented in §5-§9 of this manual. The one structural finding is
+`RequireRole.jsx`'s single-role check (`components/auth/RequireRole.jsx:16`, `roles.includes(role)`)
+being one of the last un-swept single-role gates in the frontend (see project memory
+`project_frontend_single_role_gate_drift` — the rest of the app's gating already moved to
+`hasAnyRole()`/the `roles[]` array). Not fixed here since `department_head` was excluded rather
+than granted access, but any future decision to open Executive Dashboard to more roles should fix
+this gate properly (add to the array or convert to `hasAnyRole()`) rather than special-case around
+it again.
+
+**Separately found, not fixed (flagged for a future pass):** verifying this with real pilot
+accounts (`pilot.financemgr@manifest.in`, `pilot.hrmgr@manifest.in`, etc.) surfaced that all
+~24 `pilot.*@manifest.in` accounts have `users.role = 'user'` in the database — a generic
+placeholder — while their real granular role (finance_manager, hr_manager, …) lives only in the
+`user_roles` junction table. Since `auth.service.js`'s login flow sends `role: user.role` (the
+same column) as the JWT's primary-role claim, a **real login** for any of these pilot accounts
+gets `role='user'`, not their intended granular role — meaning this dashboard feature (and any
+other singular-`role` check in the app) silently no-ops for the entire pilot fleet today. This is
+a data/seeding gap, not a code bug in this feature, and is out of scope for this pass — see project
+memory `project_home_role_dashboard_rollout` for the full detail before the pilot program relies on
+per-role behavior being visible to these accounts.

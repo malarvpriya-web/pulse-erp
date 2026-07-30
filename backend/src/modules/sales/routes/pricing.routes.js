@@ -3,6 +3,7 @@ import { Router } from 'express';
 import pool from '../../../config/db.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { requirePermission } from '../../../middlewares/auth.middleware.js';
 
 const router = Router();
 
@@ -362,9 +363,11 @@ router.get('/discount-approvals', async (req, res) => {
   const cid = companyOf(req);
   try {
     const result = await pool.query(
-      `SELECT da.*, dr.name AS rule_name, dr.discount_value AS rule_discount_value
+      `SELECT da.*, dr.name AS rule_name, dr.discount_value AS rule_discount_value,
+              q.quotation_number, q.customer_name AS quotation_customer_name
        FROM discount_approvals da
        LEFT JOIN discount_rules dr ON dr.id = da.discount_rule_id
+       LEFT JOIN quotations q ON q.id = da.quotation_id
        WHERE da.company_id = $1
        ORDER BY da.requested_at DESC`,
       [cid]
@@ -375,18 +378,33 @@ router.get('/discount-approvals', async (req, res) => {
   }
 });
 
-// PUT /discount-approvals/:id
-router.put('/discount-approvals/:id', async (req, res) => {
+// PUT /discount-approvals/:id — approve/reject. Gated on 'sales'.'approve':
+// role_permissions already seeds sales_manager with can_approve=true and
+// sales_exec with can_approve=false for the 'sales' module (its own seed
+// description says "no pricing approval"), but nothing enforced it here —
+// any authenticated user hitting this endpoint directly could self-approve
+// their own pending discount request.
+router.put('/discount-approvals/:id', requirePermission('sales', 'approve'), async (req, res) => {
   const cid = companyOf(req);
   try {
     const { id } = req.params;
-    const { status, reason, approved_by } = req.body;
+    const { status, reason } = req.body;
+    // PricingEngine.jsx's Approvals tab never sends approved_by at all —
+    // resolve it from the acting user server-side, same convention as
+    // checkDiscountApprovalGate's requested_by.
+    const approvedBy = req.body.approved_by || req.user?.name || req.user?.email || null;
+    // $1 reused as both a plain column assignment and inside CASE WHEN
+    // $1='approved' made Postgres unable to deduce one consistent type for
+    // it ("inconsistent types deduced for parameter $1") — a live 500 on
+    // every real call, never caught before because nothing had ever created
+    // a real discount_approvals row for this endpoint to act on until the
+    // quotation-conversion gate started creating them. Explicit cast fixes it.
     const result = await pool.query(
       `UPDATE discount_approvals
        SET status=$1, reason=$2, approved_by=$3,
-           approved_at=CASE WHEN $1='approved' THEN NOW() ELSE approved_at END
+           approved_at=CASE WHEN $1::varchar='approved' THEN NOW() ELSE approved_at END
        WHERE id=$4 AND company_id=$5 RETURNING *`,
-      [status, reason, approved_by, id, cid]
+      [status, reason, approvedBy, id, cid]
     );
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Sales', recordId: id, recordType: 'discount_approval', action: 'approve', newData: result.rows[0], req });
     res.json(result.rows[0]);

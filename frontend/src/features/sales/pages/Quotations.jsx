@@ -363,6 +363,11 @@ const Quotations = ({ setPage, urlParams } = {}) => {
         subtotal:     totals.subtotal,
         tax_amount:   totals.tax,
         total_amount: totals.total,
+        // formData.discount was always computed into totals client-side and
+        // sent as `discount`, but quotations has no matching column, so the
+        // number vanished on every save. Send it under the real column name
+        // now that it's persisted (needed for the discount-approval gate).
+        discount_pct: parseFloat(formData.discount || 0),
       });
       if (!isMounted.current) return;
       const qId = quotation.data.id;
@@ -632,7 +637,23 @@ const Quotations = ({ setPage, urlParams } = {}) => {
                       {overdue && <span style={{ fontSize: 10, marginLeft: 4 }}>Overdue</span>}
                     </td>
                     <td><strong>₹{fmt(q.total_amount)}</strong></td>
-                    <td><span className="sq-badge" style={{ background: s.bg, color: s.color }}>{s.label}</span></td>
+                    <td>
+                      <span className="sq-badge" style={{ background: s.bg, color: s.color }}>{s.label}</span>
+                      {q.discount_approval_status === 'pending' && (
+                        <div style={{ marginTop: 4 }}>
+                          <span className="sq-badge" style={{ background: '#fef3c7', color: '#92400e', fontSize: 10 }} title="Discount exceeds the approval threshold; conversion is blocked until a sales manager decides">
+                            Discount approval pending
+                          </span>
+                        </div>
+                      )}
+                      {q.discount_approval_status === 'rejected' && (
+                        <div style={{ marginTop: 4 }}>
+                          <span className="sq-badge" style={{ background: '#fee2e2', color: '#991b1b', fontSize: 10 }} title="Discount request was rejected; adjust the discount or resubmit">
+                            Discount rejected
+                          </span>
+                        </div>
+                      )}
+                    </td>
                     <td>
                       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
                         {!readOnly && (

@@ -63,9 +63,18 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
     );
     const lifecycleId = ins.rows[0].id;
 
-    // Auto-create a Project linked to this sales order + lifecycle
+    // Auto-create a Project linked to this sales order + lifecycle. Runs inside
+    // its own SAVEPOINT: projects.created_by FKs to employees(id), not
+    // users(id), and the confirming account is often a login with no linked
+    // employee (e.g. the canonical admin). Without a savepoint, that
+    // constraint violation aborted the whole client transaction — the
+    // production-order creation below would then fail too (Postgres refuses
+    // every query until rollback), and COMMIT on an aborted transaction is a
+    // silent no-op ROLLBACK, so the entire bootstrap vanished while this
+    // function still returned success.
     let projectId = null;
     try {
+      await client.query('SAVEPOINT sp_project');
       const yr  = new Date().getFullYear();
       const seqR = await client.query(
         `SELECT COUNT(*)::int AS n FROM projects WHERE ($1::int IS NULL OR company_id=$1)`,
@@ -82,6 +91,8 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
         );
         oppId = oppR.rows[0]?.opportunity_id || null;
       }
+      const empR = await client.query(`SELECT employee_id FROM users WHERE id=$1`, [actorId]);
+      const createdByEmployeeId = empR.rows[0]?.employee_id || null;
       const projRes = await client.query(
         `INSERT INTO projects
            (project_code, project_name, company_id, customer_name,
@@ -92,7 +103,7 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
         [code,
          `Project for ${so.customer_name || 'Customer'} — ${so.order_number}`,
          so.company_id, so.customer_name || null,
-         so.order_number || so.id.toString(), oppId, actorId]
+         so.order_number || so.id.toString(), oppId, createdByEmployeeId]
       );
       projectId = projRes.rows[0]?.id || null;
       if (projectId) {
@@ -101,7 +112,9 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
           [projectId, lifecycleId]
         );
       }
+      await client.query('RELEASE SAVEPOINT sp_project');
     } catch (projErr) {
+      await client.query('ROLLBACK TO SAVEPOINT sp_project').catch(() => {});
       console.error('[autoBootstrap] project creation failed (non-fatal):', projErr.message);
     }
 
@@ -114,10 +127,11 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
     // via an endpoint the frontend never calls.
     let productionOrderId = null;
     try {
+      await client.query('SAVEPOINT sp_prod_order');
       // Best-effort BOM match by product name, same pattern the lifecycle "design"
       // gate already uses, so a matched BOM also seeds production_operations.
       const firstItem = await client.query(
-        `SELECT item_description FROM sales_order_items WHERE order_id=$1 ORDER BY id LIMIT 1`,
+        `SELECT description AS item_description FROM sales_order_items WHERE order_id=$1 ORDER BY id LIMIT 1`,
         [salesOrderId]
       );
       let bomId = null;
@@ -136,7 +150,9 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
           [productionOrderId, lifecycleId]
         );
       }
+      await client.query('RELEASE SAVEPOINT sp_prod_order');
     } catch (poErr) {
+      await client.query('ROLLBACK TO SAVEPOINT sp_prod_order').catch(() => {});
       console.error('[autoBootstrap] production order creation failed (non-fatal):', poErr.message);
     }
 
@@ -322,12 +338,92 @@ router.patch('/quotations/:id/reject', requirePermission('sales', 'edit'), async
   }
 });
 
+// Discount-approval gate at Quotation -> Sales Order conversion.
+// discount_rules already has a real requires_approval/approval_threshold_pct
+// policy engine and discount_approvals already has a full request/pending/
+// approved/rejected workflow with its own UI (PricingEngine.jsx's Approvals
+// tab, PUT /pricing/discount-approvals/:id) -- neither was ever triggered by
+// an actual quotation, and quotations had no discount column to check against
+// at all until this change. Mirrors the credit-check gate's auto-detecting
+// style (no separate manual "request approval" click) rather than requiring
+// the salesperson to remember a step; the pre-existing manual endpoint
+// (POST /discount-rules/request-approval) had no frontend caller anywhere.
+// Uses `pool`, not the caller's transactional `client` -- the pending request
+// this creates must survive even when the conversion itself gets rolled back.
+async function checkDiscountApprovalGate(quotation, companyId, req) {
+  const discountPct = parseFloat(quotation.discount_pct || 0);
+  if (discountPct <= 0) return null;
+
+  const ruleRes = await pool.query(
+    `SELECT id, approval_threshold_pct FROM discount_rules
+     WHERE company_id = $1 AND is_active = true AND requires_approval = true
+     ORDER BY approval_threshold_pct ASC LIMIT 1`,
+    [companyId]
+  );
+  if (!ruleRes.rows.length) return null; // no approval policy configured for this company
+  const rule = ruleRes.rows[0];
+  if (discountPct < parseFloat(rule.approval_threshold_pct)) return null;
+
+  const existing = (await pool.query(
+    `SELECT * FROM discount_approvals WHERE quotation_id = $1 ORDER BY requested_at DESC LIMIT 1`,
+    [quotation.id]
+  )).rows[0];
+
+  if (existing?.status === 'approved') return null;
+  if (existing?.status === 'pending') {
+    return { status: 409, body: { error: `Discount approval already pending for this quotation (${discountPct}% requested) — awaiting sales-manager sign-off.` } };
+  }
+  if (existing?.status === 'rejected') {
+    return { status: 409, body: { error: `This quotation's discount request was rejected: ${existing.reason || 'no reason given'}. Adjust the discount or resubmit.` } };
+  }
+
+  const requestedBy = req.user?.name || req.user?.email || 'system';
+  await pool.query(
+    `INSERT INTO discount_approvals
+       (company_id, discount_rule_id, quotation_id, requested_discount_pct, requested_by, status, order_value)
+     VALUES ($1,$2,$3,$4,$5,'pending',$6)`,
+    [companyId, rule.id, quotation.id, discountPct, requestedBy, quotation.total_amount || 0]
+  );
+  return {
+    status: 409,
+    body: { error: `This quotation's ${discountPct}% discount exceeds the ${rule.approval_threshold_pct}% approval threshold — a request has been submitted for sales-manager sign-off (Pricing → Approvals).` },
+  };
+}
+
 router.patch('/quotations/:id/convert-to-order', requirePermission('sales', 'add'), async (req, res) => {
   try {
     const quotation = await quotationsRepository.findById(req.params.id);
     if (!quotation) return res.status(404).json({ error: 'Quotation not found' });
     const userId    = req.user?.userId ?? req.user?.id;
     const companyId = companyOf(req);
+
+    // This path had neither the credit-check gate that /accept-and-convert and
+    // /orders/from-quotation already have, nor the discount-approval gate —
+    // it's a live, reachable conversion path (Quotations.jsx's "Convert to
+    // Sales Order" button for accepted quotations), not dead code.
+    if (quotation.customer_id) {
+      const clRes = await pool.query(
+        `SELECT credit_hold, hold_reason, credit_limit, current_outstanding,
+                credit_limit - current_outstanding AS available_credit
+         FROM credit_limits WHERE customer_id = $1`,
+        [quotation.customer_id]
+      );
+      if (clRes.rows.length) {
+        const cl = clRes.rows[0];
+        if (cl.credit_hold) {
+          return res.status(409).json({ error: `Customer is on credit hold: ${cl.hold_reason || 'Manual hold'}` });
+        }
+        const projected = parseFloat(cl.current_outstanding) + parseFloat(quotation.total_amount || 0);
+        if (parseFloat(cl.credit_limit) > 0 && projected > parseFloat(cl.credit_limit)) {
+          return res.status(409).json({
+            error: `Converting this quotation would exceed the customer's credit limit. Available: ₹${parseFloat(cl.available_credit).toLocaleString('en-IN')}`,
+          });
+        }
+      }
+    }
+    const gateResult = await checkDiscountApprovalGate(quotation, companyId, req);
+    if (gateResult) return res.status(gateResult.status).json(gateResult.body);
+
     const items     = await quotationsRepository.getItems(req.params.id);
     const orderNumber = await salesOrdersRepository.getNextOrderNumber();
     const order = await salesOrdersRepository.create({
@@ -365,19 +461,20 @@ router.patch('/quotations/:id/convert-to-order', requirePermission('sales', 'add
 
 // Atomic accept + convert — avoids the two-step race condition in the frontend
 router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'add'), async (req, res) => {
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    const userId    = req.user?.userId ?? req.user?.id;
     const companyId = companyOf(req);
 
-    const qRes = await client.query(
-      `SELECT * FROM quotations WHERE id = $1 AND company_id = $2 FOR UPDATE`,
-      [req.params.id, companyId]
-    );
-    if (!qRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Quotation not found' }); }
-    const quotation = qRes.rows[0];
-    if (quotation.status === 'converted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Quotation is already converted to a Sales Order' }); }
+    // Pre-checks run on an unlocked read, BEFORE the FOR UPDATE transaction
+    // below opens. The discount-approval gate's pending-request INSERT has an
+    // FK to quotations(id); running it on a separate pool connection while
+    // this handler's own client holds FOR UPDATE on that same row deadlocks
+    // at the application level (Postgres's FK check needs a FOR KEY SHARE
+    // lock the FOR UPDATE holder won't release until this same request's own
+    // code — blocked awaiting the gate — moves on). Not a DB-detectable
+    // deadlock cycle, just a hang until query_timeout. Gates must run first.
+    const preCheck = await quotationsRepository.findById(req.params.id, companyId);
+    if (!preCheck) return res.status(404).json({ error: 'Quotation not found' });
+    if (preCheck.status === 'converted') return res.status(409).json({ error: 'Quotation is already converted to a Sales Order' });
 
     // Credit-check gate: the built /credit-check logic existed but nothing
     // called it before a quotation converted to a confirmed Sales Order — any
@@ -385,22 +482,20 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
     // same credit_limits lookup here; only 'blocked' actually stops the
     // conversion, matching /credit-check's own semantics ('warning' still
     // approves, just flags high utilization).
-    if (quotation.customer_id) {
-      const clRes = await client.query(
+    if (preCheck.customer_id) {
+      const clRes = await pool.query(
         `SELECT credit_hold, hold_reason, credit_limit, current_outstanding,
                 credit_limit - current_outstanding AS available_credit
          FROM credit_limits WHERE customer_id = $1`,
-        [quotation.customer_id]
+        [preCheck.customer_id]
       );
       if (clRes.rows.length) {
         const cl = clRes.rows[0];
         if (cl.credit_hold) {
-          await client.query('ROLLBACK');
           return res.status(409).json({ error: `Customer is on credit hold: ${cl.hold_reason || 'Manual hold'}` });
         }
-        const projected = parseFloat(cl.current_outstanding) + parseFloat(quotation.total_amount || 0);
+        const projected = parseFloat(cl.current_outstanding) + parseFloat(preCheck.total_amount || 0);
         if (parseFloat(cl.credit_limit) > 0 && projected > parseFloat(cl.credit_limit)) {
-          await client.query('ROLLBACK');
           return res.status(409).json({
             error: `Converting this quotation would exceed the customer's credit limit. Available: ₹${parseFloat(cl.available_credit).toLocaleString('en-IN')}`,
           });
@@ -408,8 +503,33 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
       }
     }
 
+    const gateResult = await checkDiscountApprovalGate(preCheck, companyId, req);
+    if (gateResult) return res.status(gateResult.status).json(gateResult.body);
+
+    // All pre-checks passed — now do the actual atomic accept+convert.
+    const client = await pool.connect();
+    try {
+    await client.query('BEGIN');
+    const userId = req.user?.userId ?? req.user?.id;
+
+    const qRes = await client.query(
+      `SELECT * FROM quotations WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, companyId]
+    );
+    if (!qRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Quotation not found' }); }
+    const quotation = qRes.rows[0];
+    // Re-check post-lock — a concurrent request could have converted it
+    // between the pre-check above and acquiring this lock.
+    if (quotation.status === 'converted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Quotation is already converted to a Sales Order' }); }
+
     const items = await quotationsRepository.getItems(req.params.id);
     const orderNumber = await salesOrdersRepository.getNextOrderNumber();
+    // create()/addItem() must run on this same `client` -- sales_orders.quotation_id
+    // and sales_order_items.order_id both FK rows this transaction still holds
+    // FOR UPDATE / hasn't committed yet. Running them on the default pool (a
+    // different connection) previously deadlocked every single accept-and-convert
+    // call: Postgres's FK check blocks on this transaction's lock, and this
+    // transaction's own code was blocked awaiting that exact call to return.
     const order = await salesOrdersRepository.create({
       order_number:  orderNumber,
       company_id:    companyId,
@@ -423,7 +543,7 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
       notes:         quotation.notes,
       order_status:  'confirmed',
       created_by:    userId,
-    });
+    }, client);
     for (const it of items) {
       await salesOrdersRepository.addItem({
         order_id:         order.id,
@@ -433,7 +553,7 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
         tax_percentage:   it.tax_percentage || 0,
         tax_amount:       it.tax_amount || 0,
         total:            it.total || it.amount || 0,
-      });
+      }, client);
     }
     await client.query(
       `UPDATE quotations SET status = 'converted', updated_at = NOW() WHERE id = $1`,
@@ -455,11 +575,14 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
     await client.query('COMMIT');
     logAudit({ userId, module: 'sales', recordId: req.params.id, recordType: 'quotation', action: 'update', newData: { status: 'converted' }, req });
     res.status(201).json({ quotation_id: quotation.id, order_id: order.id, order_number: order.order_number || orderNumber });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      res.status(500).json({ error: error.message });
+    } finally {
+      client.release();
+    }
   } catch (error) {
-    await client.query('ROLLBACK');
     res.status(500).json({ error: error.message });
-  } finally {
-    client.release();
   }
 });
 
@@ -796,6 +919,9 @@ router.post('/orders/from-quotation/:quotationId', requirePermission('sales', 'a
         }
       }
     }
+
+    const gateResult = await checkDiscountApprovalGate(quotation, companyId, req);
+    if (gateResult) return res.status(gateResult.status).json(gateResult.body);
 
     const items   = await quotationsRepository.getItems(req.params.quotationId);
     const orderNumber = await salesOrdersRepository.getNextOrderNumber();

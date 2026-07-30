@@ -8,13 +8,21 @@ const ORDER_COLUMNS = new Set([
 ]);
 
 const salesOrdersRepository = {
-  async create(data) {
+  // `client` is optional -- pass the transaction client holding a row lock on
+  // the source quotation (accept-and-convert's SELECT ... FOR UPDATE). This
+  // INSERT has a real FK to quotations(id); running it on the default `pool`
+  // (a different connection) while that lock is held deadlocks at the
+  // application level -- Postgres's FK check needs a lock the FOR UPDATE
+  // holder won't release until this same request's own code (blocked
+  // awaiting this call) moves on. See accept-and-convert's own comment.
+  async create(data, client) {
+    const db = client || pool;
     const {
       order_number, quotation_id, company_id, customer_id, customer_name,
       order_date, delivery_date, order_status, notes, created_by,
       subtotal, tax_amount, total_amount, supply_type,
     } = data;
-    const result = await pool.query(
+    const result = await db.query(
       `INSERT INTO sales_orders
          (order_number, quotation_id, company_id, customer_id, customer_name,
           order_date, delivery_date, order_status, notes, created_by,
@@ -124,42 +132,61 @@ const salesOrdersRepository = {
     return nextSalesOrderNumber(client);
   },
 
-  async addItem(data) {
+  // sales_order_items' real columns are description/unit_price/tax_rate/total_amount
+  // (see migration 20260620000002) — item_description/rate/tax_percentage/total
+  // never existed on the live table. Every INSERT/SELECT below targets the real
+  // columns but aliases back to the old names, since the frontend (SalesOrders.jsx)
+  // and other backend readers (e.g. the invoice-generation mapping in
+  // sales.routes.js) are already written against that contract.
+  // `client` optional, same reason as create() above -- order_id here can be
+  // an uncommitted row from the same caller's transaction (accept-and-convert
+  // creates the order via `client`, then adds items in a loop right after;
+  // sales_order_items.order_id FKs sales_orders(id), so this must stay on the
+  // same connection or it deadlocks waiting to see the uncommitted parent row).
+  async addItem(data, client) {
+    const db = client || pool;
     const { order_id, item_description, quantity, rate, tax_percentage } = data;
     const tax_amount = (quantity * rate * tax_percentage) / 100;
     const total = (quantity * rate) + tax_amount;
-    
-    const result = await pool.query(
-      `INSERT INTO sales_order_items (order_id, item_description, quantity, rate, tax_percentage, tax_amount, total)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+
+    const result = await db.query(
+      `INSERT INTO sales_order_items (order_id, description, quantity, unit_price, tax_rate, tax_amount, total_amount)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, order_id, item_code, description AS item_description, quantity, unit,
+                 unit_price AS rate, discount_pct, tax_rate AS tax_percentage, tax_amount,
+                 total_amount AS total, fulfilled_qty, created_at`,
       [order_id, item_description, quantity, rate, tax_percentage, tax_amount, total]
     );
-    
-    await this.updateTotals(order_id);
+
+    await this.updateTotals(order_id, client);
     return result.rows[0];
   },
 
   async getItems(order_id) {
     const result = await pool.query(
-      `SELECT * FROM sales_order_items WHERE order_id = $1 ORDER BY created_at`,
+      `SELECT id, order_id, item_code, description AS item_description, quantity, unit,
+              unit_price AS rate, discount_pct, tax_rate AS tax_percentage, tax_amount,
+              total_amount AS total, fulfilled_qty, created_at
+       FROM sales_order_items WHERE order_id = $1 ORDER BY created_at`,
       [order_id]
     );
     return result.rows;
   },
 
-  async updateTotals(order_id) {
-    const result = await pool.query(`
-      SELECT 
-        SUM(total - tax_amount) as subtotal,
+  async updateTotals(order_id, client) {
+    const db = client || pool;
+    const result = await db.query(`
+      SELECT
+        SUM(total_amount - tax_amount) as subtotal,
         SUM(tax_amount) as tax_amount,
-        SUM(total) as total_amount
+        SUM(total_amount) as total_amount
       FROM sales_order_items
       WHERE order_id = $1
     `, [order_id]);
 
     const { subtotal, tax_amount, total_amount } = result.rows[0];
-    
-    await pool.query(
+
+    await db.query(
       `UPDATE sales_orders SET subtotal = $1, tax_amount = $2, total_amount = $3 WHERE id = $4`,
       [subtotal || 0, tax_amount || 0, total_amount || 0, order_id]
     );
