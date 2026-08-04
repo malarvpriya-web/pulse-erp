@@ -14,9 +14,10 @@ import {
   computeRevenueMetrics,
   computeSalesKPIs,
 } from '../services/metricsEngine.js';
-import { calcAttritionRate, calcOfferAcceptanceRate } from '../services/metricsCalculator.js';
+import { calcAttritionRate } from '../services/metricsCalculator.js';
 import pqRouter  from './powerQuality.routes.js';
 import mfgRouter from './manufacturing.routes.js';
+import recruitmentRepository from '../../modules/recruitment/repositories/recruitment.repository.js';
 
 /* safe single-row helper */
 const sq1 = async (sql, params = []) => {
@@ -175,28 +176,19 @@ router.get('/hiring-trend', async (req, res) => {
 });
 
 // GET /api/analytics/offer-acceptance — recruitment offer conversion
+//
+// Was reimplemented here against candidates.status, a column nothing in the
+// app ever writes (offer status lives on offer_letters, not candidates) —
+// this always returned zeros. Delegates to recruitmentRepository's
+// getOfferAcceptanceRate(), the same function Recruitment's own
+// /recruitment/analytics/offer-acceptance-rate uses, instead of maintaining
+// a second copy of the query. Fixed 2026-08-04.
 router.get('/offer-acceptance', async (req, res) => {
   try {
-    const row = await sq1(`
-      SELECT
-        COALESCE(COUNT(*) FILTER (WHERE LOWER(status) IN ('offered','accepted','joined','declined')), 0) AS offered,
-        COALESCE(COUNT(*) FILTER (WHERE LOWER(status) IN ('accepted','joined')), 0) AS accepted,
-        COALESCE(COUNT(*) FILTER (WHERE LOWER(status) = 'declined'), 0) AS declined
-      FROM candidates
-      WHERE updated_at >= NOW() - INTERVAL '12 months'
-    `);
-    const offered  = parseInt(row?.offered  || 0);
-    const accepted = parseInt(row?.accepted || 0);
-    const declined = parseInt(row?.declined || 0);
-    const data = {
-      offered,
-      accepted,
-      declined,
-      rate: calcOfferAcceptanceRate(accepted, offered),
-    };
-    res.json({ data });
+    const cid = req.scope?.company_id ?? null;
+    const { offered, accepted, declined, rate } = await recruitmentRepository.getOfferAcceptanceRate(cid);
+    res.json({ data: { offered, accepted, declined, rate } });
   } catch (e) {
-    /* candidates table may not exist — return zeros */
     res.json({ data: { offered: 0, accepted: 0, declined: 0, rate: 0 } });
   }
 });
@@ -433,32 +425,18 @@ router.get('/salary-bands', async (req, res) => {
 });
 
 // ── GET /api/analytics/time-to-hire — avg days from candidacy to joining ───────
+//
+// Was reimplemented here joining employees to candidates by email and
+// filtering on candidates.stage, a column nothing in the app ever writes
+// (real field is current_stage) — this always returned zeros. Delegates to
+// recruitmentRepository.getTimeToHire(), the same function Recruitment's own
+// /recruitment/analytics/time-to-hire uses, instead of a second copy of the
+// query. Fixed 2026-08-04.
 router.get('/time-to-hire', async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
-    // Join employees with candidates by email; compute days between application and joining
-    const row = await sq1(`
-      SELECT
-        ROUND(AVG(e.joining_date - c.created_at::date)) AS avg_days,
-        COUNT(*) AS matched,
-        MIN(e.joining_date - c.created_at::date) AS min_days,
-        MAX(e.joining_date - c.created_at::date) AS max_days
-      FROM employees e
-      JOIN candidates c ON LOWER(c.email) = LOWER(e.company_email)
-      WHERE e.joining_date >= NOW() - INTERVAL '12 months'
-        AND c.stage IN ('joined','accepted')
-        AND e.joining_date >= c.created_at::date
-        ${and.replace('$1', `$${params.length + 1}`)}
-    `, params);
-    res.json({
-      data: {
-        avgDays:  parseInt(row?.avg_days  || 0),
-        matched:  parseInt(row?.matched   || 0),
-        minDays:  parseInt(row?.min_days  || 0),
-        maxDays:  parseInt(row?.max_days  || 0),
-      },
-    });
+    const { avg_days, min_days, max_days, matched } = await recruitmentRepository.getTimeToHire(cid);
+    res.json({ data: { avgDays: avg_days, matched, minDays: min_days, maxDays: max_days } });
   } catch (e) {
     res.json({ data: { avgDays: 0, matched: 0, minDays: 0, maxDays: 0 } });
   }

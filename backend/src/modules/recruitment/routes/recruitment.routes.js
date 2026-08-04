@@ -12,7 +12,6 @@ import notificationsRepository from '../../notifications/repositories/notificati
 import { logAudit } from '../../../services/AuditService.js';
 import { triggerEmail } from '../../../services/emailTrigger.js';
 import { companyOf } from '../../../shared/scope.js';
-import { createEmployeeLogin } from '../../../employees/employee.service.js';
 
 const notify = (userId, module, recordId, message) => {
   if (!userId) return;
@@ -104,24 +103,19 @@ const upload = multer({
 const cid = (req) => companyOf(req);
 
 // ==================== DASHBOARD SUMMARY ====================
-router.get('/dashboard-summary', async (req, res) => {
+const getDashboardSummary = async (req, res) => {
   try {
     const data = await recruitmentRepository.getDashboard(cid(req));
     res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
-
-// Keep /dashboard for backwards compat
-router.get('/dashboard', async (req, res) => {
-  try {
-    const data = await recruitmentRepository.getDashboard(cid(req));
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+};
+// /dashboard-summary is the canonical path (used by RecruitmentDashboard.jsx);
+// /dashboard has no current frontend caller but is kept as an alias for any
+// external/API consumer rather than removed outright.
+router.get('/dashboard-summary', getDashboardSummary);
+router.get('/dashboard', getDashboardSummary);
 
 // ==================== PIPELINE SUMMARY ====================
 router.get('/pipeline-summary', async (req, res) => {
@@ -168,6 +162,16 @@ router.post('/requisitions', async (req, res) => {
 
 router.put('/requisitions/:id', async (req, res) => {
   try {
+    // 'approved' is now gated through the Approval Center (POST
+    // /approvals/requisition:<id>/approve, which requires an approver role —
+    // see approvals.controller.js). Blocking it here too, not just omitting a
+    // button in JobRequisitionPipeline.jsx, so the enforcement lives in the
+    // API and can't be bypassed by calling this endpoint directly.
+    if (req.body.status === 'approved') {
+      return res.status(400).json({
+        error: 'Requisitions must be approved through the Approval Center, not edited directly.',
+      });
+    }
     const requisition = await recruitmentRepository.updateRequisition(req.params.id, req.body, cid(req));
     res.json(requisition);
   } catch (error) {
@@ -177,7 +181,7 @@ router.put('/requisitions/:id', async (req, res) => {
 
 router.delete('/requisitions/:id', async (req, res) => {
   try {
-    await recruitmentRepository.deleteRequisition(req.params.id);
+    await recruitmentRepository.deleteRequisition(req.params.id, cid(req));
     res.json({ message: 'Requisition deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -318,7 +322,7 @@ router.put('/candidates/:id', async (req, res) => {
 router.post('/candidates/:id/move-stage', async (req, res) => {
   try {
     const { new_stage, moved_by, notes } = req.body;
-    await recruitmentRepository.moveCandidateStage(req.params.id, new_stage, moved_by, notes);
+    await recruitmentRepository.moveCandidateStage(req.params.id, new_stage, moved_by, notes, cid(req));
 
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'candidate', action: 'stage_change', newData: { stage: new_stage }, req });
 
@@ -382,7 +386,7 @@ router.post('/candidates/:id/hire', async (req, res) => {
 // ==================== PIPELINE ====================
 router.get('/pipeline/:job_opening_id', async (req, res) => {
   try {
-    const pipeline = await recruitmentRepository.getCandidatePipeline(req.params.job_opening_id);
+    const pipeline = await recruitmentRepository.getPipelineSummary(cid(req), req.params.job_opening_id);
     res.json(pipeline);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -392,7 +396,7 @@ router.get('/pipeline/:job_opening_id', async (req, res) => {
 router.get('/pipeline/:job_opening_id/:stage', async (req, res) => {
   try {
     const candidates = await recruitmentRepository.getCandidatesByStage(
-      req.params.job_opening_id, req.params.stage
+      req.params.job_opening_id, req.params.stage, cid(req)
     );
     res.json(candidates);
   } catch (error) {
@@ -403,7 +407,7 @@ router.get('/pipeline/:job_opening_id/:stage', async (req, res) => {
 // ==================== INTERVIEW NOTES ====================
 router.post('/interview-notes', async (req, res) => {
   try {
-    const note = await recruitmentRepository.createInterviewNote(req.body);
+    const note = await recruitmentRepository.createInterviewNote(req.body, cid(req));
     res.status(201).json(note);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -412,7 +416,7 @@ router.post('/interview-notes', async (req, res) => {
 
 router.get('/interview-notes/:candidate_id', async (req, res) => {
   try {
-    const notes = await recruitmentRepository.findInterviewNotes(req.params.candidate_id);
+    const notes = await recruitmentRepository.findInterviewNotes(req.params.candidate_id, cid(req));
     res.json(notes);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -478,13 +482,23 @@ router.post('/interviews/:id/submit-feedback', async (req, res) => {
       return res.status(400).json({ error: 'rejection_reason is required when outcome is rejected' });
     }
 
-    // 1. Load interview schedule → get candidate_id
-    const schedRes = await pool.query('SELECT * FROM interview_schedules WHERE id = $1', [req.params.id]);
+    const company_id = cid(req);
+
+    // 1. Load interview schedule → get candidate_id (previously unscoped —
+    // any authenticated user could submit feedback for another company's
+    // interview by id)
+    const schedRes = await pool.query(
+      'SELECT * FROM interview_schedules WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
+      [req.params.id, company_id]
+    );
     if (!schedRes.rows.length) return res.status(404).json({ error: 'Interview not found' });
     const schedule = schedRes.rows[0];
 
-    // 2. Load candidate → get current_stage
-    const candRes = await pool.query('SELECT * FROM candidates WHERE id = $1', [schedule.candidate_id]);
+    // 2. Load candidate → get current_stage (previously unscoped too)
+    const candRes = await pool.query(
+      'SELECT * FROM candidates WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
+      [schedule.candidate_id, company_id]
+    );
     if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
     const candidate = candRes.rows[0];
     const currentStage = candidate.current_stage;
@@ -529,7 +543,8 @@ router.post('/interviews/:id/submit-feedback', async (req, res) => {
         // candidate_stage_history.moved_by FKs employees(id), not users(id) —
         // getCandidateStageHistory's own read joins on employees.
         req.user?.employee_id ?? null,
-        rejection_reason || `Interview outcome: ${outcome}`
+        rejection_reason || `Interview outcome: ${outcome}`,
+        company_id
       );
       moveResumeOnStageChange(String(schedule.candidate_id), nextStage).catch(err =>
         console.warn('[Drive] submit-feedback moveResume failed:', err.message)
@@ -677,7 +692,7 @@ router.put('/offers/:id', async (req, res) => {
 
 router.post('/offers/:id/accept', async (req, res) => {
   try {
-    const offer = await recruitmentRepository.acceptOffer(req.params.id);
+    const offer = await recruitmentRepository.acceptOffer(req.params.id, cid(req));
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'offer', action: 'accept', newData: offer, req });
     res.json(offer);
   } catch (error) {
@@ -846,99 +861,36 @@ router.post('/auto-creation/:candidateId/trigger', async (req, res) => {
     );
     if (existing.length) return res.status(409).json({ error: 'Employee already created for this candidate', employee_code: existing[0].employee_code });
 
-    // Generate employee code (MAX-based to survive deletions)
-    const { rows: empMax } = await pool.query(
-      `SELECT COALESCE(MAX(CAST(REGEXP_REPLACE(office_id,'[^0-9]','','g') AS INT)), 0) AS max_num
-         FROM employees WHERE company_id = $1 AND office_id ~ '^EMP-[0-9]+'`,
-      [company_id]
-    );
-    const emp_number = (empMax[0].max_num || 0) + 1;
-    const emp_code = `EMP-${String(emp_number).padStart(4, '0')}`;
-
-    // Create log entry first (pending)
+    // Create log entry first (pending) — employee_code is filled in once
+    // hireCandidate() generates it below, so this can't drift from the
+    // number actually assigned to the employee row.
     const { rows: logRows } = await pool.query(`
       INSERT INTO recruitment_employee_creation_log
-        (company_id, candidate_id, candidate_name, job_opening_id, job_title, employee_code, status, triggered_by)
-      VALUES ($1,$2,$3,$4,$5,$6,'in_progress',$7)
+        (company_id, candidate_id, candidate_name, job_opening_id, job_title, status, triggered_by)
+      VALUES ($1,$2,$3,$4,$5,'in_progress',$6)
       ON CONFLICT DO NOTHING
       RETURNING *
-    `, [company_id, candidate_id, c.full_name, c.job_opening_id, c.job_title, emp_code, triggered_by]);
+    `, [company_id, candidate_id, c.full_name, c.job_opening_id, c.job_title, triggered_by]);
 
     const logId = logRows[0]?.id;
 
-    // Insert employee record
-    let employee_id = null;
     try {
-      const nameParts = (c.full_name || '').split(' ');
-      const first_name = nameParts[0] || c.full_name;
-      const last_name = nameParts.slice(1).join(' ') || '';
-
-      const { rows: empRows } = await pool.query(`
-        INSERT INTO employees
-          (company_id, office_id, first_name, last_name, company_email, phone,
-           department, designation, employment_type, joining_date, status,
-           source_candidate_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Active',$11)
-        RETURNING id, office_id, first_name, last_name, company_email
-      `, [company_id, emp_code, first_name, last_name, c.email, c.phone,
-          c.department || 'General', c.job_title || 'Staff',
-          c.employment_type || 'Full-time',
-          c.joining_date || new Date().toISOString().split('T')[0],
-          candidate_id]);
-
-      employee_id = empRows[0].id;
-
-      // Auto-enroll into payroll — same pattern as employee.service.js's
-      // addEmployee and recruitment.repository.js's hireCandidate (the other
-      // two employee-creation paths). This was the one of three still
-      // missing it, so recruitment-sourced auto-created employees were
-      // payroll-invisible until someone manually added an assignment.
-      // c.offered_salary (already fetched above from the accepted offer
-      // letter, previously unused in this handler) seeds a real basic_salary
-      // instead of the column default when one exists.
-      let payrollEnrolled = false;
-      try {
-        const { rows: defStruct } = await pool.query(
-          `SELECT id FROM salary_structures WHERE is_default = true ORDER BY id LIMIT 1`
-        );
-        const offeredSalary = parseFloat(c.offered_salary);
-        const params = [employee_id, defStruct[0]?.id ?? null, c.joining_date || new Date().toISOString().split('T')[0]];
-        let sql = `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from`;
-        if (Number.isFinite(offeredSalary) && offeredSalary > 0) {
-          params.push(offeredSalary);
-          sql += `, basic_salary) VALUES ($1,$2,$3,$${params.length})`;
-        } else {
-          sql += `) VALUES ($1,$2,$3)`;
-        }
-        await pool.query(sql, params);
-        payrollEnrolled = true;
-      } catch (e) {
-        console.error('[auto-creation/trigger] payroll auto-enrollment failed:', e.message);
-      }
-
-      // Provision a login — same bug just fixed in recruitment.repository.js's
-      // hireCandidate (the other recruitment-sourced employee-creation path).
-      // This handler has its own separate INSERT INTO employees and never
-      // called createEmployeeLogin, so candidates auto-created here got an
-      // employee record but no users row to actually sign in with.
-      let loginProvisioned = false;
-      try {
-        await createEmployeeLogin(pool, {
-          id: employee_id,
-          first_name,
-          last_name,
-          company_email: empRows[0].company_email,
-          department: c.department || 'General',
-          company_id,
+      // Same underlying employee-creation transaction as /candidates/:id/hire
+      // (recruitmentRepository.hireCandidate) — this handler previously
+      // reimplemented employee creation, payroll enrollment, and login
+      // provisioning separately, and each fix made to one path (payroll
+      // enrollment, login provisioning) had to be re-applied to the other by
+      // hand. Passing `pool` (not a transaction client) preserves this
+      // route's original non-transactional behavior.
+      const { employee, employeeId, payrollEnrolled, loginProvisioned } =
+        await recruitmentRepository.hireCandidate(candidate_id, company_id, pool, {
+          employmentType: c.employment_type,
+          offeredSalary: parseFloat(c.offered_salary),
+          sourceCandidateId: candidate_id,
         });
-        loginProvisioned = true;
-      } catch (e) {
-        console.error('[auto-creation/trigger] login provisioning failed:', e.message);
-      }
 
-      // Build auto-creation checklist
       const checklist_items = [
-        { task: 'Employee record created', done: true, note: `Code: ${emp_code}` },
+        { task: 'Employee record created', done: true, note: `Code: ${employeeId}` },
         { task: 'Login account created', done: loginProvisioned },
         { task: 'Official email request pending', done: false },
         { task: 'Onboarding checklist to be created', done: false },
@@ -949,30 +901,27 @@ router.post('/auto-creation/:candidateId/trigger', async (req, res) => {
         { task: 'Org chart node to be added', done: false },
       ];
 
-      // Update log to completed
       await pool.query(`
         UPDATE recruitment_employee_creation_log
-           SET status = 'completed', employee_id = $1, completed_at = NOW(),
-               checklist_items = $2
-         WHERE id = $3
-      `, [employee_id, JSON.stringify(checklist_items), logId]);
+           SET status = 'completed', employee_id = $1, employee_code = $2, completed_at = NOW(),
+               checklist_items = $3
+         WHERE id = $4
+      `, [employee.id, employeeId, JSON.stringify(checklist_items), logId]);
 
-      // Notify HR
       notify(triggered_by, 'recruitment', candidate_id,
-        `Employee ${emp_code} created for ${c.full_name} — pending onboarding setup`);
+        `Employee ${employeeId} created for ${c.full_name} — pending onboarding setup`);
 
+      res.status(201).json({
+        message: 'Employee created successfully',
+        employee_id: employee.id,
+        employee_code: employeeId,
+        candidate_name: c.full_name,
+        next_steps: ['Configure payroll profile', 'Set up leave balance', 'Create email account', 'Add to org chart'],
+      });
     } catch (empErr) {
       await pool.query(`UPDATE recruitment_employee_creation_log SET status='failed', error_log=$1 WHERE id=$2`, [empErr.message, logId]);
       return res.status(500).json({ error: `Employee creation failed: ${empErr.message}` });
     }
-
-    res.status(201).json({
-      message: 'Employee created successfully',
-      employee_id,
-      employee_code: emp_code,
-      candidate_name: c.full_name,
-      next_steps: ['Configure payroll profile', 'Set up leave balance', 'Create email account', 'Add to org chart'],
-    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

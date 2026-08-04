@@ -82,8 +82,14 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
-  async deleteRequisition(id) {
-    await pool.query(`UPDATE job_requisitions SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+  // Previously had no company_id scoping at all — any authenticated user
+  // could soft-delete another company's requisition by id.
+  async deleteRequisition(id, company_id = null) {
+    await pool.query(
+      `UPDATE job_requisitions SET deleted_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [id, company_id]
+    );
   },
 
   // ==================== JOB OPENINGS ====================
@@ -190,14 +196,29 @@ const recruitmentRepository = {
   },
 
   // ==================== CANDIDATES ====================
+  // Single creation path for /recruitment/candidates, /recruitment/candidates/bulk
+  // (via bulkCreateCandidates, which batches this same column set for
+  // performance), and /talent/resumes (source: 'resume_db', no applied_job_id).
+  // The extra profile fields (current_company..notes) were previously only
+  // handled by /talent/resumes' own separate INSERT — accepting them here too
+  // means a resume-sourced candidate keeps that data once routed through this
+  // one method, and the two job-application callers simply leave them null.
   async createCandidate(data) {
-    const { full_name, email, phone, resume_file_url, source, applied_job_id, company_id, source_agency_id } = data;
+    const {
+      full_name, email, phone, resume_file_url, source, applied_job_id, company_id, source_agency_id,
+      current_company, current_designation, experience_years, notice_period_days, expected_ctc, skills, notes,
+    } = data;
     const result = await pool.query(
       `INSERT INTO candidates
          (full_name, email, phone, resume_file_url, source, applied_job_id,
-          company_id, source_agency_id, current_stage, overall_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'applied','active') RETURNING *`,
-      [full_name, email, phone, resume_file_url, source, applied_job_id, company_id, source_agency_id || null]
+          company_id, source_agency_id, current_company, current_designation,
+          experience_years, notice_period_days, expected_ctc, skills, notes,
+          current_stage, overall_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,'applied','active') RETURNING *`,
+      [full_name, email, phone, resume_file_url, source, applied_job_id || null, company_id, source_agency_id || null,
+       current_company || null, current_designation || null,
+       experience_years ?? null, notice_period_days ?? null, expected_ctc ?? null,
+       skills ? JSON.stringify(skills) : '[]', notes || null]
     );
     await pool.query(
       `INSERT INTO candidate_stage_history (candidate_id, stage, notes)
@@ -308,17 +329,22 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
-  async moveCandidateStage(candidate_id, new_stage, moved_by, notes) {
+  // company_id was previously not threaded through at all — any authenticated
+  // user could move another company's candidate through the pipeline by id.
+  // Skips the history insert if the scoped UPDATE didn't match a row.
+  async moveCandidateStage(candidate_id, new_stage, moved_by, notes, company_id = null) {
     const extra = new_stage === 'hired'
       ? ', overall_status = \'hired\', hired_at = NOW()'
       : new_stage === 'rejected' || new_stage === 'not_suitable'
         ? ', overall_status = \'rejected\''
         : '';
 
-    await pool.query(
-      `UPDATE candidates SET current_stage = $1, updated_at = CURRENT_TIMESTAMP ${extra} WHERE id = $2`,
-      [new_stage, candidate_id]
+    const result = await pool.query(
+      `UPDATE candidates SET current_stage = $1, updated_at = CURRENT_TIMESTAMP ${extra}
+        WHERE id = $2 AND ($3::int IS NULL OR company_id = $3)`,
+      [new_stage, candidate_id, company_id]
     );
+    if (result.rowCount === 0) throw new Error('Candidate not found');
     await pool.query(
       `INSERT INTO candidate_stage_history (candidate_id, stage, moved_by, notes)
        VALUES ($1, $2, $3, $4)`,
@@ -338,34 +364,33 @@ const recruitmentRepository = {
     return result.rows;
   },
 
-  async getCandidatePipeline(job_opening_id) {
-    const result = await pool.query(`
-      SELECT current_stage, COUNT(*) AS count
-      FROM candidates
-      WHERE applied_job_id = $1 AND deleted_at IS NULL AND overall_status = 'active'
-      GROUP BY current_stage
-    `, [job_opening_id]);
-    const pipeline = {
-      applied: 0, screening: 0, '1st_level': 0, '2nd_level': 0,
-      offer: 0, hired: 0, not_suitable: 0, maybe: 0, future_use: 0, rejected: 0,
-    };
-    result.rows.forEach(r => { pipeline[r.current_stage] = parseInt(r.count); });
-    return pipeline;
-  },
-
-  async getCandidatesByStage(job_opening_id, stage) {
+  async getCandidatesByStage(job_opening_id, stage, company_id = null) {
+    const params = [job_opening_id, stage];
+    let extra = '';
+    if (company_id) { extra = ` AND c.company_id = $3`; params.push(company_id); }
     const result = await pool.query(
       `SELECT c.* FROM candidates c
-       WHERE c.applied_job_id = $1 AND c.current_stage = $2 AND c.deleted_at IS NULL
+       WHERE c.applied_job_id = $1 AND c.current_stage = $2 AND c.deleted_at IS NULL${extra}
        ORDER BY c.created_at DESC`,
-      [job_opening_id, stage]
+      params
     );
     return result.rows;
   },
 
   // ==================== INTERVIEW NOTES ====================
-  async createInterviewNote(data) {
+  // interview_notes has no company_id column of its own — scoping is via the
+  // candidate it belongs to. Previously unscoped entirely: any authenticated
+  // user could read or write interview notes for another company's candidate
+  // by guessing/enumerating candidate_id.
+  async createInterviewNote(data, company_id = null) {
     const { candidate_id, interviewer_id, interview_round, rating, comments, recommendation } = data;
+    if (company_id) {
+      const owns = await pool.query(
+        `SELECT 1 FROM candidates WHERE id = $1 AND company_id = $2`,
+        [candidate_id, company_id]
+      );
+      if (!owns.rows.length) throw new Error('Candidate not found');
+    }
     const result = await pool.query(
       `INSERT INTO interview_notes
          (candidate_id, interviewer_id, interview_round, rating, comments, recommendation)
@@ -375,14 +400,18 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
-  async findInterviewNotes(candidate_id) {
+  async findInterviewNotes(candidate_id, company_id = null) {
+    const params = [candidate_id];
+    let extra = '';
+    if (company_id) { extra = ` AND c.company_id = $2`; params.push(company_id); }
     const result = await pool.query(
       `SELECT n.*, e.name AS interviewer_name
        FROM interview_notes n
+       JOIN candidates c ON c.id = n.candidate_id
        LEFT JOIN employees e ON n.interviewer_id = e.id
-       WHERE n.candidate_id = $1
+       WHERE n.candidate_id = $1${extra}
        ORDER BY n.created_at DESC`,
-      [candidate_id]
+      params
     );
     return result.rows;
   },
@@ -597,14 +626,18 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
-  async acceptOffer(offer_id) {
+  // Previously had no company_id scoping — any authenticated user could
+  // accept another company's offer by id.
+  async acceptOffer(offer_id, company_id = null) {
     const result = await pool.query(
       `UPDATE offer_letters
        SET offer_status = 'accepted', response_date = CURRENT_DATE, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 RETURNING *`,
-      [offer_id]
+       WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)
+       RETURNING *`,
+      [offer_id, company_id]
     );
     const offer = result.rows[0];
+    if (!offer) throw new Error('Offer not found');
     await pool.query(
       `UPDATE candidates SET overall_status = 'hired', current_stage = 'hired', hired_at = NOW()
        WHERE id = $1`,
@@ -649,7 +682,12 @@ const recruitmentRepository = {
     };
   },
 
-  async getPipelineSummary(company_id) {
+  // Single source of truth for candidate-pipeline-by-stage counts, used by
+  // /pipeline-summary (company-wide), /pipeline/:job_opening_id (scoped to one
+  // opening — previously a separate getCandidatePipeline() with its own SQL
+  // and a fixed-key-object shape instead of this array-of-{stage,count}
+  // shape), and /talent/recruiter-dashboard (previously its own third copy).
+  async getPipelineSummary(company_id, job_opening_id = null) {
     const STAGE_ORDER = {
       applied: 1, screening: 2, '1st_level': 3, '2nd_level': 4,
       offer: 5, hired: 6, not_suitable: 7, maybe: 8, future_use: 9, rejected: 10,
@@ -671,7 +709,9 @@ const recruitmentRepository = {
       FROM candidates
       WHERE current_stage IS NOT NULL AND deleted_at IS NULL`;
     const params = [];
-    if (company_id) { query += ` AND company_id = $1`; params.push(company_id); }
+    let n = 1;
+    if (company_id)     { query += ` AND company_id = $${n++}`;     params.push(company_id); }
+    if (job_opening_id) { query += ` AND applied_job_id = $${n++}`; params.push(job_opening_id); }
     query += ` GROUP BY current_stage`;
     const result = await pool.query(query, params);
     return result.rows
@@ -693,30 +733,61 @@ const recruitmentRepository = {
     return result.rows;
   },
 
+  // Single source of truth for "time to hire" — also called by the top-level
+  // /analytics/time-to-hire (HR Analytics' TimeToHireCard), which used to
+  // reimplement this independently against candidates.stage, a column
+  // nothing in this codebase ever writes (candidates use current_stage) —
+  // confirmed live: that endpoint silently returned zero every time. Fixed
+  // 2026-08-04 by pointing it here instead of duplicating a second, broken
+  // copy of the same query. min/max/matched added for TimeToHireCard's
+  // fastest/longest/sample-size fields; avg_days kept as the pre-existing
+  // field name so HiringForecasts.jsx's lookup doesn't need to change.
   async getTimeToHire(company_id) {
     let query = `
-      SELECT AVG(EXTRACT(DAY FROM (ol.offer_sent_date - c.created_at))) AS avg_days
+      SELECT
+        ROUND(AVG(EXTRACT(DAY FROM (ol.offer_sent_date - c.created_at)))) AS avg_days,
+        ROUND(MIN(EXTRACT(DAY FROM (ol.offer_sent_date - c.created_at)))) AS min_days,
+        ROUND(MAX(EXTRACT(DAY FROM (ol.offer_sent_date - c.created_at)))) AS max_days,
+        COUNT(*) AS matched
       FROM offer_letters ol
       LEFT JOIN candidates c ON c.id::text = ol.candidate_id::text
       WHERE ol.offer_status = 'accepted' AND ol.deleted_at IS NULL`;
     const params = [];
     if (company_id) { query += ` AND ol.company_id = $1`; params.push(company_id); }
     const result = await pool.query(query, params);
-    return result.rows[0];
+    const row = result.rows[0];
+    return {
+      avg_days: parseInt(row.avg_days) || 0,
+      min_days: parseInt(row.min_days) || 0,
+      max_days: parseInt(row.max_days) || 0,
+      matched: parseInt(row.matched) || 0,
+    };
   },
 
+  // Single source of truth for offer acceptance — also called by the
+  // top-level /analytics/offer-acceptance (HR Analytics' OfferAcceptanceCard),
+  // which used to reimplement this independently against candidates.status,
+  // same dead-column bug as getTimeToHire above (real field is
+  // candidates.overall_status; offer status itself lives on offer_letters,
+  // not candidates, regardless). Fixed 2026-08-04. `offered`/`declined` added
+  // for the card's breakdown row; `total`/`accepted`/`rate` kept as the
+  // pre-existing field names for HiringForecasts.jsx.
   async getOfferAcceptanceRate(company_id) {
     let query = `
       SELECT
+        COUNT(CASE WHEN offer_status IN ('sent','accepted','declined') THEN 1 END) AS offered,
         COUNT(CASE WHEN offer_status = 'accepted' THEN 1 END) AS accepted,
-        COUNT(CASE WHEN offer_status IN ('sent','accepted','declined') THEN 1 END) AS total
+        COUNT(CASE WHEN offer_status = 'declined' THEN 1 END) AS declined
       FROM offer_letters WHERE deleted_at IS NULL`;
     const params = [];
     if (company_id) { query += ` AND company_id = $1`; params.push(company_id); }
     const result = await pool.query(query, params);
     const row = result.rows[0];
-    const rate = row.total > 0 ? (row.accepted / row.total * 100).toFixed(2) : 0;
-    return { accepted: parseInt(row.accepted), total: parseInt(row.total), rate: parseFloat(rate) };
+    const offered  = parseInt(row.offered)  || 0;
+    const accepted = parseInt(row.accepted) || 0;
+    const declined = parseInt(row.declined) || 0;
+    const rate = offered > 0 ? (accepted / offered * 100).toFixed(2) : 0;
+    return { offered, accepted, declined, total: offered, rate: parseFloat(rate) };
   },
 
   async getInterviewToHireRatio(company_id) {
@@ -741,18 +812,26 @@ const recruitmentRepository = {
   },
 
   // ==================== HIRE CANDIDATE (full transaction) ====================
-  async hireCandidate(candidateId, companyId, dbClient) {
+  // Single employee-creation path for /candidates/:id/hire (direct hire, no
+  // options) and /auto-creation/:candidateId/trigger (passes employmentType/
+  // offeredSalary/sourceCandidateId — that route previously reimplemented all
+  // of this separately). `options` fields are all optional so the direct-hire
+  // caller's behavior is unchanged.
+  async hireCandidate(candidateId, companyId, dbClient, options = {}) {
     const client = dbClient || pool;
+    const { employmentType = null, offeredSalary = null, sourceCandidateId = null } = options;
 
-    // 1. Load candidate + job title
+    // 1. Load candidate + job title — scoped to companyId so a candidate id
+    // belonging to another company can't be hired into this one (it wasn't
+    // scoped here before, despite companyId being passed in).
     const candResult = await client.query(
       `SELECT c.*, COALESCE(jo.job_title, jr.job_title) AS job_title,
               jo.id AS job_opening_id, jo.department
        FROM candidates c
        LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
        LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
-       WHERE c.id = $1`,
-      [candidateId]
+       WHERE c.id = $1 AND ($2::int IS NULL OR c.company_id = $2)`,
+      [candidateId, companyId]
     );
     const cand = candResult.rows[0];
     if (!cand) throw new Error('Candidate not found');
@@ -775,10 +854,11 @@ const recruitmentRepository = {
     const empResult = await client.query(
       `INSERT INTO employees
          (company_id, office_id, first_name, last_name, company_email, phone,
-          department, designation, status, joining_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Active', CURRENT_DATE) RETURNING *`,
+          department, designation, employment_type, status, joining_date,
+          source_candidate_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'Active', CURRENT_DATE, $10) RETURNING *`,
       [companyId, employeeId, firstName, lastName, cand.email, cand.phone,
-       cand.department, cand.job_title]
+       cand.department, cand.job_title, employmentType, sourceCandidateId]
     );
     const employee = empResult.rows[0];
 
@@ -788,15 +868,30 @@ const recruitmentRepository = {
     // come through; without this, payroll.service.js's LEFT JOIN LATERAL
     // returns NULL basic_salary/structure_id for every recruitment-sourced
     // hire until someone manually adds a salary assignment.
+    let payrollEnrolled = false;
     try {
       const { rows: defStruct } = await client.query(
         `SELECT id FROM salary_structures WHERE is_default = true ORDER BY id LIMIT 1`
       );
-      await client.query(
-        `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from)
-         VALUES ($1, $2, $3)`,
-        [employee.id, defStruct[0]?.id ?? null, employee.joining_date || new Date().toISOString().slice(0, 10)]
-      );
+      const effectiveFrom = employee.joining_date || new Date().toISOString().slice(0, 10);
+      // offeredSalary (from the accepted offer letter, when the caller has
+      // one — see auto-creation/:candidateId/trigger) seeds a real
+      // basic_salary instead of the column default.
+      const validSalary = Number.isFinite(offeredSalary) && offeredSalary > 0 ? offeredSalary : null;
+      if (validSalary != null) {
+        await client.query(
+          `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from, basic_salary)
+           VALUES ($1, $2, $3, $4)`,
+          [employee.id, defStruct[0]?.id ?? null, effectiveFrom, validSalary]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from)
+           VALUES ($1, $2, $3)`,
+          [employee.id, defStruct[0]?.id ?? null, effectiveFrom]
+        );
+      }
+      payrollEnrolled = true;
     } catch (e) {
       console.error('[hireCandidate] payroll auto-enrollment failed:', e.message);
     }
@@ -808,8 +903,10 @@ const recruitmentRepository = {
     // an employee record but no way to actually sign in. Reuses the same
     // helper the direct "Add Employee" flow uses (email fallback,
     // existing-account skip, role sync, primary scope).
+    let loginProvisioned = false;
     try {
       await createEmployeeLogin(client, employee);
+      loginProvisioned = true;
     } catch (e) {
       console.error('[hireCandidate] login provisioning failed:', e.message);
     }
@@ -837,7 +934,7 @@ const recruitmentRepository = {
       [cand.job_opening_id]
     );
 
-    return { employee, employeeId };
+    return { employee, employeeId, payrollEnrolled, loginProvisioned };
   },
 
   // ==================== REPORTS ====================

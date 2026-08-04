@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import pool from '../shared/db.js';
 import { companyOf } from '../../shared/scope.js';
+import recruitmentRepository from '../recruitment/repositories/recruitment.repository.js';
 import {
   ensureFolder,
   uploadFile as driveUpload,
@@ -428,24 +429,50 @@ router.get('/questions/stats', async (req, res) => {
   }
 });
 
+// Shared by /questions and the legacy /interview-questions alias below — the
+// legacy route used to run its own SQL with no company_id filter at all (any
+// authenticated user could read every company's question bank) and wrote to
+// the old `tags` text column instead of `tags_jsonb`, orphaning rows that the
+// scoped /questions endpoint could never see. One query, two response shapes.
+async function listQuestions(companyId, { category = '', difficulty = '', job_role = '', search = '' } = {}) {
+  const r = await pool.query(`
+    SELECT id, question, category, difficulty, job_role,
+           expected_answer, tags_jsonb AS tags, is_active, created_at
+    FROM interview_questions
+    WHERE ($1::int IS NULL OR company_id = $1)
+      AND COALESCE(is_active, true) = true
+      AND ($2 = '' OR category = $2)
+      AND ($3 = '' OR difficulty = $3)
+      AND ($4 = '' OR job_role ILIKE '%' || $4 || '%')
+      AND ($5 = '' OR question  ILIKE '%' || $5 || '%')
+    ORDER BY category, difficulty, created_at DESC
+  `, [companyId, category, difficulty, job_role, search]);
+  return r.rows;
+}
+
+async function insertQuestion(companyId, { question, category, difficulty, job_role, expected_answer, tags }) {
+  const r = await pool.query(`
+    INSERT INTO interview_questions
+      (company_id, question, category, difficulty, job_role, expected_answer, tags_jsonb, is_active)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,true)
+    RETURNING id, question, category, difficulty, job_role,
+              expected_answer, tags_jsonb AS tags, is_active, created_at
+  `, [
+    companyId, question, category || 'General',
+    difficulty || 'medium',
+    job_role || null,
+    expected_answer || null,
+    tags ? JSON.stringify(tags) : '[]',
+  ]);
+  return r.rows[0];
+}
+
 // GET /api/talent/questions
 router.get('/questions', async (req, res) => {
   try {
-    const { category = '', difficulty = '', job_role = '', search = '' } = req.query;
     const companyId = getCid(req);
-    const r = await pool.query(`
-      SELECT id, question, category, difficulty, job_role,
-             expected_answer, tags_jsonb AS tags, is_active, created_at
-      FROM interview_questions
-      WHERE ($1::int IS NULL OR company_id = $1)
-        AND COALESCE(is_active, true) = true
-        AND ($2 = '' OR category = $2)
-        AND ($3 = '' OR difficulty = $3)
-        AND ($4 = '' OR job_role ILIKE '%' || $4 || '%')
-        AND ($5 = '' OR question  ILIKE '%' || $5 || '%')
-      ORDER BY category, difficulty, created_at DESC
-    `, [companyId, category, difficulty, job_role, search]);
-    res.json({ data: r.rows });
+    const rows = await listQuestions(companyId, req.query);
+    res.json({ data: rows });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -454,24 +481,12 @@ router.get('/questions', async (req, res) => {
 // POST /api/talent/questions
 router.post('/questions', async (req, res) => {
   try {
-    const { question, category, difficulty, job_role, expected_answer, tags } = req.body;
+    const { question, category } = req.body;
     if (!question) return res.status(400).json({ error: 'question is required' });
     if (!category) return res.status(400).json({ error: 'category is required' });
     const companyId = getCid(req);
-    const r = await pool.query(`
-      INSERT INTO interview_questions
-        (company_id, question, category, difficulty, job_role, expected_answer, tags_jsonb, is_active)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,true)
-      RETURNING id, question, category, difficulty, job_role,
-                expected_answer, tags_jsonb AS tags, is_active, created_at
-    `, [
-      companyId, question, category,
-      difficulty || 'medium',
-      job_role || null,
-      expected_answer || null,
-      tags ? JSON.stringify(tags) : '[]',
-    ]);
-    res.status(201).json({ data: r.rows[0] });
+    const row = await insertQuestion(companyId, req.body);
+    res.status(201).json({ data: row });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -755,16 +770,12 @@ router.get('/recruiter-dashboard', async (req, res) => {
     ]);
 
     // ── Candidate pipeline by stage ────────────────────────────────────────
+    // Shared with /recruitment/pipeline-summary and /recruitment/pipeline/:id
+    // via recruitmentRepository.getPipelineSummary() — was its own third copy
+    // of this SQL.
     let pipeline = [];
     try {
-      const pr = await pool.query(
-        `SELECT current_stage AS stage, COUNT(*)::int AS count
-         FROM candidates
-         WHERE deleted_at IS NULL${cFilter} AND current_stage IS NOT NULL
-         GROUP BY current_stage ORDER BY count DESC`,
-        params
-      );
-      pipeline = pr.rows;
+      pipeline = await recruitmentRepository.getPipelineSummary(companyId);
     } catch (_) { /* non-fatal */ }
 
     // ── Today's interviews ─────────────────────────────────────────────────
@@ -1003,25 +1014,22 @@ router.post('/resumes', upload.single('resume'), async (req, res) => {
     let skills = [];
     try { skills = JSON.parse(req.body.skills || '[]'); } catch { skills = []; }
 
-    const ins = await pool.query(
-      `INSERT INTO candidates
-         (full_name, email, phone, current_company, current_designation,
-          experience_years, notice_period_days, expected_ctc, skills, notes,
-          source, current_stage, overall_status, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,'manual','applied','active',$11)
-       RETURNING *`,
-      [
-        name, email, phone || null,
-        current_company || null, current_designation || null,
-        experience_years  ? parseFloat(experience_years)            : null,
-        (() => { const n = parseInt(notice_period_days, 10); return isNaN(n) ? null : n; })(),
-        (() => { const n = parseFloat(expected_ctc); return isNaN(n) ? null : n; })(),
-        JSON.stringify(skills),
-        notes || null,
-        companyId,
-      ]
-    );
-    const candidate = ins.rows[0];
+    // Routed through the shared recruitmentRepository.createCandidate() —
+    // previously its own separate INSERT (source: 'manual', no
+    // candidate_stage_history row). 'resume_db' distinguishes speculative
+    // Resume Database uploads from job-application-sourced candidates.
+    const candidate = await recruitmentRepository.createCandidate({
+      full_name: name, email, phone: phone || null,
+      current_company: current_company || null,
+      current_designation: current_designation || null,
+      experience_years: experience_years ? parseFloat(experience_years) : null,
+      notice_period_days: (() => { const n = parseInt(notice_period_days, 10); return isNaN(n) ? null : n; })(),
+      expected_ctc: (() => { const n = parseFloat(expected_ctc); return isNaN(n) ? null : n; })(),
+      skills,
+      notes: notes || null,
+      source: 'resume_db',
+      company_id: companyId,
+    });
 
     if (req.file && isDriveConfigured()) {
       try {
@@ -1097,14 +1105,14 @@ router.put('/resumes/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Legacy interview-questions endpoints (kept for backward compat)
+// Legacy interview-questions endpoints — forward to the same query/insert
+// logic as /questions above (see listQuestions/insertQuestion), just kept
+// unwrapped (no {data:...} envelope) for whatever legacy caller still hits
+// this path. Flagged for removal in Phase 3 once nothing depends on it.
 router.get('/interview-questions', async (req, res) => {
   try {
-    const r = await pool.query(
-      `SELECT * FROM interview_questions
-       WHERE COALESCE(is_active, true) = true ORDER BY category, difficulty`
-    );
-    res.json(r.rows);
+    const rows = await listQuestions(getCid(req), req.query);
+    res.json(rows);
   } catch (e) {
     if (e.message.includes('does not exist')) return res.json([]);
     res.status(500).json({ error: e.message });
@@ -1114,12 +1122,11 @@ router.get('/interview-questions', async (req, res) => {
 router.post('/interview-questions', async (req, res) => {
   try {
     const { question, category, difficulty, answer, tags } = req.body;
-    const r = await pool.query(
-      `INSERT INTO interview_questions (question, category, difficulty, expected_answer, tags)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [question, category || 'General', difficulty || 'Medium', answer || '', tags || '']
-    );
-    res.json(r.rows[0]);
+    if (!question) return res.status(400).json({ error: 'question is required' });
+    const row = await insertQuestion(getCid(req), {
+      question, category, difficulty, expected_answer: answer, tags,
+    });
+    res.json(row);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

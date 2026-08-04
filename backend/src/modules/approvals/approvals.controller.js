@@ -158,6 +158,47 @@ async function pendingPurchaseRequests(companyId) {
   );
 }
 
+// Job requisitions have a real DB-enforced lifecycle (CHECK constraint:
+// draft -> pending_approval -> approved -> open -> closed) but nothing
+// previously surfaced a 'pending_approval' row anywhere an approver could see
+// or act on it — the only write path was a raw PUT with no role gate at all
+// (see MODULE_FEATURE_CONNECTION_MANUAL.md's Recruitment section, fixed
+// 2026-08-04 alongside this). No `approved_by` column exists on the table, so
+// (like pr/ecn) this stays in the shared unassigned pool — any current
+// APPROVER_ROLES holder can claim it, same as Purchase Requests and ECNs
+// today for roles without a narrower APPROVER_CATEGORY_SCOPE entry.
+async function pendingRequisitions(companyId) {
+  const params  = companyId != null ? [companyId] : [];
+  const cFilter = companyId != null ? `AND jr.company_id = $1` : '';
+  return safeQuery(
+    `SELECT
+       'requisition:' || jr.id::text     AS id,
+       'requisition'                     AS module_name,
+       jr.id::text                       AS source_id,
+       'Requisition'                     AS request_type,
+       COALESCE(TRIM(e.first_name || ' ' || COALESCE(e.last_name,'')), jr.requested_by::text) AS requested_by,
+       jr.requested_by                   AS requester_id,
+       e.company_email                   AS requester_email,
+       jr.department                     AS department,
+       jr.created_at                     AS request_date,
+       NULL::numeric                     AS amount,
+       CASE WHEN jr.number_of_positions >= 3 THEN 'High'
+            WHEN jr.number_of_positions = 2 THEN 'Medium'
+            ELSE 'Low' END                AS priority,
+       'Pending'                         AS status,
+       NULL::integer                     AS approver_id,
+       CONCAT(jr.job_title, ' (', jr.number_of_positions, ' position',
+              CASE WHEN jr.number_of_positions = 1 THEN '' ELSE 's' END, ')') AS request_title,
+       jr.job_description                AS description,
+       jr.company_id
+     FROM job_requisitions jr
+     LEFT JOIN employees e ON e.id = jr.requested_by
+     WHERE jr.status = 'pending_approval' AND jr.deleted_at IS NULL ${cFilter}
+     ORDER BY jr.created_at ASC`,
+    params
+  );
+}
+
 async function pendingExpenses(companyId) {
   const params  = companyId != null ? [companyId] : [];
   const cFilter = companyId != null ? `AND e.company_id = $1` : '';
@@ -321,7 +362,7 @@ export const getPendingApprovals = async (req, res) => {
     const offset    = parseInt(req.query.offset || '0', 10);
 
     // Fetch from all sources in parallel; each is resilient to missing tables
-    const [central, leaves, regs, ots, prs, exps, ecns, pays] = await Promise.all([
+    const [central, leaves, regs, ots, prs, exps, ecns, pays, reqs] = await Promise.all([
       pendingCentral(userId, companyId),
       pendingLeaves(companyId),
       pendingRegularizations(companyId),
@@ -330,9 +371,10 @@ export const getPendingApprovals = async (req, res) => {
       pendingExpenses(companyId),
       pendingECNs(companyId),
       pendingPaymentBatches(companyId),
+      pendingRequisitions(companyId),
     ]);
 
-    let all = [...central, ...leaves, ...regs, ...ots, ...prs, ...exps, ...ecns, ...pays];
+    let all = [...central, ...leaves, ...regs, ...ots, ...prs, ...exps, ...ecns, ...pays, ...reqs];
 
     // Non-admins only see items assigned to them or unassigned within their company
     if (!isAdmin) {
@@ -686,6 +728,16 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
         [sourceId, userId]
       );
       break;
+    case 'requisition':
+      // job_requisitions has no approved_by/approved_at column (unlike pr/ecn/
+      // pay above) — status is the only record of the decision. The caller
+      // (approveRequest) already logAudit()s this action, which is where the
+      // "who/when" lives instead.
+      await safeQuery(
+        `UPDATE job_requisitions SET status = 'approved', updated_at = NOW() WHERE id = $1::integer`,
+        [sourceId]
+      );
+      break;
     default:
       break;
   }
@@ -749,6 +801,17 @@ async function rejectSourceItem(modulePrefix, sourceId, userId, comment, req) {
       await safeQuery(
         `UPDATE payment_batches SET status = 'Rejected', rejection_reason = $2 WHERE id = $1::integer`,
         [sourceId, comment]
+      );
+      break;
+    case 'requisition':
+      // No 'rejected' state exists in job_requisitions' status CHECK
+      // constraint (draft/pending_approval/approved/open/closed) and no
+      // rejection-reason column either — bounces back to 'draft' for the
+      // requester to revise and resubmit. The rejection comment is preserved
+      // in the audit log (logAudit in the caller), not on the row itself.
+      await safeQuery(
+        `UPDATE job_requisitions SET status = 'draft', updated_at = NOW() WHERE id = $1::integer`,
+        [sourceId]
       );
       break;
     default:
