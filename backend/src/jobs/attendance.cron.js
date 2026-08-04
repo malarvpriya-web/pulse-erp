@@ -6,6 +6,7 @@
  */
 import cron from 'node-cron';
 import pool from '../modules/shared/db.js';
+import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 
 // ── Helper: write to attendance_audit_logs ──────────────────────────────────
 async function auditLog(companyId, employeeId, action, data) {
@@ -155,20 +156,22 @@ cron.schedule('0 9 1 * *', async () => {
   try {
     const prevMonth = new Date();
     prevMonth.setDate(0);
-    const m = prevMonth.getMonth() + 1;
-    const y = prevMonth.getFullYear();
+    const monthLabel = prevMonth.toLocaleString('en-US', { month: 'long', year: 'numeric' });
     // Notify HR users to freeze attendance
-    await pool.query(`
-      INSERT INTO notifications (user_id, title, message, module_name, notification_type)
-      SELECT u.id,
-             'Attendance Freeze Reminder',
-             'Please freeze attendance for ' || TO_CHAR(make_date($1,$2,1), 'Month YYYY') || ' before processing payroll.',
-             'attendance',
-             'system_reminder'
-        FROM users u
-       WHERE LOWER(COALESCE(u.role,'')) IN ('hr','hr_admin','hr_manager','admin')
-         AND u.is_active = TRUE
-    `, [y, m]).catch(() => {});
+    const { rows: hrUsers } = await pool.query(`
+      SELECT id FROM users
+       WHERE LOWER(COALESCE(role,'')) IN ('hr','hr_admin','hr_manager','admin')
+         AND is_active = TRUE
+    `).catch(() => ({ rows: [] }));
+    for (const u of hrUsers) {
+      await notificationsRepository.create({
+        user_id: u.id,
+        title: 'Attendance Freeze Reminder',
+        message: `Please freeze attendance for ${monthLabel} before processing payroll.`,
+        module_name: 'attendance',
+        notification_type: 'system_reminder',
+      }).catch(() => {});
+    }
   } catch { /* non-blocking */ }
 }, { timezone: 'Asia/Kolkata' });
 

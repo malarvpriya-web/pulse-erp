@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import pool from '../config/db.js';
+import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 
 async function getReceivers() {
   const { rows } = await pool.query(
@@ -27,11 +28,14 @@ async function insertReminder(userId, { type, referenceId, title, message }) {
   );
   if (dup.rows.length) return;
 
-  await pool.query(
-    `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
-     VALUES ($1, $2, $3, 'finance', $4, $5)`,
-    [userId, title, message, referenceId, type]
-  );
+  await notificationsRepository.create({
+    user_id: userId,
+    title,
+    message,
+    module_name: 'finance',
+    reference_id: referenceId,
+    notification_type: type,
+  });
 }
 
 async function runArOverdueCheck(receivers) {

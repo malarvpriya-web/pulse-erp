@@ -10,6 +10,7 @@
 import pool from '../config/db.js';
 import { onEvent } from './eventBus.js';
 import { activateWarranty } from '../modules/servicedesk/routes/commissioning.routes.js';
+import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 
 const AMC_SALES_ROLES = "('admin','super_admin','superadmin','manager','sales','sales_manager')";
 
@@ -39,15 +40,14 @@ export function registerEventReactions() {
         [r.id, warranty.id]
       );
       if (dup.rows.length) continue;
-      await pool.query(
-        `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
-         VALUES ($1,$2,$3,'warranty',$4,'warranty_expiring')`,
-        [
-          r.id, 'Warranty Expiring Soon',
-          `${warranty.product_name || 'Product'} (${warranty.warranty_number}) for ${warranty.customer_name || 'customer'} expires on ${warranty.warranty_end} — reach out about renewal/AMC.`,
-          warranty.id,
-        ]
-      );
+      await notificationsRepository.create({
+        user_id: r.id,
+        title: 'Warranty Expiring Soon',
+        message: `${warranty.product_name || 'Product'} (${warranty.warranty_number}) for ${warranty.customer_name || 'customer'} expires on ${warranty.warranty_end} — reach out about renewal/AMC.`,
+        module_name: 'warranty',
+        reference_id: warranty.id,
+        notification_type: 'warranty_expiring',
+      });
     }
   });
 

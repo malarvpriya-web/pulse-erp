@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import pool from '../config/db.js';
+import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 
 const REMINDER_DAYS = parseInt(process.env.AMC_RENEWAL_REMINDER_DAYS || '30', 10);
 
@@ -29,17 +30,14 @@ async function insertReminder(userId, contract, notificationType) {
   );
   if (dup.rows.length) return;
 
-  await pool.query(
-    `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
-     VALUES ($1, $2, $3, 'service', $4, $5)`,
-    [
-      userId,
-      `AMC Renewal Due in ${contract.days_left} Day${contract.days_left === 1 ? '' : 's'}`,
-      `${contract.contract_type || 'AMC'} contract ${contract.contract_number ? `${contract.contract_number} ` : ''}for ${contract.customer_name} expires on ${contract.end_date}. Renew soon.`,
-      contract.id,
-      notificationType,
-    ]
-  );
+  await notificationsRepository.create({
+    user_id: userId,
+    title: `AMC Renewal Due in ${contract.days_left} Day${contract.days_left === 1 ? '' : 's'}`,
+    message: `${contract.contract_type || 'AMC'} contract ${contract.contract_number ? `${contract.contract_number} ` : ''}for ${contract.customer_name} expires on ${contract.end_date}. Renew soon.`,
+    module_name: 'service',
+    reference_id: contract.id,
+    notification_type: notificationType,
+  });
 }
 
 // `service_contracts` (manual-entry, ServiceContracts.jsx) and `amc_contracts`

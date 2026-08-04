@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import pool from '../config/db.js';
+import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 
 // Renewal Engine (Priority 5) — subscriptions had zero cron jobs of any kind
 // (see MODULE_FEATURE_CONNECTION_MANUAL.md §18.1 #8); this is the Reminder
@@ -39,11 +40,13 @@ async function insertReminder(userId, sub) {
   );
   if (dup.rows.length) return;
 
-  await pool.query(
-    `INSERT INTO notifications (user_id, title, message, module_name, notification_type)
-     VALUES ($1, $2, $3, 'sales', 'subscription_renewal')`,
-    [userId, overdue ? 'Subscription Renewal Overdue' : 'Subscription Renewal Due Soon', message]
-  );
+  await notificationsRepository.create({
+    user_id: userId,
+    title: overdue ? 'Subscription Renewal Overdue' : 'Subscription Renewal Due Soon',
+    message,
+    module_name: 'sales',
+    notification_type: 'subscription_renewal',
+  });
 }
 async function runSubscriptionRenewalCheck() {
   const receivers = await getReceivers();

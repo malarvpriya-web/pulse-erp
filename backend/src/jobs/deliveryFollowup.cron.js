@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import pool from '../config/db.js';
+import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 
 const REMINDER_DAYS = parseInt(process.env.PO_DELIVERY_REMINDER_DAYS || '7', 10);
 
@@ -29,16 +30,14 @@ async function insertReminder(userId, po) {
   );
   if (dup.rows.length) return;
 
-  await pool.query(
-    `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
-     VALUES ($1, $2, $3, 'procurement', $4, 'delivery_followup')`,
-    [
-      userId,
-      `PO Follow-up Due in ${REMINDER_DAYS} Days`,
-      `PO ${po.po_number} for ${po.supplier_name} is expected on ${po.expected_delivery_date}. Follow up this week.`,
-      po.id,
-    ]
-  );
+  await notificationsRepository.create({
+    user_id: userId,
+    title: `PO Follow-up Due in ${REMINDER_DAYS} Days`,
+    message: `PO ${po.po_number} for ${po.supplier_name} is expected on ${po.expected_delivery_date}. Follow up this week.`,
+    module_name: 'procurement',
+    reference_id: po.id,
+    notification_type: 'delivery_followup',
+  });
 }
 
 async function runDeliveryFollowupCheck() {
