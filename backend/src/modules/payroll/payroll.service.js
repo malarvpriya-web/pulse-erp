@@ -5,6 +5,17 @@ import {
   generateForm16Summary,
   getMonthName,
 } from './payrollEngine.js';
+import journalRepo from '../finance/repositories/journal.repository.js';
+
+async function findDefaultAccount(client, companyId, codes) {
+  const { rows } = await client.query(
+    `SELECT id FROM chart_of_accounts
+     WHERE code = ANY($1) AND (company_id = $2 OR company_id IS NULL) AND is_active = true
+     ORDER BY company_id DESC NULLS LAST LIMIT 1`,
+    [codes, companyId ?? null]
+  );
+  return rows[0]?.id ?? null;
+}
 
 const ACTIVE_STATUSES = `LOWER(status) IN ('active', 'probation')`;
 
@@ -160,12 +171,70 @@ export async function markPaid(employeeId, { month, year, payment_mode = 'bank_t
   const m = parseInt(month);
   const y = parseInt(year);
 
-  // Mark salary as paid
-  await pool.query(`
-    UPDATE payroll_runs
+  // Mark salary as paid — only rows not already 'paid' count as a fresh
+  // disbursement, so a repeat call to this endpoint doesn't double-clear
+  // Salary Payable below. payroll_runs has no company_id of its own — resolve
+  // it via employees, the same pattern used everywhere else in this module.
+  const { rows: newlyPaid } = await pool.query(`
+    UPDATE payroll_runs pr
     SET status = 'paid', generated_at = NOW(), payment_mode = $4, payment_reference = $5
-    WHERE employee_id = $1 AND month = $2 AND year = $3
+    FROM employees e
+    WHERE pr.employee_id = $1 AND pr.month = $2 AND pr.year = $3 AND pr.status != 'paid'
+      AND e.id = pr.employee_id
+    RETURNING pr.net_pay, e.company_id
   `, [employeeId, m, y, payment_mode, reference || null]);
+
+  // Clear Salary Payable (credited on payroll approval, postPayrollJournal.service.js)
+  // against Bank now that the salary has actually gone out — previously nothing
+  // ever debited 2040, so it accumulated permanently on the Balance Sheet even
+  // after real disbursement. Best-effort: a missing GL account must not block
+  // the mark-paid action itself, same SAVEPOINT resilience bill.service.js uses.
+  if (newlyPaid.length > 0) {
+    const netPay = parseFloat(newlyPaid[0].net_pay || 0);
+    const companyId = newlyPaid[0].company_id ?? null;
+    if (netPay > 0) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SAVEPOINT payroll_clear_sp');
+        try {
+          const salaryPayableId = await findDefaultAccount(client, companyId, ['2040']);
+          const bankAccountId = await findDefaultAccount(client, companyId, ['1001']);
+          if (salaryPayableId && bankAccountId) {
+            const entryNumber = await journalRepo.getNextEntryNumber(client);
+            const journalEntry = await journalRepo.createEntry(client, {
+              entry_number: entryNumber,
+              entry_date: new Date().toISOString().split('T')[0],
+              entry_type: 'Payment',
+              reference_type: 'salary_disbursement',
+              reference_id: `${employeeId}-${y}-${String(m).padStart(2, '0')}`,
+              description: `Salary disbursed — employee ${employeeId}, ${y}-${String(m).padStart(2, '0')}`,
+              created_by: null,
+            });
+            await journalRepo.createLine(client, {
+              journal_entry_id: journalEntry.id, account_id: salaryPayableId,
+              description: 'Salary payable cleared', debit: netPay, credit: 0, company_id: companyId,
+            });
+            await journalRepo.createLine(client, {
+              journal_entry_id: journalEntry.id, account_id: bankAccountId,
+              description: 'Salary disbursed via ' + payment_mode, debit: 0, credit: netPay, company_id: companyId,
+            });
+            await journalRepo.postEntry(client, journalEntry.id);
+          }
+          await client.query('RELEASE SAVEPOINT payroll_clear_sp');
+        } catch (jeErr) {
+          await client.query('ROLLBACK TO SAVEPOINT payroll_clear_sp');
+          console.warn('[payroll] Salary Payable clearing entry skipped for employee', employeeId, '—', jeErr.message);
+        }
+        await client.query('COMMIT');
+      } catch (txErr) {
+        await client.query('ROLLBACK');
+        console.error('[payroll] Salary Payable clearing transaction failed:', txErr.message);
+      } finally {
+        client.release();
+      }
+    }
+  }
 
   // Sync Section 192 TDS to tds_transactions ─────────────────────────────────
   // Fetch the payroll record to get TDS amount

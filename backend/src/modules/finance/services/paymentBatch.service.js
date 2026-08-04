@@ -24,7 +24,7 @@ class PaymentBatchService {
         await paymentBatchRepo.addItem(client, {
           batch_id: batch.id,
           company_id: data.company_id || null,
-          party_id: item.supplier_id || item.party_id || null,
+          supplier_id: item.supplier_id || item.party_id || null,
           supplier_name: item.supplier_name || item.supplier || null,
           bill_id: item.bill_id || null,
           bill_ref: item.bill_ref || null,
@@ -126,11 +126,26 @@ class PaymentBatchService {
 
       for (const item of items) {
         const paymentNumber = await paymentRepository.getNextNumber();
+        // payment_batch_items.supplier_id is a vendors.id integer; payments.party_id
+        // is a parties.id uuid — same unbridged-masters gap the 3-way-match approval
+        // route already resolves (procurement.routes.js), same fallback here: prefer
+        // the real vendors.party_id bridge, else a best-effort case-insensitive name
+        // match, so this payment is still linkable even when neither resolves.
+        let resolvedPartyId = null;
+        if (item.supplier_id) {
+          const { rows: vRows } = await client.query(
+            `SELECT v.party_id,
+                    (SELECT id FROM parties WHERE LOWER(name) = LOWER(v.vendor_name) AND deleted_at IS NULL LIMIT 1) AS matched_id
+             FROM vendors v WHERE v.id = $1`,
+            [item.supplier_id]
+          );
+          resolvedPartyId = vRows[0]?.party_id ?? vRows[0]?.matched_id ?? null;
+        }
         const payment = await paymentRepository.create(client, {
           payment_number: paymentNumber,
           payment_date: batch.batch_date || new Date().toISOString().split('T')[0],
           payment_type: 'Supplier',
-          party_id: item.party_id,
+          party_id: resolvedPartyId,
           amount: item.amount,
           payment_method: item.payment_method || item.method,
           reference_number: item.reference_number,

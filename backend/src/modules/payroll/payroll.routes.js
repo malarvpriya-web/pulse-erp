@@ -119,7 +119,8 @@ router.post('/approve', verifyToken, allowRoles(...FINANCE_ROLES), async (req, r
           AND ($4::integer IS NULL OR EXISTS (
                 SELECT 1 FROM employees e WHERE e.id = pr.employee_id AND e.company_id = $4
               ))
-        RETURNING pr.id, pr.employee_id, pr.gross, pr.net_pay, pr.employer_pf, pr.employer_esi`,
+        RETURNING pr.id, pr.employee_id, pr.gross, pr.net_pay, pr.employer_pf, pr.employer_esi,
+                  pr.employee_pf, pr.employee_esi, pr.tds, pr.professional_tax, pr.lwf_employee, pr.lwf_employer`,
       [req.user?.userId ?? null, parseInt(month), parseInt(year), cid]
     );
     const rowCount = approvedRows.length;
@@ -148,7 +149,13 @@ router.post('/approve', verifyToken, allowRoles(...FINANCE_ROLES), async (req, r
         net: acc.net + parseFloat(r.net_pay || 0),
         pf: acc.pf + parseFloat(r.employer_pf || 0),
         esi: acc.esi + parseFloat(r.employer_esi || 0),
-      }), { gross: 0, net: 0, pf: 0, esi: 0 });
+        eePf: acc.eePf + parseFloat(r.employee_pf || 0),
+        eeEsi: acc.eeEsi + parseFloat(r.employee_esi || 0),
+        tds: acc.tds + parseFloat(r.tds || 0),
+        pt: acc.pt + parseFloat(r.professional_tax || 0),
+        lwfEe: acc.lwfEe + parseFloat(r.lwf_employee || 0),
+        lwfEr: acc.lwfEr + parseFloat(r.lwf_employer || 0),
+      }), { gross: 0, net: 0, pf: 0, esi: 0, eePf: 0, eeEsi: 0, tds: 0, pt: 0, lwfEe: 0, lwfEr: 0 });
       gl = await postPayrollJournal({
         payroll_run_id: `${year}-${String(month).padStart(2, '0')}`,
         payroll_month: `${year}-${String(month).padStart(2, '0')}`,
@@ -156,6 +163,12 @@ router.post('/approve', verifyToken, allowRoles(...FINANCE_ROLES), async (req, r
         net_salary: totals.net,
         pf_employer: totals.pf,
         esi_employer: totals.esi,
+        pf_employee: totals.eePf,
+        esi_employee: totals.eeEsi,
+        tds: totals.tds,
+        professional_tax: totals.pt,
+        lwf_employee: totals.lwfEe,
+        lwf_employer: totals.lwfEr,
         companyId: cid,
         userId: req.user?.userId ?? null,
       });

@@ -31,19 +31,19 @@ class PaymentBatchRepository {
 
   async addItem(client, data) {
     const {
-      batch_id, company_id, party_id, supplier_name, bill_id, bill_ref,
+      batch_id, company_id, supplier_id, supplier_name, bill_id, bill_ref,
       amount, payment_method, reference_number, notes,
     } = data;
 
     const result = await client.query(
       `INSERT INTO payment_batch_items
-         (batch_id, company_id, party_id, supplier_name, bill_id, bill_ref,
+         (batch_id, company_id, supplier_id, supplier_name, bill_id, bill_ref,
           amount, payment_method, reference_number, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [
         batch_id,
         company_id || null,
-        party_id || null,
+        supplier_id || null,
         supplier_name || null,
         bill_id || null,
         bill_ref || null,
@@ -123,11 +123,11 @@ class PaymentBatchRepository {
   async getItems(batchId) {
     const result = await pool.query(
       `SELECT pbi.*,
-              COALESCE(pbi.supplier_name, p.name) AS supplier,
+              COALESCE(pbi.supplier_name, v.vendor_name) AS supplier,
               COALESCE(pbi.bill_ref, b.bill_number) AS bill_ref,
               pbi.payment_method AS method
        FROM payment_batch_items pbi
-       LEFT JOIN parties p ON pbi.party_id = p.id
+       LEFT JOIN vendors v ON pbi.supplier_id = v.id
        LEFT JOIN bills   b ON pbi.bill_id   = b.id
        WHERE pbi.batch_id = $1
        ORDER BY pbi.created_at`,
@@ -139,13 +139,13 @@ class PaymentBatchRepository {
   async getItemsWithBankDetails(batchId) {
     const result = await pool.query(
       `SELECT pbi.*,
-              COALESCE(pbi.supplier_name, p.name)     AS party_name,
-              COALESCE(pbi.bill_ref, b.bill_number)   AS bill_number,
-              p.bank_account                          AS account_number,
-              p.ifsc                                  AS ifsc_code,
-              p.bank_name
+              COALESCE(pbi.supplier_name, v.vendor_name) AS party_name,
+              COALESCE(pbi.bill_ref, b.bill_number)      AS bill_number,
+              v.account_number                           AS account_number,
+              v.ifsc                                     AS ifsc_code,
+              v.bank_name
        FROM payment_batch_items pbi
-       LEFT JOIN parties p ON pbi.party_id = p.id
+       LEFT JOIN vendors v ON pbi.supplier_id = v.id
        LEFT JOIN bills   b ON pbi.bill_id   = b.id
        WHERE pbi.batch_id = $1
        ORDER BY pbi.created_at`,

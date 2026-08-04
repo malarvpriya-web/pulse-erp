@@ -1314,12 +1314,15 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
 });
 
 // ─── POST /payroll-journal ────────────────────────────────────────────────────
-// Creates a journal entry from a completed payroll run.
-// DR: 5010 (Salaries), 5011 (PF Employer), 5012 (ESI Employer)
-// CR: 2040 (Salary Payable)
+// Creates a journal entry from a completed payroll run. See payrollJournal.service.js
+// for the full DR/CR breakdown — every employee-side deduction (PF/ESI/LWF/TDS/
+// professional tax) now gets its own payable credit line so the entry balances.
 router.post('/payroll-journal', requirePermission('finance', 'approve'), async (req, res) => {
   try {
-    const { payroll_run_id, payroll_month, net_salary, pf_employer, esi_employer, gross_salary } = req.body;
+    const {
+      payroll_run_id, payroll_month, net_salary, pf_employer, esi_employer, gross_salary,
+      pf_employee, esi_employee, tds, professional_tax, lwf_employee, lwf_employer,
+    } = req.body;
     if (!payroll_run_id || !payroll_month) {
       return res.status(400).json({ error: 'payroll_run_id and payroll_month are required' });
     }
@@ -1328,6 +1331,7 @@ router.post('/payroll-journal', requirePermission('finance', 'approve'), async (
 
     const result = await postPayrollJournal({
       payroll_run_id, payroll_month, net_salary, pf_employer, esi_employer, gross_salary,
+      pf_employee, esi_employee, tds, professional_tax, lwf_employee, lwf_employer,
       companyId, userId,
     });
 
