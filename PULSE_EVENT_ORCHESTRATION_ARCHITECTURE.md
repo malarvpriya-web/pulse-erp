@@ -98,6 +98,12 @@ avoids repeating them at every event.
    notification) — two unrelated modules, the identical mistake, both invisible without reading
    the code.
 
+   **Update 2026-08-03**: this pathway no longer exists. `recruitment.routes.js`'s `notify()` was
+   repointed at pathway #2 (`notificationsRepository.create()`, same call signature, no call sites
+   touched), and `services/notificationService.js` — confirmed to still have zero real importers —
+   was deleted. Recruitment notifications now also mirror to mobile push, which this pathway never
+   did. 4 pathways remain.
+
 **Net effect:** none of the cron-driven or workflow-driven notifications observed this session
 reach email/SMS — only the one hand-built `probation.cron.js` path does, via push. If a pilot
 user reports "I never got an email about X," this table is why — the answer is almost always

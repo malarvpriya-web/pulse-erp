@@ -102,7 +102,7 @@ backend/
 │   ├── routes/            # DEPRECATED parallel routing (see §9)
 │   ├── services/          # WorkflowService, PermissionService, AuditService,
 │   │                      #   RuleEngineService, ValidationEngineService,
-│   │                      #   WorkflowNotificationService, notificationService
+│   │                      #   WorkflowNotificationService
 │   ├── analytics/         # analytics.routes.js (top-level analytics)
 │   ├── jobs/              # probation.cron.js, healthMonitor.cron.js,
 │   │                      #   deliveryFollowup.cron.js

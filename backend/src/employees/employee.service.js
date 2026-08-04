@@ -21,7 +21,7 @@ function toIntOrNull(val) {
  * is present or an account already exists for that email. Returns the login
  * descriptor (or null when skipped).
  */
-async function createEmployeeLogin(client, emp) {
+export async function createEmployeeLogin(client, emp) {
   const email = (emp.personal_email || emp.company_email || "").trim().toLowerCase();
   if (!email) return null;
 

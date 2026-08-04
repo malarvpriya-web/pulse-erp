@@ -8,14 +8,22 @@ import {
   uploadResume,
   moveResumeOnStageChange,
 } from '../../../services/recruitmentDriveService.js';
-import { createNotification } from '../../../services/notificationService.js';
+import notificationsRepository from '../../notifications/repositories/notifications.repository.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { triggerEmail } from '../../../services/emailTrigger.js';
 import { companyOf } from '../../../shared/scope.js';
+import { createEmployeeLogin } from '../../../employees/employee.service.js';
 
 const notify = (userId, module, recordId, message) => {
   if (!userId) return;
-  createNotification(pool, userId, module, recordId, message).catch(() => {});
+  notificationsRepository.create({
+    user_id: userId,
+    title: (message || 'Notification').slice(0, 100),
+    message,
+    module_name: module,
+    reference_id: recordId,
+    notification_type: 'info',
+  }).catch(() => {});
 };
 
 const router = express.Router();
@@ -160,7 +168,7 @@ router.post('/requisitions', async (req, res) => {
 
 router.put('/requisitions/:id', async (req, res) => {
   try {
-    const requisition = await recruitmentRepository.updateRequisition(req.params.id, req.body);
+    const requisition = await recruitmentRepository.updateRequisition(req.params.id, req.body, cid(req));
     res.json(requisition);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -216,7 +224,7 @@ router.post('/openings', async (req, res) => {
 
 router.put('/openings/:id', async (req, res) => {
   try {
-    const opening = await recruitmentRepository.updateOpening(req.params.id, req.body);
+    const opening = await recruitmentRepository.updateOpening(req.params.id, req.body, cid(req));
     res.json(opening);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -300,7 +308,7 @@ router.post('/candidates/bulk', upload.array('resumes'), async (req, res) => {
 
 router.put('/candidates/:id', async (req, res) => {
   try {
-    const candidate = await recruitmentRepository.updateCandidate(req.params.id, req.body);
+    const candidate = await recruitmentRepository.updateCandidate(req.params.id, req.body, cid(req));
     res.json(candidate);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -451,7 +459,7 @@ router.post('/interviews', async (req, res) => {
 
 router.put('/interviews/:id', async (req, res) => {
   try {
-    const interview = await recruitmentRepository.updateInterview(req.params.id, req.body);
+    const interview = await recruitmentRepository.updateInterview(req.params.id, req.body, cid(req));
     res.json(interview);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -648,7 +656,7 @@ router.post('/offers', async (req, res) => {
 
 router.put('/offers/:id', async (req, res) => {
   try {
-    const offer = await recruitmentRepository.updateOffer(req.params.id, req.body);
+    const offer = await recruitmentRepository.updateOffer(req.params.id, req.body, cid(req));
     // Notify when offer is sent
     if (req.body.offer_status === 'sent') {
       notify(req.user?.userId ?? req.user?.id, 'recruitment', offer.id,
@@ -908,9 +916,30 @@ router.post('/auto-creation/:candidateId/trigger', async (req, res) => {
         console.error('[auto-creation/trigger] payroll auto-enrollment failed:', e.message);
       }
 
+      // Provision a login — same bug just fixed in recruitment.repository.js's
+      // hireCandidate (the other recruitment-sourced employee-creation path).
+      // This handler has its own separate INSERT INTO employees and never
+      // called createEmployeeLogin, so candidates auto-created here got an
+      // employee record but no users row to actually sign in with.
+      let loginProvisioned = false;
+      try {
+        await createEmployeeLogin(pool, {
+          id: employee_id,
+          first_name,
+          last_name,
+          company_email: empRows[0].company_email,
+          department: c.department || 'General',
+          company_id,
+        });
+        loginProvisioned = true;
+      } catch (e) {
+        console.error('[auto-creation/trigger] login provisioning failed:', e.message);
+      }
+
       // Build auto-creation checklist
       const checklist_items = [
         { task: 'Employee record created', done: true, note: `Code: ${emp_code}` },
+        { task: 'Login account created', done: loginProvisioned },
         { task: 'Official email request pending', done: false },
         { task: 'Onboarding checklist to be created', done: false },
         { task: 'Attendance profile to be configured', done: false },

@@ -1,4 +1,6 @@
 import pool from '../../shared/db.js';
+import { createEmployeeLogin } from '../../../employees/employee.service.js';
+import { pickUpdatable } from '../../../shared/safeUpdate.js';
 
 const recruitmentRepository = {
   // ==================== JOB REQUISITIONS ====================
@@ -50,17 +52,31 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
-  async updateRequisition(id, data) {
+  // `data` was previously spread straight into the SET clause with the key
+  // itself interpolated (not bound) — mass assignment (company_id, deleted_at)
+  // plus SQL injection via a crafted key. pickUpdatable() validates every key
+  // against the live `job_requisitions` columns; company_id scoping in the
+  // WHERE clause (not just a check in the route) closes the cross-tenant
+  // write this also had no guard against.
+  async updateRequisition(id, data, company_id = null) {
+    const safe = await pickUpdatable('job_requisitions', data);
     const fields = [];
     const values = [];
-    let n = 1;
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== undefined) { fields.push(`${k} = $${n++}`); values.push(v); }
-    }
+    let paramCount = 1;
+    Object.keys(safe).forEach(key => {
+      fields.push(`${key} = $${paramCount}`);
+      values.push(safe[key]);
+      paramCount++;
+    });
+    if (!fields.length) return this.findRequisitionById(id, company_id);
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
+    values.push(company_id);
     const result = await pool.query(
-      `UPDATE job_requisitions SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
+      `UPDATE job_requisitions SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+          AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
+        RETURNING *`,
       values
     );
     return result.rows[0];
@@ -147,17 +163,27 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
-  async updateOpening(id, data) {
+  // Same key-interpolation mass-assignment/injection issue as updateRequisition
+  // above — see that comment.
+  async updateOpening(id, data, company_id = null) {
+    const safe = await pickUpdatable('job_openings', data);
     const fields = [];
     const values = [];
-    let n = 1;
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== undefined) { fields.push(`${k} = $${n++}`); values.push(v); }
-    }
+    let paramCount = 1;
+    Object.keys(safe).forEach(key => {
+      fields.push(`${key} = $${paramCount}`);
+      values.push(safe[key]);
+      paramCount++;
+    });
+    if (!fields.length) return this.findOpeningById(id, company_id);
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
+    values.push(company_id);
     const result = await pool.query(
-      `UPDATE job_openings SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
+      `UPDATE job_openings SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+          AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
+        RETURNING *`,
       values
     );
     return result.rows[0];
@@ -256,17 +282,27 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
-  async updateCandidate(id, data) {
+  // Same key-interpolation mass-assignment/injection issue as updateRequisition
+  // above — see that comment.
+  async updateCandidate(id, data, company_id = null) {
+    const safe = await pickUpdatable('candidates', data);
     const fields = [];
     const values = [];
-    let n = 1;
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== undefined) { fields.push(`${k} = $${n++}`); values.push(v); }
-    }
+    let paramCount = 1;
+    Object.keys(safe).forEach(key => {
+      fields.push(`${key} = $${paramCount}`);
+      values.push(safe[key]);
+      paramCount++;
+    });
+    if (!fields.length) return this.findCandidateById(id, company_id);
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
+    values.push(company_id);
     const result = await pool.query(
-      `UPDATE candidates SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
+      `UPDATE candidates SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+          AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
+        RETURNING *`,
       values
     );
     return result.rows[0];
@@ -388,17 +424,33 @@ const recruitmentRepository = {
     return result.rows;
   },
 
-  async updateInterview(id, data) {
+  // Same key-interpolation mass-assignment/injection issue as updateRequisition
+  // above — see that comment.
+  async updateInterview(id, data, company_id = null) {
+    const safe = await pickUpdatable('interview_schedules', data);
     const fields = [];
     const values = [];
-    let n = 1;
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== undefined) { fields.push(`${k} = $${n++}`); values.push(v); }
+    let paramCount = 1;
+    Object.keys(safe).forEach(key => {
+      fields.push(`${key} = $${paramCount}`);
+      values.push(safe[key]);
+      paramCount++;
+    });
+    if (!fields.length) {
+      const existing = await pool.query(
+        `SELECT * FROM interview_schedules WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+        [id, company_id]
+      );
+      return existing.rows[0];
     }
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
+    values.push(company_id);
     const result = await pool.query(
-      `UPDATE interview_schedules SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
+      `UPDATE interview_schedules SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+          AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
+        RETURNING *`,
       values
     );
     return result.rows[0];
@@ -433,17 +485,25 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
+  // Same key-interpolation mass-assignment/injection issue as updateRequisition
+  // above — see that comment. `email_templates` has no `company_id` column
+  // (confirmed: unscoped everywhere else in this file too), so no tenant
+  // scoping to add here, unlike the other five update*() functions.
   async updateEmailTemplate(id, data) {
+    const safe = await pickUpdatable('email_templates', data);
     const fields = [];
     const values = [];
-    let n = 1;
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== undefined) { fields.push(`${k} = $${n++}`); values.push(v); }
-    }
+    let paramCount = 1;
+    Object.keys(safe).forEach(key => {
+      fields.push(`${key} = $${paramCount}`);
+      values.push(safe[key]);
+      paramCount++;
+    });
+    if (!fields.length) return this.findEmailTemplateById(id);
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
     const result = await pool.query(
-      `UPDATE email_templates SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
+      `UPDATE email_templates SET ${fields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
       values
     );
     return result.rows[0];
@@ -511,17 +571,27 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
-  async updateOffer(id, data) {
+  // Same key-interpolation mass-assignment/injection issue as updateRequisition
+  // above — see that comment.
+  async updateOffer(id, data, company_id = null) {
+    const safe = await pickUpdatable('offer_letters', data);
     const fields = [];
     const values = [];
-    let n = 1;
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== undefined) { fields.push(`${k} = $${n++}`); values.push(v); }
-    }
+    let paramCount = 1;
+    Object.keys(safe).forEach(key => {
+      fields.push(`${key} = $${paramCount}`);
+      values.push(safe[key]);
+      paramCount++;
+    });
+    if (!fields.length) return this.findOfferById(id, company_id);
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
+    values.push(company_id);
     const result = await pool.query(
-      `UPDATE offer_letters SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
+      `UPDATE offer_letters SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+          AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
+        RETURNING *`,
       values
     );
     return result.rows[0];
@@ -729,6 +799,19 @@ const recruitmentRepository = {
       );
     } catch (e) {
       console.error('[hireCandidate] payroll auto-enrollment failed:', e.message);
+    }
+
+    // 4c. Provision a login — this is the more common real-world hire path
+    // (per the comment above) but was the one employee-creation path that
+    // never called anything equivalent to employee.service.js's own
+    // createEmployeeLogin/INSERT INTO users. A recruitment-sourced hire had
+    // an employee record but no way to actually sign in. Reuses the same
+    // helper the direct "Add Employee" flow uses (email fallback,
+    // existing-account skip, role sync, primary scope).
+    try {
+      await createEmployeeLogin(client, employee);
+    } catch (e) {
+      console.error('[hireCandidate] login provisioning failed:', e.message);
     }
 
     // 5. Mark candidate as hired
