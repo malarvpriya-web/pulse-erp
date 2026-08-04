@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-29T02:47:19.858Z",
+  "generated_at": "2026-07-30T02:41:58.607Z",
   "source": "Pulse@localhost:5432",
   "migrations": [
     "20260330000000_core_schema.js",
@@ -273,6 +273,10 @@
     "20260728000007_warranty_registrations_months_column.js",
     "20260728000008_warranty_registrations_exclusions_column.js",
     "20260729000001_installation_requests.js",
-    "20260729000002_sales_orders_dispatch_columns_drift_fix.js"
+    "20260729000002_sales_orders_dispatch_columns_drift_fix.js",
+    "20260729000003_discount_approval_gate.js",
+    "20260730000001_credit_limits_customer_id_uuid.js",
+    "20260730000002_inspection_reports_missing_columns.js",
+    "20260730000002_quotation_items_missing_columns.js"
   ]
 }

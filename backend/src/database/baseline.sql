@@ -3998,7 +3998,7 @@ ALTER SEQUENCE public.cost_centers_id_seq OWNED BY public.cost_centers.id;
 
 CREATE TABLE public.credit_limits (
     id integer NOT NULL,
-    customer_id integer,
+    customer_id uuid,
     customer_name character varying(255),
     credit_limit numeric(15,2) DEFAULT 0,
     current_outstanding numeric(15,2) DEFAULT 0,
@@ -5716,7 +5716,8 @@ CREATE TABLE public.discount_approvals (
     requested_at timestamp with time zone DEFAULT now(),
     approved_at timestamp with time zone,
     order_value numeric(15,2) DEFAULT 0,
-    company_id integer
+    company_id integer,
+    quotation_id integer
 );
 
 
@@ -9172,7 +9173,9 @@ CREATE TABLE public.inspection_reports (
     inspected_at timestamp with time zone DEFAULT now(),
     stage character varying(10) DEFAULT 'IQC'::character varying,
     overall_result character varying(20),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    grn_id integer,
+    company_id integer
 );
 
 
@@ -15952,7 +15955,11 @@ CREATE TABLE public.quotation_items (
     tax_rate numeric(5,2) DEFAULT 0,
     tax_amount numeric(15,2) DEFAULT 0,
     total_amount numeric(15,2) DEFAULT 0,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    item_description character varying(500),
+    rate numeric(12,2) DEFAULT 0,
+    tax_percentage numeric(5,2) DEFAULT 18,
+    total numeric(12,2) DEFAULT 0
 );
 
 
@@ -16005,6 +16012,7 @@ CREATE TABLE public.quotations (
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     supply_type character varying(10) DEFAULT 'intra'::character varying,
+    discount_pct numeric(5,2) DEFAULT 0,
     CONSTRAINT quotations_supply_type_check CHECK (((supply_type)::text = ANY ((ARRAY['intra'::character varying, 'inter'::character varying])::text[])))
 );
 
@@ -35143,6 +35151,20 @@ CREATE INDEX idx_increment_reco_employee ON public.increment_recommendations USI
 
 
 --
+-- Name: idx_inspection_reports_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inspection_reports_company ON public.inspection_reports USING btree (company_id);
+
+
+--
+-- Name: idx_inspection_reports_grn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inspection_reports_grn ON public.inspection_reports USING btree (grn_id);
+
+
+--
 -- Name: idx_inspection_reports_stage; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -39946,6 +39968,14 @@ ALTER TABLE ONLY public.cost_centers
 
 
 --
+-- Name: credit_limits credit_limits_customer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.credit_limits
+    ADD CONSTRAINT credit_limits_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.parties(id);
+
+
+--
 -- Name: credit_note_items credit_note_items_credit_note_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -40231,6 +40261,14 @@ ALTER TABLE public.device_telemetry
 
 ALTER TABLE ONLY public.discount_approvals
     ADD CONSTRAINT discount_approvals_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: discount_approvals discount_approvals_quotation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.discount_approvals
+    ADD CONSTRAINT discount_approvals_quotation_id_fkey FOREIGN KEY (quotation_id) REFERENCES public.quotations(id);
 
 
 --
@@ -41175,6 +41213,22 @@ ALTER TABLE ONLY public.increment_recommendations
 
 ALTER TABLE ONLY public.inspection_reports
     ADD CONSTRAINT inspection_reports_checklist_id_fkey FOREIGN KEY (checklist_id) REFERENCES public.inspection_checklists(id);
+
+
+--
+-- Name: inspection_reports inspection_reports_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inspection_reports
+    ADD CONSTRAINT inspection_reports_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
+-- Name: inspection_reports inspection_reports_grn_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inspection_reports
+    ADD CONSTRAINT inspection_reports_grn_id_fkey FOREIGN KEY (grn_id) REFERENCES public.goods_receipt_notes(id) ON DELETE SET NULL;
 
 
 --
