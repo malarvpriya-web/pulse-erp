@@ -1,8 +1,19 @@
 # Business Process Architecture — Priority 2
 
-Date: 2026-07-27. Maps the two end-to-end business-process chains named in the roadmap,
-link by link, marking each ✓ working / ⚠ partial / ✗ missing. A polished visual version of
-this document is published as an Artifact (see bottom for the link).
+Date: 2026-07-27, **re-verified and updated 2026-08-03**. Maps the two end-to-end
+business-process chains named in the roadmap, link by link, marking each ✓ working /
+⚠ partial / ✗ missing. A polished visual version of this document is published as an
+Artifact (see bottom for the link).
+
+**2026-08-03 update — all 7 gaps this document originally flagged (2 in Chain 1, 5 in
+Chain 2) are now closed.** None of the fixes happened in this pass — they were built by
+other sessions between 2026-07-28 and 2026-07-29 (`MODULE_FEATURE_CONNECTION_MANUAL.md`,
+last updated 2026-07-29, already documents all of them under §18.1 #1/#2/#3/#6/#7/#8/#13).
+This document itself was simply stale — a repeat of the pattern this whole audit series
+has hit before: **findings go stale within days, always re-verify against live code before
+treating a prior pass's ✗/⚠ as still open.** Every item below was independently
+re-confirmed against current code on 2026-08-03 (route file, exact call site, and — for the
+two auto-creation triggers — the calling code, not just the callee) before being marked ✓.
 
 ## Relationship to the existing Enterprise Workflow Audit
 
@@ -32,39 +43,43 @@ and exit access-revoke are solid. One architectural note carried over: 3 separat
 employee-creation code paths still exist with no shared source of truth (payroll now reaches
 all of them individually, but a future change could drift again).
 
-**Employee ↔ Travel**: ⚠ **partial — real data link, not an enforced gate**
+**Employee ↔ Travel**: ✓ **fixed 2026-07-28 — real manager-routing + exit gate (re-verified 2026-08-03)**
 - Travel policy resolves dynamically at claim time from grade/designation/department — no
-  broken link here.
-- **Approval is a role-gate, not manager-routing.** `travel.routes.js:1097`
-  (`level-approve`) and `travel-reimbursement.routes.js`'s manager-approve check only
-  `req.user.role === 'manager'` — there is no query against a `reporting_manager_id` on
-  `employees` anywhere in either file. **Any user holding the `manager` role can approve any
-  employee's travel request, advance, or claim** — not just their own reports.
-- **Exit never checks outstanding travel advances.** `exit.routes.js`'s F&F compute/pay
-  (`POST /fnf/compute/:employee_id`, `POST /fnf/:id/pay`) has zero references to `travel`.
-  The codebase already has the right pattern for this — `travel-reimbursement.routes.js:598`
-  and `travel.routes.js:1162` both expose a `GET /closure-check` used to gate project/PO
-  closure — it was simply never applied to employee exit.
+  broken link here (unchanged).
+- **Approval is now identity-gated, not role-gated.** `travelApprovalAuthz.js` replaces the
+  old `req.user.role === 'manager'` check with a real hierarchy — reporting manager →
+  delegate → HR override → admin override. `travel.routes.js`'s actual Approve/Reject
+  endpoint (the one the Travel Approvals screen calls — not the unused `/level-approve`
+  multi-level flow) and `travel-reimbursement.routes.js`'s `PUT /claims/:id/manager-approve`
+  both use it. A bare `manager`-role user can no longer approve an arbitrary employee's
+  travel.
+- **Exit now checks outstanding travel advances before final settlement.** `exit.routes.js`'s
+  `computeClearanceBlockers()` (lines 55–115) sums unsettled `travel_advances` per employee
+  (resolved through `users.employee_id`, since `travel_advances.employee_id` actually stores
+  a `users.id`) and includes it as a named blocker (`travel_advances`). `POST /fnf/:id/pay`
+  calls this and hard-blocks (`can_settle` must be true) before paying final settlement.
 
-**Employee ↔ Asset**: ⚠ **partial — allocation wired at hire, return not enforced at exit**
-- `AddEmployee.jsx`/`EditEmployee.jsx` do POST to `/employee-assets` on save
-  (best-effort/non-blocking by design — reasonable).
-- **Exit's asset-return checkbox is cosmetic.** The clearance form's `it_assets_returned`
-  boolean is only ever read/written inside `exit.routes.js` itself and the frontend
-  checklist label — nothing blocks `/fnf/:id/pay` or the `employees.status='left'`
-  transition on it. **Contrast: the sibling `access_revoked` checkbox in the same form *is*
-  enforced** — it genuinely deactivates the user's login. The enforcement pattern exists in
-  this exact file; it just wasn't extended to assets.
-- Net effect: `employee_asset_allocations` rows can sit at `status='allocated'`,
-  `return_date IS NULL` indefinitely after an employee is marked `left`/`terminated`.
+**Employee ↔ Asset**: ✓ **fixed 2026-07-28 — asset-return now enforced at exit (re-verified 2026-08-03)**
+- `AddEmployee.jsx`/`EditEmployee.jsx` still POST to `/employee-assets` on save
+  (best-effort/non-blocking by design — unchanged, reasonable).
+- **Exit's asset-return check is no longer cosmetic.** The same `computeClearanceBlockers()`
+  queries `employee_asset_allocations` directly (`status NOT IN ('returned','disposed')`) as
+  a live blocker (`assets`) — not the old disconnected `it_assets_returned` checkbox. This
+  now sits alongside `access_revoked`, `it_access`, and finance/manager/HR sign-off as one of
+  six conditions `POST /fnf/:id/pay` gates on (`can_settle = blockers.every(b => b.cleared)`).
+- Net effect (fixed): an `employee_asset_allocations` row sitting at `status='allocated'`
+  now blocks final settlement until it's returned or disposed — the gap the roadmap flagged
+  no longer exists.
 
-**→ Exit**: ✓ per the existing audit (access-revoke fixed and confirmed still true
-2026-07-27) — but see above: exit completes today without checking travel or asset state.
+**→ Exit**: ✓ — the "Exit Clearance Engine" (`computeClearanceBlockers()` +
+`POST /fnf/:id/pay`) is the single gate for all of this now: assets, travel advances, IT
+access, and finance/manager/HR sign-off all block final settlement together, not just
+access-revoke in isolation.
 
 **Chain 1 bottom line**: the HR core (hire through payroll) is genuinely solid and verified
-multiple times over. The two links the roadmap explicitly called out — Travel and Asset —
-are exactly where the chain is weakest: both are real, queryable associations that were never
-wired into the one moment (Exit) where they matter most.
+multiple times over. The two links the roadmap explicitly called out as weakest — Travel and
+Asset — are now both wired into the one moment (Exit) where they matter most; nothing
+structural remains open in this chain as of 2026-08-03.
 
 ---
 
@@ -83,20 +98,32 @@ no schema link to quotations.
 quality stop-ship hold is airtight; `routingCopy.service.js` correctly copies the
 `is_inspection` flag through (re-verified still true 2026-07-27).
 
-**→ Installation**: ✗ **not a real, distinct step.** "Installation" exists only as a checklist
-*category* inside Commissioning (`commissioning.routes.js:39-42`) — no separate table,
-status, or route. (A similarly-named `InstallationDashboard.jsx` is unrelated — it's a
-project-geography map view, not a lifecycle step. Worth knowing so nobody mistakes it for
-this.)
+**→ Installation**: ✓ **fixed 2026-07-29 — first-class module (re-verified 2026-08-03).**
+"Installation" is now a real `installation_requests` table (migration
+`20260729000001_installation_requests.js`) with its own lifecycle (`requested` →
+`engineer_assigned` → `travel_planned` → `in_progress` → `completed`/`cancelled`), a full
+route file (`installation.routes.js`: assign-engineer, plan-travel, start, complete,
+customer-acceptance, cancel), and a frontend page (`InstallationRequests.jsx`, mounted at
+`/installation-requests`). Rows are **auto-created on Sales Order dispatch** —
+`sales.routes.js`'s `PUT /orders/:id/dispatch` calls the exported `createInstallationRequest()`
+when a project can be resolved (line ~1088), idempotent via a partial unique index on
+`(sales_order_id) WHERE status NOT IN ('cancelled')`. Deliberately links to (not duplicates)
+`travel_requests` for the Travel Planning step and `commissioning_workflows` for the handoff
+at completion. (The similarly-named `InstallationDashboard.jsx` remains unrelated — it's a
+project-geography map view, not this lifecycle step. Still worth knowing so nobody confuses
+the two.)
 
-**→ Warranty**: ⚠ **partial — activation trigger is solid, but 3 disconnected stores.**
-`POST /commissioning/:id/activate-warranty` genuinely fires on sign-off, correctly computing
-and setting `customer_equipment.warranty_status`. But there are **three separate warranty
-tables with no cross-linking**: `customer_equipment` (written by commissioning),
-`warranty_registrations` (read by one "expiring warranty" screen, under Operations), and
-`product_warranties` (read by a *second*, separately-named "expiring warranty" screen, under
-Projects). **A warranty activated via commissioning sign-off won't surface in either expiry
-screen** unless someone separately registers it in one of the other two tables.
+**→ Warranty**: ✓ **fixed 2026-07-28 — Unified Warranty Engine (re-verified 2026-08-03).**
+`POST /commissioning/:id/activate-warranty` now writes a real `warranty_registrations` row
+(idempotent on `commissioning_workflow_id`) instead of only setting
+`customer_equipment.warranty_status`. Migration `20260728000006_unified_warranty_engine.js`
+added `project_id`/`commissioning_workflow_id`/`equipment_id`/`amc_contract_id` columns to
+`warranty_registrations`, converging all three previously-disconnected sources onto it (the
+most feature-complete of the three — it already had a `warranty_claims` child table and
+coverage flags). `customer_equipment` and `product_warranties` were confirmed empty in the
+live DB before the migration (zero backfill risk); `product_warranties` is left in place
+but application code stops writing to it. **A warranty activated via commissioning sign-off
+now surfaces correctly** in Customer 360, the Warranty Expiry dashboards, and AMC.
 
 **→ AMC → Complaint → Service**: ✓/⚠ — existing audit's "Service Lifecycle," scored
 **82/100, Needs Minor Fixes**. Real signature capture, ticket-closure gating, and the
@@ -111,29 +138,49 @@ auto-creates a CSAT-request notification the instant a ticket transitions to
 resolved/closed — the trigger side is solid and needs no fix. (Actual capture still depends
 on the agent/customer acting on that notification — a soft gap, not a broken link.)
 
-**→ Upsell**: ✗ **missing an operational path.** `ceo-intelligence.routes.js` computes a
-real `upsell_opportunity` label (AMC Upsell / Expand Account) per customer, but its only
-frontend consumer (`CEOIntelligenceDashboard.jsx`) renders it as a plain, unclickable
-`<div>`. **Nothing turns the signal into an action** — no CRM opportunity, task, or
-notification is ever created from it.
+**→ Upsell**: ✓ **fixed — real operational path (re-verified 2026-08-03).**
+`ceo-intelligence.routes.js` still computes the real `upsell_opportunity` label (AMC Upsell
+/ Expand Account) per customer, but `CEOIntelligenceDashboard.jsx` now renders it as an
+actionable "Convert →" button, not an inert `<div>`. It calls
+`POST /ceo-intelligence/customers/:partyId/convert-upsell`, which resolves (or best-effort
+creates) the CRM `accounts` row bridging the Finance `parties` record and creates a real CRM
+opportunity from the signal. **The signal now turns into an action**, not just a label.
 
-**→ Renewal**: ⚠ **a second, fully siloed mechanism exists beyond AMC.**
-`sales.routes.js` has a complete, separate `subscriptions` table (plan/billing-cycle/
-auto-renew/next-billing-date) with its own frontend page and manual pause/cancel/renew
-endpoints — **wired to zero cron jobs** and not linked to `amc_contracts`, sales orders, or
-Customer 360 at all. Two independent renewal mechanisms, not one unified pipeline.
+**→ Renewal**: ✓ **fixed 2026-07-29 — Renewal Engine, Priority 5 (re-verified 2026-08-03).**
+The `subscriptions` mechanism and `amc_contracts` remain two separate record types by design
+(they represent genuinely different commercial models — recurring billing vs. service
+contracts) — this was **not** collapsed into one table. What was fixed is the actual
+complaint: "wired to zero cron jobs" and no approval gate. `subscriptionRenewal.cron.js`
+(new, daily 09:15, mirrors `amcRenewal.cron.js`'s reminder pattern) is started in
+`server.js` alongside the AMC cron. A shared `renewalApproval.js` gate (threshold-based,
+`admin`/`super_admin`/`finance`/`finance_manager` only) now covers **both** AMC and
+Subscription renewals, closing the "anyone could renew at any value" gap neither mechanism
+had a check for before. Two tracks by design, but both now function correctly on their own.
 
-**Chain 2 bottom line**: the transactional spine (CRM through Dispatch, and separately
-Complaint through Service) is solid and already verified. The weak links are exactly the ones
-that turn a completed sale into repeat revenue — Warranty visibility is fragmented, Upsell is
-a label nobody can act on, and Renewal quietly runs on two disconnected tracks.
+**Chain 2 bottom line (updated 2026-08-03)**: the transactional spine (CRM through Dispatch,
+and separately Complaint through Service) was already solid. As of this update, the five
+links that turn a completed sale into repeat revenue are now closed too — Installation is a
+real, dispatch-triggered lifecycle step; Warranty converges on one table read by every
+consumer; Upsell signals convert into real CRM opportunities; and Renewal reminders + an
+approval gate cover both AMC and Subscriptions. Nothing from this chain's original findings
+remains open.
 
 ---
 
 ## Sources
 - Existing scores/chain segments: `project_enterprise_workflow_audit` memory (Pass 7,
   2026-07-24) and its published artifact, `https://claude.ai/code/artifact/e78ffbd4-40cd-49ea-919c-f11e4cfa62e8`.
-- Fresh findings (Travel/Asset/Installation/Warranty/Feedback/Upsell/Renewal): this session's
-  research, 2026-07-27, against the live working tree.
+- Original findings (Travel/Asset/Installation/Warranty/Feedback/Upsell/Renewal): 2026-07-27,
+  against the live working tree at that time.
+- **2026-08-03 update**: all 7 original gaps re-verified as fixed, directly against current
+  code (not against `MODULE_FEATURE_CONNECTION_MANUAL.md`'s claims, though its 2026-07-29
+  §18.1 entries independently corroborate every fix below): `travelApprovalAuthz.js` +
+  `exit.routes.js`'s `computeClearanceBlockers()`/`POST /fnf/:id/pay` (Chain 1, both items);
+  `installation.routes.js` + `installation_requests` + `sales.routes.js`'s dispatch handler;
+  `20260728000006_unified_warranty_engine.js` + `commissioning.routes.js`'s
+  `activate-warranty`; `CEOIntelligenceDashboard.jsx`'s convert button +
+  `ceo-intelligence.routes.js`'s `convert-upsell`; `subscriptionRenewal.cron.js` +
+  `renewalApproval.js` (Chain 2, all five items). No code changes were made this pass — the
+  fixes already existed, this document was simply out of date.
 - Visual version of this document: see the published Artifact linked from this session
   (title "Pulse Business Process Architecture").
