@@ -355,12 +355,14 @@ export default function ApprovalCenter() {
                     return (
                       <tr key={a.id} className={rowClass(a)}>
                         <td>
-                          <input type="checkbox"
-                            checked={selectedItems.includes(a.id)}
-                            onChange={e => setSelectedItems(prev =>
-                              e.target.checked ? [...prev, a.id] : prev.filter(i => i !== a.id)
-                            )}
-                          />
+                          {a.can_act !== false && (
+                            <input type="checkbox"
+                              checked={selectedItems.includes(a.id)}
+                              onChange={e => setSelectedItems(prev =>
+                                e.target.checked ? [...prev, a.id] : prev.filter(i => i !== a.id)
+                              )}
+                            />
+                          )}
                         </td>
                         <td>
                           <span style={{ display:'inline-block', padding:'3px 10px', borderRadius:10, fontSize:11, fontWeight:600, background:tm.bg, color:tm.color }}>
@@ -382,9 +384,15 @@ export default function ApprovalCenter() {
                         <td style={{ whiteSpace:'nowrap' }}>{waitDays(a.request_date)}d</td>
                         <td className="action-cell">
                           <button className="btn-view"    onClick={() => openDetail(a)}>View</button>
-                          <button className="btn-approve" onClick={() => handleApprove(a.id, a.request_type)} title="Approve" disabled={!!actioning} style={actioning === a.id ? { opacity: 0.6, cursor: 'not-allowed' } : {}}>✓</button>
-                          <button className="btn-reject"  onClick={() => { setSelectedApproval(a); setShowRejectModal(true); }} title="Reject" disabled={!!actioning}>✗</button>
-                          {overdue && (
+                          {a.can_act === false ? (
+                            <span className="badge-view-only" title="Not assigned to your role — view only">View only</span>
+                          ) : (
+                            <>
+                              <button className="btn-approve" onClick={() => handleApprove(a.id, a.request_type)} title="Approve" disabled={!!actioning} style={actioning === a.id ? { opacity: 0.6, cursor: 'not-allowed' } : {}}>✓</button>
+                              <button className="btn-reject"  onClick={() => { setSelectedApproval(a); setShowRejectModal(true); }} title="Reject" disabled={!!actioning}>✗</button>
+                            </>
+                          )}
+                          {overdue && a.can_act !== false && (
                             <button className="btn-escalate" onClick={() => handleEscalate(a.id)} title="Escalate to next approver">↑</button>
                           )}
                         </td>
@@ -509,12 +517,18 @@ export default function ApprovalCenter() {
               )}
             </div>
             <div className="panel-footer">
-              <button className="btn-approve-large" onClick={() => handleApprove(selectedApproval.id, selectedApproval.request_type)} disabled={!!actioning} style={actioning ? { opacity: 0.6, cursor: 'not-allowed' } : {}}>
-                {actioning === selectedApproval.id ? 'Approving…' : '✓ Approve'}
-              </button>
-              <button className="btn-reject-large" onClick={() => setShowRejectModal(true)} disabled={!!actioning}>
-                ✗ Reject
-              </button>
+              {selectedApproval.can_act === false ? (
+                <p className="panel-view-only-note">Not assigned to your role — view only.</p>
+              ) : (
+                <>
+                  <button className="btn-approve-large" onClick={() => handleApprove(selectedApproval.id, selectedApproval.request_type)} disabled={!!actioning} style={actioning ? { opacity: 0.6, cursor: 'not-allowed' } : {}}>
+                    {actioning === selectedApproval.id ? 'Approving…' : '✓ Approve'}
+                  </button>
+                  <button className="btn-reject-large" onClick={() => setShowRejectModal(true)} disabled={!!actioning}>
+                    ✗ Reject
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

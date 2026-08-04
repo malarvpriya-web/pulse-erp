@@ -361,8 +361,18 @@ export const ROLE_SECTION_ALLOWLIST = {
     'Attendance', 'Leaves', 'Timesheets', 'Performance', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures',
   ],
+  // 'Approvals' REMOVED (2026-07-30, same F16 reasoning as project_manager/
+  // sales_manager/service_manager below): hr_exec is not in approvals.authz.js's
+  // APPROVER_ROLES, and every source category the Approval Center's read path
+  // ever shows as "unassigned" (leave/OT/PR/expense/ECN/payment) requires
+  // APPROVER_ROLES membership to act on — never true for this role. The section
+  // was a populated-but-broken queue: real items listed, every Approve/Reject
+  // click 403s via canActOnApproval, surfaced to the user as a generic "Failed
+  // to approve — try again" toast that can never succeed. Regularization/
+  // probation items assigned directly by identity (not role) still reach
+  // hr_exec via notifications regardless of this allowlist entry.
   hr_exec: [
-    'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment',
+    'Home', 'HR', 'Learning Center', 'Recruitment',
     'Attendance', 'Leaves', 'Timesheets', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes',
   ],
@@ -373,25 +383,34 @@ export const ROLE_SECTION_ALLOWLIST = {
   // Phase-42 granular finance seats (20260529000001_phase42_security_roles.js).
   // Both hold 'Finance'/'Reports' via the module-permission fallback
   // (role_permissions grants finance_manager full finance+accounting+gst+tds,
-  // accounts_exec view/add/edit finance with no GL/TDS). 'Approvals' and
-  // 'Notifications' are now ALSO covered by that same fallback — their
-  // NAV_ITEMS entries carry `module: 'approvals'`/`'notifications'` and
+  // accounts_exec view/add/edit finance with no GL/TDS). 'Notifications' is
+  // ALSO covered by that same fallback — its NAV_ITEMS entry carries
+  // `module: 'notifications'` and
   // [20260721000002_granular_role_approvals_notifications_grants.js] grants
-  // both roles a role_permissions row (finance_manager VAEP/VAE as an
-  // APPROVER_ROLES member, accounts_exec VA/V as an executor). Listed here
-  // too — redundant with the fallback but harmless — so the grant stays
+  // both roles a role_permissions row on the 'notifications' module. Listed
+  // here too — redundant with the fallback but harmless — so the grant stays
   // visible without cross-referencing role_permissions.
   // 'Leaves'/'Attendance' (2026-07-28): mirrors the self-service carve-out
   // the coarse `finance` role already had — these two granular roles never
   // got it, so a finance_manager/accounts_exec had no menu path to apply for
   // their own leave. Scoped to self-service only via FINANCE_RESTRICTED_
   // SECTIONS / FINANCE_SELF_SERVICE_PAGES, same as `finance`.
+  // finance_manager keeps 'Approvals' — it IS in approvals.authz.js's
+  // APPROVER_ROLES (unscoped, VAEP). accounts_exec's role_permissions
+  // 'approvals' module grant (VA, "executor") is a generic CRUD flag on a
+  // different permission dimension — it does NOT make accounts_exec an
+  // APPROVER_ROLES member, so 'Approvals' was REMOVED from accounts_exec here
+  // (2026-07-30, same F16 reasoning as project_manager/sales_manager/
+  // service_manager below, and hr_exec above): every category the Approval
+  // Center's read path shows as "unassigned" 403s on click for a non-approver
+  // role, surfaced to the user as a misleading generic "Failed to approve —
+  // try again" toast. See hr_exec's comment above for the full mechanism.
   finance_manager: [
     'Home', 'Approvals', 'Finance', 'Reports', 'Leaves', 'Attendance',
     'Notifications', 'Org Chart', 'QR Codes',
   ],
   accounts_exec: [
-    'Home', 'Approvals', 'Finance', 'Reports', 'Leaves', 'Attendance',
+    'Home', 'Finance', 'Reports', 'Leaves', 'Attendance',
     'Notifications', 'Org Chart', 'QR Codes',
   ],
   // Phase-42 project-delivery seat (20260529000001_phase42_security_roles.js
@@ -452,8 +471,10 @@ export const ROLE_SECTION_ALLOWLIST = {
     'Home', 'CRM', 'Sales', 'Marketing', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures', 'Tenders · More',
   ],
+  // 'Approvals' REMOVED (2026-07-30, same F16/hr_exec reasoning — see hr_exec's
+  // comment above): sales_exec is not in approvals.authz.js's APPROVER_ROLES.
   sales_exec: [
-    'Home', 'Approvals', 'CRM', 'Sales',
+    'Home', 'CRM', 'Sales',
     'Notifications', 'Org Chart', 'QR Codes', 'Tenders · More',
   ],
   // Phase-42 granular procurement seats (20260529000001_phase42_security_roles.js).
@@ -480,16 +501,23 @@ export const ROLE_SECTION_ALLOWLIST = {
     'Home', 'Approvals', 'Procurement', 'Inventory', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
   ],
+  // 'Approvals' REMOVED from procurement_exec (2026-07-30, same F16/hr_exec
+  // reasoning — see hr_exec's comment above): unlike procurement_manager
+  // (category-scoped APPROVER_ROLES member, pr/purchase_request/purchase),
+  // procurement_exec holds no APPROVER_ROLES membership at all.
   procurement_exec: [
-    'Home', 'Approvals', 'Procurement', 'Inventory',
+    'Home', 'Procurement', 'Inventory',
     'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
   ],
   // store_keeper (20260529000001_...): view/add/edit/export inventory,
   // view/add/edit warehouse, view-only procurement (GRN receipt), and —
   // unlike procurement_exec — VONLY reports. EXEC_TIER (Approvals VA/
   // Notifications V). 'Asset Register · More' — see procurement_manager above.
+  // 'Approvals' REMOVED (2026-07-30, same F16/hr_exec reasoning — see
+  // hr_exec's comment above): store_keeper is not in approvals.authz.js's
+  // APPROVER_ROLES.
   store_keeper: [
-    'Home', 'Approvals', 'Inventory', 'Procurement', 'Reports',
+    'Home', 'Inventory', 'Procurement', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
   ],
   // Phase-42 granular production seats. production_manager holds FULL
@@ -512,8 +540,12 @@ export const ROLE_SECTION_ALLOWLIST = {
     'Reports', 'Timesheets', 'Notifications', 'Org Chart', 'QR Codes',
     'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
   ],
+  // 'Approvals' REMOVED from production_engineer (2026-07-30, same F16/
+  // hr_exec reasoning — see hr_exec's comment above): unlike
+  // production_manager (category-scoped APPROVER_ROLES member, ecn),
+  // production_engineer holds no APPROVER_ROLES membership at all.
   production_engineer: [
-    'Home', 'Approvals', 'Production', 'Engineering', 'Quality', 'Inventory',
+    'Home', 'Production', 'Engineering', 'Quality', 'Inventory',
     'Timesheets', 'Notifications', 'Org Chart', 'QR Codes',
     'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
   ],
@@ -529,17 +561,22 @@ export const ROLE_SECTION_ALLOWLIST = {
     'Reports', 'Notifications', 'Org Chart', 'QR Codes',
     'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
   ],
+  // 'Approvals' REMOVED from qc_engineer (2026-07-30, same F16/hr_exec
+  // reasoning — see hr_exec's comment above): unlike qc_manager
+  // (category-scoped APPROVER_ROLES member, ecn), qc_engineer holds no
+  // APPROVER_ROLES membership at all.
   qc_engineer: [
-    'Home', 'Approvals', 'Quality', 'Production', 'Inventory',
+    'Home', 'Quality', 'Production', 'Inventory',
     'Notifications', 'Org Chart', 'QR Codes', 'Compliance · More',
   ],
   // design_engineer (20260529000001_...): view/add/edit/delete engineering +
   // VAE bom (no top-level section) + view-only quality/production, no
   // reports — EXEC_TIER. Also holds view-only iot and VAED rd
   // (20260719000001_seed_role_permission_gaps.js) — see production_manager
-  // comment above.
+  // comment above. 'Approvals' REMOVED (2026-07-30, same F16/hr_exec
+  // reasoning — see hr_exec's comment above): not in APPROVER_ROLES.
   design_engineer: [
-    'Home', 'Approvals', 'Engineering', 'Quality', 'Production',
+    'Home', 'Engineering', 'Quality', 'Production',
     'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More', 'R&D · More',
   ],
   // Phase-42 granular service seats. service_manager holds FULL servicedesk +
@@ -560,8 +597,11 @@ export const ROLE_SECTION_ALLOWLIST = {
     'Home', 'Service Desk', 'Complaints', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More',
   ],
+  // 'Approvals' REMOVED (2026-07-30, same F16/hr_exec reasoning — see
+  // hr_exec's comment above): service_engineer is not in approvals.authz.js's
+  // APPROVER_ROLES.
   service_engineer: [
-    'Home', 'Approvals', 'Service Desk', 'Complaints',
+    'Home', 'Service Desk', 'Complaints',
     'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More',
   ],
   // l2_approver (20260721000003_seed_l2_approver_role.js): dedicated

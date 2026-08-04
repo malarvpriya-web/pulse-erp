@@ -151,6 +151,10 @@
 .btn-reject:hover { background: #dc2626 !important; color: #fff !important; }
 .btn-escalate { background: #fef3c7; color: #92400e; }
 .btn-escalate:hover { background: #f59e0b !important; color: #fff !important; }
+.badge-view-only {
+  display: inline-block; padding: 5px 10px; border-radius: 6px;
+  font-size: 11px; font-weight: 600; color: #6b7280; background: #f3f4f6;
+}
 
 /* ── Side panel ── */
 .side-panel { position: fixed; inset: 0; z-index: 1000; }
@@ -224,6 +228,7 @@
 .btn-approve-large:hover { background: #5B35D5 !important; color: #fff !important; }
 .btn-reject-large  { background: #fff; color: #dc2626 !important; border: 1px solid #fecaca; }
 .btn-reject-large:hover { background: #fee2e2 !important; color: #dc2626 !important; }
+.panel-view-only-note { flex: 1; margin: 0; text-align: center; font-size: 13px; color: #6b7280; }
 
 /* ── Modals ── */
 .modal {

@@ -1,7 +1,7 @@
 import pool from "../../config/db.js";
 import { notifyWorkflowEvent } from "../../services/WorkflowNotificationService.js";
 import { logAudit } from "../../services/AuditService.js";
-import { canOverride, canClaimCategory } from "./approvals.authz.js";
+import { canOverride, canClaimCategory, isApproverRole } from "./approvals.authz.js";
 import { assertCanDecideAmount } from "../procurement/procurement.authz.js";
 import { getEmployeeApprovals } from "../../home/home.service.js";
 
@@ -340,6 +340,24 @@ export const getPendingApprovals = async (req, res) => {
         r.approver_id == null || String(r.approver_id) === String(userId)
       );
     }
+
+    // `isAdmin` above (isSupervisor: super_admin/admin/manager/hr/...) governs
+    // read VISIBILITY only — it is broader than who can actually act on a row
+    // (canActOnApproval, the write-path guard). Without this, e.g. a `manager`
+    // sees every row including ones assigned to a specific other person, and
+    // the frontend rendered live Approve/Reject buttons on all of them
+    // regardless — clicking one that isn't actually yours 403s. Same story for
+    // roles like `hr_exec`/`procurement_exec`/the engineer grades, which are
+    // visible on unassigned rows here but hold no claim authority at all
+    // (deliberately excluded from APPROVER_ROLES). Annotate the exact same
+    // rule the write path enforces so the frontend can hide/disable instead of
+    // rendering a button that's a guaranteed 403.
+    all = all.map(r => ({
+      ...r,
+      can_act: canOverride(req) || (r.approver_id != null
+        ? String(r.approver_id) === String(userId)
+        : isApproverRole(req) && canClaimCategory(req, r.module_name)),
+    }));
 
     // Sort by request_date ascending (oldest first), then paginate
     all.sort((a, b) => new Date(a.request_date) - new Date(b.request_date));
