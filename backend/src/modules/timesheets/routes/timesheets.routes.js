@@ -1,7 +1,7 @@
 import express from 'express';
 import pool from '../../shared/db.js';
 import timesheetRepository from '../repositories/timesheet.repository.js';
-import projectCostRepository from '../../projects/repositories/projectCost.repository.js';
+import { recalculateProjectCost } from '../../projects/services/projectCostRollup.service.js';
 import { companyOf } from '../../../shared/scope.js';
 import { CLOSED_PROJECT_STATUSES } from '../../projects/projectStatus.js';
 
@@ -251,11 +251,13 @@ router.post('/timesheets/approve', async (req, res) => {
     const { ids, approved_by } = req.body;
     await timesheetRepository.approveEntries(ids, approved_by);
     
-    // Update project labour costs
+    // Recalculate full project cost (all 9 sources), not just labour — updateLabourCost()
+    // used to overwrite total_cost/profit/margin_pct unconditionally from labour_cost alone,
+    // silently collapsing the correct multi-source rollup on every approval.
     const entries = await timesheetRepository.findAll({ status: 'approved' });
     const projectIds = [...new Set(entries.map(e => e.project_id))];
     for (const projectId of projectIds) {
-      await projectCostRepository.updateLabourCost(projectId);
+      await recalculateProjectCost(projectId);
     }
     
     res.json({ message: 'Timesheets approved' });
