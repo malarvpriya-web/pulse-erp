@@ -230,23 +230,39 @@ async function calcQualityScore(customerId, companyId) {
   let details = {};
 
   try {
+    // non_conformance_reports is a dead legacy twin with no customer_id column
+    // at all (see [[project_crm_duplicate_table_families]]) — always threw
+    // "column does not exist", silently caught below, so this dimension never
+    // actually scored anything. The live table is ncr_reports, linked to a
+    // customer only indirectly via project_id -> projects.customer_name (no
+    // real customer FK exists on projects either) -> best-effort name match
+    // into parties, the same bridge pattern used for vendors/CEO-dashboard
+    // project-customer resolution elsewhere in this codebase.
     const r = await pool.query(
       `SELECT
          COUNT(*)::int                                                              AS total_ncrs,
-         COUNT(CASE WHEN status != 'closed' THEN 1 END)::int                      AS open_ncrs,
-         COUNT(CASE WHEN severity IN ('major','critical') THEN 1 END)::int        AS major_ncrs,
-         COUNT(CASE WHEN created_at >= NOW()-INTERVAL '12 months' THEN 1 END)::int AS ncrs_12m
-       FROM non_conformance_reports WHERE customer_id=$1`,
+         COUNT(CASE WHEN ncr.status != 'closed' THEN 1 END)::int                      AS open_ncrs,
+         COUNT(CASE WHEN ncr.severity IN ('major','critical') THEN 1 END)::int        AS major_ncrs,
+         COUNT(CASE WHEN ncr.created_at >= NOW()-INTERVAL '12 months' THEN 1 END)::int AS ncrs_12m
+       FROM ncr_reports ncr
+       JOIN projects p ON p.id = ncr.project_id
+       JOIN parties pt ON LOWER(pt.name) = LOWER(COALESCE(p.customer_name, p.client_name))
+       WHERE pt.id=$1`,
       [customerId]
     );
     const d = r.rows[0];
 
     let complaints = 0;
     try {
+      // Same customerId (parties.id uuid) vs support_tickets.customer_id
+      // (accounts.id integer) mismatch fixed in calcServiceScore below.
       const cr = await pool.query(
-        `SELECT COUNT(*)::int AS cnt FROM support_tickets
-         WHERE customer_id=$1 AND priority IN ('high','critical')
-         AND created_at >= NOW()-INTERVAL '12 months'`,
+        `SELECT COUNT(*)::int AS cnt
+         FROM support_tickets st
+         LEFT JOIN contacts c ON c.id = st.contact_id
+         LEFT JOIN accounts a ON a.id = c.account_id
+         WHERE a.party_id=$1 AND st.priority IN ('high','critical')
+         AND st.created_at >= NOW()-INTERVAL '12 months'`,
         [customerId]
       );
       complaints = cr.rows[0]?.cnt || 0;
@@ -279,17 +295,27 @@ async function calcServiceScore(customerId, companyId) {
   let details = {};
 
   try {
+    // customerId here is parties.id (uuid, see calculateAndStore's own
+    // `SELECT name FROM parties WHERE id=$1` a few lines up) but
+    // support_tickets.customer_id is an integer FK to accounts(id) — comparing
+    // the two throws (uuid = integer), silently caught below, so this
+    // dimension always scored via the empty-details fallback. Same
+    // contact_id -> accounts.party_id bridge already used by
+    // customer360.routes.js's ticket endpoints.
     const r = await pool.query(
       `SELECT
          COUNT(*)::int                                                                  AS total_tickets,
-         COUNT(CASE WHEN status NOT IN ('resolved','closed') THEN 1 END)::int         AS open_tickets,
-         COUNT(CASE WHEN status NOT IN ('resolved','closed')
-                    AND priority = 'critical' THEN 1 END)::int                        AS critical_open,
-         COALESCE(ROUND(AVG(CASE WHEN status IN ('resolved','closed') AND resolved_at IS NOT NULL
-                               THEN EXTRACT(EPOCH FROM (resolved_at-created_at))/86400
+         COUNT(CASE WHEN st.status NOT IN ('resolved','closed') THEN 1 END)::int         AS open_tickets,
+         COUNT(CASE WHEN st.status NOT IN ('resolved','closed')
+                    AND st.priority = 'critical' THEN 1 END)::int                        AS critical_open,
+         COALESCE(ROUND(AVG(CASE WHEN st.status IN ('resolved','closed') AND st.resolved_at IS NOT NULL
+                               THEN EXTRACT(EPOCH FROM (st.resolved_at-st.created_at))/86400
                                END))::int, 0)                                         AS avg_resolution_days,
-         COUNT(CASE WHEN status IN ('resolved','closed') THEN 1 END)::int             AS closed_tickets
-       FROM support_tickets WHERE customer_id=$1`,
+         COUNT(CASE WHEN st.status IN ('resolved','closed') THEN 1 END)::int             AS closed_tickets
+       FROM support_tickets st
+       LEFT JOIN contacts c ON c.id = st.contact_id
+       LEFT JOIN accounts a ON a.id = c.account_id
+       WHERE a.party_id=$1`,
       [customerId]
     );
     const d = r.rows[0];
@@ -1012,10 +1038,14 @@ export async function getServiceDashboard(companyId) {
               chs.service_score, chs.quality_score, chs.service_escalation_risk,
               p.name AS customer_name, p.city,
               (SELECT COUNT(*)::int FROM support_tickets st
-               WHERE st.customer_id=chs.customer_id AND st.status NOT IN ('resolved','closed')
+               LEFT JOIN contacts c ON c.id = st.contact_id
+               LEFT JOIN accounts a ON a.id = c.account_id
+               WHERE a.party_id=chs.customer_id AND st.status NOT IN ('resolved','closed')
                AND st.priority='critical') AS critical_open_tickets,
               (SELECT COUNT(*)::int FROM support_tickets st
-               WHERE st.customer_id=chs.customer_id AND st.status NOT IN ('resolved','closed')) AS open_tickets
+               LEFT JOIN contacts c ON c.id = st.contact_id
+               LEFT JOIN accounts a ON a.id = c.account_id
+               WHERE a.party_id=chs.customer_id AND st.status NOT IN ('resolved','closed')) AS open_tickets
        FROM customer_health_scores chs
        JOIN parties p ON p.id=chs.customer_id
        WHERE chs.company_id=$1

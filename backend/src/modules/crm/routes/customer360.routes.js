@@ -651,9 +651,17 @@ router.get('/customer360/:partyId/health-score', requirePermission('crm', 'view'
 
   let unresolvedCritical = 0;
   try {
+    // support_tickets.customer_id FKs accounts(id), not parties.id — the same
+    // dead-join bug already fixed at this file's /service, /timeline, and
+    // /tickets endpoints (contact_id -> accounts.party_id), just missed here.
+    // Was silently caught by this try/catch, always returning 0 and inflating
+    // every customer's support_score to its maximum.
     const r = await pool.query(
-      `SELECT COUNT(*)::int AS cnt FROM support_tickets
-       WHERE customer_id = $1 AND status != 'resolved' AND priority = 'critical'`,
+      `SELECT COUNT(*)::int AS cnt
+       FROM support_tickets st
+       LEFT JOIN contacts c ON c.id = st.contact_id
+       LEFT JOIN accounts a ON a.id = c.account_id
+       WHERE a.party_id = $1 AND st.status != 'resolved' AND st.priority = 'critical'`,
       [partyId]
     );
     unresolvedCritical = r.rows[0]?.cnt || 0;
