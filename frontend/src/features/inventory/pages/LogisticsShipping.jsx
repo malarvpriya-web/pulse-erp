@@ -1,7 +1,9 @@
 // frontend/src/features/inventory/pages/LogisticsShipping.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { Truck, FileText } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
 
 function formatINR(n) {
   const num = parseFloat(n);
@@ -144,7 +146,11 @@ function ShipmentsTab() {
         </div>
       )}
 
-      <div style={{ overflowX:'auto' }}>
+      <TableContainer
+        isEmpty={shipments.length === 0}
+        emptyState={<EmptyState icon={Truck} title="No shipments yet" />}
+        rowCount={shipments.length}
+      >
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
           <thead>
             <tr style={{ background:'#f5f3ff' }}>
@@ -187,12 +193,9 @@ function ShipmentsTab() {
                 </tr>
               );
             })}
-            {!shipments.length && (
-              <tr><td colSpan={10} style={{ padding:24, textAlign:'center', color:'#9ca3af', fontSize:13 }}>No shipments yet.</td></tr>
-            )}
           </tbody>
         </table>
-      </div>
+      </TableContainer>
 
       {tracking && (
         <div style={{ position:'fixed', right:0, top:0, bottom:0, width:360, background:'#fff', boxShadow:'-4px 0 20px rgba(0,0,0,0.12)', zIndex:500, overflowY:'auto', padding:24 }}>
@@ -361,7 +364,11 @@ function EWayBillsTab() {
         </div>
       )}
 
-      <div style={{ overflowX:'auto' }}>
+      <TableContainer
+        isEmpty={bills.length === 0}
+        emptyState={<EmptyState icon={FileText} title="No e-way bills yet" />}
+        rowCount={bills.length}
+      >
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
           <thead>
             <tr style={{ background:'#f5f3ff' }}>
@@ -399,12 +406,9 @@ function EWayBillsTab() {
                 </tr>
               );
             })}
-            {!bills.length && (
-              <tr><td colSpan={8} style={{ padding:24, textAlign:'center', color:'#9ca3af', fontSize:13 }}>No e-way bills yet.</td></tr>
-            )}
           </tbody>
         </table>
-      </div>
+      </TableContainer>
     </div>
   );
 }
@@ -413,26 +417,28 @@ function EWayBillsTab() {
 export default function LogisticsShipping() {
   const [tab, setTab] = useState('Shipments');
 
-  const tabStyle = (t) => ({
-    padding:'9px 20px', border:'none', cursor:'pointer', fontWeight:600, fontSize:13,
-    background: tab===t ? '#6B3FDB' : 'transparent',
-    color:      tab===t ? '#fff'    : '#6B3FDB',
-    borderBottom: tab===t ? '2px solid #6B3FDB' : '2px solid transparent',
-  });
-
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
-      <div style={{ marginBottom:20 }}>
-        <h2 style={{ margin:'0 0 4px', color:'#4c1d95', fontSize:22 }}>Logistics & Shipping</h2>
-        <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Shipment tracking, courier management, and e-way bill recording</p>
-      </div>
-      <div style={{ display:'flex', gap:0, borderBottom:'2px solid #e9e4ff', background:'#fff', borderRadius:'10px 10px 0 0', padding:'0 8px' }}>
-        {['Shipments','E-Way Bills'].map(t=><button key={t} style={tabStyle(t)} onClick={()=>setTab(t)}>{t}</button>)}
-      </div>
-      <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderTop:'none', borderRadius:'0 0 10px 10px', padding:20 }}>
-        {tab==='Shipments'   && <ShipmentsTab />}
-        {tab==='E-Way Bills' && <EWayBillsTab />}
-      </div>
-    </div>
+    <PageLayout>
+      <PageHeader
+        title="Logistics & Shipping"
+        description="Shipment tracking, courier management, and e-way bill recording"
+        filters={
+          <div style={{ display:'flex', gap:6 }}>
+            {['Shipments','E-Way Bills'].map(t => (
+              <button
+                key={t}
+                type="button"
+                className={`pl-icon-btn${tab===t ? ' pl-active' : ''}`}
+                onClick={()=>setTab(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        }
+      />
+      {tab==='Shipments'   && <ShipmentsTab />}
+      {tab==='E-Way Bills' && <EWayBillsTab />}
+    </PageLayout>
   );
 }

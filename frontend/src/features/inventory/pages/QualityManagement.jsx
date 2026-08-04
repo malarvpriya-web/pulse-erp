@@ -1,7 +1,9 @@
 // frontend/src/features/inventory/pages/QualityManagement.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { ClipboardList, FileSearch, ListChecks } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
 
 
 /* ── helpers ── */
@@ -157,7 +159,7 @@ function ChecklistsTab() {
             )}
           </div>
         ))}
-        {!lists.length && <p style={{ color:'#9ca3af', fontSize:13, textAlign:'center', padding:24 }}>No checklists yet. Create your first one above.</p>}
+        {!lists.length && <EmptyState icon={ClipboardList} title="No checklists yet" subtitle="Create your first one above." compact />}
       </div>
     </div>
   );
@@ -290,7 +292,11 @@ function ReportsTab() {
         </div>
       )}
 
-      <div style={{ overflowX:'auto' }}>
+      <TableContainer
+        isEmpty={reports.length === 0}
+        emptyState={<EmptyState icon={FileSearch} title="No inspection reports yet" />}
+        rowCount={reports.length}
+      >
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
           <thead>
             <tr style={{ background:'#f5f3ff' }}>
@@ -311,12 +317,9 @@ function ReportsTab() {
                 <td style={{ padding:'9px 12px' }}>{statusBadge(r.status)}</td>
               </tr>
             ))}
-            {!reports.length && (
-              <tr><td colSpan={5} style={{ padding:24, textAlign:'center', color:'#9ca3af', fontSize:13 }}>No inspection reports yet.</td></tr>
-            )}
           </tbody>
         </table>
-      </div>
+      </TableContainer>
     </div>
   );
 }
@@ -606,7 +609,11 @@ function CAPATab() {
         </div>
       )}
 
-      <div style={{ overflowX:'auto' }}>
+      <TableContainer
+        isEmpty={capas.length === 0}
+        emptyState={<EmptyState icon={ListChecks} title="No CAPA actions yet" />}
+        rowCount={capas.length}
+      >
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
           <thead>
             <tr style={{ background:'#f5f3ff' }}>
@@ -664,12 +671,9 @@ function CAPATab() {
                 </tr>
               );
             })}
-            {!capas.length && (
-              <tr><td colSpan={8} style={{ padding:24, textAlign:'center', color:'#9ca3af', fontSize:13 }}>No CAPA actions yet.</td></tr>
-            )}
           </tbody>
         </table>
-      </div>
+      </TableContainer>
     </div>
   );
 }
@@ -682,29 +686,29 @@ const TABS = ['Inspection Checklists', 'Inspection Reports', 'NCR Board', 'CAPA'
 export default function QualityManagement() {
   const [tab, setTab] = useState('Inspection Checklists');
 
-  const tabStyle = (t) => ({
-    padding:'9px 18px', border:'none', cursor:'pointer', fontWeight:600, fontSize:13,
-    background: tab===t ? '#6B3FDB' : 'transparent',
-    color:      tab===t ? '#fff'    : '#6B3FDB',
-    borderBottom: tab===t ? '2px solid #6B3FDB' : '2px solid transparent',
-  });
-
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
-      <div style={{ marginBottom:20 }}>
-        <h2 style={{ margin:'0 0 4px', color:'#4c1d95', fontSize:22 }}>Quality Management</h2>
-        <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Inspection checklists, NCR tracking, and corrective action management</p>
-      </div>
-
-      <div style={{ display:'flex', gap:0, borderBottom:'2px solid #e9e4ff', background:'#fff', borderRadius:'10px 10px 0 0', padding:'0 8px', flexWrap:'wrap' }}>
-        {TABS.map(t=><button key={t} style={tabStyle(t)} onClick={()=>setTab(t)}>{t}</button>)}
-      </div>
-      <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderTop:'none', borderRadius:'0 0 10px 10px', padding:20 }}>
-        {tab==='Inspection Checklists' && <ChecklistsTab />}
-        {tab==='Inspection Reports'    && <ReportsTab />}
-        {tab==='NCR Board'             && <NCRTab />}
-        {tab==='CAPA'                  && <CAPATab />}
-      </div>
-    </div>
+    <PageLayout>
+      <PageHeader
+        description="Inspection checklists, NCR tracking, and corrective action management"
+        filters={
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            {TABS.map(t => (
+              <button
+                key={t}
+                type="button"
+                className={`pl-icon-btn${tab===t ? ' pl-active' : ''}`}
+                onClick={()=>setTab(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        }
+      />
+      {tab==='Inspection Checklists' && <ChecklistsTab />}
+      {tab==='Inspection Reports'    && <ReportsTab />}
+      {tab==='NCR Board'             && <NCRTab />}
+      {tab==='CAPA'                  && <CAPATab />}
+    </PageLayout>
   );
 }

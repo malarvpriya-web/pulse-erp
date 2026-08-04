@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import { BarChart3, Calendar, CheckCircle2 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { fmtL, fmtNum } from '@/utils/format';
+import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
 
 /*
  * Inventory Report — ₹-value view of the stock ledger, per store & financial year.
@@ -170,212 +172,188 @@ export default function InventoryReport() {
   const tdL = { ...td, textAlign: 'left' };
 
   return (
-    <div className="pulse-page" style={{ padding: 24, background: 'var(--color-bg-page, #f8f9fc)' }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4, color: '#1f2937' }}>Inventory Report</h1>
-      <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 18 }}>
-        ₹-value view of the stock ledger — {storeName}{data?.fy ? ` · ${data.fy.label}` : ''}
-      </p>
-
-      {/* ── Filter panel ── */}
-      <div style={{ background: '#fff', borderRadius: 12, padding: '16px 20px', boxShadow: '0 1px 4px rgba(0,0,0,.08)', marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Select Store</label>
-            <select value={storeId} onChange={e => setStoreId(e.target.value)}
-              style={{ padding: '7px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, minWidth: 200, background: '#fff' }}>
+    <PageLayout>
+      <PageHeader
+        description={`₹-value view of the stock ledger — ${storeName}${data?.fy ? ` · ${data.fy.label}` : ''}`}
+        actions={
+          <button className="pl-icon-btn" onClick={download} disabled={loading}>
+            ⬇ Download
+          </button>
+        }
+        filters={
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+            <select value={storeId} onChange={e => setStoreId(e.target.value)} className="pl-icon-btn">
               <option value="all">All Stores</option>
               {stores.map(s => <option key={s.id} value={s.id}>{s.warehouse_name || s.name}</option>)}
             </select>
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Financial Year</label>
-            <select value={fyYear} onChange={e => setFyYear(+e.target.value)}
-              style={{ padding: '7px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, minWidth: 240, background: '#fff' }}>
+            <select value={fyYear} onChange={e => setFyYear(+e.target.value)} className="pl-icon-btn">
               {FY_OPTS.map(o => <option key={o.year} value={o.year}>{o.label}</option>)}
             </select>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {TABS.map(t => (
+                <button
+                  key={t.key}
+                  type="button"
+                  className={`pl-icon-btn${tab === t.key ? ' pl-active' : ''}`}
+                  onClick={() => setTab(t.key)}
+                >
+                  {t.label}
+                  {t.key === 'place_order' && placeOrder.length > 0 && (
+                    <span style={{ marginLeft: 6, background: '#fee2e2', color: '#dc2626', borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 700 }}>{placeOrder.length}</span>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
-          <div style={{ flex: 1 }} />
-          <button onClick={download} disabled={loading}
-            style={{ background: '#f9fafb', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, padding: '8px 16px', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 13 }}>
-            ⬇ Download
-          </button>
-        </div>
-      </div>
-
-      {/* ── Tabs ── */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid #e5e7eb', flexWrap: 'wrap' }}>
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '9px 16px', fontSize: 13,
-              fontWeight: tab === t.key ? 700 : 500,
-              color: tab === t.key ? '#6B3FDB' : '#6b7280',
-              borderBottom: tab === t.key ? '2px solid #6B3FDB' : '2px solid transparent',
-              marginBottom: -1,
-            }}>
-            {t.label}
-            {t.key === 'place_order' && placeOrder.length > 0 && (
-              <span style={{ marginLeft: 6, background: '#fee2e2', color: '#dc2626', borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 700 }}>{placeOrder.length}</span>
-            )}
-          </button>
-        ))}
-      </div>
+        }
+      />
 
       {error && (
         <div style={{ background: '#fee2e2', color: '#dc2626', borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13, fontWeight: 600 }}>{error}</div>
       )}
-      {loading && <div style={{ textAlign: 'center', padding: 48, color: '#9ca3af', fontSize: 14 }}>Loading report…</div>}
 
-      {!loading && !error && (
-        <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,.08)', overflow: 'hidden' }}>
-
+      {!error && (
+        <>
           {/* ── Category pivot tabs (Purchased / Used / Balance) ── */}
           {pivotField && (
-            categories.length === 0 ? (
-              <Empty label="No ledger data for this store and financial year." />
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ background: '#f9fafb' }}>
-                      <th style={thL}>Category</th>
-                      <th style={th}>Opening</th>
-                      {monthLabels.map(m => <th key={m} style={th}>{m}</th>)}
-                      <th style={{ ...th, background: '#f3f4f6' }}>Total</th>
-                      <th style={{ ...th, background: '#f3f4f6' }}>Closing</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {categories.map((c, i) => {
-                      const rowTotal = c[pivotField].reduce((a, b) => a + b, 0);
-                      return (
-                        <tr key={c.category} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 ? '#fafafa' : '#fff' }}>
-                          <td style={{ ...tdL, fontWeight: 600 }}>{c.category}</td>
-                          <td style={{ ...td, color: '#6b7280' }}>{fmtL(c.opening_value)}</td>
-                          {c[pivotField].map((v, j) => (
-                            <td key={j} style={{ ...td, color: v ? '#111827' : '#d1d5db' }}>{v ? fmtL(v) : '—'}</td>
-                          ))}
-                          <td style={{ ...td, fontWeight: 700, background: '#f9fafb' }}>{fmtL(rowTotal)}</td>
-                          <td style={{ ...td, fontWeight: 700, background: '#f9fafb', color: '#6B3FDB' }}>{fmtL(c.closing_value)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  {pivotTotals && (
-                    <tfoot>
-                      <tr style={{ borderTop: '2px solid #e5e7eb', background: '#f9fafb', fontWeight: 700 }}>
-                        <td style={tdL}>Total</td>
-                        <td style={td}>{fmtL(pivotTotals.opening)}</td>
-                        {pivotTotals.monthly.map((v, j) => <td key={j} style={td}>{v ? fmtL(v) : '—'}</td>)}
-                        <td style={{ ...td, background: '#f3f4f6' }}>{fmtL(pivotTotals.total)}</td>
-                        <td style={{ ...td, background: '#f3f4f6', color: '#6B3FDB' }}>{fmtL(pivotTotals.closing)}</td>
+            <TableContainer
+              loading={loading}
+              isEmpty={categories.length === 0}
+              emptyState={<EmptyState icon={BarChart3} title="No ledger data" subtitle="No ledger data for this store and financial year." />}
+            >
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: '#f9fafb' }}>
+                    <th style={thL}>Category</th>
+                    <th style={th}>Opening</th>
+                    {monthLabels.map(m => <th key={m} style={th}>{m}</th>)}
+                    <th style={{ ...th, background: '#f3f4f6' }}>Total</th>
+                    <th style={{ ...th, background: '#f3f4f6' }}>Closing</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {categories.map((c, i) => {
+                    const rowTotal = c[pivotField].reduce((a, b) => a + b, 0);
+                    return (
+                      <tr key={c.category} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 ? '#fafafa' : '#fff' }}>
+                        <td style={{ ...tdL, fontWeight: 600 }}>{c.category}</td>
+                        <td style={{ ...td, color: '#6b7280' }}>{fmtL(c.opening_value)}</td>
+                        {c[pivotField].map((v, j) => (
+                          <td key={j} style={{ ...td, color: v ? '#111827' : '#d1d5db' }}>{v ? fmtL(v) : '—'}</td>
+                        ))}
+                        <td style={{ ...td, fontWeight: 700, background: '#f9fafb' }}>{fmtL(rowTotal)}</td>
+                        <td style={{ ...td, fontWeight: 700, background: '#f9fafb', color: '#6B3FDB' }}>{fmtL(c.closing_value)}</td>
                       </tr>
-                    </tfoot>
-                  )}
-                </table>
-                <div style={{ padding: '8px 14px', fontSize: 11, color: '#9ca3af', borderTop: '1px solid #f3f4f6' }}>
-                  Closing = Opening + Purchased − Used · Total = sum of {monthLabels.length} monthly columns · values in ₹ (K/L/Cr)
-                </div>
+                    );
+                  })}
+                </tbody>
+                {pivotTotals && (
+                  <tfoot>
+                    <tr style={{ borderTop: '2px solid #e5e7eb', background: '#f9fafb', fontWeight: 700 }}>
+                      <td style={tdL}>Total</td>
+                      <td style={td}>{fmtL(pivotTotals.opening)}</td>
+                      {pivotTotals.monthly.map((v, j) => <td key={j} style={td}>{v ? fmtL(v) : '—'}</td>)}
+                      <td style={{ ...td, background: '#f3f4f6' }}>{fmtL(pivotTotals.total)}</td>
+                      <td style={{ ...td, background: '#f3f4f6', color: '#6B3FDB' }}>{fmtL(pivotTotals.closing)}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+              <div style={{ padding: '8px 14px', fontSize: 11, color: '#9ca3af', borderTop: '1px solid #f3f4f6' }}>
+                Closing = Opening + Purchased − Used · Total = sum of {monthLabels.length} monthly columns · values in ₹ (K/L/Cr)
               </div>
-            )
+            </TableContainer>
           )}
 
           {/* ── Day Report ── */}
           {tab === 'day' && (
-            days.length === 0 ? (
-              <Empty label="No stock movements recorded for this store and financial year." />
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ background: '#f9fafb' }}>
-                      <th style={thL}>Date</th>
-                      <th style={th}>Purchased</th>
-                      <th style={th}>Used</th>
-                      <th style={th}>Net</th>
-                      <th style={th}>Transactions</th>
+            <TableContainer
+              loading={loading}
+              isEmpty={days.length === 0}
+              emptyState={<EmptyState icon={Calendar} title="No movements" subtitle="No stock movements recorded for this store and financial year." />}
+            >
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: '#f9fafb' }}>
+                    <th style={thL}>Date</th>
+                    <th style={th}>Purchased</th>
+                    <th style={th}>Used</th>
+                    <th style={th}>Net</th>
+                    <th style={th}>Transactions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {days.map((d, i) => (
+                    <tr key={d.day} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 ? '#fafafa' : '#fff' }}>
+                      <td style={tdL}>{d.day}</td>
+                      <td style={{ ...td, color: '#16a34a' }}>{fmtL(d.purchased)}</td>
+                      <td style={{ ...td, color: '#dc2626' }}>{fmtL(d.used)}</td>
+                      <td style={{ ...td, fontWeight: 600 }}>{fmtL(d.net)}</td>
+                      <td style={td}>{fmtNum(d.txns)}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {days.map((d, i) => (
-                      <tr key={d.day} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 ? '#fafafa' : '#fff' }}>
-                        <td style={tdL}>{d.day}</td>
-                        <td style={{ ...td, color: '#16a34a' }}>{fmtL(d.purchased)}</td>
-                        <td style={{ ...td, color: '#dc2626' }}>{fmtL(d.used)}</td>
-                        <td style={{ ...td, fontWeight: 600 }}>{fmtL(d.net)}</td>
-                        <td style={td}>{fmtNum(d.txns)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
+                  ))}
+                </tbody>
+              </table>
+            </TableContainer>
           )}
 
           {/* ── Place Order ── */}
           {tab === 'place_order' && (
-            placeOrder.length === 0 ? (
-              <Empty label="No items are at or below their reorder level. 🎉" />
-            ) : (
-              <>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #f3f4f6' }}>
+            <>
+              {!loading && placeOrder.length > 0 && (
+                <div className="pl-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px' }}>
                   <span style={{ fontSize: 13, color: '#6b7280' }}>{selected.size} of {placeOrder.length} selected</span>
                   <button onClick={placeOrders} disabled={placing || selected.size === 0}
                     style={{ background: selected.size ? '#6B3FDB' : '#c4b5fd', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: placing || !selected.size ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13 }}>
                     {placing ? 'Placing…' : `Create Purchase Request${selected.size !== 1 ? 's' : ''}`}
                   </button>
                 </div>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ background: '#f9fafb' }}>
-                        <th style={{ ...thL, width: 36 }}>
-                          <input type="checkbox" checked={selected.size === placeOrder.length && placeOrder.length > 0} onChange={toggleAll} />
-                        </th>
-                        <th style={thL}>Item Code</th>
-                        <th style={thL}>Item Name</th>
-                        <th style={thL}>Category</th>
-                        <th style={th}>Current Stock</th>
-                        <th style={th}>Reorder Level</th>
-                        <th style={th}>Shortfall</th>
-                        <th style={th}>Suggested Qty</th>
-                        <th style={thL}>Preferred Vendor</th>
+              )}
+              <TableContainer
+                loading={loading}
+                isEmpty={placeOrder.length === 0}
+                emptyState={<EmptyState icon={CheckCircle2} title="Nothing to reorder" subtitle="No items are at or below their reorder level." />}
+              >
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f9fafb' }}>
+                      <th style={{ ...thL, width: 36 }}>
+                        <input type="checkbox" checked={selected.size === placeOrder.length && placeOrder.length > 0} onChange={toggleAll} />
+                      </th>
+                      <th style={thL}>Item Code</th>
+                      <th style={thL}>Item Name</th>
+                      <th style={thL}>Category</th>
+                      <th style={th}>Current Stock</th>
+                      <th style={th}>Reorder Level</th>
+                      <th style={th}>Shortfall</th>
+                      <th style={th}>Suggested Qty</th>
+                      <th style={thL}>Preferred Vendor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {placeOrder.map((r, i) => (
+                      <tr key={r.id} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 ? '#fafafa' : '#fff' }}>
+                        <td style={{ ...tdL }}><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                        <td style={tdL}>{r.item_code}</td>
+                        <td style={tdL}>{r.item_name}</td>
+                        <td style={tdL}>{r.category}</td>
+                        <td style={{ ...td, color: '#dc2626', fontWeight: 600 }}>{fmtNum(r.current_stock)}</td>
+                        <td style={td}>{fmtNum(r.reorder_level)}</td>
+                        <td style={{ ...td, color: '#ea580c' }}>{fmtNum(r.shortfall)}</td>
+                        <td style={{ ...td, fontWeight: 600 }}>{fmtNum(r.suggested_qty)}</td>
+                        <td style={{ ...tdL, color: r.preferred_vendor ? '#374151' : '#9ca3af' }}>{r.preferred_vendor || '—'}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {placeOrder.map((r, i) => (
-                        <tr key={r.id} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 ? '#fafafa' : '#fff' }}>
-                          <td style={{ ...tdL }}><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
-                          <td style={tdL}>{r.item_code}</td>
-                          <td style={tdL}>{r.item_name}</td>
-                          <td style={tdL}>{r.category}</td>
-                          <td style={{ ...td, color: '#dc2626', fontWeight: 600 }}>{fmtNum(r.current_stock)}</td>
-                          <td style={td}>{fmtNum(r.reorder_level)}</td>
-                          <td style={{ ...td, color: '#ea580c' }}>{fmtNum(r.shortfall)}</td>
-                          <td style={{ ...td, fontWeight: 600 }}>{fmtNum(r.suggested_qty)}</td>
-                          <td style={{ ...tdL, color: r.preferred_vendor ? '#374151' : '#9ca3af' }}>{r.preferred_vendor || '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
                 <div style={{ padding: '8px 14px', fontSize: 11, color: '#9ca3af', borderTop: '1px solid #f3f4f6' }}>
                   Creating a purchase request routes into the procurement workflow (suggested qty = 2× reorder level − current stock).
                 </div>
-              </>
-            )
+              </TableContainer>
+            </>
           )}
-        </div>
+        </>
       )}
-    </div>
-  );
-}
-
-function Empty({ label }) {
-  return (
-    <div style={{ padding: 48, textAlign: 'center', color: '#9ca3af' }}>
-      <div style={{ fontSize: 34, marginBottom: 10 }}>📊</div>
-      <div style={{ fontSize: 14 }}>{label}</div>
-    </div>
+    </PageLayout>
   );
 }

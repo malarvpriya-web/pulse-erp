@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, Plus, RefreshCw, X, ArrowRightLeft } from 'lucide-react';
+import { Plus, RefreshCw, X, ArrowRightLeft } from 'lucide-react';
 import api from '@/services/api/client';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
+import { PageLayout, PageHeader, TableContainer, FormCard, FormSection, EmptyState } from '@/components/pulse-ui';
 import './StockMovements.css';
 
 
@@ -104,132 +105,129 @@ export default function StockMovements() {
   const inCount  = displayed.filter(m => m.movement_type === 'IN').length;
   const outCount = displayed.filter(m => m.movement_type === 'OUT').length;
 
-  return (
-    <div className="sm-root">
+  const typeFilters = [
+    { label: 'All', val: '' }, { label: '▲ IN', val: 'IN' }, { label: '▼ OUT', val: 'OUT' },
+  ];
 
+  return (
+    <PageLayout>
       {toast && <div className={`sm-toast sm-toast-${toast.type}`}>{toast.msg}</div>}
 
-      {readOnly && <ReadOnlyBanner />}
-
-      <div className="sm-header">
-        <div>
-          <h2 className="sm-title">Stock Movements</h2>
-          <p className="sm-sub">
+      <PageHeader
+        description={
+          <>
             {displayed.length} transactions &nbsp;·&nbsp;
             <span style={{ color: '#15803d' }}>▲ {inCount} IN</span> &nbsp;
             <span style={{ color: '#dc2626' }}>▼ {outCount} OUT</span>
-          </p>
-        </div>
-        <div className="sm-header-r">
-          <button className="sm-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          {!readOnly && (
-            <button className="sm-btn-primary" onClick={() => { setForm(emptyAdj()); setDrawer(true); }}>
-              <Plus size={14} /> Stock Adjustment
-            </button>
-          )}
-        </div>
-      </div>
+          </>
+        }
+        actions={
+          <>
+            <button className="pl-icon-btn" onClick={load}><RefreshCw size={14} /> Refresh</button>
+            {!readOnly && (
+              <button className="pulse-btn-primary" onClick={() => { setForm(emptyAdj()); setDrawer(true); }}>
+                <Plus size={14} /> Stock Adjustment
+              </button>
+            )}
+          </>
+        }
+        search={{ value: search, onChange: setSearch, placeholder: 'Search item, SKU, reference…' }}
+        filters={
+          <div style={{ display: 'flex', gap: 6 }}>
+            {typeFilters.map(t => (
+              <button
+                key={t.val}
+                type="button"
+                className={`pl-icon-btn${fType === t.val ? ' pl-active' : ''}`}
+                onClick={() => setFType(t.val)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        }
+      />
+
+      {readOnly && <ReadOnlyBanner />}
 
       {pendingAdj.length > 0 && (
-        <div className="sm-table-wrap" style={{ marginBottom: 16, border: '1px solid #fde68a', background: '#fffbeb' }}>
+        <div className="pl-card" style={{ marginBottom: 16, borderColor: '#fde68a', background: '#fffbeb' }}>
           <div style={{ padding: '10px 14px', fontWeight: 600, fontSize: 13, color: '#92400e' }}>
             {pendingAdj.length} adjustment{pendingAdj.length === 1 ? '' : 's'} awaiting approval
           </div>
-          <table className="sm-table">
-            <thead>
-              <tr><th>Number</th><th>Type</th><th>Warehouse</th><th>Reason</th><th>Date</th><th></th></tr>
-            </thead>
-            <tbody>
-              {pendingAdj.map(a => (
-                <tr key={a.id}>
-                  <td className="sm-mono">{a.adjustment_number}</td>
-                  <td>{a.adjustment_type === 'increase' ? '▲ Increase' : '▼ Decrease'}</td>
-                  <td>{a.warehouse_id}</td>
-                  <td className="sm-notes">{a.reason || '—'}</td>
-                  <td>{a.adjustment_date ? new Date(a.adjustment_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {!readOnly && (
-                      <>
-                        <button className="sm-btn-primary" style={{ marginRight: 6, padding: '4px 10px', fontSize: 12 }}
-                          disabled={actingId === a.id} onClick={() => handleApprove(a.id)}>
-                          {actingId === a.id ? '…' : 'Approve'}
-                        </button>
-                        <button className="sm-btn-outline" style={{ padding: '4px 10px', fontSize: 12 }}
-                          disabled={actingId === a.id} onClick={() => handleReject(a.id)}>
-                          Reject
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="pl-table-scroll">
+            <table>
+              <thead>
+                <tr><th>Number</th><th>Type</th><th>Warehouse</th><th>Reason</th><th>Date</th><th></th></tr>
+              </thead>
+              <tbody>
+                {pendingAdj.map(a => (
+                  <tr key={a.id}>
+                    <td className="sm-mono">{a.adjustment_number}</td>
+                    <td>{a.adjustment_type === 'increase' ? '▲ Increase' : '▼ Decrease'}</td>
+                    <td>{a.warehouse_id}</td>
+                    <td className="sm-notes">{a.reason || '—'}</td>
+                    <td>{a.adjustment_date ? new Date(a.adjustment_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {!readOnly && (
+                        <>
+                          <button className="pulse-btn-primary" style={{ marginRight: 6, padding: '4px 10px', fontSize: 12 }}
+                            disabled={actingId === a.id} onClick={() => handleApprove(a.id)}>
+                            {actingId === a.id ? '…' : 'Approve'}
+                          </button>
+                          <button className="pulse-btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }}
+                            disabled={actingId === a.id} onClick={() => handleReject(a.id)}>
+                            Reject
+                          </button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
-      {/* filters */}
-      <div className="sm-filters">
-        <div className="sm-search">
-          <Search size={14} />
-          <input placeholder="Search item, SKU, reference…" value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
-        <div className="sm-tabs">
-          {[{ label: 'All', val: '' }, { label: '▲ IN', val: 'IN' }, { label: '▼ OUT', val: 'OUT' }].map(t => (
-            <button key={t.val} className={`sm-tab${fType === t.val ? ' sm-tab-active' : ''}`}
-              onClick={() => setFType(t.val)}>{t.label}</button>
-          ))}
-        </div>
-        {(search || fType) && (
-          <button className="sm-clear-btn" onClick={() => { setSearch(''); setFType(''); }}>
-            <X size={12} /> Clear
-          </button>
-        )}
-      </div>
-
-      {/* table */}
-      {loading ? (
-        <div className="sm-loading"><div className="sm-spinner" /></div>
-      ) : displayed.length === 0 ? (
-        <div className="sm-empty">
-          <ArrowRightLeft size={40} color="#d1d5db" />
-          <p>No movements found</p>
-        </div>
-      ) : (
-        <div className="sm-table-wrap">
-          <table className="sm-table">
-            <thead>
-              <tr>
-                <th>Item</th><th>SKU</th><th>Type</th><th>Qty</th>
-                <th>Reference</th><th>Notes</th><th>By</th><th>Date</th>
+      <TableContainer
+        loading={loading}
+        isEmpty={displayed.length === 0}
+        emptyState={<EmptyState icon={ArrowRightLeft} title="No movements found" />}
+        rowCount={displayed.length}
+      >
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th><th>SKU</th><th>Type</th><th>Qty</th>
+              <th>Reference</th><th>Notes</th><th>By</th><th>Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {displayed.map((m, i) => (
+              <tr key={m.id || i}>
+                <td className="sm-item-name">{m.item_name}</td>
+                <td className="sm-mono">{m.sku}</td>
+                <td>
+                  <span className="sm-badge" style={{
+                    background: m.movement_type === 'IN' ? '#f0fdf4' : '#fef2f2',
+                    color:      m.movement_type === 'IN' ? '#15803d' : '#dc2626',
+                  }}>
+                    {m.movement_type === 'IN' ? '▲ IN' : '▼ OUT'}
+                  </span>
+                </td>
+                <td className="sm-qty" style={{ color: m.movement_type === 'IN' ? '#15803d' : '#dc2626' }}>
+                  {m.movement_type === 'IN' ? '+' : '−'}{parseInt(m.quantity).toLocaleString('en-IN')}
+                </td>
+                <td className="sm-mono">{m.reference || '—'}</td>
+                <td className="sm-notes">{m.notes || '—'}</td>
+                <td>{m.created_by || '—'}</td>
+                <td>{m.created_at ? new Date(m.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
               </tr>
-            </thead>
-            <tbody>
-              {displayed.map((m, i) => (
-                <tr key={m.id || i}>
-                  <td className="sm-item-name">{m.item_name}</td>
-                  <td className="sm-mono">{m.sku}</td>
-                  <td>
-                    <span className="sm-badge" style={{
-                      background: m.movement_type === 'IN' ? '#f0fdf4' : '#fef2f2',
-                      color:      m.movement_type === 'IN' ? '#15803d' : '#dc2626',
-                    }}>
-                      {m.movement_type === 'IN' ? '▲ IN' : '▼ OUT'}
-                    </span>
-                  </td>
-                  <td className="sm-qty" style={{ color: m.movement_type === 'IN' ? '#15803d' : '#dc2626' }}>
-                    {m.movement_type === 'IN' ? '+' : '−'}{parseInt(m.quantity).toLocaleString('en-IN')}
-                  </td>
-                  <td className="sm-mono">{m.reference || '—'}</td>
-                  <td className="sm-notes">{m.notes || '—'}</td>
-                  <td>{m.created_by || '—'}</td>
-                  <td>{m.created_at ? new Date(m.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            ))}
+          </tbody>
+        </table>
+      </TableContainer>
 
       {/* Stock Adjustment Drawer */}
       {drawer && (
@@ -237,58 +235,65 @@ export default function StockMovements() {
           <div className="sm-drawer" onClick={e => e.stopPropagation()}>
             <div className="sm-drawer-hd">
               <h3>Stock Adjustment</h3>
-              <button className="sm-icon-btn" onClick={() => setDrawer(false)}><X size={16} /></button>
+              <button className="pl-icon-btn" onClick={() => setDrawer(false)}><X size={16} /></button>
             </div>
             <div className="sm-drawer-body">
-              <div className="sm-field">
-                <label>Item *</label>
-                <select value={form.item_id}
-                  onChange={e => {
-                    const it = invItems.find(i => String(i.id) === e.target.value);
-                    setForm(f => ({ ...f, item_id: e.target.value, item_name: it?.item_name || '' }));
-                  }}>
-                  <option value="">Select item…</option>
-                  {invItems.map(it => <option key={it.id} value={it.id}>{it.item_name} ({it.item_code})</option>)}
-                </select>
-              </div>
-              <div className="sm-row2">
-                <div className="sm-field">
-                  <label>Adjustment Type</label>
-                  <select value={form.adjustment_type} onChange={e => setForm(f => ({ ...f, adjustment_type: e.target.value }))}>
-                    <option value="Addition">Addition (+)</option>
-                    <option value="Deduction">Deduction (−)</option>
-                    <option value="Transfer">Transfer</option>
-                    <option value="Write-off">Write-off</option>
-                  </select>
-                </div>
-                <div className="sm-field">
-                  <label>Quantity *</label>
-                  <input type="number" min="0.01" step="0.01" value={form.quantity}
-                    onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
-                </div>
-              </div>
-              <div className="sm-field">
-                <label>Reference</label>
-                <input value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="e.g. ADJ-001" />
-              </div>
-              <div className="sm-field">
-                <label>Reason</label>
-                <input value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} placeholder="Brief reason" />
-              </div>
-              <div className="sm-field">
-                <label>Notes</label>
-                <textarea rows={3} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Additional details" />
-              </div>
-            </div>
-            <div className="sm-drawer-ft">
-              <button className="sm-btn-outline" onClick={() => setDrawer(false)}>Cancel</button>
-              <button className="sm-btn-primary" onClick={handleAdjust} disabled={submitting}>
-                {submitting ? 'Saving…' : 'Save Adjustment'}
-              </button>
+              <FormCard
+                footer={
+                  <>
+                    <button className="pulse-btn-secondary" onClick={() => setDrawer(false)}>Cancel</button>
+                    <button className="pulse-btn-primary" onClick={handleAdjust} disabled={submitting}>
+                      {submitting ? 'Saving…' : 'Save Adjustment'}
+                    </button>
+                  </>
+                }
+              >
+                <FormSection title="Adjustment Details" collapsible={false}>
+                  <div className="pulse-field">
+                    <label>Item *</label>
+                    <select value={form.item_id}
+                      onChange={e => {
+                        const it = invItems.find(i => String(i.id) === e.target.value);
+                        setForm(f => ({ ...f, item_id: e.target.value, item_name: it?.item_name || '' }));
+                      }}>
+                      <option value="">Select item…</option>
+                      {invItems.map(it => <option key={it.id} value={it.id}>{it.item_name} ({it.item_code})</option>)}
+                    </select>
+                  </div>
+                  <div className="sm-row2">
+                    <div className="pulse-field">
+                      <label>Adjustment Type</label>
+                      <select value={form.adjustment_type} onChange={e => setForm(f => ({ ...f, adjustment_type: e.target.value }))}>
+                        <option value="Addition">Addition (+)</option>
+                        <option value="Deduction">Deduction (−)</option>
+                        <option value="Transfer">Transfer</option>
+                        <option value="Write-off">Write-off</option>
+                      </select>
+                    </div>
+                    <div className="pulse-field">
+                      <label>Quantity *</label>
+                      <input type="number" min="0.01" step="0.01" value={form.quantity}
+                        onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="pulse-field">
+                    <label>Reference</label>
+                    <input value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="e.g. ADJ-001" />
+                  </div>
+                  <div className="pulse-field">
+                    <label>Reason</label>
+                    <input value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} placeholder="Brief reason" />
+                  </div>
+                  <div className="pulse-field">
+                    <label>Notes</label>
+                    <textarea rows={3} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Additional details" />
+                  </div>
+                </FormSection>
+              </FormCard>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 }

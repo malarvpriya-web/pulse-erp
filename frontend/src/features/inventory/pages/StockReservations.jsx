@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { Package } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './AdvancedInventory.css';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
 
 const StockReservations = ({ setPage }) => {
   const toast = useToast();
@@ -115,7 +117,7 @@ const StockReservations = ({ setPage }) => {
   };
 
   return (
-    <div className="adv-inv-page">
+    <PageLayout>
       <ConfirmDialog
         open={!!pendingHandleCancel}
         title="Cancel Reservation"
@@ -125,12 +127,38 @@ const StockReservations = ({ setPage }) => {
         onConfirm={handleCancel}
         onCancel={() => setPendingHandleCancel(null)}
       />
-      <div className="page-header">
-        <div>
-          <h1>Stock Reservations</h1>
-        </div>
-        <button className="primary-btn" onClick={() => setShowForm(true)}>+ New Reservation</button>
-      </div>
+
+      <PageHeader
+        actions={
+          <button className="pulse-btn-primary" onClick={() => setShowForm(true)}>+ New Reservation</button>
+        }
+        filters={
+          <div style={{ display: 'flex', gap: 8 }}>
+            <select
+              className="pl-icon-btn"
+              value={filters.status}
+              onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+            >
+              <option value="">All statuses</option>
+              <option value="active">Active</option>
+              <option value="partially_consumed">Partially Consumed</option>
+              <option value="fully_consumed">Fully Consumed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <select
+              className="pl-icon-btn"
+              value={filters.reference_type}
+              onChange={(e) => setFilters({ ...filters, reference_type: e.target.value })}
+            >
+              <option value="">All types</option>
+              <option value="project_id">Project</option>
+              <option value="sales_order_id">Sales Order</option>
+              <option value="production_order_id">Production</option>
+              <option value="service_ticket_id">Service</option>
+            </select>
+          </div>
+        }
+      />
 
       {showForm && (
         <div className="modal-overlay">
@@ -204,38 +232,12 @@ const StockReservations = ({ setPage }) => {
         </div>
       )}
 
-      <div className="filters-bar">
-        <div className="filter-group">
-          <label>Status:</label>
-          <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-            <option value="">All</option>
-            <option value="active">Active</option>
-            <option value="partially_consumed">Partially Consumed</option>
-            <option value="fully_consumed">Fully Consumed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
-        </div>
-        <div className="filter-group">
-          <label>Type:</label>
-          <select value={filters.reference_type} onChange={(e) => setFilters({ ...filters, reference_type: e.target.value })}>
-            <option value="">All Types</option>
-            <option value="project_id">Project</option>
-            <option value="sales_order_id">Sales Order</option>
-            <option value="production_order_id">Production</option>
-            <option value="service_ticket_id">Service</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="table-container">
-        {reservations.length === 0 && (
-          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#9ca3af' }}>
-            <div style={{ fontSize: 36, marginBottom: 8 }}>📦</div>
-            <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>No stock reservations found</p>
-            <p style={{ margin: '4px 0 0', fontSize: 12 }}>Create a reservation using the button above.</p>
-          </div>
-        )}
-        {reservations.length > 0 && <table className="data-table">
+      <TableContainer
+        isEmpty={reservations.length === 0}
+        emptyState={<EmptyState icon={Package} title="No stock reservations found" subtitle="Create a reservation using the button above." />}
+        rowCount={reservations.length}
+      >
+        <table>
           <thead>
             <tr>
               <th>Item</th>
@@ -272,9 +274,9 @@ const StockReservations = ({ setPage }) => {
               </tr>
             ))}
           </tbody>
-        </table>}
-      </div>
-    </div>
+        </table>
+      </TableContainer>
+    </PageLayout>
   );
 };
 

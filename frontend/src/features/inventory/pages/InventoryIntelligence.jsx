@@ -2,12 +2,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
+import { AlertTriangle, ArrowRightLeft, TrendingDown, Receipt } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
+import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
 
 
 const fmt = (n) => `₹${parseFloat(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 const fmtK = (n) => { const v = parseFloat(n || 0); return v >= 100000 ? `₹${(v / 100000).toFixed(1)}L` : `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`; };
-const tabStyle = (active) => ({ padding: '8px 20px', border: 'none', background: active ? '#6B3FDB' : 'transparent', color: active ? '#fff' : '#6b7280', cursor: 'pointer', borderRadius: 8, fontWeight: active ? 600 : 400, fontSize: 14 });
 const cardStyle = { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, overflow: 'hidden', marginBottom: 16 };
 const thStyle = { padding: '10px 16px', textAlign: 'left', fontWeight: 600, fontSize: 12, color: '#6b7280', background: '#fafafa', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap' };
 const tdStyle = { padding: '10px 16px', fontSize: 13, color: '#111827', borderBottom: '1px solid #f8f8fc' };
@@ -177,17 +178,24 @@ export default function InventoryIntelligence() {
   const abcPieData = abcData?.stats ? Object.entries(abcData.stats).map(([cat, s]) => ({ name: `Category ${cat}`, value: s.value, count: s.count })) : [];
 
   return (
-    <div style={{ padding: '24px', background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: '#111827', margin: 0 }}>Inventory Intelligence</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 14 }}>Reorder alerts, transfers, ABC analysis & landed costs</p>
-      </div>
-
-      <div style={{ display: 'flex', gap: 4, background: '#f0ebff', padding: 4, borderRadius: 10, marginBottom: 24, width: 'fit-content' }}>
-        {['Reorder Alerts', 'Warehouse Transfers', 'ABC Analysis', 'Landed Costs'].map((t, i) => (
-          <button key={i} style={tabStyle(tab === i)} onClick={() => setTab(i)}>{t}</button>
-        ))}
-      </div>
+    <PageLayout>
+      <PageHeader
+        description="Reorder alerts, transfers, ABC analysis & landed costs"
+        filters={
+          <div style={{ display: 'flex', gap: 6 }}>
+            {['Reorder Alerts', 'Warehouse Transfers', 'ABC Analysis', 'Landed Costs'].map((t, i) => (
+              <button
+                key={i}
+                type="button"
+                className={`pl-icon-btn${tab === i ? ' pl-active' : ''}`}
+                onClick={() => setTab(i)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
       {tab === 0 && (
         <div>
@@ -203,6 +211,9 @@ export default function InventoryIntelligence() {
             <span style={{ fontSize: 13, color: '#6b7280' }}>{alerts.length} items below reorder point</span>
           </div>
 
+          {alerts.length === 0 ? (
+            <EmptyState icon={AlertTriangle} title="No reorder alerts" subtitle="All items are currently above their reorder point." />
+          ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12, marginBottom: 16 }}>
             {alerts.map((a, i) => {
               const stockPct = a.reorder_point > 0 ? (a.current_stock / a.reorder_point) * 100 : 0;
@@ -251,6 +262,7 @@ export default function InventoryIntelligence() {
               );
             })}
           </div>
+          )}
         </div>
       )}
 
@@ -300,7 +312,11 @@ export default function InventoryIntelligence() {
             </div>
           )}
 
-          <div style={cardStyle}>
+          <TableContainer
+            isEmpty={transfers.length === 0}
+            emptyState={<EmptyState icon={ArrowRightLeft} title="No warehouse transfers yet" />}
+            rowCount={transfers.length}
+          >
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>{['Transfer #', 'From', 'To', 'Items', 'Status', 'Transfer Date', 'Received', 'Actions'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
               <tbody>
@@ -324,7 +340,7 @@ export default function InventoryIntelligence() {
                 })}
               </tbody>
             </table>
-          </div>
+          </TableContainer>
         </div>
       )}
 
@@ -372,7 +388,11 @@ export default function InventoryIntelligence() {
                   </ResponsiveContainer>
                 </div>
 
-                <div style={cardStyle}>
+                <TableContainer
+                  isEmpty={(abcData.items || []).length === 0}
+                  emptyState={<EmptyState icon={TrendingDown} title="No ABC items yet" compact />}
+                  rowCount={(abcData.items || []).length}
+                >
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead><tr>{['#', 'Item Code', 'Item Name', 'Annual Value', 'Cumulative %', 'Category'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
                     <tbody>
@@ -390,35 +410,41 @@ export default function InventoryIntelligence() {
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </TableContainer>
               </div>
             </div>
           )}
 
           {abcSubTab === 1 && (
-            <div style={cardStyle}>
-              <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f0f4', background: '#fef3c7', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div>
+              <div style={{ ...cardStyle, padding: '16px 20px', background: '#fef3c7', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 18 }}>⚠️</span>
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14, color: '#92400e' }}>Slow Moving Inventory</div>
                   <div style={{ fontSize: 12, color: '#b45309' }}>Items with no movement in last 90 days — {fmt(slowMovers.reduce((s, i) => s + parseFloat(i.stock_value || 0), 0))} at risk</div>
                 </div>
               </div>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr>{['Item Code', 'Item Name', 'Stock', 'Unit Cost', 'Stock Value', 'Last Movement'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {slowMovers.map((s, i) => (
-                    <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
-                      <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{s.item_code}</td>
-                      <td style={tdStyle}>{s.item_name}</td>
-                      <td style={tdStyle}>{s.current_stock?.toLocaleString('en-IN')}</td>
-                      <td style={tdStyle}>{fmt(s.unit_cost)}</td>
-                      <td style={{ ...tdStyle, fontWeight: 600, color: '#dc2626' }}>{fmt(s.stock_value)}</td>
-                      <td style={tdStyle}>{s.last_movement_date ? new Date(s.last_movement_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'Never'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <TableContainer
+                isEmpty={slowMovers.length === 0}
+                emptyState={<EmptyState icon={TrendingDown} title="No slow-moving items" subtitle="Nothing has been idle for 90+ days." />}
+                rowCount={slowMovers.length}
+              >
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead><tr>{['Item Code', 'Item Name', 'Stock', 'Unit Cost', 'Stock Value', 'Last Movement'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {slowMovers.map((s, i) => (
+                      <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                        <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{s.item_code}</td>
+                        <td style={tdStyle}>{s.item_name}</td>
+                        <td style={tdStyle}>{s.current_stock?.toLocaleString('en-IN')}</td>
+                        <td style={tdStyle}>{fmt(s.unit_cost)}</td>
+                        <td style={{ ...tdStyle, fontWeight: 600, color: '#dc2626' }}>{fmt(s.stock_value)}</td>
+                        <td style={tdStyle}>{s.last_movement_date ? new Date(s.last_movement_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'Never'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableContainer>
             </div>
           )}
         </div>
@@ -469,7 +495,11 @@ export default function InventoryIntelligence() {
             </div>
           )}
 
-          <div style={cardStyle}>
+          <TableContainer
+            isEmpty={landedCosts.length === 0}
+            emptyState={<EmptyState icon={Receipt} title="No landed cost entries yet" />}
+            rowCount={landedCosts.length}
+          >
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>{['PO Number', 'Vendor', 'Freight', 'Customs', 'Insurance', 'Other', 'Total', 'Method', 'Status', 'Actions'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
               <tbody>
@@ -493,7 +523,7 @@ export default function InventoryIntelligence() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableContainer>
         </div>
       )}
       {showReorderSetup && (
@@ -560,6 +590,6 @@ export default function InventoryIntelligence() {
           </div>
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 }

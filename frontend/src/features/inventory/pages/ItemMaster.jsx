@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, Plus, RefreshCw, X, Package, Edit2, Store, Boxes, ArrowDownToLine, ArrowUpFromLine, SlidersHorizontal, History, Trash2, Columns3, Download, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, RefreshCw, X, Package, Edit2, Store, Boxes, ArrowDownToLine, ArrowUpFromLine, SlidersHorizontal, History, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import api from '@/services/api/client';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
 import {
   getCategories, createCategory,
   getItemVendorPrices, createItemVendorPrice, updateItemVendorPrice, deleteItemVendorPrice,
@@ -86,7 +87,6 @@ export default function ItemMaster({ setPage: _setPage }) {
   const [stockBusy,  setStockBusy]  = useState(false);
   const [sortKey,    setSortKey]    = useState('item_code');
   const [sortDir,    setSortDir]    = useState('asc');
-  const [colMenu,    setColMenu]    = useState(false);
   const [hiddenCols, setHiddenCols] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('im_hidden_cols') || '[]')); }
     catch { return new Set(); }
@@ -397,147 +397,114 @@ export default function ItemMaster({ setPage: _setPage }) {
   };
 
   return (
-    <div className="im-root">
+    <PageLayout>
 
       {toast && <div className={`im-toast im-toast-${toast.type}`}>{toast.msg}</div>}
 
+      <PageHeader
+        description={`${displayed.length} item${displayed.length !== 1 ? 's' : ''}`}
+        actions={
+          <>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '5px 10px', borderRadius: 8,
+              border: `1px solid ${store ? '#ddd6fe' : '#fde68a'}`,
+              background: store ? '#faf9ff' : '#fffbeb',
+            }} title="Stock balances and stock actions are scoped to this store">
+              <Store size={14} color={store ? '#6B3FDB' : '#d97706'} />
+              <span style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>Store:</span>
+              <select value={store} onChange={e => changeStore(e.target.value)}
+                style={{ border: 'none', background: 'transparent', fontSize: 13, fontWeight: 600,
+                         color: store ? '#1f2937' : '#b45309', cursor: 'pointer', outline: 'none', maxWidth: 180 }}>
+                <option value="">Not selected</option>
+                {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouse_name || w.name}</option>)}
+              </select>
+            </div>
+            <button className="pl-icon-btn" onClick={load}><RefreshCw size={14} /></button>
+            {!readOnly && <button className="pulse-btn-primary" onClick={openAdd}><Plus size={14} /> Add Item</button>}
+          </>
+        }
+        search={{ value: search, onChange: setSearch, placeholder: 'Search by name or item code…' }}
+        filters={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select className="pl-icon-btn" value={fType} onChange={e => setFType(e.target.value)}>
+              <option value="">All Types</option>
+              {ITEM_TYPES.map(c => <option key={c}>{c}</option>)}
+            </select>
+            <select className="pl-icon-btn" value={fCat} onChange={e => setFCat(e.target.value)}>
+              <option value="">All Categories</option>
+              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            {(search || fType || fCat) && (
+              <button className="pl-icon-btn" onClick={() => { setSearch(''); setFType(''); setFCat(''); }}>
+                <X size={12} /> Clear
+              </button>
+            )}
+          </div>
+        }
+      />
+
       {readOnly && <ReadOnlyBanner />}
 
-      <div className="im-header">
-        <div>
-          <h2 className="im-title">Item Master</h2>
-          <p className="im-sub">{displayed.length} item{displayed.length !== 1 ? 's' : ''}</p>
-        </div>
-        <div className="im-header-r">
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '5px 10px', borderRadius: 8,
-            border: `1px solid ${store ? '#ddd6fe' : '#fde68a'}`,
-            background: store ? '#faf9ff' : '#fffbeb',
-          }} title="Stock balances and stock actions are scoped to this store">
-            <Store size={14} color={store ? '#6B3FDB' : '#d97706'} />
-            <span style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>Store:</span>
-            <select value={store} onChange={e => changeStore(e.target.value)}
-              style={{ border: 'none', background: 'transparent', fontSize: 13, fontWeight: 600,
-                       color: store ? '#1f2937' : '#b45309', cursor: 'pointer', outline: 'none', maxWidth: 180 }}>
-              <option value="">Not selected</option>
-              {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouse_name || w.name}</option>)}
+      <TableContainer
+        loading={loading}
+        isEmpty={sorted.length === 0}
+        emptyState={<EmptyState icon={Package} title="No items found" />}
+        columns={COLUMNS.map(c => ({ key: c.key, label: c.label }))}
+        hiddenColumns={hiddenCols}
+        onToggleColumn={toggleCol}
+        onExport={sorted.length > 0 ? exportCsv : undefined}
+        rowCount={sorted.length}
+        toolbarRight={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#6b7280' }}>
+            <span>Rows</span>
+            <select className="pl-icon-btn" value={perPage} onChange={e => setPerPage(Number(e.target.value))}>
+              {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+              <option value={0}>All</option>
             </select>
+            {perPage !== 0 && totalPages > 1 && (
+              <>
+                <button className="pl-icon-btn" disabled={curPage <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>‹</button>
+                <span style={{ minWidth: 60, textAlign: 'center' }}>{curPage} / {totalPages}</span>
+                <button className="pl-icon-btn" disabled={curPage >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>›</button>
+              </>
+            )}
           </div>
-          <button className="im-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          {!readOnly && <button className="im-btn-primary" onClick={openAdd}><Plus size={14} /> Add Item</button>}
-        </div>
-      </div>
-
-      {/* filters */}
-      <div className="im-filters">
-        <div className="im-search">
-          <Search size={14} />
-          <input placeholder="Search by name or item code…" value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
-        <select className="im-select" value={fType} onChange={e => setFType(e.target.value)}>
-          <option value="">All Types</option>
-          {ITEM_TYPES.map(c => <option key={c}>{c}</option>)}
-        </select>
-        <select className="im-select" value={fCat} onChange={e => setFCat(e.target.value)}>
-          <option value="">All Categories</option>
-          {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        {(search || fType || fCat) && (
-          <button className="im-clear-btn" onClick={() => { setSearch(''); setFType(''); setFCat(''); }}>
-            <X size={12} /> Clear
-          </button>
-        )}
-      </div>
-
-      {/* grid toolbar — column visibility, export, rows per page */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, position: 'relative' }}>
-        <div style={{ position: 'relative' }}>
-          <button className="im-btn-outline" onClick={() => setColMenu(o => !o)} title="Show / hide columns">
-            <Columns3 size={14} /> Columns{hiddenCols.size ? ` (${visibleCols.length}/${COLUMNS.length})` : ''}
-          </button>
-          {colMenu && (
-            <>
-              <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setColMenu(false)} />
-              <div style={{ position: 'absolute', top: '110%', left: 0, zIndex: 41, background: '#fff',
-                            border: '1px solid #e5e7eb', borderRadius: 8, boxShadow: '0 10px 30px rgba(0,0,0,.12)',
-                            padding: 8, minWidth: 190 }}>
-                {COLUMNS.map(c => (
-                  <label key={c.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
-                                              fontSize: 13, cursor: 'pointer', borderRadius: 6 }}>
-                    <input type="checkbox" checked={!hiddenCols.has(c.key)} onChange={() => toggleCol(c.key)} />
+        }
+      >
+        <table>
+          <thead>
+            <tr>
+              {visibleCols.map(c => (
+                <th key={c.key} title={c.title} onClick={() => toggleSort(c.key)}
+                    style={{ cursor: 'pointer', userSelect: 'none', textAlign: c.align || undefined }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                     {c.label}
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-
-        <button className="im-btn-outline" onClick={exportCsv} disabled={sorted.length === 0} title="Export to Excel (CSV)">
-          <Download size={14} /> Excel
-        </button>
-
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#6b7280' }}>
-          <span>Rows</span>
-          <select className="im-select" value={perPage} onChange={e => setPerPage(Number(e.target.value))} style={{ minWidth: 78 }}>
-            {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
-            <option value={0}>All</option>
-          </select>
-          {perPage !== 0 && totalPages > 1 && (
-            <>
-              <button className="im-icon-btn" disabled={curPage <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>‹</button>
-              <span style={{ minWidth: 74, textAlign: 'center' }}>{curPage} / {totalPages}</span>
-              <button className="im-icon-btn" disabled={curPage >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>›</button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* table */}
-      {loading ? (
-        <div className="im-loading"><div className="im-spinner" /></div>
-      ) : sorted.length === 0 ? (
-        <div className="im-empty">
-          <Package size={40} color="#d1d5db" />
-          <p>No items found</p>
-        </div>
-      ) : (
-        <div className="im-table-wrap">
-          <table className="im-table">
-            <thead>
-              <tr>
-                {visibleCols.map(c => (
-                  <th key={c.key} title={c.title} onClick={() => toggleSort(c.key)}
-                      style={{ cursor: 'pointer', userSelect: 'none', textAlign: c.align || undefined }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                      {c.label}
-                      {sortKey === c.key && (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
-                    </span>
-                  </th>
-                ))}
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {pageRows.map(it => (
-                <tr key={it.id} className="im-row" style={readOnly ? { cursor: 'default' } : undefined} onClick={() => { if (!readOnly) openEdit(it); }}>
-                  {visibleCols.map(c => (
-                    <td key={c.key} className={c.cls} style={{ textAlign: c.align || undefined }}>{c.render(it)}</td>
-                  ))}
-                  <td onClick={e => e.stopPropagation()}>
-                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      <button className="im-edit-btn" title="Stock actions & transactions" onClick={() => openStock(it)}><Boxes size={13} /></button>
-                      {!readOnly && <button className="im-edit-btn" title="Edit item" onClick={() => openEdit(it)}><Edit2 size={13} /></button>}
-                      {!readOnly && <button className="im-edit-btn" title="Delete item" onClick={() => setConfirmDel(it)}><Trash2 size={13} /></button>}
-                    </div>
-                  </td>
-                </tr>
+                    {sortKey === c.key && (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+                  </span>
+                </th>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.map(it => (
+              <tr key={it.id} className="im-row" style={readOnly ? { cursor: 'default' } : undefined} onClick={() => { if (!readOnly) openEdit(it); }}>
+                {visibleCols.map(c => (
+                  <td key={c.key} className={c.cls} style={{ textAlign: c.align || undefined }}>{c.render(it)}</td>
+                ))}
+                <td onClick={e => e.stopPropagation()}>
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    <button className="im-edit-btn" title="Stock actions & transactions" onClick={() => openStock(it)}><Boxes size={13} /></button>
+                    {!readOnly && <button className="im-edit-btn" title="Edit item" onClick={() => openEdit(it)}><Edit2 size={13} /></button>}
+                    {!readOnly && <button className="im-edit-btn" title="Delete item" onClick={() => setConfirmDel(it)}><Trash2 size={13} /></button>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableContainer>
 
       {/* Add / Edit Drawer */}
       {drawer !== null && (
@@ -955,6 +922,6 @@ export default function ItemMaster({ setPage: _setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 }

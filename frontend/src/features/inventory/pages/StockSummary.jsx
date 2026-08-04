@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Search, RefreshCw, Download, AlertTriangle, Package,
   TrendingDown, IndianRupee, Warehouse, X,
   ChevronUp, ChevronDown, ChevronsUpDown,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageLayout, PageHeader, KPICardGrid, KPICard, ContentCard, TableContainer, EmptyState } from '@/components/pulse-ui';
 import './StockSummary.css';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -32,20 +33,6 @@ const STOCK_STATUS = (bal, reorder) => {
   if (b <= r * 1.5) return { key: 'warning',  label: 'Watch',        color: '#ca8a04', bg: '#fefce8' };
   return              { key: 'ok',       label: 'In Stock',     color: '#16a34a', bg: '#f0fdf4' };
 };
-
-// ── KPI card ──────────────────────────────────────────────────────────────────
-function KpiCard({ icon: Icon, label, value, sub, color, bg, alert }) {
-  return (
-    <div className={`ss-kpi${alert ? ' ss-kpi-alert' : ''}`} style={{ '--kc': color, '--kb': bg }}>
-      <div className="ss-kpi-icon"><Icon size={20} /></div>
-      <div className="ss-kpi-body">
-        <div className="ss-kpi-value">{value}</div>
-        <div className="ss-kpi-label">{label}</div>
-        {sub && <div className="ss-kpi-sub">{sub}</div>}
-      </div>
-    </div>
-  );
-}
 
 // ── Stock level bar ───────────────────────────────────────────────────────────
 function StockBar({ balance, reorder }) {
@@ -100,7 +87,6 @@ export default function StockSummary() {
   const [sortDir,    setSortDir]    = useState('asc');
   const [page,       setPage]       = useState(1);
   const PAGE_SIZE = 20;
-  const searchRef = useRef(null);
 
   // ── Fetch ────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -192,136 +178,99 @@ export default function StockSummary() {
   const hasFilters   = search || whFilter || typeFilter || tab !== 'all';
 
   return (
-    <div className="ss-root">
-
-      {/* ── Header ── */}
-      <div className="ss-header">
-        <div className="ss-header-left">
-          <div className="ss-header-icon"><Package size={22} /></div>
-          <div>
-            <h1 className="ss-title">Stock Summary</h1>
-            <p className="ss-subtitle">
-              {loading ? 'Loading…' : `${stock.length.toLocaleString()} items across ${warehouses.length} warehouses`}
-            </p>
+    <PageLayout>
+      <PageHeader
+        description={loading ? 'Loading…' : `${stock.length.toLocaleString()} items across ${warehouses.length} warehouses`}
+        actions={
+          <>
+            <button className="pl-icon-btn" onClick={load} disabled={loading}>
+              <RefreshCw size={14} className={loading ? 'ss-spin' : ''} /> Refresh
+            </button>
+            <button className="pl-icon-btn" onClick={() => exportCsv(rows)} disabled={!rows.length}>
+              <Download size={14} /> Export CSV
+            </button>
+          </>
+        }
+        search={{ value: search, onChange: v => { setSearch(v); setPage(1); }, placeholder: 'Search item, code, warehouse…' }}
+        filters={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div className="ss-tabs">
+              {[
+                { key: 'all', label: 'All Stock',   count: stock.length },
+                { key: 'low', label: 'Low Stock',   count: lowCount,  alert: true },
+                { key: 'out', label: 'Out of Stock', count: outCount, alert: true },
+              ].map(t => (
+                <button
+                  key={t.key}
+                  className={`ss-tab${tab === t.key ? ' ss-tab-active' : ''}${t.alert && (t.count > 0) ? ' ss-tab-alert' : ''}`}
+                  onClick={() => { setTab(t.key); setPage(1); }}
+                >
+                  {t.label}
+                  {t.count > 0 && <span className="ss-tab-badge">{t.count}</span>}
+                </button>
+              ))}
+            </div>
+            <select className="pl-icon-btn" value={whFilter} onChange={e => { setWhFilter(e.target.value); setPage(1); }}>
+              <option value="">All Warehouses</option>
+              {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouse_name}</option>)}
+            </select>
+            {hasFilters && (
+              <button className="pl-icon-btn" onClick={clearFilters}>
+                <X size={12} /> Clear
+              </button>
+            )}
           </div>
-        </div>
-        <div className="ss-header-right">
-          <button className="ss-btn ss-btn-ghost" onClick={load} disabled={loading}>
-            <RefreshCw size={14} className={loading ? 'ss-spin' : ''} /> Refresh
-          </button>
-          <button className="ss-btn ss-btn-ghost" onClick={() => exportCsv(rows)} disabled={!rows.length}>
-            <Download size={14} /> Export CSV
-          </button>
-        </div>
-      </div>
+        }
+      />
 
       {/* ── KPI row ── */}
-      <div className="ss-kpi-row">
-        <KpiCard icon={Package}       label="Total SKUs"     value={stock.length.toLocaleString()}  sub={`${typeBreakdown.length} types`}                   color="#4B2DCE" bg="#F2EFFE" />
-        <KpiCard icon={IndianRupee}    label="Total Value"    value={fmtVal(totalValue)}             sub="at avg. cost"                                       color="#0891b2" bg="#ecfeff" />
-        <KpiCard icon={Warehouse}     label="Warehouses"     value={warehouses.length}              sub="active locations"                                   color="#16a34a" bg="#f0fdf4" />
-        <KpiCard icon={TrendingDown}  label="Low Stock"      value={lowCount}                       sub={lowCount ? 'need reorder' : 'all levels healthy'}   color="#d97706" bg="#fffbeb" alert={lowCount > 0} />
-        <KpiCard icon={AlertTriangle} label="Out of Stock"   value={outCount}                       sub={outCount ? 'immediate action' : 'none'}             color="#dc2626" bg="#fef2f2" alert={outCount > 0} />
-      </div>
+      <KPICardGrid>
+        <KPICard icon={Package}       label="Total SKUs"   value={stock.length.toLocaleString()} sub={`${typeBreakdown.length} types`} />
+        <KPICard icon={IndianRupee}   label="Total Value"  value={fmtVal(totalValue)} sub="at avg. cost" tone="info" />
+        <KPICard icon={Warehouse}     label="Warehouses"   value={warehouses.length} sub="active locations" tone="success" />
+        <KPICard icon={TrendingDown}  label="Low Stock"    value={lowCount} sub={lowCount ? 'need reorder' : 'all levels healthy'} tone="warning" />
+        <KPICard icon={AlertTriangle} label="Out of Stock" value={outCount} sub={outCount ? 'immediate action' : 'none'} tone="danger" />
+      </KPICardGrid>
 
       {/* ── Type breakdown ── */}
       {typeBreakdown.length > 0 && (
-        <div className="ss-breakdown">
-          {typeBreakdown.map(t => {
-            const cfg = t.cfg || { label: t.key, color: '#6b7280', bg: '#f3f4f6' };
-            const valPct = totalValue > 0 ? Math.round((t.value / totalValue) * 100) : 0;
-            return (
-              <button
-                key={t.key}
-                className={`ss-type-chip${typeFilter === t.key ? ' ss-type-chip-active' : ''}`}
-                style={{ '--tc': cfg.color, '--tb': cfg.bg }}
-                onClick={() => { setTypeFilter(typeFilter === t.key ? '' : t.key); setPage(1); }}
-              >
-                <span className="ss-type-dot" />
-                <span className="ss-type-label">{cfg.label}</span>
-                <span className="ss-type-count">{t.count}</span>
-                <span className="ss-type-pct">{valPct}% val</span>
-              </button>
-            );
-          })}
-        </div>
+        <ContentCard>
+          <div className="ss-breakdown">
+            {typeBreakdown.map(t => {
+              const cfg = t.cfg || { label: t.key, color: '#6b7280', bg: '#f3f4f6' };
+              const valPct = totalValue > 0 ? Math.round((t.value / totalValue) * 100) : 0;
+              return (
+                <button
+                  key={t.key}
+                  className={`ss-type-chip${typeFilter === t.key ? ' ss-type-chip-active' : ''}`}
+                  style={{ '--tc': cfg.color, '--tb': cfg.bg }}
+                  onClick={() => { setTypeFilter(typeFilter === t.key ? '' : t.key); setPage(1); }}
+                >
+                  <span className="ss-type-dot" />
+                  <span className="ss-type-label">{cfg.label}</span>
+                  <span className="ss-type-count">{t.count}</span>
+                  <span className="ss-type-pct">{valPct}% val</span>
+                </button>
+              );
+            })}
+          </div>
+        </ContentCard>
       )}
 
-      {/* ── Toolbar ── */}
-      <div className="ss-toolbar">
-        <div className="ss-toolbar-left">
-          {/* Tabs */}
-          <div className="ss-tabs">
-            {[
-              { key: 'all', label: 'All Stock',   count: stock.length },
-              { key: 'low', label: 'Low Stock',   count: lowCount,  alert: true },
-              { key: 'out', label: 'Out of Stock', count: outCount, alert: true },
-            ].map(t => (
-              <button
-                key={t.key}
-                className={`ss-tab${tab === t.key ? ' ss-tab-active' : ''}${t.alert && (t.count > 0) ? ' ss-tab-alert' : ''}`}
-                onClick={() => { setTab(t.key); setPage(1); }}
-              >
-                {t.label}
-                {t.count > 0 && <span className="ss-tab-badge">{t.count}</span>}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="ss-toolbar-right">
-          {/* Search */}
-          <div className="ss-search-wrap">
-            <Search size={13} className="ss-search-icon" />
-            <input
-              ref={searchRef}
-              className="ss-search"
-              placeholder="Search item, code, warehouse…"
-              value={search}
-              onChange={e => { setSearch(e.target.value); setPage(1); }}
-            />
-            {search && <button className="ss-search-clear" onClick={() => setSearch('')}><X size={12} /></button>}
-          </div>
-
-          {/* Warehouse filter */}
-          <select className="ss-select" value={whFilter} onChange={e => { setWhFilter(e.target.value); setPage(1); }}>
-            <option value="">All Warehouses</option>
-            {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouse_name}</option>)}
-          </select>
-
-          {/* Clear filters */}
-          {hasFilters && (
-            <button className="ss-btn ss-btn-ghost ss-btn-sm" onClick={clearFilters}>
-              <X size={12} /> Clear
-            </button>
-          )}
-        </div>
-      </div>
-
       {/* ── Table ── */}
-      <div className="ss-table-wrap">
-        {loading ? (
-          <div className="ss-loading">
-            {[...Array(8)].map((_, i) => (
-              <div key={i} className="ss-skeleton-row">
-                {[...Array(8)].map((_, j) => <div key={j} className="ss-skeleton-cell" style={{ width: `${[80,160,100,60,40,70,90,70][j]}px` }} />)}
-              </div>
-            ))}
-          </div>
-        ) : pageRows.length === 0 ? (
-          <div className="ss-empty">
-            <div className="ss-empty-icon">
-              {tab === 'low' ? <TrendingDown size={44} /> : tab === 'out' ? <AlertTriangle size={44} /> : <Package size={44} />}
-            </div>
-            <div className="ss-empty-title">
-              {tab === 'low' ? 'No low-stock items' : tab === 'out' ? 'No out-of-stock items' : 'No items found'}
-            </div>
-            <div className="ss-empty-sub">
-              {hasFilters ? 'Try adjusting your filters' : tab !== 'all' ? 'Great — all stock levels are healthy!' : 'Add stock items to get started'}
-            </div>
-            {hasFilters && <button className="ss-btn ss-btn-primary ss-btn-sm" onClick={clearFilters}>Clear filters</button>}
-          </div>
-        ) : (
+      <TableContainer
+        loading={loading}
+        isEmpty={!loading && pageRows.length === 0}
+        emptyState={
+          <EmptyState
+            icon={tab === 'low' ? TrendingDown : tab === 'out' ? AlertTriangle : Package}
+            title={tab === 'low' ? 'No low-stock items' : tab === 'out' ? 'No out-of-stock items' : 'No items found'}
+            subtitle={hasFilters ? 'Try adjusting your filters' : tab !== 'all' ? 'Great — all stock levels are healthy!' : 'Add stock items to get started'}
+            action={hasFilters && <button className="pulse-btn-primary" onClick={clearFilters}>Clear filters</button>}
+          />
+        }
+      >
+        {pageRows.length > 0 && (
           <table className="ss-table">
             <thead>
               <tr>
@@ -387,7 +336,7 @@ export default function StockSummary() {
             </tbody>
           </table>
         )}
-      </div>
+      </TableContainer>
 
       {/* ── Pagination ── */}
       {!loading && rows.length > PAGE_SIZE && (
@@ -411,6 +360,6 @@ export default function StockSummary() {
           </div>
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 }

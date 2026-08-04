@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, Plus, RefreshCw, X, Hash, Eye, Clock, ChevronDown } from 'lucide-react';
+import { Plus, RefreshCw, X, Hash, Eye, Clock, ChevronDown, CheckCircle2, Wrench, AlertTriangle } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageLayout, PageHeader, KPICardGrid, KPICard, TableContainer, EmptyState } from '@/components/pulse-ui';
 
 const STATUS_OPTIONS = ['in_stock', 'dispatched', 'in_service', 'returned', 'scrapped'];
 
@@ -148,7 +149,7 @@ export default function SerialTracking() {
   const st = (s) => STATUS_STYLE[s] || { bg: '#f3f4f6', color: '#374151', label: s };
 
   return (
-    <div style={{ padding: '24px', fontFamily: 'Inter, sans-serif' }}>
+    <PageLayout>
 
       {toast && (
         <div style={{
@@ -160,126 +161,97 @@ export default function SerialTracking() {
         }}>{toast.msg}</div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Serial Number Tracking</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>{serials.length} serialised units</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{ padding: '8px', border: '1px solid #e5e7eb', borderRadius: 6, background: '#fff', cursor: 'pointer' }}>
-            <RefreshCw size={14} />
-          </button>
-          <button onClick={openAdd} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            <Plus size={14} /> Add Serial
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Serial Number Tracking"
+        description={`${serials.length} serialised units`}
+        actions={
+          <>
+            <button className="pl-icon-btn" onClick={load}><RefreshCw size={14} /></button>
+            <button className="pulse-btn-primary" onClick={openAdd}><Plus size={14} /> Add Serial</button>
+          </>
+        }
+        search={{ value: search, onChange: setSearch, placeholder: 'Search serial number, item name, item code…' }}
+        filters={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select className="pl-icon-btn" value={fStatus} onChange={e => setFStatus(e.target.value)}>
+              <option value="">All Statuses</option>
+              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{st(s).label}</option>)}
+            </select>
+            {(search || fStatus) && (
+              <button className="pl-icon-btn" onClick={() => { setSearch(''); setFStatus(''); }}>
+                <X size={12} /> Clear
+              </button>
+            )}
+          </div>
+        }
+      />
 
       {/* Stats */}
       {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
-          {[
-            { label: 'Total Units', value: stats.total,        color: '#1d4ed8' },
-            { label: 'In Stock',    value: stats.in_stock,     color: '#15803d' },
-            { label: 'In Service',  value: stats.in_service,   color: '#92400e' },
-            { label: 'Warranty Expiring (30d)', value: stats.warranty_expiring_30d, color: '#dc2626' },
-          ].map(({ label, value, color }) => (
-            <div key={label} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 18px' }}>
-              <div style={{ fontSize: 22, fontWeight: 700, color }}>{value ?? 0}</div>
-              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{label}</div>
-            </div>
-          ))}
-        </div>
+        <KPICardGrid>
+          <KPICard icon={Hash} label="Total Units" value={stats.total ?? 0} tone="info" />
+          <KPICard icon={CheckCircle2} label="In Stock" value={stats.in_stock ?? 0} tone="success" />
+          <KPICard icon={Wrench} label="In Service" value={stats.in_service ?? 0} tone="warning" />
+          <KPICard icon={AlertTriangle} label="Warranty Expiring (30d)" value={stats.warranty_expiring_30d ?? 0} tone="danger" />
+        </KPICardGrid>
       )}
-
-      {/* Filters */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, border: '1px solid #e5e7eb', borderRadius: 6, padding: '6px 10px', background: '#fff', flex: 1 }}>
-          <Search size={14} color="#9ca3af" />
-          <input
-            placeholder="Search serial number, item name, item code…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            style={{ border: 'none', outline: 'none', fontSize: 13, width: '100%', color: '#374151' }}
-          />
-        </div>
-        <select
-          value={fStatus}
-          onChange={e => setFStatus(e.target.value)}
-          style={{ border: '1px solid #e5e7eb', borderRadius: 6, padding: '6px 10px', fontSize: 13, background: '#fff', cursor: 'pointer' }}
-        >
-          <option value="">All Statuses</option>
-          {STATUS_OPTIONS.map(s => <option key={s} value={s}>{st(s).label}</option>)}
-        </select>
-        {(search || fStatus) && (
-          <button onClick={() => { setSearch(''); setFStatus(''); }}
-            style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px', border: '1px solid #e5e7eb', borderRadius: 6, background: '#fff', cursor: 'pointer', fontSize: 12 }}>
-            <X size={12} /> Clear
-          </button>
-        )}
-      </div>
 
       {/* Table */}
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading…</div>
-      ) : serials.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>
-          <Hash size={40} strokeWidth={1} />
-          <p style={{ marginTop: 12 }}>No serial numbers found</p>
-        </div>
-      ) : (
-        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                {['Serial #', 'Item', 'Manufacturer', 'Batch', 'Warehouse / Location', 'Mfg Date', 'Warranty Expiry', 'Status', ''].map(h => (
-                  <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {serials.map((s, i) => {
-                const style = st(s.status);
-                const today = new Date();
-                const warrantyDate = s.warranty_expiry ? new Date(s.warranty_expiry) : null;
-                const warrantyExpired = warrantyDate && warrantyDate < today;
-                return (
-                  <tr key={s.id} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 === 0 ? '#fff' : '#fafafa', cursor: 'pointer' }}
-                    onClick={() => openDetail(s)}>
-                    <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontWeight: 600, color: '#111827' }}>{s.serial_number}</td>
-                    <td style={{ padding: '10px 12px' }}>
-                      <div style={{ fontWeight: 500 }}>{s.item_name}</div>
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>{s.item_code}</div>
-                    </td>
-                    <td style={{ padding: '10px 12px', color: '#6b7280' }}>{s.manufacturer || '—'}</td>
-                    <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{s.batch_number || '—'}</td>
-                    <td style={{ padding: '10px 12px', color: '#374151' }}>
-                      {s.warehouse_name || s.current_location || '—'}
-                    </td>
-                    <td style={{ padding: '10px 12px', color: '#6b7280', fontSize: 12 }}>
-                      {s.manufactured_date ? new Date(s.manufactured_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
-                    </td>
-                    <td style={{ padding: '10px 12px', fontSize: 12, color: warrantyExpired ? '#dc2626' : '#374151', fontWeight: warrantyExpired ? 600 : 400 }}>
-                      {warrantyDate ? warrantyDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
-                      {warrantyExpired && <span style={{ marginLeft: 4, fontSize: 10, background: '#fef2f2', color: '#dc2626', padding: '1px 4px', borderRadius: 3 }}>EXPIRED</span>}
-                    </td>
-                    <td style={{ padding: '10px 12px' }}>
-                      <span style={{ background: style.bg, color: style.color, padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 500 }}>{style.label}</span>
-                    </td>
-                    <td style={{ padding: '10px 12px' }} onClick={e => e.stopPropagation()}>
-                      <button onClick={() => openEdit(s)}
-                        style={{ padding: '4px 8px', fontSize: 12, border: '1px solid #e5e7eb', borderRadius: 4, background: '#fff', cursor: 'pointer' }}>
-                        Edit
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <TableContainer
+        loading={loading}
+        isEmpty={serials.length === 0}
+        emptyState={<EmptyState icon={Hash} title="No serial numbers found" />}
+        rowCount={serials.length}
+      >
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr>
+              {['Serial #', 'Item', 'Manufacturer', 'Batch', 'Warehouse / Location', 'Mfg Date', 'Warranty Expiry', 'Status', ''].map(h => (
+                <th key={h}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {serials.map((s, i) => {
+              const style = st(s.status);
+              const today = new Date();
+              const warrantyDate = s.warranty_expiry ? new Date(s.warranty_expiry) : null;
+              const warrantyExpired = warrantyDate && warrantyDate < today;
+              return (
+                <tr key={s.id} style={{ cursor: 'pointer' }}
+                  onClick={() => openDetail(s)}>
+                  <td style={{ fontFamily: 'monospace', fontWeight: 600, color: '#111827' }}>{s.serial_number}</td>
+                  <td>
+                    <div style={{ fontWeight: 500 }}>{s.item_name}</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af' }}>{s.item_code}</div>
+                  </td>
+                  <td style={{ color: '#6b7280' }}>{s.manufacturer || '—'}</td>
+                  <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{s.batch_number || '—'}</td>
+                  <td style={{ color: '#374151' }}>
+                    {s.warehouse_name || s.current_location || '—'}
+                  </td>
+                  <td style={{ color: '#6b7280', fontSize: 12 }}>
+                    {s.manufactured_date ? new Date(s.manufactured_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
+                  </td>
+                  <td style={{ fontSize: 12, color: warrantyExpired ? '#dc2626' : '#374151', fontWeight: warrantyExpired ? 600 : 400 }}>
+                    {warrantyDate ? warrantyDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
+                    {warrantyExpired && <span style={{ marginLeft: 4, fontSize: 10, background: '#fef2f2', color: '#dc2626', padding: '1px 4px', borderRadius: 3 }}>EXPIRED</span>}
+                  </td>
+                  <td>
+                    <span style={{ background: style.bg, color: style.color, padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 500 }}>{style.label}</span>
+                  </td>
+                  <td onClick={e => e.stopPropagation()}>
+                    <button onClick={() => openEdit(s)}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid #e5e7eb', borderRadius: 4, background: '#fff', cursor: 'pointer' }}>
+                      Edit
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </TableContainer>
 
       {/* Detail Panel */}
       {detail && (
@@ -443,6 +415,6 @@ export default function SerialTracking() {
           </div>
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 }

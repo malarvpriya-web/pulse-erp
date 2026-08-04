@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { Layers } from 'lucide-react';
 import api from '@/services/api/client';
 import './AdvancedInventory.css';
 import { useToast } from '@/context/ToastContext';
+import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
 
 const BatchTracking = ({ setPage }) => {
   const toast = useToast();
@@ -95,13 +97,24 @@ const BatchTracking = ({ setPage }) => {
   };
 
   return (
-    <div className="adv-inv-page">
-      <div className="page-header">
-        <div>
-          <h1>Batch Tracking</h1>
-        </div>
-        <button className="primary-btn" onClick={() => setShowForm(true)}>+ New Batch</button>
-      </div>
+    <PageLayout>
+      <PageHeader
+        actions={
+          <button className="pulse-btn-primary" onClick={() => setShowForm(true)}>+ New Batch</button>
+        }
+        filters={
+          <select
+            className="pl-icon-btn"
+            value={filters.status}
+            onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+          >
+            <option value="">All statuses</option>
+            <option value="active">Active</option>
+            <option value="expired">Expired</option>
+            <option value="depleted">Depleted</option>
+          </select>
+        }
+      />
 
       {showForm && (
         <div className="modal-overlay">
@@ -165,20 +178,12 @@ const BatchTracking = ({ setPage }) => {
         </div>
       )}
 
-      <div className="filters-bar">
-        <div className="filter-group">
-          <label>Status:</label>
-          <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-            <option value="">All</option>
-            <option value="active">Active</option>
-            <option value="expired">Expired</option>
-            <option value="depleted">Depleted</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="table-container">
-        <table className="data-table">
+      <TableContainer
+        isEmpty={batches.length === 0}
+        emptyState={<EmptyState icon={Layers} title="No batches found" subtitle="Create a batch to start tracking it here." />}
+        rowCount={batches.length}
+      >
+        <table>
           <thead>
             <tr>
               <th>Batch Number</th>
@@ -218,8 +223,8 @@ const BatchTracking = ({ setPage }) => {
             ))}
           </tbody>
         </table>
-      </div>
-    </div>
+      </TableContainer>
+    </PageLayout>
   );
 };
 

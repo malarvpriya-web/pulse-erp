@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Package, Layers } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageLayout, PageHeader, TableContainer, ContentCard, EmptyState, LoadingState } from '@/components/pulse-ui';
 
 const fmt2 = (n) => parseFloat(n || 0).toFixed(2);
 const fmtRs = (n) => `₹${parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const thStyle = { padding: '10px 16px', textAlign: 'left', fontWeight: 600, fontSize: 12, color: '#6b7280', background: '#fafafa', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap' };
 const tdStyle = { padding: '10px 16px', fontSize: 13, color: '#111827', borderBottom: '1px solid #f8f8fc' };
-const tabStyle = (active) => ({ padding: '8px 20px', border: 'none', background: active ? '#6B3FDB' : 'transparent', color: active ? '#fff' : '#6b7280', cursor: 'pointer', borderRadius: 8, fontWeight: active ? 600 : 400, fontSize: 14 });
-const cardStyle = { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, overflow: 'hidden', marginBottom: 16 };
 const inputStyle = { width: '100%', padding: '8px 12px', border: '1px solid #e9e4ff', borderRadius: 8, fontSize: 13, boxSizing: 'border-box' };
 
 const REF_TYPES = ['manual', 'production_order', 'sales_order', 'project', 'maintenance'];
@@ -98,67 +98,69 @@ export default function MaterialConsumption() {
   }, {});
 
   return (
-    <div style={{ padding: '24px', background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#111827', margin: 0 }}>Material Consumption</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 14 }}>Track material usage by project, type, and date</p>
-        </div>
-        <button onClick={openLogModal} style={{ padding: '10px 20px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>
-          + Log Consumption
-        </button>
-      </div>
-
-      <div style={{ display: 'flex', gap: 4, background: '#f0ebff', padding: 4, borderRadius: 10, marginBottom: 24, width: 'fit-content' }}>
-        {[['by-project', 'By Project'], ['by-type', 'By Type'], ['all-allocations', 'All Allocations']].map(([key, label]) => (
-          <button key={key} style={tabStyle(activeTab === key)} onClick={() => setActiveTab(key)}>{label}</button>
-        ))}
-      </div>
+    <PageLayout>
+      <PageHeader
+        description="Track material usage by project, type, and date"
+        actions={
+          <button className="pulse-btn-primary" onClick={openLogModal}>+ Log Consumption</button>
+        }
+        filters={
+          <div style={{ display: 'flex', gap: 6 }}>
+            {[['by-project', 'By Project'], ['by-type', 'By Type'], ['all-allocations', 'All Allocations']].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`pl-icon-btn${activeTab === key ? ' pl-active' : ''}`}
+                onClick={() => setActiveTab(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
       {activeTab === 'by-project' && (
-        <div style={cardStyle}>
-          {loading ? (
-            <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>Loading…</div>
-          ) : byProject.length === 0 ? (
-            <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>
-              No project-linked consumption found. Log consumption with a project ID to see data here.
-            </div>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  {['Project', 'Item Code', 'Item Name', 'Unit', 'Total Consumed', 'Avg Rate', 'Total Value', 'Transactions'].map(h => (
-                    <th key={h} style={thStyle}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {byProject.map((row, i) => (
-                  <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
-                    <td style={{ ...tdStyle, fontWeight: 600 }}>
-                      {row.project_name || row.project_code || `Project #${row.project_id}`}
-                    </td>
-                    <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{row.item_code}</td>
-                    <td style={tdStyle}>{row.item_name}</td>
-                    <td style={tdStyle}>{row.unit_of_measure}</td>
-                    <td style={tdStyle}>{fmt2(row.total_consumed)}</td>
-                    <td style={tdStyle}>{fmtRs(row.avg_rate)}</td>
-                    <td style={{ ...tdStyle, fontWeight: 600, color: '#6B3FDB' }}>{fmtRs(row.total_value)}</td>
-                    <td style={tdStyle}>{row.transaction_count}</td>
-                  </tr>
+        <TableContainer
+          loading={loading}
+          isEmpty={byProject.length === 0}
+          emptyState={<EmptyState icon={Package} title="No project-linked consumption" subtitle="Log consumption with a project ID to see data here." />}
+          rowCount={byProject.length}
+        >
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                {['Project', 'Item Code', 'Item Name', 'Unit', 'Total Consumed', 'Avg Rate', 'Total Value', 'Transactions'].map(h => (
+                  <th key={h} style={thStyle}>{h}</th>
                 ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+              </tr>
+            </thead>
+            <tbody>
+              {byProject.map((row, i) => (
+                <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                  <td style={{ ...tdStyle, fontWeight: 600 }}>
+                    {row.project_name || row.project_code || `Project #${row.project_id}`}
+                  </td>
+                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{row.item_code}</td>
+                  <td style={tdStyle}>{row.item_name}</td>
+                  <td style={tdStyle}>{row.unit_of_measure}</td>
+                  <td style={tdStyle}>{fmt2(row.total_consumed)}</td>
+                  <td style={tdStyle}>{fmtRs(row.avg_rate)}</td>
+                  <td style={{ ...tdStyle, fontWeight: 600, color: '#6B3FDB' }}>{fmtRs(row.total_value)}</td>
+                  <td style={tdStyle}>{row.transaction_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableContainer>
       )}
 
       {activeTab === 'by-type' && (
         <div>
           {loading ? (
-            <div style={{ ...cardStyle, padding: 40, textAlign: 'center', color: '#6b7280' }}>Loading…</div>
+            <ContentCard><LoadingState shape="table" /></ContentCard>
           ) : Object.keys(grouped).length === 0 ? (
-            <div style={{ ...cardStyle, padding: 40, textAlign: 'center', color: '#6b7280' }}>No consumption records found.</div>
+            <ContentCard><EmptyState icon={Layers} title="No consumption records found" /></ContentCard>
           ) : (
             Object.entries(grouped).map(([type, rows]) => (
               <div key={type} style={{ marginBottom: 24 }}>
@@ -168,7 +170,7 @@ export default function MaterialConsumption() {
                   </span>
                   <span style={{ fontSize: 13, color: '#6b7280' }}>{rows.length} records</span>
                 </div>
-                <div style={cardStyle}>
+                <TableContainer>
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr>
@@ -192,7 +194,7 @@ export default function MaterialConsumption() {
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </TableContainer>
               </div>
             ))
           )}
@@ -224,43 +226,39 @@ export default function MaterialConsumption() {
             <span style={{ fontSize: 13, color: '#6b7280', marginLeft: 'auto' }}>{allList.length} records</span>
           </div>
 
-          <div style={cardStyle}>
-            {loading ? (
-              <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>Loading…</div>
-            ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr>
-                    {['Date', 'Item', 'Warehouse', 'Type', 'Reference', 'Project', 'Quantity', 'Rate', 'Value', 'Purpose'].map(h => (
-                      <th key={h} style={thStyle}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {allList.length === 0 ? (
-                    <tr><td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: '#9ca3af', padding: 32 }}>No records found</td></tr>
-                  ) : allList.map((row, i) => (
-                    <tr key={row.id || i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
-                      <td style={tdStyle}>{row.allocation_date ? new Date(row.allocation_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
-                      <td style={tdStyle}>{row.item_name} <span style={{ fontSize: 11, color: '#9ca3af' }}>({row.item_code})</span></td>
-                      <td style={tdStyle}>{row.warehouse_name}</td>
-                      <td style={tdStyle}>
-                        <span style={{ padding: '2px 8px', background: '#f0ebff', color: '#6B3FDB', borderRadius: 4, fontSize: 11 }}>
-                          {(row.reference_type || row.allocation_type || 'manual').replace(/_/g, ' ')}
-                        </span>
-                      </td>
-                      <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{row.reference_id || '—'}</td>
-                      <td style={tdStyle}>{row.project_name || (row.project_id ? `#${row.project_id}` : '—')}</td>
-                      <td style={tdStyle}>{fmt2(row.quantity)}</td>
-                      <td style={tdStyle}>{fmtRs(row.rate)}</td>
-                      <td style={{ ...tdStyle, fontWeight: 600 }}>{fmtRs(parseFloat(row.quantity || 0) * parseFloat(row.rate || 0))}</td>
-                      <td style={tdStyle}>{row.purpose || '—'}</td>
-                    </tr>
+          <TableContainer loading={loading}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {['Date', 'Item', 'Warehouse', 'Type', 'Reference', 'Project', 'Quantity', 'Rate', 'Value', 'Purpose'].map(h => (
+                    <th key={h} style={thStyle}>{h}</th>
                   ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+                </tr>
+              </thead>
+              <tbody>
+                {allList.length === 0 ? (
+                  <tr><td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: '#9ca3af', padding: 32 }}>No records found</td></tr>
+                ) : allList.map((row, i) => (
+                  <tr key={row.id || i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                    <td style={tdStyle}>{row.allocation_date ? new Date(row.allocation_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
+                    <td style={tdStyle}>{row.item_name} <span style={{ fontSize: 11, color: '#9ca3af' }}>({row.item_code})</span></td>
+                    <td style={tdStyle}>{row.warehouse_name}</td>
+                    <td style={tdStyle}>
+                      <span style={{ padding: '2px 8px', background: '#f0ebff', color: '#6B3FDB', borderRadius: 4, fontSize: 11 }}>
+                        {(row.reference_type || row.allocation_type || 'manual').replace(/_/g, ' ')}
+                      </span>
+                    </td>
+                    <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{row.reference_id || '—'}</td>
+                    <td style={tdStyle}>{row.project_name || (row.project_id ? `#${row.project_id}` : '—')}</td>
+                    <td style={tdStyle}>{fmt2(row.quantity)}</td>
+                    <td style={tdStyle}>{fmtRs(row.rate)}</td>
+                    <td style={{ ...tdStyle, fontWeight: 600 }}>{fmtRs(parseFloat(row.quantity || 0) * parseFloat(row.rate || 0))}</td>
+                    <td style={tdStyle}>{row.purpose || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableContainer>
         </div>
       )}
 
@@ -330,6 +328,6 @@ export default function MaterialConsumption() {
           </div>
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 }

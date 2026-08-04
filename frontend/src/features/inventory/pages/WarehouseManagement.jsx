@@ -5,6 +5,7 @@ import { useToast } from '@/context/ToastContext';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import QualityTestsPanel from '@/features/quality/components/QualityTestsPanel';
+import { PageLayout, PageHeader, ContentCard } from '@/components/pulse-ui';
 
 
 /* ── TAB 1: Bin Locations ── */
@@ -850,29 +851,32 @@ export default function WarehouseManagement() {
   const { readOnly } = usePageAccess();
   const [tab, setTab] = useState('Bin Locations');
 
-  const tabStyle = (t) => ({
-    padding: '9px 18px', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13,
-    background:   tab === t ? '#6B3FDB' : 'transparent',
-    color:        tab === t ? '#fff'    : '#6B3FDB',
-    borderBottom: tab === t ? '2px solid #6B3FDB' : '2px solid transparent',
-  });
-
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: '0 0 4px', color: '#4c1d95', fontSize: 22 }}>🏬 Warehouse Management</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Bin locations, pick-pack-ship, inward QC, and cycle counting</p>
-      </div>
+    <PageLayout>
+      <PageHeader
+        description="Bin locations, pick-pack-ship, inward QC, and cycle counting"
+        filters={
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {TABS.map(t => (
+              <button
+                key={t}
+                type="button"
+                className={`pl-icon-btn${tab === t ? ' pl-active' : ''}`}
+                onClick={() => setTab(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        }
+      />
       {readOnly && <ReadOnlyBanner />}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e9e4ff', background: '#fff', borderRadius: '10px 10px 0 0', padding: '0 8px', flexWrap: 'wrap' }}>
-        {TABS.map(t => <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>{t}</button>)}
-      </div>
-      <div style={{ background: '#fff', border: '1px solid #e9e4ff', borderTop: 'none', borderRadius: '0 0 10px 10px', padding: 20 }}>
+      <ContentCard>
         {tab === 'Bin Locations'  && <BinsTab />}
         {tab === 'Pick-Pack-Ship' && <PickPackTab />}
         {tab === 'Inward QC'      && <InwardQCTab />}
         {tab === 'Cycle Count'    && <CycleCountTab />}
-      </div>
-    </div>
+      </ContentCard>
+    </PageLayout>
   );
 }
