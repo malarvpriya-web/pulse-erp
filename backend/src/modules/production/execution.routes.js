@@ -24,6 +24,23 @@ async function resolveCompanyId(client, scope, bodyCompanyId) {
   return rows[0]?.id ?? null;
 }
 
+/* ── Has this order got an open (non-closed) NCR against it, directly or via
+   one of its operations? A QC stop-ship hold (holdProductionOrderOnQcFail in
+   quality.routes.js) sets production_orders.status='on_hold' — every route
+   that can clear on_hold must check this first, or it silently defeats the
+   stop-ship the moment work resumes anywhere on the order. ── */
+async function hasOpenNcr(client, orderId) {
+  const { rows } = await client.query(
+    `SELECT COUNT(*)::INT AS n FROM ncr_reports
+     WHERE status NOT IN ('closed')
+       AND ((reference_type='production_order' AND reference_id=$1)
+         OR (reference_type='production_operation' AND reference_id IN
+             (SELECT id FROM production_operations WHERE production_order_id=$1)))`,
+    [orderId]
+  ).catch(() => ({ rows: [{ n: 0 }] }));
+  return (rows[0]?.n || 0) > 0;
+}
+
 async function logOpEvent(client, operationId, orderId, eventType, req, payload = {}) {
   const a = actor(req);
   await client.query(
@@ -617,6 +634,14 @@ router.patch('/orders/:id/start', requirePermission('production', 'edit'), async
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
     const cid = req.scope?.company_id;
     const a = actor(req);
+    // This was a second, unguarded way to clear an on_hold QC stop-ship —
+    // see hasOpenNcr's own comment. Only relevant when actually clearing a
+    // hold; a 'planned'/'released' order with an unrelated open NCR elsewhere
+    // shouldn't be blocked from starting.
+    const { rows: curRows } = await pool.query('SELECT status FROM production_orders WHERE id=$1', [req.params.id]);
+    if (curRows[0]?.status === 'on_hold' && await hasOpenNcr(pool, req.params.id)) {
+      return res.status(400).json({ error: 'Order is on hold with an open NCR — resolve/close it before starting' });
+    }
     const { rows } = await pool.query(
       `UPDATE production_orders
        SET status = 'in_progress',
@@ -1021,6 +1046,11 @@ router.post('/orders/:id/resume', requirePermission('production', 'edit'), async
     const cid = req.scope?.company_id;
     const a = actor(req);
     await client.query('BEGIN');
+    // Second unguarded way to clear an on_hold QC stop-ship — see hasOpenNcr's comment.
+    if (await hasOpenNcr(client, req.params.id)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Order is on hold with an open NCR — resolve/close it before resuming' });
+    }
     await client.query(
       `UPDATE production_operations SET status='ready', updated_at=NOW()
        WHERE production_order_id=$1 AND status='on_hold'`,
@@ -1315,19 +1345,9 @@ router.post('/operations/:id/start', requirePermission('production', 'edit'), as
     const { rows: orderRows } = await client.query(
       `SELECT status FROM production_orders WHERE id = $1`, [opRow.production_order_id]
     );
-    if (orderRows[0]?.status === 'on_hold') {
-      const openNcr = await client.query(
-        `SELECT COUNT(*)::INT AS n FROM ncr_reports
-         WHERE status NOT IN ('closed')
-           AND ((reference_type='production_order' AND reference_id=$1)
-             OR (reference_type='production_operation' AND reference_id IN
-                 (SELECT id FROM production_operations WHERE production_order_id=$1)))`,
-        [opRow.production_order_id]
-      ).catch(() => ({ rows: [{ n: 0 }] }));
-      if ((openNcr.rows[0]?.n || 0) > 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Order is on hold with an open NCR — resolve/close it before resuming operations' });
-      }
+    if (orderRows[0]?.status === 'on_hold' && await hasOpenNcr(client, opRow.production_order_id)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Order is on hold with an open NCR — resolve/close it before resuming operations' });
     }
 
     const updated = await client.query(
@@ -1465,15 +1485,7 @@ router.post('/operations/:id/complete', requirePermission('production', 'edit'),
     // 'production_order' — this gate used to only ever match the NCRs raised
     // directly above (scrap-at-inspection), so a quality-module NCR against
     // one of this order's operations never actually blocked completion.
-    const openNcr = await client.query(
-      `SELECT COUNT(*)::INT AS n FROM ncr_reports
-       WHERE status NOT IN ('closed')
-         AND ((reference_type='production_order' AND reference_id=$1)
-           OR (reference_type='production_operation' AND reference_id IN
-               (SELECT id FROM production_operations WHERE production_order_id=$1)))`,
-      [op.production_order_id]
-    ).catch(() => ({ rows: [{ n: 0 }] }));
-    if ((pending.rows[0]?.n || 0) === 0 && (openNcr.rows[0]?.n || 0) === 0) {
+    if ((pending.rows[0]?.n || 0) === 0 && !(await hasOpenNcr(client, op.production_order_id))) {
       // Backflush materials
       await backflushMaterials(client, op.production_order_id, cid, op.id, a.id, a.name, req.user?.employee_id ?? null);
 

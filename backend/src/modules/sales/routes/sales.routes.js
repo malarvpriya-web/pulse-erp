@@ -453,7 +453,22 @@ router.patch('/quotations/:id/convert-to-order', requirePermission('sales', 'add
     }
     await quotationsRepository.update(req.params.id, { status: 'converted' });
     logAudit({ userId, module: 'sales', recordId: req.params.id, recordType: 'quotation', action: 'update', newData: { status: 'converted' }, req });
-    res.status(201).json({ quotation_id: quotation.id, order_id: order.id, order_number: order.order_number || orderNumber });
+    // The order lands 'confirmed' here directly (never via PATCH /orders/:id/confirm),
+    // so the SO->Production auto-bootstrap — and the commission calc that
+    // /confirm also triggers — never ran for this conversion path at all, not
+    // just silently failed. Same warning-surfacing pattern as /confirm.
+    const bootstrap = await autoBootstrapLifecycleOnOrderAccept(order.id, req.user);
+    let productionOrderWarning = null;
+    if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
+      productionOrderWarning = 'Order created, but automatic production-order creation failed — check server logs and create it manually if needed.';
+      console.warn(`[quotations/:id/convert-to-order] production order creation failed for SO ${order.id}`);
+    }
+    notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: order.id, submitterUserId: order.created_by ?? null });
+    calculateCommission(order.id, companyId);
+    res.status(201).json({
+      quotation_id: quotation.id, order_id: order.id, order_number: order.order_number || orderNumber,
+      ...(productionOrderWarning ? { warning: productionOrderWarning } : {}),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -507,80 +522,118 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
     if (gateResult) return res.status(gateResult.status).json(gateResult.body);
 
     // All pre-checks passed — now do the actual atomic accept+convert.
+    // `created` holds the outcome once the transaction commits; the actual
+    // response (and the post-commit bootstrap call below) happens after this
+    // try/finally exits, once the connection is safely released either way —
+    // restructured from a single try/catch/finally so client.release() still
+    // covers every early-return path (not-found/already-converted) exactly as
+    // before, while still letting the success path run the bootstrap call
+    // only after release.
     const client = await pool.connect();
+    let created = null;
+    let earlyResponse = null;
     try {
-    await client.query('BEGIN');
-    const userId = req.user?.userId ?? req.user?.id;
+      await client.query('BEGIN');
+      const userId = req.user?.userId ?? req.user?.id;
 
-    const qRes = await client.query(
-      `SELECT * FROM quotations WHERE id = $1 AND company_id = $2 FOR UPDATE`,
-      [req.params.id, companyId]
-    );
-    if (!qRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Quotation not found' }); }
-    const quotation = qRes.rows[0];
-    // Re-check post-lock — a concurrent request could have converted it
-    // between the pre-check above and acquiring this lock.
-    if (quotation.status === 'converted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Quotation is already converted to a Sales Order' }); }
-
-    const items = await quotationsRepository.getItems(req.params.id);
-    const orderNumber = await salesOrdersRepository.getNextOrderNumber();
-    // create()/addItem() must run on this same `client` -- sales_orders.quotation_id
-    // and sales_order_items.order_id both FK rows this transaction still holds
-    // FOR UPDATE / hasn't committed yet. Running them on the default pool (a
-    // different connection) previously deadlocked every single accept-and-convert
-    // call: Postgres's FK check blocks on this transaction's lock, and this
-    // transaction's own code was blocked awaiting that exact call to return.
-    const order = await salesOrdersRepository.create({
-      order_number:  orderNumber,
-      company_id:    companyId,
-      customer_id:   quotation.customer_id,
-      customer_name: quotation.customer_name,
-      quotation_id:  quotation.id,
-      order_date:    new Date().toISOString().split('T')[0],
-      subtotal:      quotation.subtotal,
-      tax_amount:    quotation.tax_amount,
-      total_amount:  quotation.total_amount,
-      notes:         quotation.notes,
-      order_status:  'confirmed',
-      created_by:    userId,
-    }, client);
-    for (const it of items) {
-      await salesOrdersRepository.addItem({
-        order_id:         order.id,
-        item_description: it.item_description || it.description,
-        quantity:         it.quantity,
-        rate:             it.rate || it.unit_price || 0,
-        tax_percentage:   it.tax_percentage || 0,
-        tax_amount:       it.tax_amount || 0,
-        total:            it.total || it.amount || 0,
-      }, client);
-    }
-    await client.query(
-      `UPDATE quotations SET status = 'converted', updated_at = NOW() WHERE id = $1`,
-      [req.params.id]
-    );
-    // Sync the source opportunity to Won. Previously nothing did this — an
-    // opportunity could sit "Negotiation" forever even after its quotation
-    // became a real Sales Order, inflating open-pipeline/forecast reports
-    // indefinitely. Matches the casing/side-effects PATCH /opportunities/:id/stage
-    // applies when the Kanban board itself moves a card to Won.
-    if (quotation.opportunity_id) {
-      await client.query(
-        `UPDATE opportunities
-         SET stage = 'Won', closed_date = NOW(), probability_percentage = 100, updated_at = NOW()
-         WHERE id = $1 AND LOWER(stage) NOT IN ('won','lost')`,
-        [quotation.opportunity_id]
-      ).catch(() => {});
-    }
-    await client.query('COMMIT');
-    logAudit({ userId, module: 'sales', recordId: req.params.id, recordType: 'quotation', action: 'update', newData: { status: 'converted' }, req });
-    res.status(201).json({ quotation_id: quotation.id, order_id: order.id, order_number: order.order_number || orderNumber });
+      const qRes = await client.query(
+        `SELECT * FROM quotations WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+        [req.params.id, companyId]
+      );
+      if (!qRes.rows.length) {
+        await client.query('ROLLBACK');
+        earlyResponse = { status: 404, body: { error: 'Quotation not found' } };
+      } else {
+        const quotation = qRes.rows[0];
+        // Re-check post-lock — a concurrent request could have converted it
+        // between the pre-check above and acquiring this lock.
+        if (quotation.status === 'converted') {
+          await client.query('ROLLBACK');
+          earlyResponse = { status: 409, body: { error: 'Quotation is already converted to a Sales Order' } };
+        } else {
+          const items = await quotationsRepository.getItems(req.params.id);
+          const orderNumber = await salesOrdersRepository.getNextOrderNumber();
+          // create()/addItem() must run on this same `client` -- sales_orders.quotation_id
+          // and sales_order_items.order_id both FK rows this transaction still holds
+          // FOR UPDATE / hasn't committed yet. Running them on the default pool (a
+          // different connection) previously deadlocked every single accept-and-convert
+          // call: Postgres's FK check blocks on this transaction's lock, and this
+          // transaction's own code was blocked awaiting that exact call to return.
+          const order = await salesOrdersRepository.create({
+            order_number:  orderNumber,
+            company_id:    companyId,
+            customer_id:   quotation.customer_id,
+            customer_name: quotation.customer_name,
+            quotation_id:  quotation.id,
+            order_date:    new Date().toISOString().split('T')[0],
+            subtotal:      quotation.subtotal,
+            tax_amount:    quotation.tax_amount,
+            total_amount:  quotation.total_amount,
+            notes:         quotation.notes,
+            order_status:  'confirmed',
+            created_by:    userId,
+          }, client);
+          for (const it of items) {
+            await salesOrdersRepository.addItem({
+              order_id:         order.id,
+              item_description: it.item_description || it.description,
+              quantity:         it.quantity,
+              rate:             it.rate || it.unit_price || 0,
+              tax_percentage:   it.tax_percentage || 0,
+              tax_amount:       it.tax_amount || 0,
+              total:            it.total || it.amount || 0,
+            }, client);
+          }
+          await client.query(
+            `UPDATE quotations SET status = 'converted', updated_at = NOW() WHERE id = $1`,
+            [req.params.id]
+          );
+          // Sync the source opportunity to Won. Previously nothing did this — an
+          // opportunity could sit "Negotiation" forever even after its quotation
+          // became a real Sales Order, inflating open-pipeline/forecast reports
+          // indefinitely. Matches the casing/side-effects PATCH /opportunities/:id/stage
+          // applies when the Kanban board itself moves a card to Won.
+          if (quotation.opportunity_id) {
+            await client.query(
+              `UPDATE opportunities
+               SET stage = 'Won', closed_date = NOW(), probability_percentage = 100, updated_at = NOW()
+               WHERE id = $1 AND LOWER(stage) NOT IN ('won','lost')`,
+              [quotation.opportunity_id]
+            ).catch(() => {});
+          }
+          await client.query('COMMIT');
+          logAudit({ userId, module: 'sales', recordId: req.params.id, recordType: 'quotation', action: 'update', newData: { status: 'converted' }, req });
+          created = { quotation, order, orderNumber };
+        }
+      }
     } catch (error) {
       await client.query('ROLLBACK');
-      res.status(500).json({ error: error.message });
+      earlyResponse = { status: 500, body: { error: error.message } };
     } finally {
       client.release();
     }
+
+    if (earlyResponse) return res.status(earlyResponse.status).json(earlyResponse.body);
+
+    // Must run after the transaction above is committed and the client
+    // released — autoBootstrapLifecycleOnOrderAccept opens its own separate
+    // pool connection, and calling it while this handler's client still held
+    // FOR UPDATE on the quotation row is exactly the self-deadlock class this
+    // route's own comments above already document and fix for the order/item
+    // inserts; the same reasoning applies to any call made before release.
+    const { quotation, order, orderNumber } = created;
+    const bootstrap = await autoBootstrapLifecycleOnOrderAccept(order.id, req.user);
+    let productionOrderWarning = null;
+    if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
+      productionOrderWarning = 'Order created, but automatic production-order creation failed — check server logs and create it manually if needed.';
+      console.warn(`[quotations/:id/accept-and-convert] production order creation failed for SO ${order.id}`);
+    }
+    notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: order.id, submitterUserId: order.created_by ?? null });
+    calculateCommission(order.id, companyId);
+    res.status(201).json({
+      quotation_id: quotation.id, order_id: order.id, order_number: order.order_number || orderNumber,
+      ...(productionOrderWarning ? { warning: productionOrderWarning } : {}),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -952,6 +1005,15 @@ router.post('/orders/from-quotation/:quotationId', requirePermission('sales', 'a
     }
     await quotationsRepository.update(req.params.quotationId, { status: 'converted' });
     logAudit({ userId, module: 'sales', recordId: order.id, recordType: 'sales_order', action: 'create', newData: order, req });
+    // This order lands 'confirmed' directly here too — same gap as
+    // /quotations/:id/convert-to-order, see the comment there.
+    const bootstrap = await autoBootstrapLifecycleOnOrderAccept(order.id, req.user);
+    if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
+      order.warning = 'Order created, but automatic production-order creation failed — check server logs and create it manually if needed.';
+      console.warn(`[orders/from-quotation] production order creation failed for SO ${order.id}`);
+    }
+    notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: order.id, submitterUserId: order.created_by ?? null });
+    calculateCommission(order.id, companyId);
     res.status(201).json({ data: order });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -43,7 +43,7 @@ export async function createProductionOrderFromSalesOrder(client, salesOrder, re
   } = opts;
 
   const item = await client.query(
-    `SELECT item_description, quantity
+    `SELECT description AS item_description, quantity
      FROM sales_order_items
      WHERE order_id = $1
      ORDER BY id
@@ -143,7 +143,7 @@ async function checkGates(client, instance) {
       EXISTS(
         SELECT 1 FROM bom_headers bh
         JOIN sales_order_items soi ON soi.order_id = $1
-        WHERE bh.product_name ILIKE '%' || soi.item_description || '%' AND bh.status='active'
+        WHERE bh.product_name ILIKE '%' || soi.description || '%' AND bh.status='active'
       ) AS has_active_bom`,
     [instance.sales_order_id || 0]
   );
