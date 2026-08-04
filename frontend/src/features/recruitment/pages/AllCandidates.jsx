@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
+import { fmtDate } from '@/utils/dateFormatter';
 import './Recruitment.css';
 
 const AllCandidates = ({ setPage }) => {
@@ -152,7 +153,7 @@ const AllCandidates = ({ setPage }) => {
                     {candidate.overall_status}
                   </span>
                 </td>
-                <td>{new Date(candidate.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
+                <td>{fmtDate(candidate.created_at)}</td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <button
                     className="action-btn"

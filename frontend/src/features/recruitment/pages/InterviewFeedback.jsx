@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Star, Plus, X, MessageSquare, ThumbsUp, ThumbsDown, Minus } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { fmtDate } from '@/utils/dateFormatter';
 
 const RATING_LABELS = { 1:'Poor', 2:'Below Average', 3:'Average', 4:'Good', 5:'Excellent' };
 const RECOMMENDATION_META = {
@@ -128,7 +129,7 @@ function FeedbackCard({ note }) {
         <div>
           <div style={{ fontWeight:700, fontSize:14, color:'#111827' }}>{note.interview_round || 'Interview'}</div>
           <div style={{ fontSize:12, color:'#9ca3af', marginTop:2 }}>
-            by {note.interviewer_name || 'Interviewer'} · {new Date(note.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
+            by {note.interviewer_name || 'Interviewer'} · {fmtDate(note.created_at)}
           </div>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>

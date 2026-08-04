@@ -4,6 +4,7 @@ import useAppStore from '@/store/useAppStore';
 import { Calendar, Clock, Video, Building2, Phone, User, Link2, FileText, CheckCircle, XCircle, RefreshCw, CalendarDays, BookOpen, Square, CheckSquare, X, Search, ChevronDown, ChevronUp, Plus } from 'lucide-react';
 import './InterviewScheduler.css';
 import { useToast } from '@/context/ToastContext';
+import { fmtDate as fmtDateStr } from '@/utils/dateFormatter';
 
 const STATUS_META = {
   scheduled:   { label: 'Scheduled',   bg: '#dbeafe', color: '#1d4ed8', icon: Clock },
@@ -32,9 +33,9 @@ const fmtDate = (d) => {
     const dt = new Date(d + 'T00:00:00');
     const today = new Date(); today.setHours(0,0,0,0);
     const tomorrow = new Date(today); tomorrow.setDate(today.getDate()+1);
-    if (dt.getTime() === today.getTime()) return { label: 'Today', sub: dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }), isToday: true };
-    if (dt.getTime() === tomorrow.getTime()) return { label: 'Tomorrow', sub: dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }), isToday: false };
-    return { label: dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }), sub: dt.getFullYear().toString(), isToday: false };
+    if (dt.getTime() === today.getTime()) return { label: 'Today', sub: fmtDateStr(dt), isToday: true };
+    if (dt.getTime() === tomorrow.getTime()) return { label: 'Tomorrow', sub: fmtDateStr(dt), isToday: false };
+    return { label: fmtDateStr(dt), sub: dt.getFullYear().toString(), isToday: false };
   } catch { return { label: d, sub: '', isToday: false }; }
 };
 

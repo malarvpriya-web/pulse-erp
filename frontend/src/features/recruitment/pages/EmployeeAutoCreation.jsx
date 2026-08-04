@@ -3,6 +3,7 @@ import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { UserPlus, CheckCircle, Clock, AlertCircle, RefreshCw, ChevronRight, X } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { fmtDate } from '@/utils/dateFormatter';
 
 const CARD = { background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:'20px', marginBottom:16 };
 const BTN  = (bg='#6B3FDB') => ({ background:bg, color:'#fff', border:'none', borderRadius:8, padding:'8px 16px', fontSize:13, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6 });
@@ -154,7 +155,7 @@ export default function EmployeeAutoCreation() {
                   <td style={{ padding:'10px 12px', color:'#374151', fontSize:12 }}>{c.email}</td>
                   <td style={{ padding:'10px 12px', color:'#374151' }}>{c.job_title || '—'}</td>
                   <td style={{ padding:'10px 12px', color:'#6b7280' }}>{c.department || '—'}</td>
-                  <td style={{ padding:'10px 12px', color:'#374151' }}>{c.joining_date ? new Date(c.joining_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
+                  <td style={{ padding:'10px 12px', color:'#374151' }}>{fmtDate(c.joining_date)}</td>
                   <td style={{ padding:'10px 12px', color:'#059669', fontWeight:600 }}>
                     {c.offered_salary ? `₹${Number(c.offered_salary).toLocaleString('en-IN')}/mo` : '—'}
                   </td>
@@ -218,8 +219,8 @@ export default function EmployeeAutoCreation() {
                     </span>
                   </td>
                   <td style={{ padding:'10px 12px', color:'#374151' }}>{l.employee_id || '—'}</td>
-                  <td style={{ padding:'10px 12px', color:'#6b7280' }}>{l.triggered_at ? new Date(l.triggered_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
-                  <td style={{ padding:'10px 12px', color:'#6b7280' }}>{l.completed_at ? new Date(l.completed_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : l.error_log ? <span style={{ color:'#dc2626', fontSize:11 }}>{l.error_log.slice(0,50)}</span> : '—'}</td>
+                  <td style={{ padding:'10px 12px', color:'#6b7280' }}>{fmtDate(l.triggered_at)}</td>
+                  <td style={{ padding:'10px 12px', color:'#6b7280' }}>{l.completed_at ? fmtDate(l.completed_at) : l.error_log ? <span style={{ color:'#dc2626', fontSize:11 }}>{l.error_log.slice(0,50)}</span> : '—'}</td>
                 </tr>
               ))}
               {!log.length && (

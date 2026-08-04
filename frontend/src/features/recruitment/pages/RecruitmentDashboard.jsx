@@ -11,23 +11,12 @@ import {
 } from 'recharts';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import { fmtDate } from '@/utils/dateFormatter';
+import { STAGE_LABELS } from '../shared/constants';
 import './RecruitmentDashboard.css';
 
 // Active Kanban stages — dead-end stages visible in All Candidates, not Kanban
 const KANBAN_STAGES = ['applied', 'screening', '1st_level', '2nd_level', 'offer', 'hired'];
-
-const STAGE_LABELS = {
-  applied:      'Applied',
-  screening:    'Screening',
-  '1st_level':  '1st Interview',
-  '2nd_level':  '2nd Interview',
-  offer:        'Offer',
-  hired:        'Hired',
-  not_suitable: 'Not Suitable',
-  maybe:        'Maybe',
-  future_use:   'Future Use',
-  rejected:     'Rejected',
-};
 
 const STAGE_COLORS = {
   applied:      { color: '#64748b', bg: '#f1f5f9' },
@@ -595,7 +584,7 @@ export default function RecruitmentDashboard({ setPage }) {
                         <div className="rec-cand-card-bottom">
                           <span className="rec-cand-source">{c.source}</span>
                           <span className="rec-cand-applied">
-                            {c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : ''}
+                            {c.created_at ? fmtDate(c.created_at) : ''}
                           </span>
                         </div>
                       </div>
@@ -649,7 +638,7 @@ export default function RecruitmentDashboard({ setPage }) {
                     </td>
                     <td className="rec-td-muted">
                       {(p.opening_date || p.created_at)
-                        ? new Date(p.opening_date || p.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })
+                        ? fmtDate(p.opening_date || p.created_at)
                         : '—'}
                     </td>
                   </tr>

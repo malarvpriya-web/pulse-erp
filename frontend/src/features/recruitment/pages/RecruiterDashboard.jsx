@@ -9,6 +9,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
+import { formatDate as fmtDate } from '@/utils/dateFormatter';
 import './RecruiterDashboard.css';
 
 const STAGE_LABELS = {
@@ -33,11 +34,6 @@ const SOURCE_COLORS = {
 function fmtDays(days) {
   if (days == null) return 'N/A';
   return `${days}d`;
-}
-
-function fmtDate(d) {
-  if (!d) return '';
-  return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
 }
 
 function fmtTime(t) {

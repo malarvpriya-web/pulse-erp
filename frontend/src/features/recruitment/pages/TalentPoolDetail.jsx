@@ -6,9 +6,7 @@ import {
   ExternalLink, Briefcase, Building2, Pencil,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
-
-const fmtDate = (d) =>
-  d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
+import { fmtDate } from '@/utils/dateFormatter';
 
 const EMPTY_FORM = { pool_name: '', description: '', department: '', skills: [], is_active: true };
 

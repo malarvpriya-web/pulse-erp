@@ -3,11 +3,10 @@ import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { Users, Plus, X, Search, Eye, Pencil, Trash2, Tag, Building2 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { formatDate as fmtDate } from '@/utils/dateFormatter';
 
 const EMPTY_FORM = { pool_name: '', description: '', department: '', skills: [], is_active: true };
 const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#3b82f6','#ec4899','#14b8a6'];
-
-const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '';
 
 export default function TalentPools({ setPage }) {
   const toast = useToast();

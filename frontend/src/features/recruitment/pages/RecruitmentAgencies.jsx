@@ -7,6 +7,7 @@ import {
   ToggleLeft, ToggleRight, Trash2, Tag,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { fmtDate } from '@/utils/dateFormatter';
 
 const EMPTY_FORM = {
   name: '', contact_person: '', email: '', phone: '', website: '',
@@ -18,12 +19,6 @@ const EMPTY_FORM = {
 const DIFF_COLORS = {
   active:   { bg: '#dcfce7', color: '#15803d' },
   inactive: { bg: '#fee2e2', color: '#b91c1c' },
-};
-
-const fmtDate = (d) => {
-  if (!d) return '—';
-  try { return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }); }
-  catch { return d; }
 };
 
 const isExpired = (end) => end && new Date(end) < new Date();

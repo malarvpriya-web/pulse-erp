@@ -2,20 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
 import { useToast } from '@/context/ToastContext';
+import { fmtDate } from '@/utils/dateFormatter';
+import { STAGE_LABELS } from '../shared/constants';
 import './Recruitment.css';
-
-const STAGE_LABELS = {
-  applied:      'Applied',
-  screening:    'Screening',
-  '1st_level':  '1st Interview',
-  '2nd_level':  '2nd Interview',
-  offer:        'Offer',
-  hired:        'Hired',
-  not_suitable: 'Not Suitable',
-  maybe:        'Maybe',
-  future_use:   'Future Use',
-  rejected:     'Rejected',
-};
 
 const ACTIVE_STAGES = ['applied', 'screening', '1st_level', '2nd_level', 'offer', 'hired'];
 
@@ -354,7 +343,7 @@ const CandidateDetail = ({ setPage }) => {
                 <tbody>
                   {interviews.map(iv => (
                     <tr key={iv.id}>
-                      <td>{iv.interview_date ? new Date(iv.interview_date + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
+                      <td>{fmtDate(iv.interview_date)}</td>
                       <td>{iv.interview_time}</td>
                       <td><span className="badge">{iv.interview_mode}</span></td>
                       <td>{iv.interviewer_name || 'TBD'}</td>
@@ -385,7 +374,7 @@ const CandidateDetail = ({ setPage }) => {
                     <span className={`recommendation-badge ${note.recommendation}`}>
                       {note.recommendation?.replace(/_/g, ' ')}
                     </span>
-                    <small>{note.interviewer_name} · {new Date(note.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</small>
+                    <small>{note.interviewer_name} · {fmtDate(note.created_at)}</small>
                   </div>
                 </div>
               ))}
