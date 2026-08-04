@@ -512,11 +512,26 @@ router.patch('/purchase-orders/:id/approve', async (req, res) => {
         return res.status(decide.status).json(decide.body);
       }
 
-      // Check min vendor rating if supplier set
+      // Check min vendor rating if supplier set. `avgRating > 0 &&` used to
+      // exempt a vendor with zero rows in vendor_ratings from this check
+      // entirely (COALESCE defaults every vendors.*_rating column to 0, so a
+      // never-rated vendor and a genuinely-zero-rated one were indistinguishable
+      // and both read as avgRating===0) — silently letting exactly the
+      // highest-risk, no-track-record vendors bypass the gate every time.
       if (oldPo.supplier_id && settings.min_vendor_rating > 0) {
-        const { rows: vRows } = await pool.query(`SELECT COALESCE(quality_rating,0) + COALESCE(delivery_rating,0) + COALESCE(price_rating,0) AS total_rating FROM vendors WHERE id=$1`, [oldPo.supplier_id]);
+        const { rows: vRows } = await pool.query(
+          `SELECT COALESCE(quality_rating,0) + COALESCE(delivery_rating,0) + COALESCE(price_rating,0) AS total_rating,
+                  EXISTS (SELECT 1 FROM vendor_ratings WHERE vendor_id = vendors.id) AS has_history
+           FROM vendors WHERE id=$1`,
+          [oldPo.supplier_id]
+        );
         const avgRating = vRows[0] ? parseFloat(vRows[0].total_rating) / 3 : 0;
-        if (avgRating > 0 && avgRating < settings.min_vendor_rating) {
+        const hasHistory = vRows[0]?.has_history || false;
+        if (!hasHistory) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `This vendor has no rating history yet — minimum rating of ${settings.min_vendor_rating} is required before their first PO can be approved. Rate the vendor or override in Settings.` });
+        }
+        if (avgRating < settings.min_vendor_rating) {
           await client.query('ROLLBACK');
           return res.status(400).json({ error: `Vendor rating (${avgRating.toFixed(1)}) is below minimum required (${settings.min_vendor_rating}). Update vendor rating or override in Settings.` });
         }
