@@ -6,7 +6,9 @@ import {
   ExternalLink, Briefcase, Building2, Pencil,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import DataTable from '@/components/core/DataTable';
 import { fmtDate } from '@/utils/dateFormatter';
+import { matchesSearch } from '../shared/search';
 
 const EMPTY_FORM = { pool_name: '', description: '', department: '', skills: [], is_active: true };
 
@@ -183,14 +185,12 @@ export default function TalentPoolDetail({ setPage, urlParams }) {
     loadMembers();
   };
 
-  const filteredResumes = resumes.filter(c => {
-    if (!resumeSearch) return true;
-    const q = resumeSearch.toLowerCase();
-    return (c.name || c.full_name || '').toLowerCase().includes(q)
-      || (c.email || '').toLowerCase().includes(q)
-      || (c.current_company || '').toLowerCase().includes(q)
-      || (c.current_designation || c.candidate_role || '').toLowerCase().includes(q);
-  });
+  const filteredResumes = resumes.filter(c => matchesSearch(c, [
+    r => r.name || r.full_name,
+    'email',
+    'current_company',
+    r => r.current_designation || r.candidate_role,
+  ], resumeSearch));
 
   // ── Remove member ──────────────────────────────────────────────────────────
   const handleRemove = async () => {
@@ -349,79 +349,93 @@ export default function TalentPoolDetail({ setPage, urlParams }) {
             </button>
           </div>
         ) : (
-          <div style={{ overflowX:'auto' }}>
-            <table style={{ width:'100%', borderCollapse:'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ background:'#f9fafb' }}>
-                  {['Name','Current Role','Experience','Skills','Stage','Resume','Added By','Notes','Actions'].map(h => (
-                    <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontSize: 11, fontWeight: 600, color:'#6b7280', whiteSpace:'nowrap', borderBottom:'1px solid #f3f4f6' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {members.map(m => {
-                  const mSkills = Array.isArray(m.skills) ? m.skills
-                    : typeof m.skills === 'string' ? (() => { try { return JSON.parse(m.skills); } catch { return []; } })()
-                    : [];
-                  return (
-                    <tr key={m.id} style={{ borderBottom:'1px solid #f9fafb' }}>
-                      <td style={{ padding:'12px 16px', whiteSpace:'nowrap' }}>
-                        <div style={{ fontWeight: 600, color:'#1f2937' }}>{m.name}</div>
-                        <div style={{ fontSize: 11, color:'#9ca3af' }}>{m.email}</div>
-                      </td>
-                      <td style={{ padding:'12px 16px' }}>
-                        <div style={{ color:'#374151' }}>{m.current_designation || '—'}</div>
-                        {m.current_company && <div style={{ fontSize: 11, color:'#9ca3af' }}>{m.current_company}</div>}
-                      </td>
-                      <td style={{ padding:'12px 16px', whiteSpace:'nowrap', color:'#374151' }}>
-                        {m.experience_years != null ? `${m.experience_years} yr` : '—'}
-                      </td>
-                      <td style={{ padding:'12px 16px', maxWidth: 160 }}>
-                        <div style={{ display:'flex', flexWrap:'wrap', gap: 3 }}>
-                          {mSkills.slice(0, 2).map((sk, i) => (
-                            <span key={i} style={{ background:'#f5f3ff', color:'#6B3FDB', padding:'1px 6px', borderRadius: 12, fontSize: 10 }}>{sk}</span>
-                          ))}
-                          {mSkills.length > 2 && <span style={{ fontSize: 10, color:'#9ca3af' }}>+{mSkills.length - 2}</span>}
-                          {mSkills.length === 0 && <span style={{ color:'#d1d5db', fontSize: 11 }}>—</span>}
-                        </div>
-                      </td>
-                      <td style={{ padding:'12px 16px', whiteSpace:'nowrap' }}>
-                        <StageBadge stage={m.stage}/>
-                      </td>
-                      <td style={{ padding:'12px 16px' }}>
-                        {m.resume_url
-                          ? <a href={m.resume_url} target="_blank" rel="noopener noreferrer"
-                              style={{ display:'flex', alignItems:'center', gap: 4, color:'#6B3FDB', fontSize: 12 }}>
-                              <ExternalLink size={12}/> View
-                            </a>
-                          : <span style={{ color:'#d1d5db', fontSize: 11 }}>—</span>}
-                      </td>
-                      <td style={{ padding:'12px 16px', color:'#6b7280', fontSize: 12, whiteSpace:'nowrap' }}>
-                        {m.added_by_name || '—'}
-                        {m.added_at && <div style={{ fontSize: 10, color:'#d1d5db' }}>{fmtDate(m.added_at)}</div>}
-                      </td>
-                      <td style={{ padding:'12px 16px', maxWidth: 140 }}>
-                        <span style={{ fontSize: 11, color:'#6b7280' }}>{m.notes || '—'}</span>
-                      </td>
-                      <td style={{ padding:'12px 16px', whiteSpace:'nowrap' }}>
-                        <div style={{ display:'flex', gap: 6 }}>
-                          <button onClick={() => openPipelineModal(m)}
-                            title="Move to Recruitment Pipeline"
-                            style={{ display:'flex', alignItems:'center', gap: 4, padding:'5px 10px', background:'#f0fdf4', color:'#15803d', border:'none', borderRadius: 6, cursor:'pointer', fontSize: 11, fontWeight: 600, whiteSpace:'nowrap' }}>
-                            <Briefcase size={11}/> Pipeline
-                          </button>
-                          <button onClick={() => setPendingRemoveMember(m)} disabled={removing === m.id}
-                            title="Remove from pool"
-                            style={{ padding:'5px 8px', background:'#fef2f2', color:'#dc2626', border:'none', borderRadius: 6, cursor:'pointer', opacity: removing === m.id ? 0.5 : 1 }}>
-                            <Trash2 size={12}/>
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div style={{ padding: '0 20px 16px' }}>
+            <DataTable
+              selectable={false}
+              emptyText="No candidates in this pool"
+              columns={[
+                {
+                  key: 'name', label: 'Name', sortable: true,
+                  render: (v, m) => (
+                    <>
+                      <div style={{ fontWeight: 600, color:'#1f2937' }}>{v}</div>
+                      <div style={{ fontSize: 11, color:'#9ca3af' }}>{m.email}</div>
+                    </>
+                  ),
+                },
+                {
+                  key: 'current_designation', label: 'Current Role',
+                  render: (v, m) => (
+                    <>
+                      <div style={{ color:'#374151' }}>{v || '—'}</div>
+                      {m.current_company && <div style={{ fontSize: 11, color:'#9ca3af' }}>{m.current_company}</div>}
+                    </>
+                  ),
+                },
+                {
+                  key: 'experience_years', label: 'Experience',
+                  render: v => v != null ? `${v} yr` : '—',
+                },
+                {
+                  key: 'skills', label: 'Skills',
+                  render: (v) => {
+                    const mSkills = Array.isArray(v) ? v
+                      : typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return []; } })()
+                      : [];
+                    return (
+                      <div style={{ display:'flex', flexWrap:'wrap', gap: 3 }}>
+                        {mSkills.slice(0, 2).map((sk, i) => (
+                          <span key={i} style={{ background:'#f5f3ff', color:'#6B3FDB', padding:'1px 6px', borderRadius: 12, fontSize: 10 }}>{sk}</span>
+                        ))}
+                        {mSkills.length > 2 && <span style={{ fontSize: 10, color:'#9ca3af' }}>+{mSkills.length - 2}</span>}
+                        {mSkills.length === 0 && <span style={{ color:'#d1d5db', fontSize: 11 }}>—</span>}
+                      </div>
+                    );
+                  },
+                },
+                { key: 'stage', label: 'Stage', sortable: true, render: v => <StageBadge stage={v}/> },
+                {
+                  key: 'resume_url', label: 'Resume',
+                  render: v => v
+                    ? <a href={v} target="_blank" rel="noopener noreferrer"
+                        style={{ display:'flex', alignItems:'center', gap: 4, color:'#6B3FDB', fontSize: 12 }}>
+                        <ExternalLink size={12}/> View
+                      </a>
+                    : <span style={{ color:'#d1d5db', fontSize: 11 }}>—</span>,
+                },
+                {
+                  key: 'added_by_name', label: 'Added By',
+                  render: (v, m) => (
+                    <>
+                      {v || '—'}
+                      {m.added_at && <div style={{ fontSize: 10, color:'#d1d5db' }}>{fmtDate(m.added_at)}</div>}
+                    </>
+                  ),
+                },
+                {
+                  key: 'notes', label: 'Notes',
+                  render: v => <span style={{ fontSize: 11, color:'#6b7280' }}>{v || '—'}</span>,
+                },
+                {
+                  key: 'actions', label: 'Actions',
+                  render: (_, m) => (
+                    <div style={{ display:'flex', gap: 6 }}>
+                      <button onClick={() => openPipelineModal(m)}
+                        title="Move to Recruitment Pipeline"
+                        style={{ display:'flex', alignItems:'center', gap: 4, padding:'5px 10px', background:'#f0fdf4', color:'#15803d', border:'none', borderRadius: 6, cursor:'pointer', fontSize: 11, fontWeight: 600, whiteSpace:'nowrap' }}>
+                        <Briefcase size={11}/> Pipeline
+                      </button>
+                      <button onClick={() => setPendingRemoveMember(m)} disabled={removing === m.id}
+                        title="Remove from pool"
+                        style={{ padding:'5px 8px', background:'#fef2f2', color:'#dc2626', border:'none', borderRadius: 6, cursor:'pointer', opacity: removing === m.id ? 0.5 : 1 }}>
+                        <Trash2 size={12}/>
+                      </button>
+                    </div>
+                  ),
+                },
+              ]}
+              rows={members}
+            />
           </div>
         )}
       </div>

@@ -11,8 +11,10 @@ import {
 } from 'recharts';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import DataTable from '@/components/core/DataTable';
 import { fmtDate } from '@/utils/dateFormatter';
 import { STAGE_LABELS } from '../shared/constants';
+import { matchesSearch } from '../shared/search';
 import './RecruitmentDashboard.css';
 
 // Active Kanban stages — dead-end stages visible in All Candidates, not Kanban
@@ -348,9 +350,7 @@ export default function RecruitmentDashboard({ setPage }) {
 
   // Only show Kanban-active stages in pipeline view
   const filteredCandidates = candidates.filter(c => {
-    const matchSearch = !search ||
-      (c.full_name || '').toLowerCase().includes(search.toLowerCase()) ||
-      (c.job_title || '').toLowerCase().includes(search.toLowerCase());
+    const matchSearch = matchesSearch(c, ['full_name', 'job_title'], search);
     const matchStage = stageFilter === 'all' || c.current_stage === stageFilter;
     return matchSearch && matchStage;
   });
@@ -610,55 +610,41 @@ export default function RecruitmentDashboard({ setPage }) {
             </span>
           </div>
           <div className="rec-table-scroll">
-          <table className="rec-table">
-            <thead>
-              <tr>
-                <th>Position</th>
-                <th>Department</th>
-                <th>Location</th>
-                <th>Openings</th>
-                <th>Status</th>
-                <th>Posted</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.map(p => {
-                const statusKey = (p.status || 'draft').toLowerCase();
-                const sm = STATUS_META[statusKey] || STATUS_META.draft;
-                return (
-                  <tr key={p.id}>
-                    <td className="rec-td-bold">{p.job_title || p.req_job_title}</td>
-                    <td>{p.department || p.req_department}</td>
-                    <td><span className="rec-loc"><MapPin size={12} />{p.location || p.req_location}</span></td>
-                    <td className="rec-td-center">{p.number_of_positions || 1}</td>
-                    <td>
-                      <span className="rec-stage-chip-sm" style={{ background: sm.bg, color: sm.color }}>
-                        {p.status}
-                      </span>
-                    </td>
-                    <td className="rec-td-muted">
-                      {(p.opening_date || p.created_at)
-                        ? fmtDate(p.opening_date || p.created_at)
-                        : '—'}
-                    </td>
-                  </tr>
-                );
-              })}
-              {positions.length === 0 && (
-                <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '24px', color: '#94a3b8' }}>
-                    No open positions yet.{' '}
-                    <button
-                      onClick={() => setPage && setPage('JobOpenings')}
-                      style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer', fontWeight: 600 }}
-                    >
-                      Post a Job Opening →
-                    </button>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+            <DataTable
+              selectable={false}
+              emptyText={
+                <>
+                  No open positions yet.{' '}
+                  <button
+                    onClick={() => setPage && setPage('JobOpenings')}
+                    style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer', fontWeight: 600 }}
+                  >
+                    Post a Job Opening →
+                  </button>
+                </>
+              }
+              columns={[
+                { key: 'job_title', label: 'Position', sortable: true, render: (v, p) => v || p.req_job_title },
+                { key: 'department', label: 'Department', render: (v, p) => v || p.req_department },
+                {
+                  key: 'location', label: 'Location',
+                  render: (v, p) => <span className="rec-loc"><MapPin size={12} />{v || p.req_location}</span>,
+                },
+                { key: 'number_of_positions', label: 'Openings', align: 'center', render: v => v || 1 },
+                {
+                  key: 'status', label: 'Status', sortable: true,
+                  render: v => {
+                    const sm = STATUS_META[(v || 'draft').toLowerCase()] || STATUS_META.draft;
+                    return <span className="rec-stage-chip-sm" style={{ background: sm.bg, color: sm.color }}>{v}</span>;
+                  },
+                },
+                {
+                  key: 'created_at', label: 'Posted', sortable: true,
+                  render: (v, p) => (p.opening_date || v) ? fmtDate(p.opening_date || v) : '—',
+                },
+              ]}
+              rows={positions}
+            />
           </div>
         </div>
       )}

@@ -821,12 +821,35 @@ Connections:
   `job_requisitions` itself (no column for it). Frontend: `moveStatus()`
   now calls the Approval Center endpoint instead of the raw PUT specifically
   for the `approved` transition; a new Reject button + optional reason field
-  appears only while a requisition is `pending_approval`. **Offer approval
-  was explicitly NOT included in this pass** — `offer_letters.offer_status`
-  has no DB-enforced approval stage at all (`draft -> sent -> accepted/
-  declined`, confirmed live), so wiring it into the Approval Center the same
-  way would mean inventing new status values first, a real product decision
-  this session didn't have an answer for.
+  appears only while a requisition is `pending_approval`.
+- **Offer approval wired into the Approval Center (2026-08-04, follow-up
+  pass)**: `offer_letters.offer_status` has no CHECK constraint (plain
+  VARCHAR, confirmed live — unlike `job_requisitions.status`), so no
+  migration was needed to add `pending_approval` as a state between `draft`
+  and `sent`. Same shape as requisitions: `approvals.controller.js` gained
+  `pendingOffers(companyId)` in the aggregator and a `case 'offer':` in both
+  `approveSourceItem`/`rejectSourceItem` (cast `$1::uuid`, not `::integer` —
+  `offer_letters.id` is a UUID PK, unlike `job_requisitions.id`).
+  `PUT /recruitment/offers/:id` now 400s on `offer_status: 'sent'` sent
+  directly, same enforcement pattern as the requisition gate. Approve sets
+  `offer_status = 'sent'` **and** `offer_sent_date = CURRENT_DATE` — the
+  latter previously only got set if a caller happened to pass it explicitly
+  to the raw PUT, which the UI's old "Send" button never did, so
+  `getTimeToHire()`'s `AVG(offer_sent_date - candidate.created_at)` silently
+  excluded every offer sent through the UI from its average. Reject bounces
+  back to `draft`, same as requisitions. The candidate-facing "offer sent"
+  email (`triggerEmail('offer_sent', ...)`) moved from the now-gone direct-
+  PUT code path into the approve case, using `recruitmentRepository.
+  findOfferById()` for the candidate_name/email/job_title fields — also
+  fixed `designation`/`ctc` to read `job_title`/`offered_salary` instead of
+  the previously-undefined `offer.designation`/`offer.ctc` fields (offer_letters
+  has no such columns; the email template rendered blank there before).
+  Frontend (`OfferManagement.jsx`): "Send" button now submits to
+  `pending_approval` instead of writing `sent` directly; a new
+  `pending_approval` row shows "Approve & Send"/"Reject" buttons calling
+  `/approvals/offer:<id>/approve|reject`. Verified live end-to-end (submit →
+  400 on direct-sent bypass → approve → `offer_sent_date` populated;
+  separately, submit → reject → back to `draft`).
 - **HR Analytics' offer-acceptance/time-to-hire cards fixed at the root cause
   (2026-08-04)**: `analytics.routes.js`'s top-level `/analytics/
   offer-acceptance` and `/analytics/time-to-hire` (consumed by
@@ -863,6 +886,43 @@ Connections:
   latter, which is what it already uses), not a bug fix, so it wasn't
   touched this pass.
 - Reports track funnel, time-to-hire, offer acceptance.
+- **Resume/offer-letter storage is fragmented across 3 systems, none of which
+  is `document_master` (2026-08-04, documented not fixed)**: `POST
+  /recruitment/candidates` uploads the resume to S3/local via
+  `services/StorageService.js` (→ `candidates.resume_file_url`) *and*
+  separately to Google Drive via `recruitmentDriveService.js`'s
+  `uploadResume()` (folder-by-stage, moved on `move-stage`/`hire`); `POST
+  /talent/resumes` uploads to Drive a third way, directly through
+  `services/googleDrive.service.js` into a flat "Unsolicited Resumes" folder,
+  bypassing `recruitmentDriveService.js` entirely. `document_master`
+  (`backend/src/modules/documents`) — the module with real versioning,
+  approval status, and company scoping — is a fourth, unrelated system that
+  none of these three touch. There is also **no offer-letter file upload
+  feature at all** (`offer_letters` has no attachment column and no route
+  writes one) — the original ask to "route offer-letter storage through
+  Documents module conventions" has nothing to migrate. Consolidating onto
+  `document_master` is a real architecture decision (which backend becomes
+  canonical — S3 serves `resume_file_url` downloads today, Drive gives
+  recruiters the folder-by-stage view they already use) with real regression
+  risk to resume download links and Drive folder browsing if picked wrong;
+  deliberately left unresolved rather than guessed at.
+- **Shared UI components adopted on 3 of 7 flagged pages (2026-08-04)**:
+  `AllCandidates.jsx` (table + filters) and `RecruitmentDashboard.jsx`'s Open
+  Positions tab now use `components/core/DataTable`+`FilterBar` instead of a
+  hand-rolled `<table>`; `TalentPoolDetail.jsx`'s pool-members table also
+  moved to `DataTable`. `RecruitmentReports.jsx`'s own duplicate `exportCSV()`
+  function was deleted in favor of `features/_shared/exportUtils.js`.
+  **Deliberately left alone**: `ResumeDatabase.jsx` and
+  `RecruitmentAgencies.jsx` render candidates/agencies as visual cards, not
+  table rows — forcing `DataTable` there would be a UX regression (losing
+  resume-skill-chip layout / agency stat cards for a dense grid), not a fix;
+  `ResumeDatabase.jsx`'s stage/skill filters are click-to-toggle pill
+  selectors, a deliberate pattern `FilterBar`'s dropdown/multiselect controls
+  don't reproduce. `RecruiterDashboard.jsx` has no table or filter bar at all
+  (pure stat cards + lists) — nothing to swap. Verified via `esbuild` syntax
+  check on all touched files (no visual/browser verification was available
+  this pass — check each swapped page renders and sorts/exports correctly
+  before trusting it).
 
 Manual checks:
 
@@ -882,6 +942,14 @@ Manual checks:
 - Accept an offer letter, then check the HR Analytics dashboard's Offer
   Acceptance and Time to Hire cards — should show real numbers, not 0%/"No
   data yet" (fixed 2026-08-04, was always zero).
+- Create an offer, click Send — should submit for approval, not send
+  immediately; approve it as an approver role — status becomes `sent` and
+  the candidate email fires; reject it — status returns to `draft`
+  (fixed 2026-08-04).
+- All Candidates, Talent Pool detail, and Recruitment Dashboard's Open
+  Positions tab now use the shared `DataTable` — check sort, column
+  show/hide, and CSV export still work and row actions (View, Pipeline,
+  Remove) still fire correctly (2026-08-04).
 
 ### Talent
 

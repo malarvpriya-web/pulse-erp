@@ -2,7 +2,33 @@ import React, { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
 import { fmtDate } from '@/utils/dateFormatter';
+import { matchesSearch } from '../shared/search';
+import DataTable from '@/components/core/DataTable';
+import FilterBar from '@/components/core/FilterBar';
+import { exportCSV } from '@/features/_shared/exportUtils';
 import './Recruitment.css';
+
+const STAGE_OPTIONS = [
+  { value: 'all', label: 'All Stages' },
+  { value: 'applied', label: 'Applied' },
+  { value: 'screening', label: 'Screening' },
+  { value: '1st_level', label: '1st Interview' },
+  { value: '2nd_level', label: '2nd Interview' },
+  { value: 'offer', label: 'Offer' },
+  { value: 'hired', label: 'Hired' },
+  { value: 'not_suitable', label: 'Not Suitable' },
+  { value: 'maybe', label: 'Maybe' },
+  { value: 'future_use', label: 'Future Use' },
+  { value: 'rejected', label: 'Rejected' },
+];
+
+const STATUS_OPTIONS = [
+  { value: 'all', label: 'All Status' },
+  { value: 'active', label: 'Active' },
+  { value: 'hired', label: 'Hired' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'withdrawn', label: 'Withdrawn' },
+];
 
 const AllCandidates = ({ setPage }) => {
   const setSelectedCandidateId = useAppStore(s => s.setSelectedCandidateId);
@@ -32,10 +58,7 @@ const AllCandidates = ({ setPage }) => {
     setPage('CandidateDetail');
   };
 
-  const filteredCandidates = candidates.filter(c =>
-    (c.full_name || '').toLowerCase().includes(search.toLowerCase()) ||
-    (c.email || '').toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredCandidates = candidates.filter(c => matchesSearch(c, ['full_name', 'email'], search));
 
   const getStatusColor = (status) => {
     const colors = {
@@ -70,13 +93,6 @@ const AllCandidates = ({ setPage }) => {
           <h1>All Candidates</h1>
         </div>
         <div className="header-actions">
-          <input
-            type="text"
-            placeholder="Search candidates..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="search-input"
-          />
           <button
             onClick={() => setPage('CandidatePipeline')}
             style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', cursor: 'pointer', fontWeight: 500, whiteSpace: 'nowrap' }}
@@ -86,87 +102,69 @@ const AllCandidates = ({ setPage }) => {
         </div>
       </div>
 
-      <div className="filters-bar">
-        <div className="filter-group">
-          <label>Stage:</label>
-          <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} className="filter-select">
-            <option value="all">All Stages</option>
-            <option value="applied">Applied</option>
-            <option value="screening">Screening</option>
-            <option value="1st_level">1st Interview</option>
-            <option value="2nd_level">2nd Interview</option>
-            <option value="offer">Offer</option>
-            <option value="hired">Hired</option>
-            <option value="not_suitable">Not Suitable</option>
-            <option value="maybe">Maybe</option>
-            <option value="future_use">Future Use</option>
-            <option value="rejected">Rejected</option>
-          </select>
-        </div>
-
-        <div className="filter-group">
-          <label>Status:</label>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="filter-select">
-            <option value="all">All Status</option>
-            <option value="active">Active</option>
-            <option value="hired">Hired</option>
-            <option value="rejected">Rejected</option>
-            <option value="withdrawn">Withdrawn</option>
-          </select>
-        </div>
-
-        <div className="results-count">
-          Showing {filteredCandidates.length} candidates
-        </div>
+      <FilterBar
+        filters={[
+          { key: 'stage', label: 'Stage', type: 'select', options: STAGE_OPTIONS, defaultValue: 'all' },
+          { key: 'status', label: 'Status', type: 'select', options: STATUS_OPTIONS, defaultValue: 'all' },
+          { key: 'q', label: 'Search', type: 'search', placeholder: 'Search candidates...' },
+        ]}
+        values={{ stage: stageFilter, status: statusFilter, q: search }}
+        onChange={(key, val) => {
+          if (key === 'stage') setStageFilter(val);
+          else if (key === 'status') setStatusFilter(val);
+          else if (key === 'q') setSearch(val);
+        }}
+        onReset={() => { setSearch(''); setStageFilter('all'); setStatusFilter('all'); }}
+        onExport={(fmt) => {
+          if (fmt !== 'csv') return;
+          exportCSV(filteredCandidates, 'candidates', {
+            full_name: 'Name', email: 'Email', phone: 'Phone', job_title: 'Applied For',
+            source: 'Source', current_stage: 'Stage', overall_status: 'Status', created_at: 'Applied Date',
+          });
+        }}
+      />
+      <div className="results-count" style={{ marginBottom: 8 }}>
+        Showing {filteredCandidates.length} candidates
       </div>
 
-      <div className="table-container">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Phone</th>
-              <th>Applied For</th>
-              <th>Source</th>
-              <th>Current Stage</th>
-              <th>Status</th>
-              <th>Applied Date</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredCandidates.map(candidate => (
-              <tr key={candidate.id} onClick={() => openCandidate(candidate.id)} style={{ cursor: 'pointer' }}>
-                <td><strong>{candidate.full_name}</strong></td>
-                <td>{candidate.email}</td>
-                <td>{candidate.phone}</td>
-                <td>{candidate.job_title || 'N/A'}</td>
-                <td><span className="source-badge">{candidate.source}</span></td>
-                <td>
-                  <span className="status-badge" style={{ background: getStageColor(candidate.current_stage) }}>
-                    {candidate.current_stage?.replace(/_/g, ' ')}
-                  </span>
-                </td>
-                <td>
-                  <span className="status-badge" style={{ background: getStatusColor(candidate.overall_status) }}>
-                    {candidate.overall_status}
-                  </span>
-                </td>
-                <td>{fmtDate(candidate.created_at)}</td>
-                <td onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="action-btn"
-                    onClick={() => openCandidate(candidate.id)}
-                  >
-                    View
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        selectable={false}
+        emptyText="No candidates found"
+        columns={[
+          {
+            key: 'full_name', label: 'Name', sortable: true,
+            render: (v, row) => (
+              <strong style={{ color: '#6366f1', cursor: 'pointer' }} onClick={() => openCandidate(row.id)}>{v}</strong>
+            ),
+          },
+          { key: 'email', label: 'Email' },
+          { key: 'phone', label: 'Phone' },
+          { key: 'job_title', label: 'Applied For', render: v => v || 'N/A' },
+          { key: 'source', label: 'Source', render: v => <span className="source-badge">{v}</span> },
+          {
+            key: 'current_stage', label: 'Current Stage', sortable: true,
+            render: v => (
+              <span className="status-badge" style={{ background: getStageColor(v) }}>
+                {v?.replace(/_/g, ' ')}
+              </span>
+            ),
+          },
+          {
+            key: 'overall_status', label: 'Status', sortable: true,
+            render: v => (
+              <span className="status-badge" style={{ background: getStatusColor(v) }}>{v}</span>
+            ),
+          },
+          { key: 'created_at', label: 'Applied Date', sortable: true, render: v => fmtDate(v) },
+          {
+            key: 'actions', label: 'Actions',
+            render: (_, row) => (
+              <button className="action-btn" onClick={() => openCandidate(row.id)}>View</button>
+            ),
+          },
+        ]}
+        rows={filteredCandidates}
+      />
 
       {filteredCandidates.length === 0 && (
         <div className="empty-state" style={{ textAlign: 'center', padding: '3rem 1rem' }}>

@@ -671,19 +671,19 @@ router.post('/offers', async (req, res) => {
 
 router.put('/offers/:id', async (req, res) => {
   try {
-    const offer = await recruitmentRepository.updateOffer(req.params.id, req.body, cid(req));
-    // Notify when offer is sent
+    // 'sent' is now gated through the Approval Center (POST
+    // /approvals/offer:<id>/approve, which requires an approver role — see
+    // approvals.controller.js's pendingOffers()/case 'offer'). Blocking it
+    // here too, not just omitting a button in OfferManagement.jsx, so the
+    // enforcement lives in the API and can't be bypassed by calling this
+    // endpoint directly. Sending an offer is a real financial commitment,
+    // same reasoning as requisition approval above.
     if (req.body.offer_status === 'sent') {
-      notify(req.user?.userId ?? req.user?.id, 'recruitment', offer.id,
-        `Offer letter sent to ${offer.candidate_name || 'candidate'}`);
-      triggerEmail('offer_sent', {
-        candidate_email: offer.candidate_email || '',
-        candidate_name:  offer.candidate_name  || '',
-        offer_date:      offer.offer_date       || '',
-        designation:     offer.designation      || '',
-        ctc:             offer.ctc              || '',
-      }, cid(req));
+      return res.status(400).json({
+        error: 'Offers must be sent through the Approval Center, not edited directly.',
+      });
     }
+    const offer = await recruitmentRepository.updateOffer(req.params.id, req.body, cid(req));
     res.json(offer);
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -4,6 +4,8 @@ import { logAudit } from "../../services/AuditService.js";
 import { canOverride, canClaimCategory, isApproverRole } from "./approvals.authz.js";
 import { assertCanDecideAmount } from "../procurement/procurement.authz.js";
 import { getEmployeeApprovals } from "../../home/home.service.js";
+import { triggerEmail } from "../../services/emailTrigger.js";
+import recruitmentRepository from "../recruitment/repositories/recruitment.repository.js";
 
 const uid  = (req) => req.user?.userId ?? req.user?.id ?? null;
 const cid  = (req) => req.scope?.company_id ?? null;
@@ -199,6 +201,42 @@ async function pendingRequisitions(companyId) {
   );
 }
 
+// offer_letters.offer_status has no CHECK constraint (plain VARCHAR) — added
+// 'pending_approval' as a state between draft and sent so that actually
+// sending an offer (a real financial commitment) goes through an approver,
+// same reasoning as pendingRequisitions() above. Like requisitions, no
+// approved_by column exists, so this stays in the shared unassigned pool.
+async function pendingOffers(companyId) {
+  const params  = companyId != null ? [companyId] : [];
+  const cFilter = companyId != null ? `AND ol.company_id = $1` : '';
+  return safeQuery(
+    `SELECT
+       'offer:' || ol.id::text           AS id,
+       'offer'                           AS module_name,
+       ol.id::text                       AS source_id,
+       'Offer Letter'                    AS request_type,
+       c.full_name                       AS requested_by,
+       NULL::integer                     AS requester_id,
+       c.email                           AS requester_email,
+       NULL                              AS department,
+       ol.created_at                     AS request_date,
+       ol.offered_salary                 AS amount,
+       'Medium'                          AS priority,
+       'Pending'                         AS status,
+       NULL::integer                     AS approver_id,
+       CONCAT('Offer: ', c.full_name, ' — ', COALESCE(jo.job_title, jr.job_title, 'Position')) AS request_title,
+       ol.notes                          AS description,
+       ol.company_id
+     FROM offer_letters ol
+     JOIN candidates c ON c.id = ol.candidate_id
+     LEFT JOIN job_openings jo ON jo.id = ol.job_opening_id
+     LEFT JOIN job_requisitions jr ON jr.id = jo.requisition_id
+     WHERE ol.offer_status = 'pending_approval' AND ol.deleted_at IS NULL ${cFilter}
+     ORDER BY ol.created_at ASC`,
+    params
+  );
+}
+
 async function pendingExpenses(companyId) {
   const params  = companyId != null ? [companyId] : [];
   const cFilter = companyId != null ? `AND e.company_id = $1` : '';
@@ -362,7 +400,7 @@ export const getPendingApprovals = async (req, res) => {
     const offset    = parseInt(req.query.offset || '0', 10);
 
     // Fetch from all sources in parallel; each is resilient to missing tables
-    const [central, leaves, regs, ots, prs, exps, ecns, pays, reqs] = await Promise.all([
+    const [central, leaves, regs, ots, prs, exps, ecns, pays, reqs, offers] = await Promise.all([
       pendingCentral(userId, companyId),
       pendingLeaves(companyId),
       pendingRegularizations(companyId),
@@ -372,9 +410,10 @@ export const getPendingApprovals = async (req, res) => {
       pendingECNs(companyId),
       pendingPaymentBatches(companyId),
       pendingRequisitions(companyId),
+      pendingOffers(companyId),
     ]);
 
-    let all = [...central, ...leaves, ...regs, ...ots, ...prs, ...exps, ...ecns, ...pays, ...reqs];
+    let all = [...central, ...leaves, ...regs, ...ots, ...prs, ...exps, ...ecns, ...pays, ...reqs, ...offers];
 
     // Non-admins only see items assigned to them or unassigned within their company
     if (!isAdmin) {
@@ -738,6 +777,31 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
         [sourceId]
       );
       break;
+    case 'offer': {
+      // No approved_by/approved_at column here either — offer_sent_date
+      // doubles as the "when" (also feeds getTimeToHire()'s calc, which
+      // previously only got populated if a caller happened to pass it
+      // explicitly to PUT /offers/:id — the UI's "Send" button never did).
+      await safeQuery(
+        `UPDATE offer_letters SET offer_status = 'sent', offer_sent_date = CURRENT_DATE, updated_at = NOW() WHERE id = $1::uuid`,
+        [sourceId]
+      );
+      // Candidate-facing "offer sent" email — previously fired from
+      // recruitment.routes.js's PUT /offers/:id handler when offer_status
+      // was set to 'sent' directly; that write path is gone now that
+      // sending requires approval, so the email moves here.
+      const offer = await recruitmentRepository.findOfferById(sourceId, null);
+      if (offer) {
+        triggerEmail('offer_sent', {
+          candidate_email: offer.candidate_email || '',
+          candidate_name:  offer.candidate_name  || '',
+          offer_date:      offer.offer_sent_date || '',
+          designation:     offer.job_title        || '',
+          ctc:             offer.offered_salary   || '',
+        }, offer.company_id);
+      }
+      break;
+    }
     default:
       break;
   }
@@ -811,6 +875,15 @@ async function rejectSourceItem(modulePrefix, sourceId, userId, comment, req) {
       // in the audit log (logAudit in the caller), not on the row itself.
       await safeQuery(
         `UPDATE job_requisitions SET status = 'draft', updated_at = NOW() WHERE id = $1::integer`,
+        [sourceId]
+      );
+      break;
+    case 'offer':
+      // Bounces back to draft for the requester to revise, same pattern as
+      // requisition above. offer_letters has no rejection-reason column —
+      // the comment lives in the audit log only.
+      await safeQuery(
+        `UPDATE offer_letters SET offer_status = 'draft', updated_at = NOW() WHERE id = $1::uuid`,
         [sourceId]
       );
       break;

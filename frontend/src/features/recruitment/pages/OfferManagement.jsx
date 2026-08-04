@@ -2,16 +2,19 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { Plus, FileText, X, Search, CheckCircle, XCircle, Send } from 'lucide-react';
+import { matchesSearch } from '../shared/search';
 
 const fmt = n => n >= 100000 ? `₹${(n/100000).toFixed(1)}L` : `₹${Number(n||0).toLocaleString('en-IN')}`;
+const statusLabel = s => s === 'All' ? 'All' : s === 'pending_approval' ? 'Pending Approval' : s;
 
-// DB valid statuses: draft | sent | accepted | declined | withdrawn
+// DB valid statuses: draft | pending_approval | sent | accepted | declined | withdrawn
 const STATUS_COLOR = {
-  draft:     { bg:'#f3f4f6', color:'#374151' },
-  sent:      { bg:'#fef3c7', color:'#92400e' },
-  accepted:  { bg:'#d1fae5', color:'#065f46' },
-  declined:  { bg:'#fee2e2', color:'#991b1b' },
-  withdrawn: { bg:'#e5e7eb', color:'#6b7280' },
+  draft:             { bg:'#f3f4f6', color:'#374151' },
+  pending_approval:  { bg:'#ede9fe', color:'#5b21b6' },
+  sent:              { bg:'#fef3c7', color:'#92400e' },
+  accepted:          { bg:'#d1fae5', color:'#065f46' },
+  declined:          { bg:'#fee2e2', color:'#991b1b' },
+  withdrawn:         { bg:'#e5e7eb', color:'#6b7280' },
 };
 
 const EMPTY_FORM = {
@@ -121,7 +124,7 @@ export default function OfferManagement() {
 
   const filtered = offers.filter(o => {
     const matchStatus = status === 'All' || o.offer_status === status;
-    const matchSearch = !search || [o.candidate_name, o.job_title, o.candidate_email].some(v => (v||'').toLowerCase().includes(search.toLowerCase()));
+    const matchSearch = matchesSearch(o, ['candidate_name', 'job_title', 'candidate_email'], search);
     return matchStatus && matchSearch;
   });
 
@@ -132,6 +135,32 @@ export default function OfferManagement() {
       showToast(`Offer ${newStatus}`);
     } catch (err) {
       showToast(err.response?.data?.error || 'Failed to update offer status.', 'error');
+    }
+  };
+
+  // Sending an offer is a real financial commitment, so it now goes through
+  // the Approval Center rather than a direct status write (the backend 400s
+  // a direct PUT to offer_status: 'sent'). This just submits it for review —
+  // approveOffer() below does the actual send.
+  const submitForApproval = (id) => updateStatus(id, 'pending_approval');
+
+  const approveOffer = async (id) => {
+    try {
+      await api.post(`/approvals/offer:${id}/approve`);
+      load();
+      showToast('Offer approved and sent to candidate');
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Approval failed. Your role may not have approval rights.', 'error');
+    }
+  };
+
+  const rejectOffer = async (id) => {
+    try {
+      await api.post(`/approvals/offer:${id}/reject`, { comment: '' });
+      load();
+      showToast('Offer sent back to draft');
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Rejection failed. Your role may not have approval rights.', 'error');
     }
   };
 
@@ -146,7 +175,7 @@ export default function OfferManagement() {
     }
   };
 
-  const STATUS_TABS = ['All', 'draft', 'sent', 'accepted', 'declined', 'withdrawn'];
+  const STATUS_TABS = ['All', 'draft', 'pending_approval', 'sent', 'accepted', 'declined', 'withdrawn'];
 
   return (
     <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
@@ -164,12 +193,12 @@ export default function OfferManagement() {
 
       {/* Stats — responsive grid */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(110px, 1fr))', gap:12, marginBottom:20 }}>
-        {['draft','sent','accepted','declined','withdrawn'].map(s => {
+        {['draft','pending_approval','sent','accepted','declined','withdrawn'].map(s => {
           const count = offers.filter(o => o.offer_status === s).length;
           const sc = STATUS_COLOR[s];
           return (
             <div key={s} onClick={() => setStatus(s)} style={{ background:'#fff', borderRadius:10, padding:'14px 16px', border:`2px solid ${status===s?sc.color:'#f0f0f4'}`, cursor:'pointer' }}>
-              <p style={{ fontSize:11, color:'#9ca3af', margin:'0 0 4px', textTransform:'capitalize', fontWeight:500 }}>{s}</p>
+              <p style={{ fontSize:11, color:'#9ca3af', margin:'0 0 4px', fontWeight:500 }}>{statusLabel(s)}</p>
               <p style={{ fontSize:22, fontWeight:700, color:sc.color, margin:0 }}>{count}</p>
             </div>
           );
@@ -185,9 +214,9 @@ export default function OfferManagement() {
         <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
           {STATUS_TABS.map(s => (
             <button key={s} onClick={() => setStatus(s)}
-              style={{ padding:'7px 12px', borderRadius:8, border:'1px solid', fontSize:12, fontWeight:500, cursor:'pointer', textTransform:'capitalize',
+              style={{ padding:'7px 12px', borderRadius:8, border:'1px solid', fontSize:12, fontWeight:500, cursor:'pointer',
                 borderColor:status===s?'#6B3FDB':'#e5e7eb', background:status===s?'#6B3FDB':'#fff', color:status===s?'#fff':'#374151' }}>
-              {s === 'All' ? 'All' : s}
+              {statusLabel(s)}
             </button>
           ))}
         </div>
@@ -221,16 +250,29 @@ export default function OfferManagement() {
                     <td style={{ padding:'10px 16px', color:'#374151' }}>{(o.offer_sent_date||o.created_at||'').slice(0,10)}</td>
                     <td style={{ padding:'10px 16px', color:'#374151' }}>{(o.joining_date||'—').toString().slice(0,10)}</td>
                     <td style={{ padding:'10px 16px' }}>
-                      <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600, textTransform:'capitalize' }}>{o.offer_status}</span>
+                      <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600 }}>{statusLabel(o.offer_status)}</span>
                     </td>
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ display:'flex', gap:6 }}>
                         {o.offer_status === 'draft' && (
-                          <button onClick={() => updateStatus(o.id, 'sent')}
-                            title="Send offer to candidate"
+                          <button onClick={() => submitForApproval(o.id)}
+                            title="Submit for approval before sending to candidate"
                             style={{ padding:'4px 8px', background:'#dbeafe', color:'#1d4ed8', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600, display:'flex', alignItems:'center', gap:3 }}>
-                            <Send size={11}/> Send
+                            <Send size={11}/> Submit for Approval
                           </button>
+                        )}
+                        {o.offer_status === 'pending_approval' && (
+                          <>
+                            <button onClick={() => approveOffer(o.id)}
+                              title="Approve and send to candidate"
+                              style={{ padding:'4px 8px', background:'#dbeafe', color:'#1d4ed8', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600, display:'flex', alignItems:'center', gap:3 }}>
+                              <Send size={11}/> Approve &amp; Send
+                            </button>
+                            <button onClick={() => rejectOffer(o.id)}
+                              style={{ padding:'4px 8px', background:'#fee2e2', color:'#991b1b', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600, display:'flex', alignItems:'center', gap:3 }}>
+                              <XCircle size={11}/> Reject
+                            </button>
+                          </>
                         )}
                         {o.offer_status === 'sent' && (
                           <>
@@ -244,7 +286,7 @@ export default function OfferManagement() {
                             </button>
                           </>
                         )}
-                        {['draft','sent'].includes(o.offer_status) && (
+                        {['draft','pending_approval','sent'].includes(o.offer_status) && (
                           <button onClick={() => updateStatus(o.id, 'withdrawn')}
                             style={{ padding:'4px 8px', background:'#f3f4f6', color:'#6b7280', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600 }}>
                             Withdraw

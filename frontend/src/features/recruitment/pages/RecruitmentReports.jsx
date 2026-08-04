@@ -4,25 +4,8 @@ import {
   Target, AlertTriangle, CheckCircle,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { exportCSV } from '@/features/_shared/exportUtils';
 
-// ── CSV export helper ──────────────────────────────────────────
-function exportCSV(rows, filename) {
-  if (!rows || rows.length === 0) return;
-  const headers = Object.keys(rows[0]);
-  const lines = [
-    headers.join(','),
-    ...rows.map(r => headers.map(h => JSON.stringify(r[h] ?? '')).join(',')),
-  ];
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-const fmt = n => n >= 100000 ? `₹${(n/100000).toFixed(1)}L` : `₹${Number(n||0).toLocaleString('en-IN')}`;
 const pct = (n) => `${parseFloat(n||0).toFixed(1)}%`;
 
 // ── Sub-components ────────────────────────────────────────────
@@ -200,7 +183,7 @@ export default function RecruitmentReports() {
                   { source: 'linkedin', hires: summary?.linkedin_hires },
                   { source: 'website', hires: summary?.website_hires },
                   { source: 'job_portal', hires: summary?.job_portal_hires },
-                ], 'hire_by_source.csv')} />
+                ], 'hire_by_source')} />
                 <TableWrap>
                   <thead><tr><TH>Source</TH><TH right>Hires</TH></tr></thead>
                   <tbody>
@@ -247,7 +230,7 @@ export default function RecruitmentReports() {
                   filled: r.positions_filled,
                   applicants: r.applicant_count,
                   status: r.days_open > 60 ? 'At Risk' : 'Normal',
-                })), 'vacancy_aging.csv')}
+                })), 'vacancy_aging')}
               />
               {aging.length === 0 ? (
                 <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:40, textAlign:'center', color:'#9ca3af' }}>No open vacancies in this period.</div>
@@ -292,7 +275,7 @@ export default function RecruitmentReports() {
             <div>
               <SectionHeader
                 title="Source Effectiveness"
-                onExport={() => exportCSV(source, 'source_effectiveness.csv')}
+                onExport={() => exportCSV(source, 'source_effectiveness')}
               />
               {source.length === 0 ? (
                 <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:40, textAlign:'center', color:'#9ca3af' }}>No data for this period.</div>
@@ -331,7 +314,7 @@ export default function RecruitmentReports() {
             <div>
               <SectionHeader
                 title="Department Pipeline Breakdown"
-                onExport={() => exportCSV(pipeline, 'department_pipeline.csv')}
+                onExport={() => exportCSV(pipeline, 'department_pipeline')}
               />
               {pipeline.length === 0 ? (
                 <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:40, textAlign:'center', color:'#9ca3af' }}>No data for this period.</div>
