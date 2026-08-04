@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { postStock } from '../production/subcontracting.routes.js';
 
 const router = Router();
 
@@ -137,23 +138,21 @@ router.post('/inward', requirePermission('inventory', 'add'), async (req, res) =
           [item.name]
         );
         if (invItem) {
-          const qty = parseFloat(item.qty);
-          const { rows: [bal] } = await client.query(
-            `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance
-               FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-            [invItem.id, warehouseId]
-          );
-          const newBalance = parseFloat(bal.balance) + qty;
-          await client.query(
-            `INSERT INTO stock_ledger
-               (item_id, warehouse_id, transaction_type, quantity_in, quantity_out,
-                balance_qty, rate, value, reference_type, transaction_date, remarks, created_by)
-             VALUES ($1, $2, 'inward', $3, 0, $4, 0, 0, 'grn', CURRENT_DATE, $5, $6)`,
-            [invItem.id, warehouseId, qty, newBalance,
-             `GRN: ${gr_number || 'INWARD'} — ${supplier || ''}`,
-             // stock_ledger.created_by FKs employees(id), not users(id).
-             req.user?.employee_id ?? null]
-          );
+          // Was a hand-rolled stock_ledger insert that never touched
+          // inventory_items.current_stock — the column MRP planning and every
+          // dashboard reorder KPI read directly — so warehouse-screen receipts
+          // silently desynced from what those views showed. Now goes through
+          // the same shared helper GRN/production/service-desk all use.
+          await postStock(client, {
+            itemId: invItem.id,
+            warehouseId,
+            inQty: parseFloat(item.qty),
+            txnType: 'inward',
+            refType: 'grn',
+            remarks: `GRN: ${gr_number || 'INWARD'} — ${supplier || ''}`,
+            createdBy: req.user?.employee_id ?? null,
+            companyId: req.scope?.company_id ?? null,
+          });
         }
       }
     }
@@ -263,22 +262,19 @@ router.put('/pick-lists/:id/pick', requirePermission('inventory', 'edit'), async
           );
           const warehouseId = loc?.warehouse_id ?? null;
           if (warehouseId) {
-            const { rows: [bal] } = await client.query(
-              `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance
-                 FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-              [line.item_id, warehouseId]
-            );
-            const newBalance = Math.max(0, parseFloat(bal.balance) - pickedQty);
-            await client.query(
-              `INSERT INTO stock_ledger
-                 (item_id, warehouse_id, transaction_type, quantity_in, quantity_out,
-                  balance_qty, rate, value, reference_type, reference_id,
-                  transaction_date, remarks, created_by)
-               VALUES ($1, $2, 'dispatch', 0, $3, $4, 0, 0, 'pick_list', $5, CURRENT_DATE, $6, $7)`,
-              [line.item_id, warehouseId, pickedQty, newBalance,
-               req.params.id, `Pick List ${req.params.id}: ${line.item_name}`,
-               req.user?.employee_id ?? null]
-            );
+            // Same hand-rolled-vs-shared-helper gap as /inward above — this
+            // never updated inventory_items.current_stock either.
+            await postStock(client, {
+              itemId: line.item_id,
+              warehouseId,
+              outQty: pickedQty,
+              txnType: 'dispatch',
+              refType: 'pick_list',
+              refId: req.params.id,
+              remarks: `Pick List ${req.params.id}: ${line.item_name}`,
+              createdBy: req.user?.employee_id ?? null,
+              companyId: req.scope?.company_id ?? null,
+            });
           }
         }
       }
@@ -471,29 +467,20 @@ router.post('/cycle-count/:id/submit', requirePermission('inventory', 'approve')
       const absVariance = Math.abs(variance);
       const isPositive  = variance > 0;
 
-      const { rows: [bal] } = await client.query(
-        `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance
-           FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-        [itemId, warehouseId]
-      );
-      const newBalance = parseFloat(bal.balance) + variance;
-
-      await client.query(
-        `INSERT INTO stock_ledger
-           (item_id, warehouse_id, transaction_type, quantity_in, quantity_out,
-            balance_qty, rate, value, reference_type, reference_id,
-            transaction_date, remarks, created_by)
-         VALUES ($1,$2,'cycle_count',$3,$4,$5,0,0,'cycle_count',$6,CURRENT_DATE,$7,$8)`,
-        [
-          itemId, warehouseId,
-          isPositive ? absVariance : 0,
-          isPositive ? 0 : absVariance,
-          newBalance,
-          req.params.id,
-          `Cycle Count #${req.params.id} variance: ${variance > 0 ? '+' : ''}${variance}`,
-          req.user?.employee_id ?? null,
-        ]
-      );
+      // Same hand-rolled-vs-shared-helper gap as /inward and pick-list/pick
+      // above — this never updated inventory_items.current_stock either.
+      await postStock(client, {
+        itemId,
+        warehouseId,
+        inQty: isPositive ? absVariance : 0,
+        outQty: isPositive ? 0 : absVariance,
+        txnType: 'cycle_count',
+        refType: 'cycle_count',
+        refId: req.params.id,
+        remarks: `Cycle Count #${req.params.id} variance: ${variance > 0 ? '+' : ''}${variance}`,
+        createdBy: req.user?.employee_id ?? null,
+        companyId: req.scope?.company_id ?? null,
+      });
     }
 
     await client.query(
