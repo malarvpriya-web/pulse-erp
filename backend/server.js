@@ -232,6 +232,7 @@ import { startWarrantyExpiryCron } from "./src/jobs/warrantyExpiry.cron.js";
 import { registerEventReactions } from "./src/shared/eventReactions.js";
 import { startOverdueRemindersCron } from "./src/jobs/overdueReminders.cron.js";
 import { startScurveSnapshotCron } from "./src/jobs/scurveSnapshot.cron.js";
+import { startKpiDigestCron } from "./src/jobs/kpiDigest.cron.js";
 import './src/jobs/attendance.cron.js';
 import './src/jobs/leave.cron.js';
 import { logFeatureFlags } from "./src/config/featureFlags.js";
@@ -690,7 +691,6 @@ v1Router.use("/payroll",                         verifyToken, selfServiceRoutes)
 v1Router.use("/employees/self-service",          verifyToken, selfServiceRoutes);
 v1Router.use("/self-service/self-service",       verifyToken, selfServiceRoutes);  // /self-service/self-service/it-declarations
 v1Router.use("/finance/accounting",        verifyToken, accountingRoutes);
-v1Router.use("/finance/gst",               verifyToken, gstRoutes);
 v1Router.use("/projects",                  verifyToken, timesheetRoutes); // /projects/timesheets alias
 
 // ── HEALTH / METRICS — registered BEFORE v1Router so v1Router's "/" catch-all
@@ -877,6 +877,7 @@ async function startServer() {
     startWarrantyExpiryCron();
     startOverdueRemindersCron();
     startScurveSnapshotCron();
+    startKpiDigestCron();
   });
 }
 startServer().catch(err => {
