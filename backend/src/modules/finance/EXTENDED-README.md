@@ -159,11 +159,11 @@ PUT /api/finance/pdc/:id/status
 ```
 GET /api/finance/ratios?as_of_date=
 GET /api/finance/ratios/comparative?current_date=&previous_date=
-
-POST /api/finance/budgets
-GET /api/finance/budgets?fiscal_year=
-GET /api/finance/budgets/vs-actual?fiscal_year=&month=
 ```
+
+Budgeting is served by `/api/budgets/*` (`budget.routes.js`) — full CRUD, variance analysis, forecast,
+approval workflow. The `/api/finance/budgets` stub that used to live here was unimplemented
+(`vs-actual` returned a hardcoded placeholder) and had no callers; it was removed.
 
 ### 5. TICKETING / SERVICE DESK MODULE ✅
 

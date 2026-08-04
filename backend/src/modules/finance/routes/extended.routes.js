@@ -799,58 +799,6 @@ router.get('/ratios/comparative', async (req, res) => {
 });
 
 // =====================================================
-// BUDGETS
-// =====================================================
-router.post('/budgets', async (req, res) => {
-  try {
-    const { budget_name, fiscal_year, account_id, period_type, monthly_amounts, notes } = req.body;
-    const total = Object.values(monthly_amounts).reduce((sum, val) => sum + parseFloat(val), 0);
-    
-    const result = await pool.query(
-      `INSERT INTO budgets (budget_name, fiscal_year, account_id, period_type, jan_amount, feb_amount, mar_amount, apr_amount, may_amount, jun_amount, jul_amount, aug_amount, sep_amount, oct_amount, nov_amount, dec_amount, total_amount, notes) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *`,
-      [budget_name, fiscal_year, account_id, period_type, monthly_amounts.jan, monthly_amounts.feb, monthly_amounts.mar, monthly_amounts.apr, monthly_amounts.may, monthly_amounts.jun, monthly_amounts.jul, monthly_amounts.aug, monthly_amounts.sep, monthly_amounts.oct, monthly_amounts.nov, monthly_amounts.dec, total, notes]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.get('/budgets', async (req, res) => {
-  try {
-    const { fiscal_year } = req.query;
-    let query = `SELECT b.*, c.code, c.name as account_name 
-                 FROM budgets b
-                 JOIN chart_of_accounts c ON b.account_id = c.id
-                 WHERE 1=1`;
-    const params = [];
-    
-    if (fiscal_year) {
-      params.push(fiscal_year);
-      query += ` AND b.fiscal_year = $${params.length}`;
-    }
-    
-    query += ' ORDER BY b.fiscal_year DESC, c.code';
-    const result = await pool.query(query, params);
-    res.json(result.rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.get('/budgets/vs-actual', async (req, res) => {
-  try {
-    const { fiscal_year, month } = req.query;
-    // This would compare budget vs actual spending
-    // Implementation depends on specific requirements
-    res.json({ message: 'Budget vs Actual comparison' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// =====================================================
 // TICKETING SYSTEM
 // =====================================================
 router.post('/tickets', async (req, res) => {

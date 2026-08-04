@@ -368,22 +368,60 @@ export const closePeriod = async (req, res) => {
   try {
     const { id } = req.params;
     const companyId = req.scope?.company_id ?? null;
-    const params = [req.user?.userId ?? req.user?.id ?? req.user?.email, id];
-    let scope = '';
-    if (companyId != null) { params.push(companyId); scope = ` AND company_id = $${params.length}`; }
+
+    const periodParams = [id];
+    let periodScope = '';
+    if (companyId != null) { periodParams.push(companyId); periodScope = ` AND company_id = $${periodParams.length}`; }
+    const { rows: periods } = await pool.query(
+      `SELECT * FROM accounting_periods WHERE id = $1 AND status = 'open'${periodScope}`,
+      periodParams
+    );
+    if (!periods.length) {
+      return res.status(404).json({ error: "Period not found or already closed" });
+    }
+    const period = periods[0];
+
+    // Refuse to close over an inconsistent ledger — everything in range must be posted or reversed first.
+    const draftParams = [period.start_date, period.end_date];
+    let draftScope = '';
+    if (companyId != null) { draftParams.push(companyId); draftScope = ` AND company_id = $${draftParams.length}`; }
+    const { rows: drafts } = await pool.query(
+      `SELECT COUNT(*) FROM journal_entries WHERE status = 'draft' AND entry_date BETWEEN $1 AND $2${draftScope}`,
+      draftParams
+    );
+    if (parseInt(drafts[0].count) > 0) {
+      return res.status(400).json({ error: `Cannot close period: ${drafts[0].count} draft journal entries exist within this period.` });
+    }
+
+    const summaryParams = [period.start_date, period.end_date];
+    let summaryScope = '';
+    if (companyId != null) { summaryParams.push(companyId); summaryScope = ` AND je.company_id = $${summaryParams.length}`; }
+    const { rows: summary } = await pool.query(
+      `SELECT
+         COALESCE(SUM(je.total_debit),0) AS total_debits,
+         COALESCE(SUM(je.total_credit),0) AS total_credits,
+         SUM(CASE WHEN coa.account_type='Revenue' THEN jl.credit - jl.debit ELSE 0 END) -
+         SUM(CASE WHEN coa.account_type='Expense' THEN jl.debit - jl.credit ELSE 0 END) AS net_income
+       FROM journal_entries je
+       JOIN journal_lines jl ON jl.entry_id = je.id
+       JOIN chart_of_accounts coa ON coa.id = jl.account_id
+       WHERE je.status = 'posted' AND je.entry_date BETWEEN $1 AND $2${summaryScope}`,
+      summaryParams
+    );
+    const periodSummary = {
+      total_debits: parseFloat(summary[0]?.total_debits) || 0,
+      total_credits: parseFloat(summary[0]?.total_credits) || 0,
+      net_income: parseFloat(summary[0]?.net_income) || 0,
+    };
+
     const result = await pool.query(
       `UPDATE accounting_periods
-       SET status = 'closed', closed_by = $1, closed_at = NOW()
-       WHERE id = $2 AND status = 'open'${scope}
+       SET status = 'closed', closed_by = $1, closed_at = NOW(), period_summary = $2
+       WHERE id = $3
        RETURNING *`,
-      params
+      [req.user?.userId ?? req.user?.id ?? req.user?.email, JSON.stringify(periodSummary), id]
     );
-    if (!result.rows.length) {
-      return res.status(404).json({
-        error: "Period not found or already closed",
-      });
-    }
-    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Finance', recordId: id, recordType: 'accounting_period', action: 'close_period', oldData: null, newData: result.rows[0], req });
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Finance', recordId: id, recordType: 'accounting_period', action: 'close_period', oldData: period, newData: result.rows[0], req });
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
