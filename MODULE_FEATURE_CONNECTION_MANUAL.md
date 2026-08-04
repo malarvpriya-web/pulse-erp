@@ -520,6 +520,45 @@ frontend (`ApprovalCenter.jsx` only calls `/approvals/pending`) but reachable
 by any authenticated user via direct API call. Fits the existing tracked
 authz-coverage gap; flagged, not yet closed.
 
+**Second, complementary read/write mismatch fixed same day.** The 9-role nav
+fix above closes the gap for roles with no `APPROVER_ROLES` membership at all.
+A narrower but still-real version of the same "visible but not actionable"
+defect remained for roles that **are** approvers: `getPendingApprovals`
+decides read-path visibility with `isSupervisor(req)` (`role(req)` —
+`req.user.role`, the legacy **singular** primary-role field), which is a wider
+set (`super_admin`, `admin`, `manager`, `l1_manager`, `l2_manager`,
+`l3_manager`, `hr`) than `approvals.authz.js`'s `OVERRIDE_ROLES`
+(`super_admin`, `admin` only). A `manager`/`hr` viewer is `isSupervisor`, so
+the ownership filter is skipped entirely for them and they see **every**
+company row — including ones `approver_id`-assigned to a specific other
+person — with the same live-looking Approve/Reject buttons. Clicking one not
+actually theirs 403s via `canActOnApproval`'s ownership check, since `manager`/
+`hr` aren't `canOverride`. Live-verified with a real DB row (a regularization
+request assigned to a different specific user): `manager` saw it (`can_act:
+false`), the actual assignee saw it with working buttons (`can_act: true`).
+
+Fixed by computing `can_act` per row in `getPendingApprovals`
+(`approvals.controller.js`) — reusing `canOverride`/`isApproverRole`/
+`canClaimCategory` from `approvals.authz.js` (no new authz logic, single
+source of truth) — and having `ApprovalCenter.jsx` hide the row checkbox and
+Approve/Reject controls (rendering a muted "View only" badge instead) whenever
+`can_act === false`, both in the table row and the detail side-panel. Rows
+without the field (defensive default) still render live controls, so this
+can only ever hide a control, never wrongly show one that used to be hidden.
+Does not touch `ROLE_SECTION_ALLOWLIST` or any role list — purely a read-path
+annotation + frontend render guard, complementary to (not overlapping with)
+the 9-role sidebar fix above.
+
+**Noted, not fixed (separate, pre-existing):** `isSupervisor`'s use of the
+singular `req.user.role` instead of the many-to-many `rolesOf(req)` (see
+[[project_roles_many_to_many]]) is itself the recurring "never `req.user.role`"
+anti-pattern — a user whose *primary* role differs from their functional one
+(e.g. every pilot account provisioned by `pilot-provision.mjs`, whose `users.role`
+column is left at its `'user'` default while the real role lives only in
+`user_roles`) is silently NOT treated as a supervisor by this function. Already
+flagged elsewhere as unfixed pilot-data drift; not re-fixed here to avoid
+scope creep on an unrelated script.
+
 ### Global Search
 
 Frontend: `frontend/src/components/GlobalSearch.jsx`, mounted from
@@ -713,7 +752,116 @@ Connections:
   live: an earlier fix at one call site (line ~433's comment) corrected a
   *different* bug (wrong interviewer-ID lookup) but never traced through to
   this shared root cause, so notifications still silently failed even after
-  that fix.
+  that fix. **Consolidated 2026-08-03**: rather than keep the standalone,
+  once-broken `notificationService.js` alive as a fifth notification
+  pathway, `recruitment.routes.js`'s `notify()` wrapper now calls the shared
+  `modules/notifications/repositories/notifications.repository.js`'s
+  `create()` directly (same external signature, so none of the 7 call sites
+  changed). `notificationService.js` had zero other real importers
+  (confirmed repo-wide; the two remaining hits were prose comments in
+  `eventBus.js` and `signatures.routes.js`, not imports) and has been
+  deleted. This also means Recruitment's notifications now mirror to mobile
+  push (`notifications.repository.js`'s `create()` calls `sendPushToUser()`
+  when configured), which the old service never did.
+- **Security fix 2026-08-04**: all 6 `update*()` functions in
+  `recruitment.repository.js` (`updateRequisition`/`updateOpening`/
+  `updateCandidate`/`updateInterview`/`updateEmailTemplate`/`updateOffer`)
+  built their `SET` clause by interpolating `req.body`'s own keys directly
+  into the SQL string (`fields.push(`${k} = $${n++}`)`, no allowlist) —
+  the same mass-assignment/SQL-injection-via-key shape already fixed
+  elsewhere in the codebase via `shared/safeUpdate.js` (see
+  [[project_safe_update_repo_guard]]). Any caller with recruitment write
+  access could set `company_id` (jump the record to a different tenant),
+  `deleted_at` (soft-delete via a normal edit), or a crafted JSON key
+  (inject an extra assignment into the same UPDATE). All 6 now use
+  `pickUpdatable()` — schema-derived allowlist, `company_id`/`deleted_at`/
+  etc. protected — and the 5 tables that have a `company_id` column
+  (`job_requisitions`/`job_openings`/`candidates`/`interview_schedules`/
+  `offer_letters`; confirmed live against `information_schema` — all true
+  except `email_templates`) now also scope the `WHERE` clause by tenant,
+  which none of the 6 did before (any authenticated user could update any
+  other tenant's requisition/opening/candidate/interview/offer by guessing
+  its integer id — a separate, equally real gap in the same code).
+  `email_templates` gets the allowlist fix only, matching its existing
+  unscoped-everywhere-else shape. Route call sites in
+  `recruitment.routes.js` updated to pass `cid(req)`. Verified live: ran
+  `pickUpdatable()` against all 6 tables with a payload containing
+  `company_id`/`deleted_at`/an injection-shaped key/a fake column — only
+  real, unprotected columns survived for every table.
+- **Requisition approval wired into the Approval Center (2026-08-04)**:
+  `job_requisitions.status` already has a real DB CHECK-constrained
+  lifecycle (`draft -> pending_approval -> approved -> open -> closed`) and
+  `JobRequisitionPipeline.jsx` already renders it as distinct pipeline
+  stages — but nothing previously enforced the `pending_approval ->
+  approved` transition or surfaced it to an approver: any recruitment user
+  could self-approve via the raw `PUT /requisitions/:id`. Added
+  `pendingRequisitions(companyId)` to `approvals.controller.js`'s
+  `getPendingApprovals` aggregator (same shape as `pendingPurchaseRequests`/
+  `pendingECNs`) and a `case 'requisition':` in both `approveSourceItem`
+  and `rejectSourceItem`, so `POST /approvals/requisition:<id>/approve`
+  (role-gated by the existing `canActOnApproval`/`APPROVER_ROLES`, no
+  changes needed there — `hr`/`hr_manager` are already unscoped approvers,
+  same as every other role in `APPROVER_ROLES` not narrowly scoped via
+  `APPROVER_CATEGORY_SCOPE`) now does the write, with `logAudit` and
+  `notifyWorkflowEvent` for free from the shared `approveRequest`/
+  `rejectRequest` wrappers. `job_requisitions` has no `approved_by` column
+  (unlike `pr`/`ecn`), so like those two it stays in the shared unassigned
+  pool rather than being narrowly scoped — deliberately not narrowed to
+  HR-only the way `procurement_manager`→`pr` is, since that would require
+  auditing and re-scoping several other already-unscoped roles
+  (`manager`/`finance`/`finance_manager`/`payroll_admin`) to avoid
+  regressing their existing access elsewhere, a separate and much larger
+  change than this pass — see `approvals.authz.js`'s own "PROPOSED MATRIX —
+  REVIEW BEFORE EXTENDING TO OTHER MODULES" comment. The raw
+  `PUT /requisitions/:id` now 400s if
+  `status: 'approved'` is sent directly, closing the bypass. **No
+  `rejected` status exists in the CHECK constraint** — reject bounces the
+  row back to `draft` for the requester to revise; the rejection comment is
+  preserved in the `approvals` history row and `logAudit`, not on
+  `job_requisitions` itself (no column for it). Frontend: `moveStatus()`
+  now calls the Approval Center endpoint instead of the raw PUT specifically
+  for the `approved` transition; a new Reject button + optional reason field
+  appears only while a requisition is `pending_approval`. **Offer approval
+  was explicitly NOT included in this pass** — `offer_letters.offer_status`
+  has no DB-enforced approval stage at all (`draft -> sent -> accepted/
+  declined`, confirmed live), so wiring it into the Approval Center the same
+  way would mean inventing new status values first, a real product decision
+  this session didn't have an answer for.
+- **HR Analytics' offer-acceptance/time-to-hire cards fixed at the root cause
+  (2026-08-04)**: `analytics.routes.js`'s top-level `/analytics/
+  offer-acceptance` and `/analytics/time-to-hire` (consumed by
+  `hr-analytics/components/OfferAcceptanceCard.jsx` and `TimeToHireCard.jsx`
+  — flagged 80% duplicate of Recruitment's own analytics in the enterprise
+  dependency report this pass worked through) independently reimplemented
+  both metrics against `candidates.status`/`candidates.stage` — real
+  columns, but **nothing in the entire app ever writes to them** (the live
+  fields are `overall_status`/`current_stage`; offer status itself lives on
+  `offer_letters`, not `candidates`, regardless). Confirmed via a repo-wide
+  write-path grep before touching anything: every `candidates` UPDATE in
+  `recruitment`/`talent` writes `current_stage`/`overall_status`, never the
+  bare `status`/`stage` columns. These two HR Analytics cards have therefore
+  shown 0% / "No data yet" since they were built, silently — same
+  wrong-column shape as several other bugs already catalogued in
+  `PULSE_EVENT_ORCHESTRATION_ARCHITECTURE.md`. Rather than duplicate a
+  *correct* copy of the query, both routes now delegate to
+  `recruitmentRepository.getOfferAcceptanceRate()`/`getTimeToHire()` — the
+  same functions Recruitment's own `/recruitment/analytics/
+  offer-acceptance-rate` and `/recruitment/analytics/time-to-hire` already
+  used correctly (real source: `offer_letters.offer_status`). Both functions
+  extended (not replaced) to return the extra fields the HR Analytics cards
+  need (`offered`/`declined`; `min_days`/`max_days`/`matched`) while keeping
+  every pre-existing field name, so Recruitment's own
+  `HiringForecasts.jsx` — the only other consumer — needed no changes.
+  Verified live: inserted a synthetic candidate + one accepted + one
+  declined offer, confirmed both functions now return real non-zero
+  numbers, cleaned up. **`hiring-trend` (the third component the report
+  flagged, `HiringTrendChart.jsx`) was deliberately left alone** — it
+  queries `employees.joining_date`, a real, correctly-used field, so unlike
+  the other two this one isn't broken; merging it is a genuine
+  architecture-ownership question (does "hiring trend" belong to
+  candidates-reaching-a-stage or employees-actually-joining — arguably the
+  latter, which is what it already uses), not a bug fix, so it wasn't
+  touched this pass.
 - Reports track funnel, time-to-hire, offer acceptance.
 
 Manual checks:
@@ -723,6 +871,17 @@ Manual checks:
 - Employee auto-creation creates correct employee master.
 - Schedule an interview with an interviewer set — a real notification row
   should now appear for them (fixed 2026-07-29, was silently a no-op).
+- Try editing a requisition/opening/candidate/interview/offer as a non-admin
+  — confirm the write still succeeds for legitimate fields and still stays
+  scoped to your own company (fixed 2026-08-04).
+- Submit a requisition to `pending_approval`, then as an `hr`/`hr_manager`
+  (or other unscoped approver role) user open Approval Center — it should
+  appear there and Approve/Reject should work; as a non-approver role,
+  `PUT /recruitment/requisitions/:id { status: 'approved' }` should 400
+  (fixed 2026-08-04).
+- Accept an offer letter, then check the HR Analytics dashboard's Offer
+  Acceptance and Time to Hire cards — should show real numbers, not 0%/"No
+  data yet" (fixed 2026-08-04, was always zero).
 
 ### Talent
 
@@ -983,6 +1142,11 @@ Connections:
   under `backend/src/modules/servicedesk` references `invoice`, `receivable`,
   or `finance`. AMC/service revenue does not appear to post to Finance
   through a wired path. See §18.
+- Period Closing → journal entries — **fixed 2026-08-04 (§24)**: the endpoint
+  `PeriodClosing.jsx` actually calls (`/finance/periods/:id/close`) previously
+  had no draft-entry guard and never stored a period summary, unlike the
+  equivalent-but-unreached `/accounting/periods/:id/close`. Both checks are
+  now in the reachable endpoint.
 
 Manual checks:
 
@@ -990,7 +1154,9 @@ Manual checks:
 - Purchase receipt/bill appears in payables.
 - Payment updates payable/receivable status.
 - Journal entries affect statements.
-- Period closing controls backdated posting.
+- Period closing controls backdated posting — verify by attempting to close a
+  period with a draft journal entry inside its date range (should 400) and
+  confirming `period_summary` is populated on a successful close (§24).
 
 ### Fixed Assets / Asset Register
 
@@ -1748,7 +1914,13 @@ Connections:
   / `service_notifications` / the broken `notificationService.js` above) —
   that's a much larger, separate migration this pass doesn't attempt; the
   event bus is the new layer *above* those pathways (deciding what should
-  happen), not a replacement for how the reaction is delivered.<br><br>
+  happen), not a replacement for how the reaction is delivered. **Update
+  2026-08-03**: one of those 5 pathways is now gone — Recruitment's
+  `notify()` was migrated onto `notificationsRepository.create()` and
+  `notificationService.js` was deleted (see the Recruitment module section
+  above for detail). 4 pathways remain (`WorkflowNotificationService` /
+  `service_notifications` / raw INSERT sites / `notificationsRepository`
+  itself); still a separate, larger migration, not attempted here.<br><br>
   **Two more previously-undiscovered bugs found live-testing this, both
   fixed**: (1) `activateWarranty()`'s `warranty_registrations` INSERT passed
   `null` for `serial_number` whenever the commissioning workflow had no
@@ -2489,45 +2661,28 @@ cross-module coupling beyond what §2/§11/§12's diagrams already draw. Item 6
 is the one place a future pass could add real architecture (a rate-card
 source feeding AMC contract defaults) rather than just verification.
 
-## 20. Home Dashboard → Per-Role Department Dashboard Embed (2026-07-30)
+## 20. Home Dashboard → Per-Role Department Dashboard Embed (2026-07-30, REVERTED 2026-08-04)
 
 A cross-role UX audit (the "Role Experience Audit" — see project memory, not committed to this
 repo) flagged that `Home.jsx` landed 25 of 26 roles on the same generic company-wide widget grid
 (Open Tasks/Approvals/Announcements/Policies/Brand Vault/Celebrations) instead of the domain
-dashboard each role actually needed to start their day with. A `ROLE_DASHBOARD` map already
-existed in `Home.jsx` doing exactly this for 7 roles (manager, store_keeper, production_manager,
-qc_manager, sales_manager, service_engineer, procurement_manager) — this pass extended it to 15
-more, reusing each role's existing sidebar-landing dashboard component with no new pages built:
+dashboard each role actually needed to start their day with. A `ROLE_DASHBOARD` map was built
+covering 22 roles, embedding each role's existing sidebar-landing dashboard (HRDashboard,
+FinanceDashboard, ProjectsDashboard, SalesCommandCenter, etc.) in place of the generic grid on
+Home, reusing existing components with no new pages built.
 
-| Role(s) | Embedded dashboard | Component |
-|---|---|---|
-| hr, hr_manager, hr_exec, payroll_admin | HR Dashboard | `pages/HRDashboard.jsx` |
-| finance, finance_manager, accounts_exec | Finance Dashboard | `features/finance/pages/FinanceDashboard.jsx` |
-| project_manager | Projects Dashboard | `features/projects/pages/ProjectsDashboard.jsx` |
-| production_engineer | Production Dashboard | `features/production/pages/ProductionDashboard.jsx` (shared with production_manager) |
-| sales_exec | Sales Command Center | `features/sales/pages/SalesCommandCenter.jsx` (shared with sales_manager) |
-| procurement_exec | Purchase Request | `features/procurement/pages/PurchaseRequest.jsx` (shared with procurement_manager) |
-| qc_engineer | Quality Dashboard | `features/quality/pages/QualityDashboard.jsx` (shared with qc_manager) |
-| design_engineer | Engineering Dashboard | `features/engineering/pages/EngineeringDashboard.jsx` |
-| service_manager | Support Dashboard | `features/servicedesk/pages/SupportDashboard.jsx` (shared with service_engineer) |
-
-Also re-scoped `HomeBusinessPulse` (the Revenue Trend/Receivables Aging/Top Customers band) from
-`canSeeFinancials` to `canSeeFinancials && !DeptDashboard` — without this, finance/finance_manager/
-accounts_exec would see their new embedded Finance Dashboard's own Revenue vs Expenses/Receivables
-content duplicated by the generic band directly below it. Never mattered for the original 7 roles
-(none had Finance section access), so this collision was latent until this pass.
-
-**Deliberately NOT added — `department_head`.** Initially mapped to `ExecutiveDashboard` (same as
-`manager`), but browser verification with a minted `department_head` token hit a hard "Access
-Restricted" screen: `ExecutiveDashboard.jsx:352` gates its whole body behind
-`<RequireRole roles={['super_admin','admin','manager']}>` (`components/auth/RequireRole.jsx`,
-checks the singular `role` claim, not the `roles` array), and `department_head` was never added to
-that list. Also confirmed `department_head`'s own `ROLE_SECTION_ALLOWLIST` entry in
-`menuCatalog.js` has no `'Analytics & AI'` section, so this 403 is currently unreachable via normal
-navigation too — not a live dead link today, just a landmine this pass avoided stepping on.
-Deciding whether department_head *should* get Executive Dashboard access is a product decision, not
-a wiring fix, so it was left alone; `department_head` stays on the generic grid, same as
-`l2_approver` (no matching domain dashboard exists for either).
+**Reverted 2026-08-04 on explicit user instruction:** "home screen should be same for all the
+roles and employees as there only they will get the necessary docs and celebrations etc." The
+department-dashboard embed meant ~22 of 26 roles never actually saw the Policies/Brand
+Vault/Celebrations panels that are Home's whole point — their Home was silently swapped for a
+different page's content instead. Removed `ROLE_DASHBOARD`, `ROLE_DASHBOARD_NEEDS_SETPAGE`, the
+`DeptDashboard` conditional rendering branch, the `hm-root--dept` CSS modifier, and reverted
+`HomeBusinessPulse`'s gate back to plain `canSeeFinancials` (from `canSeeFinancials &&
+!DeptDashboard`) in `frontend/src/pages/Home.jsx` and `Home.css`. Every role now renders the same
+6-slot generic grid; per-role dashboards remain reachable exactly as before via their own sidebar
+entries/routes — nothing about those pages themselves changed. Hero KPI content (attendance ring
+vs. personal task/approval counters) still differs by employee-vs-management, as it did before
+this feature existed — that split was never part of what got reverted.
 
 ## 21. Discount-Approval Gate at Quotation → Sales Order (2026-07-30)
 
@@ -2651,3 +2806,333 @@ other singular-`role` check in the app) silently no-ops for the entire pilot fle
 a data/seeding gap, not a code bug in this feature, and is out of scope for this pass — see project
 memory `project_home_role_dashboard_rollout` for the full detail before the pilot program relies on
 per-role behavior being visible to these accounts.
+
+## 22. Recruitment → Employee login provisioning — second creation path fixed (2026-08-03)
+
+Recruitment has **three** separate code paths that insert an `employees` row from a candidate, not
+one: `recruitmentRepository.hireCandidate()` (`POST /recruitment/candidates/:id/hire`, the normal
+stage-driven hire), a hand-rolled second `INSERT INTO employees` inline in
+`recruitment.routes.js`'s `POST /recruitment/auto-creation/:candidateId/trigger` (for candidates
+already at the `Hired` stage whose employee record didn't get created), and `employee.service.js`'s
+own `addEmployee()` (the direct HR "Add Employee" form — unrelated to recruitment). A prior,
+already-uncommitted fix on this branch added login provisioning (`createEmployeeLogin()` — creates
+the `users` row, syncs the primary role, sets primary `user_scope`) to `hireCandidate()`, which had
+never called it despite being "the more common real-world hire path" per its own code comment. That
+fix only covered one of the two recruitment-sourced paths.
+
+**Verified live** that `/auto-creation/:candidateId/trigger` had the identical gap and fixed it the
+same way: it now calls `createEmployeeLogin(pool, {...})` right after its own `INSERT INTO
+employees` succeeds (non-blocking, same try/catch-and-log pattern already used there for payroll
+auto-enrollment), so a candidate auto-created through this second path also gets a real login instead
+of an employee record nobody can sign in with. Added a `Login account created` entry to this
+endpoint's `checklist_items` response field for parity with the existing `Payroll profile configured`
+entry — confirmed via project-wide grep that no frontend page currently reads `checklist_items`, so
+this is additive with zero UI risk.
+
+**Also removed while auditing this area**: `frontend/src/services/recruitmentService.js` — a fully
+orphaned API wrapper (confirmed via grep: zero importers anywhere in `frontend/src`) that called
+`/recruitment/jobs`, an endpoint that has never existed; the live frontend pages call
+`/recruitment/openings`/`/recruitment/requisitions` directly via the shared `api` client instead.
+Dead code, not a regression — deleted rather than fixed forward.
+
+**Not done, flagged for a future pass**: the two employee-creation paths remain separate
+implementations (different transaction handling — `hireCandidate` runs inside the caller's
+`BEGIN`/`COMMIT` transaction client, `/auto-creation/trigger` does not — different tracking tables,
+and `/auto-creation/trigger` doesn't call `logAudit()`/`triggerEmail()`/`moveResumeOnStageChange()`
+the way `/hire` does). Collapsing them into one path was judged out of scope for a login-provisioning
+fix — the two have different preconditions (`/hire` moves a candidate to `Hired`; `/auto-creation`
+requires the candidate already be `Hired` and is a catch-up mechanism) and merging them risks
+changing `/auto-creation/trigger`'s response shape (`employee_code`, `next_steps`,
+`recruitment_employee_creation_log` row) that `EmployeeAutoCreation.jsx` depends on.
+
+**Architecture impact**: none — reuses the existing `createEmployeeLogin()` helper already documented
+via `hireCandidate()` elsewhere in this manual; no new tables, endpoints, or cross-module coupling.
+
+## 23. Inventory module UI kit — `components/layout` name collision broke all 14 pages (2026-08-04)
+
+A prior, already-uncommitted pass on this branch (2026-08-03, before this entry) built a shared
+frontend UI kit — `PageLayout`/`PageHeader`/`ContentCard`/`TableContainer`/`FormCard`/`KPICardGrid`/
+`EmptyState`/`LoadingState` — and refactored all 14 Inventory pages (`ItemMaster`, `StockMovements`,
+`StockAlertsAndSuggestions`, `StockReservations`, `BatchTracking`, `StockSummary`,
+`InventoryIntelligence`, `InventoryReport`, `LogisticsShipping`, `MaterialConsumption`,
+`QualityManagement`, `SerialTracking`, `StoresCostAnalysis`, `VendorPriceComparison`,
+`WarehouseManagement`) plus `ApprovalCenter` to import from it, all via `import { EmptyState, ... }
+from '@/components/layout'`. The kit itself was placed at `frontend/src/components/layout/` (a new
+directory). `frontend/src/components/Layout.jsx` — the unrelated, pre-existing app-shell component
+(sidebar + topbar, rendered by every page) — already lived in the same folder.
+
+**This is a live production-breaking bug, not just a lint nit.** Windows/NTFS (and default macOS)
+resolve paths case-insensitively, so Vite's ESM resolver for the bare specifier `@/components/layout`
+collapsed onto `Layout.jsx` (a file) instead of `layout/index.js` (a directory) — `Layout.jsx` only has
+`export default function Layout(...)`, no named exports. Every one of the 15 refactored pages threw
+`SyntaxError: The requested module '/src/components/layout.jsx' does not provide an export named
+'EmptyState'` at import time, which the app's `ErrorBoundary` caught and rendered as a bare "Something
+went wrong" — i.e. **the entire Inventory module (9 of the 9 pages Playwright's P0/P1 smoke suite
+covers) was down** on this branch before this fix. Caught by running the mandatory Playwright
+verification pass (`tests/suites/01-smoke.spec.ts`, project `smoke`) against the live dev server, not
+by code reading — the collision is invisible in a diff or on a case-sensitive CI runner, which is
+exactly why it shipped this far uncaught.
+
+**Fix**: renamed the kit directory `frontend/src/components/layout/` → `frontend/src/components/
+pulse-ui/` (matches the kit's own `pulse-ui.css`, and can no longer collide with `Layout.jsx` on any
+filesystem) and updated all 15 importers' `from '@/components/layout'` → `from '@/components/
+pulse-ui'`. No component code changed. Re-verified: `esbuild` syntax-check clean on all 15 files +
+the kit itself, and the full `smoke` Playwright project re-run green — Inventory production-readiness
+score went from failing 9 pages to **100/100** (all 15 Inventory-tagged smoke checks passing).
+
+**Architecture impact**: renames a not-yet-committed directory before its first commit — no import
+path outside the 15 files above ever referenced the old location (confirmed via grep for non-alias
+relative references, zero found), so there is no migration concern for other code. Establishes
+`frontend/src/components/pulse-ui/` as the canonical location for this shared kit; any future page
+adopting it should import from there, not recreate a same-named `layout/` folder next to `Layout.jsx`.
+
+## 24. Finance route-alias cleanup + Period Close correctness gap (2026-08-04)
+
+A read-only structural audit of the Finance module (file/API/DB inventory, duplicate-route report)
+flagged five duplicate/alias API pairs as needing resolution. Each pair was traced against real
+frontend call sites (not assumed from the route table) before touching anything, since this app is
+carrying a live pilot (`[[project_phase5_pilot_prep]]`).
+
+**Findings — 2 of 5 pairs were true duplicates, 1 was worse than duplicate (a correctness bug), 2 were
+false positives:**
+
+1. **`/finance/gst` (server.js, alias re-mount of `gst.routes.js`) — dead, zero frontend callers.**
+   Removed the alias mount. `/gst/*` (the original mount) is unaffected and remains what
+   `GSTModule.jsx`/`FinanceDashboard.jsx` actually call.
+2. **`/finance/budgets` (`extended.routes.js`, POST + 2×GET) — dead, incomplete stub.** Raw-SQL
+   insert/select against `budgets` using hardcoded `jan_amount..dec_amount` columns, with
+   `GET /vs-actual` literally `res.json({ message: 'Budget vs Actual comparison' })` — never
+   implemented. Zero frontend callers (`BudgetManagement.jsx`/`BudgetVsActuals.jsx`/`FinanceDashboard.jsx`
+   all call `/budgets/*`, the real CRUD+variance-analysis+forecast implementation in
+   `budget.routes.js`). Removed the stub; `EXTENDED-README.md` (which still advertised the dead
+   endpoints) corrected to point at `/budgets/*`.
+3. **`/finance/periods/:id/close` (via `finance.controller.js`'s `closePeriod`, what `PeriodClosing.jsx`
+   actually calls) vs `/accounting/periods/:id/close` (`accounting.routes.js`, unreachable from the
+   frontend) — not a simple duplicate, a correctness gap.** §18.2's own entry on this exact code
+   (`accounting.routes.js:704-750`, via `PULSE_EVENT_ORCHESTRATION_ARCHITECTURE.md`) had already
+   documented it as "one of the best-built pieces of automation in this document": it refuses to close
+   a period while draft journal entries exist in range, and stores a real `period_summary` snapshot
+   (total debits/credits/net income) on close. The version the frontend actually reaches had neither
+   check — a user could close a period with unposted entries still open in it, with no summary ever
+   recorded. Ported both the draft-entry guard and the summary computation into `finance.controller.js`'s
+   `closePeriod` (kept its existing company-scoping and `logAudit` call, which the donor version lacked).
+   The donor route in `accounting.routes.js` was left in place, unchanged — still functional, still the
+   route this manual's architecture doc cites, just no longer the only place with this logic.
+4. **`/accounting/*` vs `/finance/accounting/*` — false positive, both genuinely live.** Same router
+   mounted twice; `AccountingEngine.jsx`/most of `JournalEntry.jsx` call `/accounting/*`,
+   `FinancialStatements.jsx`/part of `JournalEntry.jsx` call `/finance/accounting/*`. Left both mounts
+   in place — removing either breaks a real page.
+5. **`/finance/reports/*` vs `/statements/*` — false positive, not duplicates at all.** Genuinely
+   different data: `/finance/reports/*` derives P&L/BS/cash-flow from the trial balance
+   (`reportsService`); `/statements/*` independently derives income-statement/BS/cash-flow from
+   AR/AP/invoices/bills/GST-ITC/TDS-payable with FY ranges and trend lines. Both have live callers
+   (`Reports.jsx`/`ExecutiveDashboard.jsx` vs. `FinancialStatements.jsx`/`FinancialRatios.jsx`/
+   `AccountingEngine.jsx`). No action.
+
+**Verification**: `node --check` clean on all three edited backend files
+(`server.js`, `finance.controller.js`, `extended.routes.js`); grepped the full repo (not just
+frontend) for every removed path — zero remaining references outside the routes/docs just fixed.
+No existing test references any of the removed or changed routes.
+
+**Architecture impact**: no new tables, no new cross-module coupling. Removes two genuinely dead API
+surfaces and closes a real correctness gap on period close (a financial-integrity control, not
+cosmetic) by making the frontend-reachable endpoint match the rigor the architecture doc already
+believed it had. `/accounting/periods/:id/close` remains as a second, functionally-equivalent
+entry point to the same now-shared logic — a deliberate non-removal, not an oversight, since it is
+still directly reachable and this manual cites it by line number elsewhere.
+
+**Addendum (2026-08-04, same pass) — a companion frontend bug found while auditing this area:**
+`App.jsx`'s Finance-consolidation redirects hard-`<Navigate>`'d `/ChartOfAccounts`, `/PeriodClosing`,
+and `/CostCenters` to `/AccountingEngine` — but `AccountingEngine.jsx` has no tab covering any of
+the three, so all three were real, complete, otherwise-reachable pages made permanently unreachable
+by their own redirect. Removed the three redirect entries (routes.jsx's `ROUTES` map now resolves
+them normally, same as every other standalone page) and added `CostCenters`/`PeriodClosing` to
+`GlobalSearch.jsx`'s `SEARCHABLE_PAGES` and `SettingsCenter.jsx`'s Finance domain tile list —
+`ChartOfAccounts` was already present in both, `CostCenters`/`PeriodClosing` were not, presumably
+because the dead redirect made them seem covered. No backend change.
+
+## 25. Cron-jobs → notification-repository bypass fixed (2026-08-04)
+
+`AUTOMATION_OPPORTUNITY_AUDIT.md` §0 flagged that most cron jobs wrote reminders with a raw
+`INSERT INTO notifications`, bypassing `notifications.repository.js`'s `create()` — the only place
+that mirrors an in-app notification to push (FCM/APNs, `pushSender.js`). `probation.cron.js` was
+already correct (uses `notificationsRepository.create()`); five more call sites had the same bug and
+are now fixed the same way, dedup-check logic untouched (still a direct `pool.query` `SELECT 1 ...`
+before the insert — only the write itself moved to the repository):
+
+- `jobs/amcRenewal.cron.js` — `insertReminder()`
+- `jobs/overdueReminders.cron.js` — `insertReminder()`
+- `jobs/deliveryFollowup.cron.js` — `insertReminder()`
+- `jobs/subscriptionRenewal.cron.js` — `insertReminder()`
+- `jobs/attendance.cron.js` — monthly freeze reminder (was a single set-based
+  `INSERT ... SELECT u.id FROM users WHERE role IN (...)`, no per-user dedup ever existed; converted
+  to fetch-the-role-list-then-loop so each user goes through the repository individually)
+- `shared/eventReactions.js` — the `warranty.expiring` reaction (`jobs/warrantyExpiry.cron.js` →
+  `emitEvent('warranty.expiring', ...)` → this listener). Not itself a cron file, but downstream of
+  one and the exact same bug pattern — introduced after the audit was written, since the Business
+  Event Bus (`shared/eventBus.js`) postdates it (see `PULSE_EVENT_ORCHESTRATION_ARCHITECTURE.md`).
+
+**What this does and does not fix**: `notifications.repository.js`'s `create()` only mirrors to push
+— it does not send email or SMS despite both being real, configured senders elsewhere in the codebase
+(`utils/mailer.js`, `utils/sms.js`). So these six reminders now reach in-app + push, matching every
+other correctly-wired reminder (e.g. `probation.cron.js`), but still do **not** reach email/SMS —
+that would require the `notification_rules` table (declares per-event channel + recipient_roles,
+`migrations/20260623000001_notification_rules_rebuild.js`) to gain its first consumer, which is a
+separate, larger task the audit also flagged and this pass deliberately left alone.
+
+**Verification**: `node --check` clean on all six edited files; grepped each for `INSERT INTO
+notifications` post-edit — zero remaining; confirmed each repository-import path resolves on disk.
+No behavior change to receiver-selection SQL, dedup windows, or cron schedules — only how the row
+gets written.
+
+**Architecture impact**: no schema change, no new tables. Six existing reminder paths that silently
+under-delivered (in-app only, despite users having push-enabled devices) now match the intended
+multi-channel behavior for the channels that already exist. Does not touch the still-open gaps in
+§0 of the automation audit: manager-hierarchy approval routing, the orphaned WhatsApp sender, zero
+event-emitter/DB-trigger usage elsewhere, or the `notification_rules` consumer gap.
+
+## 26. Recruitment frontend architecture refactor — Phase 1 slice 1: date-format + stage-label dedup (2026-08-04)
+
+Start of a planned multi-phase architecture cleanup of the Recruitment module (`frontend/src/features/recruitment` — 24 pages, ~9,700 lines — and `backend/src/modules/recruitment` — two ~1,000-line files). Scope is explicitly refactor-only: no feature, workflow, DB, or route-contract changes. Per the non-negotiable "one phase at a time" rule, this pass covers only the two safest, verifiably-lossless duplication categories out of Phase 1's full list (constants/status/stage/colors/labels/utilities/validators/CSV/search/filter/date-formatting); the remainder is deferred (see below).
+
+**New file**: `frontend/src/features/recruitment/shared/constants.js` — canonical `STAGE_LABELS` (10-key candidate-stage label map), extracted because `CandidateDetail.jsx` and `RecruitmentDashboard.jsx` each defined a byte-identical copy independently. Both now import it.
+
+**Date formatting**: the `.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })` snippet (the project's DD-Mon-YY standard, see `utils/dateFormatter.js`) was locally reimplemented or inlined 20+ times across 11 pages instead of importing the existing canonical `fmtDate`/`formatDate`. Consolidated onto the shared helper in:
+`CandidateDetail.jsx`, `RecruitmentDashboard.jsx`, `TalentPoolDetail.jsx`, `TalentPools.jsx`,
+`RecruiterDashboard.jsx`, `RecruitmentAgencies.jsx`, `EmployeeAutoCreation.jsx`,
+`InterviewFeedback.jsx`, `AllCandidates.jsx`, `InterviewScheduler.jsx` (internal calls only — its
+local `fmtDate` returns a `{label, sub, isToday}` object and keeps its own name; only the three
+`toLocaleDateString` calls inside it now delegate to the shared helper via an aliased import).
+Files whose local fallback was `''` (`TalentPools.jsx`, `RecruiterDashboard.jsx`) import the
+`formatDate` alias instead of `fmtDate` to keep that exact fallback string.
+
+**Deliberately left untouched** (would risk a visible behavior change, so deferred rather than forced):
+- `JobRequisitionPipeline.jsx`'s local `formatDate` — same formatting, but falls back to `'-'` on
+  invalid input where the shared helper returns `'—'`. One-character cosmetic difference on an edge
+  case that real DB-backed dates never hit, but not proven zero-risk, so left alone.
+- All `STAGE_COLORS` maps (`CandidateDetail`, `RecruitmentDashboard`, `RecruiterDashboard`,
+  `RecruitmentAgencies`, `TalentPoolDetail`) — same-shaped objects but genuinely different hex
+  values/key sets per file (confirmed by direct comparison, not assumed). Forcing these onto one
+  palette would change on-screen colors, which the brief prohibits. A real design-token unification
+  here is a legitimate future task but needs an explicit call on which palette wins — user decision,
+  not an architecture-refactor default.
+- `RecruiterDashboard.jsx`'s own `STAGE_LABELS` (shorter key set, "1st Level" vs the canonical
+  "1st Interview") and `RecruitmentAgencies.jsx`'s/`TalentPoolDetail.jsx`'s own stage-color maps
+  (different key vocabulary, e.g. `interview` instead of `1st_level`) — genuinely divergent, not
+  duplicates.
+- `getStatusColor`/`getStageColor` in `AllCandidates.jsx` — return a single color string, not the
+  `{bg, color}` shape used elsewhere; different enough shape/call-site to not force-merge here.
+- CSV export, search/filter logic, validators, backend `recruitment.routes.js` /
+  `recruitment.repository.js` duplication, and the full Phase 2–9 scope (shared UI components, API
+  cleanup, route/repository splitting, workflow services, file reorg) — not started.
+
+**Verification**: `npx esbuild` transform check on all 24 recruitment pages — clean. `eslint` on the
+10 touched files plus the new `shared/constants.js` — 0 errors (7 pre-existing warnings, all on lines
+this pass didn't touch: missing-hook-deps, unused-vars). `vite build` — all 3239 modules transformed
+with no import-resolution errors (the build's only failure is a pre-existing, already-committed,
+unrelated `lightningcss` minify error in `components/pulse-ui/pulse-ui.css`, confirmed via `git log`/
+`git status` to predate this session and be untouched by it). `vitest run` — 292/292 tests passing
+across all 16 existing frontend test files (none cover Recruitment specifically). No manual
+browser/Playwright pass was run this slice (pure internal refactor, no route/prop/API-contract
+changes, so page behavior is expected identical — but this is a text-console verification, not a
+substitute for a UI check, and should not be read as one).
+
+**Architecture impact**: no schema, route, or API change. Establishes `frontend/src/features/recruitment/shared/` as the module's first local shared-code location (Phase 8 of the full refactor plan will grow this into `Shared/{Components,Hooks,Constants,Services,Utils,Validation}`). Net: 1 new file, 10 files reduced by one locally-duplicated function/constant each. Remaining Phase 1 categories (CSV export, search/filter, validators, backend constants) and Phases 2–9 are unstarted and awaiting approval to continue.
+
+## 27. Monthly KPI Digest — new automated cron (2026-08-04)
+
+New feature, not a bug fix: leadership (`admin`/`super_admin`/`superadmin`/`department_head`) who
+don't log in daily had no way to see last month's headline numbers without opening a dashboard.
+`jobs/kpiDigest.cron.js` runs 1st of every month at 07:00, computes the prior calendar month's
+revenue (+ MoM growth), attrition rate, open pipeline value, opportunity conversion rate, and active
+headcount per company (`invoices`/`employees`/`opportunities`, all scoped by `company_id`), narrates
+them via a new shared `intelligence/kpiNarrator.js` (GPT via `OPENAI_API_KEY` if set, else a
+rule-based bullet summary — identical logic `POST /api/ai/ceo-insights` already used, extracted so
+both share one source instead of drifting into two copies), and delivers one notification per
+receiver via `notificationsRepository.create()` (in-app + push, per §25's fix above). Idempotent per
+company per calendar month via a `notifications` row check (`module_name='executive'`,
+`notification_type='kpi_digest'`, this month) — a re-run or server restart mid-month won't re-send.
+Registered in `server.js` (`startKpiDigestCron()`, alongside the other job-scheduling calls at
+startup).
+
+**Verification**: `node --check` clean on all touched/new files. No existing test references
+`ceo-insights` or the new cron; the extraction preserves `ai.routes.js`'s existing response shape
+(`{reply, source}`) exactly, so no caller-side change.
+
+**Architecture impact**: one new cron job, one new shared module (`kpiNarrator.js`), no schema
+change, no new tables — reuses `notifications`/`invoices`/`employees`/`opportunities` and the
+existing notification pipeline. `ai.routes.js`'s `POST /ceo-insights` now delegates to
+`kpiNarrator.narrateKpis()` instead of inlining the same logic, so the two callers (interactive
+CEO-dashboard request, monthly cron) can't silently diverge.
+
+## 28. Recruitment backend consolidation — company-scoping gaps + duplicate employee-creation path (2026-08-04)
+
+Companion backend pass to §26's frontend refactor, same module. Two separate problems fixed together
+because they were found auditing the same files:
+
+**1. Multiple recruitment write/read endpoints had no `company_id` scoping at all** — any
+authenticated user could act on another company's data by guessing/enumerating an id:
+`deleteRequisition`, `moveCandidateStage`, `createInterviewNote`/`findInterviewNotes`,
+`acceptOffer`, `hireCandidate` (candidate lookup only — the insert side was already scoped via the
+passed-in `companyId`), and `POST /interviews/:id/submit-feedback`'s two lookups (interview
+schedule, then candidate). Fixed by threading `company_id` through each repository method (default
+`null` — a `null` company_id keeps existing unscoped-caller behavior identical, so this is additive,
+not a breaking signature change) and having each route pass `cid(req)`. `talent.routes.js`'s legacy
+`/interview-questions` endpoints had the same gap (zero company filter) plus wrote to the wrong
+column (`tags` instead of `tags_jsonb`, orphaning rows the scoped `/questions` endpoint could never
+see) — deduplicated both legacy and canonical endpoints onto one shared `listQuestions()`/
+`insertQuestion()` pair instead of fixing two copies separately.
+
+**2. Consolidated the two recruitment-sourced employee-creation paths** that §22 (2026-08-03, this
+manual) had already flagged as "not done, out of scope for a login-provisioning fix": `hireCandidate()`
+now accepts an optional `options` object (`employmentType`/`offeredSalary`/`sourceCandidateId`), and
+`POST /auto-creation/:candidateId/trigger` — which previously reimplemented employee insert, payroll
+auto-enrollment, and login provisioning as a second copy — now calls `hireCandidate(candidateId,
+companyId, pool, {...})` directly. Any future fix to hire logic (as already happened twice: payroll
+enrollment, then login provisioning) now only needs to land in one place. `/auto-creation/trigger`'s
+response shape (`employee_code`, `next_steps`, `recruitment_employee_creation_log` row/columns) is
+unchanged, so `EmployeeAutoCreation.jsx` needed no changes — the concern §22 raised about not risking
+this contract is what shaped how the consolidation was done, not why it was skipped this time.
+Employee-code generation also moved from a pre-computed `EMP-####` (racy against `hireCandidate`'s
+own independent numbering) to letting `hireCandidate` assign it, then writing the real value back
+into `recruitment_employee_creation_log` after.
+
+**3. Two HR Analytics cards were silently dead**, discovered incidentally while consolidating pipeline
+queries: `analytics.routes.js`'s `/time-to-hire` and `/offer-acceptance` each reimplemented their own
+query against `candidates.stage`/`candidates.status` — columns nothing in the codebase has ever
+written (real fields are `current_stage`/`overall_status`, with offer status living on
+`offer_letters`, not `candidates`, regardless) — so both always returned zero. Both, plus
+`talent.routes.js`'s recruiter-dashboard pipeline block (a third independent copy of the same
+group-by), now delegate to `recruitmentRepository.getPipelineSummary()` / `getTimeToHire()` /
+`getOfferAcceptanceRate()` — one query per metric instead of three drifting copies, matching this
+manual's established "single source of truth" pattern (`postStock`, `invoiceService.createInvoice`,
+etc.). `getPipelineSummary()` gained an optional `job_opening_id` filter so it can also replace the
+old single-opening-scoped `getCandidatePipeline()`, which is now dead and removed.
+
+**4. Job requisition approval, wired into the existing Approval Center** rather than left as a bare
+status edit: `PUT /requisitions/:id` now refuses to set `status='approved'` directly (the enforcement
+lives in the API, not just an omitted frontend button), and `approvals.controller.js` gained a new
+`pendingRequisitions()` source (job_requisitions with `status='pending_approval'`) plus `requisition`
+cases in the shared `approveSourceItem`/`rejectSourceItem` switches — reusing the generic
+Approve/Reject/can_act machinery (see §9's approvals fix above) rather than a bespoke requisition-only
+flow. `job_requisitions` has no `approved_by`/rejection-reason column, so approve sets `status=
+'approved'` (audit trail via the caller's existing `logAudit()`) and reject bounces back to `'draft'`
+for revision — the closest fit to the table's real `CHECK` constraint (`draft → pending_approval →
+approved → open → closed`), not an invented rejected state.
+
+**Verification**: `node --check` clean on all touched files; full backend suite (549 passed/9
+skipped) and full frontend suite (292 passed) both green, no regressions from the scoping/consolidation
+changes.
+
+**Architecture impact**: no new tables. `hireCandidate()`'s signature grows an optional 4th
+parameter (backward compatible — every existing caller omits it and behaves exactly as before).
+`getPipelineSummary()`/`getTimeToHire()`/`getOfferAcceptanceRate()` become cross-module dependencies
+of `analytics.routes.js` and `talent.routes.js` (both now import `recruitment.repository.js`
+directly) — a new coupling, but eliminating exactly the kind of drifted-triplicate-query problem this
+manual's §19 and §25 have both already flagged as the recurring failure mode in this codebase.
+
+**Frontend companion**: `JobRequisitionPipeline.jsx`'s `moveStatus()` special-cases a `nextStatus`
+of `'approved'` to call `POST /approvals/requisition:<id>/approve` instead of the now-blocked direct
+`PUT /requisitions/:id`, and a new Reject button (shown only while `status='pending_approval'`) calls
+the matching `POST /approvals/requisition:<id>/reject` with an optional comment. Without this, item
+4 above would have shipped a backend gate with no UI path to actually approve/reject a requisition.
