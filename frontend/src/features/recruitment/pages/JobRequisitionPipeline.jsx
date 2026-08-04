@@ -64,6 +64,7 @@ export default function JobRequisitionPipeline() {
   const [createForm, setCreateForm] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [deptList, setDeptList] = useState([]);
+  const [rejectReason, setRejectReason] = useState('');
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -156,12 +157,32 @@ export default function JobRequisitionPipeline() {
 
   const openDetail = (row) => {
     setActiveRow(row);
+    setRejectReason('');
     setShowDetail(true);
+  };
+
+  const applyLocalStatus = (status) => {
+    setRows((prev) => prev.map((r) => (r.id === activeRow.id ? { ...r, status } : r)));
+    setActiveRow((prev) => ({ ...prev, status }));
   };
 
   const moveStatus = async (nextStatus) => {
     if (!activeRow?.id) return;
     setError('');
+    // pending_approval -> approved is no longer a self-service status edit —
+    // the backend rejects it on this endpoint. Route it through the Approval
+    // Center instead, which enforces an approver role and keeps a real audit
+    // trail (see MODULE_FEATURE_CONNECTION_MANUAL.md's Recruitment section,
+    // fixed 2026-08-04).
+    if (nextStatus === 'approved') {
+      try {
+        await api.post(`/approvals/requisition:${activeRow.id}/approve`);
+        applyLocalStatus('approved');
+      } catch {
+        setError('Approval failed. Your role may not have approval rights, or this item was already actioned.');
+      }
+      return;
+    }
     try {
       const res = await api.put(`/recruitment/requisitions/${activeRow.id}`, { status: nextStatus });
       const updated = res?.data || { ...activeRow, status: nextStatus };
@@ -169,6 +190,18 @@ export default function JobRequisitionPipeline() {
       setActiveRow((prev) => ({ ...prev, ...updated }));
     } catch {
       setError('Status update failed. API did not accept the status change.');
+    }
+  };
+
+  const rejectRequisition = async () => {
+    if (!activeRow?.id) return;
+    setError('');
+    try {
+      await api.post(`/approvals/requisition:${activeRow.id}/reject`, { comment: rejectReason });
+      applyLocalStatus('draft');
+      setRejectReason('');
+    } catch {
+      setError('Rejection failed. Your role may not have approval rights, or this item was already actioned.');
     }
   };
 
@@ -309,9 +342,18 @@ export default function JobRequisitionPipeline() {
                 <div className="jrp-detail-item jrp-detail-full"><span className="jrp-detail-lbl">Skills</span><span className="jrp-detail-val">{activeRow.skills_required || '-'}</span></div>
                 <div className="jrp-detail-item jrp-detail-full"><span className="jrp-detail-lbl">Description</span><span className="jrp-detail-val">{activeRow.job_description || '-'}</span></div>
               </div>
+              {String(activeRow.status || '').toLowerCase() === 'pending_approval' && (
+                <div className="jrp-field jrp-field-full" style={{ marginTop: 16 }}>
+                  <label>Rejection reason (optional)</label>
+                  <textarea rows={2} value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="Sent back to Draft if rejected" />
+                </div>
+              )}
             </div>
             <div className="jrp-drawer-ft">
               <button className="jrp-btn-outline" onClick={() => setShowDetail(false)}>Close</button>
+              {String(activeRow.status || '').toLowerCase() === 'pending_approval' && (
+                <button className="jrp-btn-outline" onClick={rejectRequisition}>Reject</button>
+              )}
               {nextStatus && <button className="jrp-btn-primary" onClick={() => moveStatus(nextStatus)}>Move to {toLabel(nextStatus)}</button>}
             </div>
           </div>
