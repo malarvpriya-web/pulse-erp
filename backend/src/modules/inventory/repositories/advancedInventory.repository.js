@@ -241,7 +241,7 @@ const advancedInventoryRepository = {
   // ==================== PURCHASE SUGGESTIONS ====================
   async getPurchaseSuggestions(filters = {}) {
     let query = `
-      SELECT ps.*, ii.item_code, ii.item_name, ii.unit_of_measure, w.warehouse_name
+      SELECT ps.*, ii.item_code, ii.item_name, ii.unit_of_measure, ii.standard_cost, w.warehouse_name
       FROM purchase_suggestions ps
       JOIN inventory_items ii ON ps.item_id = ii.id
       JOIN warehouses w ON ps.warehouse_id = w.id
@@ -275,8 +275,8 @@ const advancedInventoryRepository = {
     return result.rows;
   },
 
-  async convertSuggestionToPR(suggestion_id, pr_id) {
-    const result = await pool.query(
+  async convertSuggestionToPR(suggestion_id, pr_id, client = pool) {
+    const result = await client.query(
       `UPDATE purchase_suggestions
        SET status = 'converted_to_pr', converted_to_pr_id = $1, converted_at = CURRENT_TIMESTAMP
        WHERE id = $2 RETURNING *`,

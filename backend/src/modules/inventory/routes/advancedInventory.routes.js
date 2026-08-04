@@ -163,26 +163,49 @@ router.post('/purchase-suggestions/:id/reject', requirePermission('inventory', '
 });
 
 router.post('/purchase-suggestions/:id/convert', requirePermission('inventory', 'add'), async (req, res) => {
+  // Was calling purchaseRequestRepo.create(data) — that repository's real
+  // signature is create(client, data); passing just one arg meant `client`
+  // silently became the data object and `data` was undefined, throwing
+  // immediately ("Cannot destructure property 'request_number' of 'data'")
+  // on every real call. Also never inserted the suggestion as a line item
+  // (purchase_request_items) or called recomputeTotal() — the same
+  // "empty PR" bug class already fixed for the RFQ-award path elsewhere in
+  // this codebase — so even a naive arity fix alone would still ship a
+  // ₹0 header with no items. Now mirrors POST /purchase-requests's own
+  // create+createItem+recomputeTotal transaction exactly.
+  const client = await pool.connect();
   try {
     const suggestion = (await repo.getPurchaseSuggestions({ id: req.params.id }))?.[0];
     if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
 
+    await client.query('BEGIN');
     const prNumber = await purchaseRequestRepo.getNextNumber();
-    const pr = await purchaseRequestRepo.create({
+    const pr = await purchaseRequestRepo.create(client, {
       request_number: prNumber,
       requested_by_employee_id: req.user.employee_id ?? req.user.userId ?? req.user.id,
       request_date: new Date(),
       notes: `Generated from purchase suggestion for item ${suggestion.item_code}`,
-      items: [{
-        item_id: suggestion.item_id,
-        item_name: suggestion.item_name,
-        quantity: suggestion.suggested_quantity
-      }]
     });
-    await repo.convertSuggestionToPR(req.params.id, pr.id);
-    res.status(201).json(pr);
+    await purchaseRequestRepo.createItem(client, {
+      pr_id: pr.id,
+      item_id: suggestion.item_id,
+      item_name: suggestion.item_name,
+      quantity: suggestion.suggested_quantity,
+      // Best-effort so the PR's total isn't a silent ₹0 (recomputeTotal sums
+      // quantity × expected_price, and that total drives approval routing) —
+      // real quote pricing isn't known yet at this stage, so the item's own
+      // standard cost is the closest honest estimate available.
+      expected_price: suggestion.standard_cost || 0,
+    });
+    await purchaseRequestRepo.recomputeTotal(client, pr.id);
+    await repo.convertSuggestionToPR(req.params.id, pr.id, client);
+    await client.query('COMMIT');
+    res.status(201).json(await purchaseRequestRepo.findById(pr.id));
   } catch (error) {
+    await client.query('ROLLBACK');
     res.status(error.status || 500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
