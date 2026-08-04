@@ -94,10 +94,13 @@ function App() {
                 )
           }
         />
-        {/* Finance consolidation redirects — old page-key paths → consolidated pages */}
+        {/* Finance consolidation redirects — old page-key paths → consolidated pages.
+            ChartOfAccounts/PeriodClosing/CostCenters were removed from this list
+            2026-08-04: AccountingEngine has no tab covering any of the three, so the
+            redirect made all three real, complete pages unreachable — see §24 in
+            MODULE_FEATURE_CONNECTION_MANUAL.md. They now resolve normally via
+            routes.jsx's ROUTES map like every other standalone page. */}
         <Route path="/JournalEntry"          element={<Navigate to="/AccountingEngine" replace />} />
-        <Route path="/ChartOfAccounts"       element={<Navigate to="/AccountingEngine" replace />} />
-        <Route path="/PeriodClosing"         element={<Navigate to="/AccountingEngine" replace />} />
         <Route path="/FinancialStatements"   element={<Navigate to="/AccountingEngine" replace />} />
         <Route path="/FinancialRatios"       element={<Navigate to="/AccountingEngine" replace />} />
         <Route path="/CustomerOutstanding"   element={<Navigate to="/ReceivablesPage" replace />} />
@@ -112,7 +115,6 @@ function App() {
         <Route path="/ForexManagement"       element={<Navigate to="/PaymentBatch" replace />} />
         <Route path="/PaymentGateway"        element={<Navigate to="/PaymentBatch" replace />} />
         <Route path="/BudgetVsActuals"       element={<Navigate to="/BudgetManagement" replace />} />
-        <Route path="/CostCenters"           element={<Navigate to="/AccountingEngine" replace />} />
         <Route path="/Tickets"              element={<Navigate to="/SupportDashboard" replace />} />
 
         {/* Attendance settings consolidation redirects */}

@@ -70,6 +70,8 @@ const DOMAINS = [
       { label: 'TDS Management',      page: 'TDSManagement',      icon: FileText,      desc: 'TDS deduction and Form 16 setup' },
       { label: 'Bank Accounts',       page: 'BankAccounts',       icon: Landmark,      desc: 'Company bank account details' },
       { label: 'Chart of Accounts',   page: 'ChartOfAccounts',    icon: BarChart3,     desc: 'Ledger structure and account groups' },
+      { label: 'Cost Centers',        page: 'CostCenters',        icon: ClipboardList, desc: 'Department-wise cost tracking and P&L' },
+      { label: 'Period Closing',      page: 'PeriodClosing',      icon: Calendar,      desc: 'Lock accounting periods and view close summaries' },
       { label: 'Budget Management',   page: 'BudgetManagement',   icon: BarChart3,     desc: 'Annual budgets and cost centres' },
       { label: 'Pricing Engine',      page: 'PricingEngine',      icon: IndianRupee,    desc: 'Price lists, discount tiers, promos' },
       { label: 'Order Policy',        page: 'OrderPolicy',        icon: ClipboardList, desc: 'Purchase order policy and tolerances' },

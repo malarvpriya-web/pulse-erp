@@ -47,6 +47,8 @@ const SEARCHABLE_PAGES = [
   { page: 'FinanceDashboardNew', label: 'Finance Dashboard',          category: 'Finance' },
   { page: 'CFODashboard',        label: 'CFO Dashboard',              category: 'Finance' },
   { page: 'ChartOfAccounts',     label: 'Chart of Accounts',          category: 'Finance' },
+  { page: 'CostCenters',         label: 'Cost Centers',               category: 'Finance' },
+  { page: 'PeriodClosing',       label: 'Period Closing',             category: 'Finance' },
   { page: 'AccountingEngine',    label: 'Accounting Engine',          category: 'Finance' },
   { page: 'BudgetManagement',    label: 'Budget Management',          category: 'Finance' },
   { page: 'TDSManagement',       label: 'TDS Management',             category: 'Finance' },
