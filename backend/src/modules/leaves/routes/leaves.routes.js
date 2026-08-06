@@ -5,6 +5,7 @@ import { requirePermission, allowRoles } from '../../../middlewares/auth.middlew
 import { validate } from '../../../services/ValidationEngineService.js';
 import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { authorizeManagerApproval, DENIED_MESSAGE } from '../../../shared/managerApprovalAuthz.js';
 
 const router = express.Router();
 
@@ -1008,12 +1009,23 @@ router.post('/apply', requirePermission('leaves', 'add'), handleApplyLeave);
 // APPROVAL WORKFLOW — L1 / L2 / L3
 // ─────────────────────────────────────────────────────────────────────────────
 
-// L1 — Manager Approval
+// L1 — Manager Approval. Identity-gated (reporting manager/delegate/HR/admin —
+// see shared/managerApprovalAuthz.js), not just anyone holding 'leaves.approve'
+// permission — that permission alone previously let any manager-role user
+// approve any employee's leave, not just their own reports.
 router.post('/approve/manager/:id', requirePermission('leaves', 'approve'), async (req, res) => {
   try {
     const actorEmpId = req.user?.employee_id; // Always use authenticated user
     const { comments } = req.body;
     const { rows: oldRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1`, [req.params.id]);
+    if (!oldRows.length) return res.status(404).json({ error: 'Leave application not found' });
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: actorEmpId,
+      actorRole: req.user?.role,
+      requesterEmployeeId: oldRows[0].employee_id,
+      delegateApproverId: oldRows[0].delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
     const application = await leavesRepository.approveByManager(req.params.id, actorEmpId, comments);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'approve', oldData: oldRows[0] ?? null, newData: { ...application, actor_role: 'manager' }, req });
     // Sync to attendance if this is a single-level approval that results in status='approved'
@@ -1034,6 +1046,14 @@ router.post('/reject/manager/:id', requirePermission('leaves', 'approve'), async
     const { comments } = req.body;
     if (!comments?.trim()) return res.status(400).json({ error: 'A rejection reason (comments) is required' });
     const { rows: oldRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1`, [req.params.id]);
+    if (!oldRows.length) return res.status(404).json({ error: 'Leave application not found' });
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: actorEmpId,
+      actorRole: req.user?.role,
+      requesterEmployeeId: oldRows[0].employee_id,
+      delegateApproverId: oldRows[0].delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
     const application = await leavesRepository.rejectByManager(req.params.id, actorEmpId, comments);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'reject', oldData: oldRows[0] ?? null, newData: { ...application, actor_role: 'manager' }, req });
     reverseLeaveAttendance(application, pool).catch(() => {});

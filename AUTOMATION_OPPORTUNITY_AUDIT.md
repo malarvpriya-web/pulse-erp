@@ -49,7 +49,7 @@ instruction to reuse — not rebuild — existing plumbing.
 ## 1. Executive Command Center
 
 ### 1.1 Monthly KPI digest to leadership
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — new `jobs/kpiDigest.cron.js`, monthly, reuses the same narrator as `POST /api/ai/ceo-insights` (`kpiNarrator.js`) and the standard notifications pipeline (auto-mirrors to push/email). Registered in `server.js`. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** Every KPI (revenue, attrition, pipeline, headcount) is already computed live behind CEO Dashboard / CEO Intelligence queries — but only surfaces when someone logs in and opens the page.
 **Pain Point:** Executives who don't log in daily never see a monthly rollup; there's no push equivalent of the dashboard.
 **Automation Flow:**
@@ -70,7 +70,7 @@ notifications.repository.create() for admin + department heads (auto-mirrors to 
 **Priority:** ⭐⭐⭐⭐
 
 ### 1.2 Anomaly auto-push instead of pull
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §40. `jobs/anomalyDetection.cron.js` runs daily 06:30, calls extracted `anomalyDetector.detectAnomalies()`, routes each flagged anomaly to the relevant role via `notificationsRepository.create()`. Registered in `server.js`. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `GET /api/ai/anomalies` (`ai.routes.js:349-451`) already detects invoice outliers, low attendance, PO price variance, TDS mismatch, and QC test-failure spikes — but only when a human opens the endpoint.
 **Pain Point:** A real, working anomaly detector sits idle unless someone remembers to check it.
 **Automation Flow:**
@@ -93,7 +93,7 @@ For each flagged anomaly → notifications.repository.create() to relevant role 
 ## 2. CRM
 
 ### 2.1 Lead / opportunity auto-assignment
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §44. New `crm/services/leadAssignment.service.js` gives `round_robin`/`load_balanced` real rotation logic (previously `load_balanced` did nothing and `round_robin` never rotated) and wires all four lead/opportunity creation paths through it; also fixed a `PUT /crm/settings` 500 (12 vs 32 live columns) that had silently blocked `auto_assign_owner` from ever persisting. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `leads.repository.js:36-60` and `crm.routes.js:851,1093` take `assigned_to` straight from the request body — a human manually picks the salesperson on every lead/opportunity.
 **Pain Point:** No round-robin, territory, or workload balancing; assignment quality depends entirely on whoever fills the form remembering who's free.
 **Automation Flow:**
@@ -114,7 +114,7 @@ notifications.repository.create() to the assignee
 **Priority:** ⭐⭐⭐
 
 ### 2.2 Lead/opportunity follow-up reminders
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see §44. `jobs/crmFollowup.cron.js` runs daily 09:00, notifies a lead/opportunity's own `assigned_to` when its follow-up date has passed. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `lead_activities.next_followup_date` (migration `20260717000005`, indexed) and `opportunities.follow_up_date` (migration `20260714000001`) already exist and are exposed via GET in `pursuits.routes.js:276,302` and `crm.routes.js:1056,1094` — but no cron reads either column.
 **Pain Point:** Follow-up dates are recorded and then silently ignored unless someone opens the record.
 **Automation Flow:**
@@ -133,7 +133,7 @@ insertReminder() to assigned_to (standard dedup pattern)
 **Priority:** ⭐⭐⭐⭐⭐
 
 ### 2.3 Tender deadline / EMD refund reminders
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see §44. `jobs/tenderDeadline.cron.js` runs daily, reuses `tenders.routes.js`'s existing due-soon/overdue/EMD-stuck predicates, broadcasts to sales/admin roles via the `user_roles` junction. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `tenders.routes.js:32-38,66-71` already computes `overdue`/`due_soon` (14-day window on `submission_deadline`) and flags `emd_refund_date IS NULL` — purely inline in GET-query SQL.
 **Pain Point:** A tender deadline or an EMD stuck in refund limbo is invisible unless someone opens the Tender workspace.
 **Automation Flow:**
@@ -152,7 +152,7 @@ insertReminder() to sales/tender-desk role
 **Priority:** ⭐⭐⭐⭐
 
 ### 2.4 Discount approval — link to quotations, route through the real engine
-**Status:** 🔴 New Automation
+**Status:** ✅ Already Done — built in §21 (2026-07-30, discount-approval gate at Quotation→Sales Order), confirmed still live during §44's CRM pass. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `discount_approvals` (`20260505000001:938-951`) has no `quotation_id` column at all — only `discount_rule_id/lead_id/order_id`. It's a standalone table/route pair, disconnected from both quotations and the generic Approval Center (`approval_requests`/`module_name`/`reference_type`).
 **Pain Point:** A discount tied to a quotation can't be traced back to it, and doesn't benefit from any shared approval routing.
 **Automation Flow:**
@@ -181,7 +181,7 @@ Approve/reject cascades back to quotation status
 **Priority:** N/A (already delivering value)
 
 ### 3.2 Quotation auto-expiry
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §41. `jobs/quotationExpiry.cron.js` runs daily 09:45, flips `sent` quotations past `validity_date` to `expired`, notifies the owning salesperson (`created_by`) via `notificationsRepository.create()`. Registered in `server.js`. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `quotations.repository.js:6` has a `validity_date` column; nothing reads it proactively. Conversion is two explicit manual endpoints — `PATCH /quotations/:id/convert-to-order` and `/accept-and-convert` (`sales.routes.js:323,365`).
 **Pain Point:** Stale quotations sit in "sent" status indefinitely, even past their own validity date, misrepresenting the live pipeline.
 **Automation Flow:**
@@ -204,7 +204,7 @@ insertReminder() to owning salesperson
 ## 4. Marketing
 
 ### 4.1 Campaign execution is CRUD-only
-**Status:** 🔴 New Automation (narrow — the module itself is thin)
+**Status:** ✅ Done (2026-08-05) — see §43. `jobs/campaignLifecycle.cron.js` (daily 09:00) nudges campaigns past `end_date` still open; also fixed a verified-live P0 where `POST /marketing/campaigns` 500'd on every call (`campaign_name` NOT NULL drift). Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** A real `marketing` module exists (`campaigns.repository.js`, `marketing.routes.js`, 612 lines) with full CRUD, tasks, deliverables, ROI/lead-attribution analytics (`:514,534`) — but `campaigns` only stores `start_date/end_date/budget/status`; there is no send/schedule/blast mechanism. Status changes via manual `PATCH /campaigns/:id/status` (`:174`).
 **Pain Point:** "Automation" here would mean building send/scheduling infrastructure that doesn't exist at all — out of scope for "automate what already exists." The only honest automation available today is status-lifecycle reminders.
 **Automation Flow:**
@@ -227,7 +227,7 @@ insertReminder() to campaign owner to close it out
 ## 5. Procurement
 
 ### 5.1 Inventory reorder → auto-draft Purchase Request
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see §46. `jobs/reorderPr.cron.js` (daily 10:15) auto-converts pending `purchase_suggestions` into draft POs through the existing conversion transaction — no new detection logic needed, `stockAlerts.js` already wrote the suggestions. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** EOQ Planner on the Inventory dashboard computes Reorder Point live; AI `/prescriptive` (`ai.routes.js:846`) already *recommends* reordering items at/below reorder point — but nothing creates the PR. Confirmed: no cron in `backend/src/jobs` references `purchase_requests` or reorder logic.
 **Pain Point:** A human must notice the Low Stock Alert or the prescriptive recommendation and manually raise a PR every time.
 **Automation Flow:**
@@ -248,7 +248,7 @@ insertReminder() to procurement role: "N draft PRs awaiting review"
 **Priority:** ⭐⭐⭐⭐⭐
 
 ### 5.2 Vendor auto-selection on PR→PO conversion
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see §49. `PATCH /purchase-requests/:id/convert-to-po` now pre-fills the lowest RFQ-quoting vendor when `supplier_id` is left blank; an explicit caller-supplied value still always wins. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `PATCH /purchase-requests/:id/convert-to-po` (`procurement.routes.js:262-326`) auto-copies PR lines to a draft PO in one action — but `supplier_id` is a pure passthrough from `req.body` (line 284); no lowest-quote or preferred-vendor logic. Separately, `GET /rfqs` already computes `MIN(rq.unit_price) AS lowest_quote` per RFQ (line 725) — a real number, currently only displayed.
 **Pain Point:** The system already knows the lowest quote per RFQ but never suggests it at PO-creation time.
 **Automation Flow:**
@@ -273,7 +273,7 @@ Buyer confirms or overrides before submitting for approval
 **Priority:** N/A (already delivering value)
 
 ### 5.4 Vendor auto-notification on PO approval
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see §49. New `sendPurchaseOrderToVendor()` in `mailer.js` emails the vendor a line-item breakdown on PO approval, alongside the existing internal notification. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** Approving a PO calls `notifyWorkflowEvent('approved', ...)` (`procurement.routes.js:530-532`) but `WorkflowNotificationService.js:87-134` only inserts an in-app row for the internal PO creator — no email/SMS ever reaches the vendor. A separate manual `/purchase-orders/:id/send` status-flip (`:481-495`) exists but also sends nothing externally.
 **Pain Point:** Every approved PO requires a human to separately email/print/call the vendor.
 **Automation Flow:**
@@ -294,7 +294,7 @@ Log to WorkflowNotificationService as before (internal), plus new external-send 
 **Priority:** ⭐⭐⭐⭐
 
 ### 5.5 Vendor document expiry reminders
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see §49. `jobs/vendorDocExpiry.cron.js` (daily 09:20) ports `vendorHealth.service.js`'s existing 30-day expiry predicate into a real per-document reminder. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `vendorHealth.service.js:99-100` and `vendor.service.js:95` already compute `docsExpiringSoon`/`expiredDocs` on demand (via `POST /recalculate-all`) — no cron ever calls it.
 **Pain Point:** Expired vendor insurance/certification/compliance documents go unnoticed until someone runs a manual recalculation.
 **Automation Flow:**
@@ -313,7 +313,7 @@ insertReminder() to SCM/procurement role per vendor with expiring docs
 **Priority:** ⭐⭐⭐⭐
 
 ### 5.6 GRN → automatic 3-way match
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see §49. `POST /grn` now auto-fires the existing three-way-match transaction (extracted into `createThreeWayMatchRecord()`) whenever the GRN carries both a `po_id` and `vendor_invoice_no`. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `POST /grn` (`:568-596`) creates the GRN and fires low-stock alerts — but three-way match (`POST /three-way-match`, `:847-881`) must be called manually with `po_id/grn_id`/invoice fields. Once invoked, variance comparison (1% tolerance) and matched/discrepancy classification are fully automatic, and approving a match auto-creates a Finance bill (`:1069-1126`).
 **Pain Point:** The matching logic itself is solid automation — it's just not triggered by the event (GRN creation) that should kick it off.
 **Automation Flow:**
@@ -341,8 +341,8 @@ Existing auto-bill-on-match logic runs unchanged
 Covered in **5.1** (Procurement) — same automation, cross-module boundary. Cross-referenced here per the module list, not duplicated.
 
 ### 6.2 Fix the AI inventory-prediction stub
-**Status:** 🟡 Extend Existing
-**Current Process:** `GET /predict/inventory` (`ai.routes.js:666`) buckets items critical/warning/ok from `current_stock` vs `reorder_level` — a plain threshold check the EOQ Planner already does. The column that would make it a real prediction, `consumed_last_30d`, is hardcoded to `0` (line 674).
+**Status:** ✅ Done (2026-08-05) — `GET /predict/inventory` (`ai.routes.js`) now computes `consumed_last_30d` from `SUM(stock_ledger.quantity_out)` over the trailing 30 days (per item, across warehouses) instead of hardcoding `0`. `risk_level` is derived from real days-of-cover (`current_stock / avg_daily_consumption`) against a lead-time + safety-stock reorder point — the same `dailyDemand * leadTimeDays + safetyStock` formula `computeEoqMetrics` uses for the EOQ Planner, so the two endpoints now agree on "at risk". Items with no movement history in the window fall back to the old static `current_stock` vs `reorder_level` bucket (can't project a velocity from zero data points). The dev DB's `stock_ledger` is currently empty (0 rows — confirmed live, see `project_stock_three_systems_unification` memory), so this returns the same empty-velocity fallback today; it will self-activate once GRN/production postings accumulate history. Verified by hand-inserting a rolled-back test row: velocity path correctly computed `consumed_last_30d`/`days_of_cover`. No new endpoint, no schema change. Leaving the rest of this entry as historical record of the original ask.
+**Current Process (historical):** `GET /predict/inventory` (`ai.routes.js:666`) buckets items critical/warning/ok from `current_stock` vs `reorder_level` — a plain threshold check the EOQ Planner already does. The column that would make it a real prediction, `consumed_last_30d`, is hardcoded to `0` (line 674).
 **Pain Point:** This endpoint is labeled "predictive" but never actually factors in consumption velocity.
 **Automation Flow:**
 ```
@@ -368,7 +368,7 @@ Same endpoint, same consumers, now genuinely predictive
 **Priority:** N/A (already delivering value)
 
 ### 7.2 Monthly depreciation — dead-wired, cheapest fix in the entire audit
-**Status:** 🔴 New Automation (trivial effort — the function already exists)
+**Status:** ✅ Done (2026-08-05) — see §47 (§46 registered the cron; §47 found `postMonthlyDepreciation()` itself was still broken against live schema and rewrote it, also collapsing a second competing annual-depreciation mechanism and fixing 2 pre-existing financial-data bugs). Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `postMonthlyDepreciation()` is fully built (SLM/WDV per Schedule II) in `finance/services/depreciation.js:100-212`; its own docstring (line 94) says "Called by the monthly cron job" — but a repo-wide check of `backend/src/jobs/*.cron.js` (all 11 files) shows zero callers. It has simply never been registered.
 **Pain Point:** Real, correct depreciation logic exists and produces zero output because nobody scheduled it.
 **Automation Flow:**
@@ -404,7 +404,7 @@ Existing function posts depreciation entries as designed
 ## 9. HRMS (Employee Lifecycle)
 
 ### 9.1 Onboarding checklist auto-init on hire
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see §45. New `hr/onboarding.service.js` wired into Direct Add Employee and both recruitment hire paths. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** A real checklist system exists (`hr_onboarding_checklist_templates`/`_progress`, due-dates computed from `joining_date` + offset, `hr/onboarding.routes.js:70-83`) — but initializing it is a manual `POST /onboarding/progress/:employee_id/init` (line 60). The recruitment hire cascade (`recruitment.routes.js:911-921`) writes checklist items as **logged pending TODOs** ("Onboarding checklist to be created", "Official email request pending", etc.) rather than executing them. One genuine auto-fire already exists: a welcome email on hire (`triggerEmail('hired_welcome', …)`, line 359-364).
 **Pain Point:** The checklist infrastructure is real; initiating it still depends on someone remembering to call the init endpoint.
 **Automation Flow:**
@@ -423,7 +423,7 @@ Checklist rows created with due-dates, as designed
 **Priority:** ⭐⭐⭐⭐
 
 ### 9.2 Exit offboarding — auto-create asset-recovery task, enforce gates
-**Status:** 🔴 New Automation
+**Status:** ✅ Already Implemented — confirmed via §48: `exit.routes.js`'s `computeClearanceBlockers()` (Pass 5 Exit Clearance Engine, 2026-07-28) already gates F&F payout on asset recovery, travel advances, and active logins; this predates the audit and needed no new build. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `exit_clearance` fields (`it_assets_returned`, `documents_collected`, `noc_*`) are set only via manual `PUT /clearance/:employee_id` (`exit.routes.js:459-499`). Only `access_revoked` has a real side-effect (deactivates login, lines 481-495) — `it_assets_returned` is a plain unenforced boolean, and exit never checks outstanding travel advances at all.
 **Pain Point:** The one enforcement pattern that works (`access_revoked`) was never extended to the two other checkboxes that clearly need the same treatment.
 **Automation Flow:**
@@ -442,7 +442,7 @@ Block employees.status='left' transition until it_assets_returned=true AND trave
 **Priority:** ⭐⭐⭐⭐
 
 ### 9.3 Full & Final settlement (F&F) auto-trigger
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see §48. New `hr/fnf.service.js` + `jobs/fnfAutoTrigger.cron.js` (daily 09:00) auto-computes F&F once `last_working_date` passes and notifies HR/finance for review; approval/pay stay human actions. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `POST /fnf/compute/:employee_id` (`exit.routes.js:281`) is never called automatically from `POST /initiate` or any status transition — HR must remember to call it, then separately approve (`:386`) and pay (`:411`).
 **Pain Point:** F&F can sit uncomputed indefinitely after an exit is initiated.
 **Automation Flow:**
@@ -465,7 +465,7 @@ insertReminder() to HR/finance that F&F is ready for approval (still human-appro
 ## 10. Recruitment
 
 ### 10.1 Auto-creation trigger fires on Hired status, not on manual click
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see §50. Extracted `recruitmentRepository.autoCreateEmployeeFromCandidate()`, now fired from both real hire paths (`moveCandidateStage`/`acceptOffer`) instead of only the unused manual-trigger route. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `POST /recruitment/auto-creation/:candidateId/trigger` (`recruitment.routes.js:813`) already correctly cascades employee + payroll creation — but sits behind a "pending" queue someone has to open and click.
 **Pain Point:** Onboarding is semi-automatic, not automatic — a human gate exists purely because nobody wired the trigger to the status change.
 **Automation Flow:**
@@ -484,7 +484,7 @@ Employee + payroll records created exactly as today, minus the manual click
 **Priority:** ⭐⭐⭐⭐⭐
 
 ### 10.2 Interview reminder cron
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see §50. `jobs/interviewReminder.cron.js` (daily 08:00) notifies the panelist in-app and emails the candidate directly the day before; also fixed a pre-existing silently-dead interviewer notification (UUID passed where `reference_id` is integer). Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `POST /interviews` (`:426`) fires an immediate notify+email at scheduling time — but no cron ever reminds anyone of an *upcoming* interview. Confirmed: none of the 11 cron files touch `interview_schedules`.
 **Pain Point:** A panelist who doesn't act on the original notification has no second nudge before the interview.
 **Automation Flow:**
@@ -503,7 +503,7 @@ insertReminder() to panelist + candidate-facing email (mailer.js)
 **Priority:** ⭐⭐⭐⭐
 
 ### 10.3 Offer-letter auto-generation at offer stage
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see §50. New `autoDraftOfferForCandidate()` auto-creates a draft offer (salary seeded from the job opening's range) the moment a candidate reaches Offer stage; sending still requires human approval. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** Reaching the offer stage only creates a reminder notification telling a recruiter to "create offer letter" (`:541-543`). Actual generation is a manual `POST /offers` (`:637`); sending is auto-notified once a human flips `offer_status` to `'sent'` (`:649-663`, fires `triggerEmail('offer_sent', …)`).
 **Pain Point:** Two separate manual steps (generate, then flip to sent) where generation itself could reuse a template the moment the stage changes.
 **Automation Flow:**
@@ -538,7 +538,7 @@ Existing send-on-status-flip logic runs unchanged
 ## 12. Leave
 
 ### 12.1 Monthly accrual, carry-forward, comp-off expiry, escalation
-**Status:** ✅ Already Implemented — `leave.cron.js` covers all four in one file, including a real N-day escalation (`:264-312`, flags applications pending >3 days and calls `notifyWorkflowEvent('escalated', ...)`). This is the single most complete automation surface in the app and a template worth copying into other modules' escalation gaps (Service Desk SLA, Quality NCR — see below).
+**Status:** ✅ Already Implemented — `leave.cron.js` covers all four in one file, including a real N-day escalation (`:264-312`, flags applications pending >3 days and calls `notifyWorkflowEvent('escalated', ...)`). This is the single most complete automation surface in the app and a template worth copying into other modules' escalation gaps (Service Desk SLA, Quality NCR — see below). **2026-08-05 update:** the escalation call itself was found to be a silent no-op app-wide — `recipientIds` was never read by `notifyWorkflowEvent()` — and has been fixed; see `MODULE_FEATURE_CONNECTION_MANUAL.md` §53 for the fix, which also repaired ~15 other previously-dead notification call sites across Leave/Comp-Off/Encashment/CRM sharing the same bug.
 **Priority:** N/A (already delivering value — cite as the reference implementation)
 
 ---
@@ -554,7 +554,7 @@ Existing send-on-status-flip logic runs unchanged
 **Priority:** N/A (already delivering value)
 
 ### 13.3 Unify the two Opportunity→Project paths
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §52/§54. New `crm/services/opportunityConversion.service.js` fires automatically whenever `PATCH /opportunities/:id/stage` lands on `won`, reusing the existing idempotency guard so it layers safely on top of the Sales Order path. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** Two separate paths exist. The **Sales Order path is fully automatic** (`sales.routes.js:76-101`, carries `opportunity_id` forward, zero manual step). The **direct CRM path is a manual button** (`crm.routes.js:1278`, `POST /opportunities/:id/convert-to-project`) — stage change to `won` (line 1141-1142) only updates `closed_date`/`probability_percentage`, it never creates a project.
 **Pain Point:** Whether a Won opportunity gets a project automatically depends entirely on which path it came through — an inconsistency, not a missing feature (the automatic version already exists and works).
 **Automation Flow:**
@@ -593,7 +593,7 @@ If none exists, auto-invoke the existing convert-to-project logic instead of wai
 ## 15. Production Planning
 
 ### 15.1 Auto-trigger MRP run on new demand
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §55. New `jobs/mrpAutoRun.cron.js` runs MRP nightly instead of waiting for the manual button; planned orders still surface for planner review as before. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `POST /mrp/run` (`production/mrp.routes.js:28`) is a manual button; `POST /planned-orders/:id/convert` / `/convert-all` (lines 161, 208) are likewise manual. Nothing runs MRP automatically when a new sales order lands (even though the order itself auto-bootstraps a production order via BOM-match — MRP is the *planning* layer above that, for components, not the immediate 1:1 order).
 **Pain Point:** Planners must remember to re-run MRP after new demand appears instead of it running proactively.
 **Automation Flow:**
@@ -624,7 +624,7 @@ Planned orders surface for planner review as today (convert/convert-all remain m
 **Priority:** N/A (already delivering value)
 
 ### 16.2 Calibration due-alerts — make it push, not pull
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §56. New `jobs/calibrationDueAlerts.cron.js` (daily 09:25) ports the existing due-alerts query, and actually reads the per-company `quality_settings.calibration_alert_days` setting the original endpoint hardcoded to 30. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `GET /calibration/due-alerts` (`quality.routes.js:526-641`) already computes what's due, gated by `quality_settings.calibration_alert_days` — but it's a GET endpoint, queried on demand.
 **Pain Point:** Calibration due-dates are correctly modeled and computed; nobody sees them unless they open the Quality module.
 **Automation Flow:**
@@ -643,7 +643,7 @@ insertReminder() to QC/maintenance role
 **Priority:** ⭐⭐⭐⭐
 
 ### 16.3 NCR critical-escalation config — wire the consumer
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — new `jobs/ncrEscalation.cron.js` (hourly) escalates open critical `ncr_reports` past `quality_settings.ncr_escalate_critical_mins` via the same `notifyWorkflowEvent('escalated', ...)` pattern §12.1's fix repaired. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `quality_settings.ncr_escalate_critical_mins` (`:802,817`) is a stored, configurable escalation threshold — with zero code anywhere that reads it and actually escalates.
 **Pain Point:** An escalation policy exists in settings and does nothing; `leave.cron.js`'s escalation pattern (12.1) is a ready-made template.
 **Automation Flow:**
@@ -666,7 +666,7 @@ notifyWorkflowEvent('escalated', ...) to next-level QC/management (same call sha
 ## 17. R&D
 
 ### 17.1 Patent / IP renewal reminders
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §56. New `jobs/patentRenewal.cron.js` (daily 09:35, 90-day window), ports `rd_patents.expiry_date WHERE status NOT IN ('lapsed','abandoned')` verbatim, same shape as `amcRenewal.cron.js`. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `rd_patents.expiry_date` is a real column (`rd.routes.js:178,183-185`), fully populated via `POST/PUT /rd/patents` — zero consumers anywhere read it proactively.
 **Pain Point:** A lapsed patent (`PATENT_STATUS` even has a `'lapsed'` state, line 25) is exactly the kind of expensive, silent miss this audit is meant to catch — the data is there, nothing watches it.
 **Automation Flow:**
@@ -693,7 +693,7 @@ insertReminder() to R&D/legal role (exact same shape as amcRenewal.cron.js — c
 **Priority:** N/A (already delivering value)
 
 ### 18.2 Auto-notify affected departments on ECN implementation
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §56. New `notifyEcnImplemented()` in `ecn.routes.js`, fired fire-and-forget from `/changes/:id/implement` after its transaction commits, to the three departments the audit names by role code directly (`production_manager`, `qc_manager`, `procurement_manager`). Live-tested end-to-end against the dev DB — resolved exactly the three intended role-holders. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `submit/approve/reject/implement` (`ecn.routes.js:190-259`) only call `logEvent()` (lines 15-23), writing an audit row to `engineering_change_events` — no `notify()`/email call exists anywhere in the file.
 **Pain Point:** Production, Quality, and Procurement — the three departments an engineering change actually affects — learn about it only if someone tells them manually.
 **Automation Flow:**
@@ -720,8 +720,8 @@ notifications.repository.create() to production_manager, qc_manager, procurement
 **Priority:** N/A (already delivering value)
 
 ### 19.2 SLA escalation — config exists, nothing executes it
-**Status:** 🔴 New Automation
-**Current Process:** `sla_policies.escalation_hours` (`servicedesk.routes.js:129`) is a stored, configurable field — no cron or consumer anywhere reads it.
+**Status:** ✅ Done — `jobs/slaEscalation.cron.js` (hourly :30), `notifyWorkflowEvent('escalated', ...)` to `servicedesk`-can_edit users. Also fixed a pre-existing schema-drift bug the cron exposed: `sla_policies` was missing 4 columns the entire feature (POST/PUT policies, breach dashboard, Settings sync) already assumed, so nothing in this feature had ever actually worked. See `MODULE_FEATURE_CONNECTION_MANUAL.md` §60.
+**Current Process (as of the original audit):** `sla_policies.escalation_hours` (`servicedesk.routes.js:129`) is a stored, configurable field — no cron or consumer anywhere reads it.
 **Pain Point:** SLA breach escalation is fully configurable in settings and entirely inert in practice.
 **Automation Flow:**
 ```
@@ -751,7 +751,7 @@ notifyWorkflowEvent('escalated', ...) to next-tier support/manager (same shape a
 **Priority:** N/A (already delivering value)
 
 ### 20.2 `subscriptions` table — a second, disconnected renewal mechanism
-**Status:** 🔴 New Automation
+**Status:** ✅ Done — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §62. `jobs/subscriptionRenewal.cron.js` (15-day window, daily 09:15) predates this audit doc (built §18, 2026-07-29). This pass fixed two real bugs found while re-verifying: `getReceivers()` read the stale legacy `users.role` column with non-existent role strings and ignored `subscriptions.company_id` entirely (a cross-tenant notification leak) — now resolves via `user_roles`/`roles`, scoped per-subscription's company; and the query silently excluded every `auto_renew=false` subscription, the segment that most needs the reminder since nothing else in the codebase auto-executes renewal — filter removed, message now differentiates auto vs. manual. Live-tested end-to-end. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `sales.routes.js` has a complete, separate `subscriptions` table (plan/billing-cycle/auto-renew/next-billing-date) with manual pause/cancel/renew endpoints — wired to zero cron jobs, not linked to `amc_contracts` or Customer 360.
 **Pain Point:** Two independent renewal tracks exist; only one has a reminder job.
 **Automation Flow:**
@@ -774,7 +774,7 @@ insertReminder() to account owner/finance
 ## 21. Customer Portal
 
 ### 21.1 Ticket status change → notify the customer
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see §56. New `notifyCustomerOfStatusChange()` on `PUT /customer-portal/tickets/:id`, fires only when status actually changed, reuses `mailer.js`'s existing `sendNotificationEmail()`. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `PUT /customer-portal/tickets/:id` (`customer-portal.routes.js:470-488`) lets staff update status but sends no notification/email — the customer only learns by polling `GET /portal/tickets` (line 150).
 **Pain Point:** The internal→external direction of the ticket loop is silent, while the reverse direction (21.2) is already automatic.
 **Automation Flow:**
@@ -810,7 +810,7 @@ Covered in **5.5** (Procurement) — same automation, cross-referenced here sinc
 ## 23. Compliance
 
 ### 23.1 Compliance evidence / audit due-date reminders
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-05) — see §54. New `jobs/complianceReminders.cron.js` (daily 09:10) ports the existing `is_expired`/`expiring_soon`/`is_overdue` read-time predicates into proactive standard-expiry and audit-due-date reminders. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `compliance.routes.js` already computes `is_expired`/`expiring_soon` (lines 33-38), `is_overdue` on audits (line 159), and dashboard KPIs (`expiring_soon`, `overdue_audits`, `audits_due_30d`, lines 218-225) — all read-time query flags, surfaced only when someone opens `/compliance/summary` or `/standards`. This is a pure-CRUD module with zero proactive reminders today.
 **Pain Point:** Compliance is exactly the domain where "nobody happened to check the dashboard" is the costliest possible failure mode, and it's the one module in this audit with zero automation of any kind.
 **Automation Flow:**
@@ -836,7 +836,7 @@ insertReminder() to compliance officer/admin role
 Covered in **7.2** (Finance) — same dead-wired function, cross-referenced here since Fixed Assets is where the impact is felt.
 
 ### 24.2 Asset warranty expiry — pull to push
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-05) — see §56. New `jobs/assetWarrantyExpiry.cron.js` (daily 09:40, 90-day window) matches `finance/assets.routes.js`'s existing dashboard predicate. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `finance/assets.routes.js:75-77` already computes `warranty_expiry BETWEEN NOW() AND NOW()+90 days` — a dashboard query, not a proactive reminder.
 **Pain Point:** Same shape as every other expiry gap in this audit: the query exists, the cron doesn't.
 **Automation Flow:**
@@ -862,7 +862,7 @@ Covered in **9.2** (HRMS) — same gap, same fix, cross-referenced.
 ## 25. Document Management
 
 ### 25.1 Document/contract expiry reminders
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-06) — see §64. Added `document_master.expiry_date` (`20260806000002_document_master_expiry_date.js`, nullable/additive) and `jobs/documentExpiry.cron.js` (daily 09:55), reminding the uploader (falling back to company admins if their account is gone). Live-verified: synthetic row 5 days out produced the expected `document_expiring` notification. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `documentMaster.routes.js` (Google Drive-backed, `module_type`/`linked_entity_type`, revision history) is a real, distinct module, separate from e-sign (`documents.routes.js`/`signatures.routes.js`) — but `document_master` has no `expiry_date` field or reminder at all. Confirmed: reminders remain limited to AMC (`amcRenewal.cron.js`) and e-sign (`esignReminder.cron.js`).
 **Pain Point:** Any contract or document stored purely as a document-master record (not modeled as an AMC/e-sign entity) has zero expiry tracking.
 **Automation Flow:**
@@ -893,7 +893,7 @@ insertReminder() to the document's linked_entity owner
 **Priority:** N/A (already delivering value)
 
 ### 26.3 Non-IoT preventive maintenance — the query exists, the cron doesn't
-**Status:** 🟡 Extend Existing (carried from Priority-3 doc, re-confirmed still true)
+**Status:** ✅ Done (2026-08-05) — see §56. New `jobs/maintenanceDue.cron.js` (daily 09:50, 7-day window) ports `maintenance.routes.js`'s existing due/overdue predicates. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `maintenance_schedules.next_due_date`/`frequency_days`/`overdue` and `maintenance.routes.js`'s "due within 7 days" (~line 602) / "overdue" (~line 623) queries exist — used only when someone opens the Maintenance page.
 **Automation Flow:**
 ```
@@ -930,7 +930,7 @@ Dashboards already exist per-department (CEO, Sales, Production, Inventory, Qual
 ## 29. Notifications
 
 ### 29.1 Reminder crons bypass the channel-aware repository
-**Status:** 🔴 New Automation (fix, not a feature)
+**Status:** ✅ Done — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §25 (raw-INSERT bypass fixed in the older crons) + §37 (`WorkflowNotificationService.js`'s wider-reach instance) + §39/§42 (email coverage extended). `overdueReminders.cron.js` and every cron built since this audit's numbered pass began already call `notificationsRepository.create()`. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `notifications.repository.js`'s `create()` auto-mirrors to push (FCM/APNs) — but `overdueReminders.cron.js:15-34`, `amcRenewal.cron.js:17`, and `deliveryFollowup.cron.js:17` all do raw `INSERT INTO notifications` directly, bypassing the repository entirely. Only `esignReminder.cron.js` calls a real send function (mailer.js). Meanwhile `notification_rules` declares `channel: 'in_app,email'` per event type with zero code ever reading it.
 **Pain Point:** The infrastructure for multi-channel delivery is real and built; most of what actually runs today silently degrades to in-app-only, regardless of what `notification_rules` says should happen.
 **Automation Flow:**
@@ -949,7 +949,7 @@ Push now fires automatically (already wired); optionally read notification_rules
 **Priority:** ⭐⭐⭐⭐⭐
 
 ### 29.2 Wire WhatsApp into at least one high-value flow
-**Status:** 🟡 Extend Existing
+**Status:** ✅ Done (2026-08-06) — see §64. Extracted the route handler's inline logic into an exported `sendWhatsAppMessage()` in `whatsapp.routes.js` (route is now a thin wrapper over it, same response shapes/status codes), and `amcRenewal.cron.js` calls it alongside its existing in-app reminder insert — the audit's own suggested pilot flow. Live-verified: `sendWhatsAppMessage()` correctly no-op-simulates and writes to `whatsapp_log` (`skipped_no_config`, since no `WHATSAPP_TOKEN` is set in this environment); wiring itself confirmed by code read. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `modules/integrations/whatsapp.routes.js:29-82` is a fully built, real Meta Graph API sender (simulates gracefully when unconfigured) — a standalone `POST /send` endpoint nothing else calls.
 **Pain Point:** A working WhatsApp channel exists and is used by zero business flows.
 **Automation Flow:**
@@ -1012,7 +1012,7 @@ Only that manager (or their own chain upward) can approve — role check becomes
 ## 31. Workflow Engine
 
 ### 31.1 Generalize N-day escalation onto the engine itself
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-06) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §61. `workflow_steps.sla_hours` already existed unused; new `jobs/workflowEscalation.cron.js` (hourly :10) walks pending steps past their step's `sla_hours` and fires the existing `notifyWorkflowEvent('escalated', ...)` path. §30.1 (extend the engine to a new module) and §30.2 (hierarchy check at the engine level) deliberately left open — user scoped this pass to §31.1 only, given §30.1's own 2-3-week-per-module estimate and the real behavior-change risk to an already-correctly-working module (Travel). Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** Only `leave.cron.js` implements real N-day pending-approval escalation (12.1). The generic `WorkflowService`/`workflow_instances` engine that leave and projects both run on has no escalation concept of its own — each module that wants escalation must reinvent it (as Quality's and Service Desk's *unused* escalation settings, 16.3/19.2, show happening today).
 **Pain Point:** Escalation is currently a per-module afterthought instead of a property of the shared engine.
 **Automation Flow:**
@@ -1035,7 +1035,7 @@ notifyWorkflowEvent('escalated', ...) to the next role up in that workflow's cha
 ## 32. Audit Logs
 
 ### 32.1 Connect anomaly detection to a daily push
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-06) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §66. `anomalyDetection.cron.js` already pushed notifications for flagged anomalies (§1.2/§40); this added a `logAudit({ action: 'anomaly_flagged.<slug>' })` call per anomaly, gated by a same-day dedup check, so flagged anomalies also become a permanent `audit_logs` record. Verified at the write-path level (synthetic anomaly round-tripped through the exact call shape); current live data doesn't trigger any of the 5 heuristics, so no real rows exist yet. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** `audit_logs` (via `logAudit()`, `audit.repository.js:7`) is purely a passive, query-only history — nothing automates on top of it. Separately, `GET /api/ai/anomalies` (`ai.routes.js:349-451`) already detects invoice outliers, low attendance, PO price variance, TDS mismatch, and QC failures — unrelated to `audit_logs` and itself on-demand only.
 **Pain Point:** Two pieces exist (a passive log, a real anomaly detector) that could combine into "flag suspicious activity automatically" but currently don't talk to each other or push anything.
 **Automation Flow:**
