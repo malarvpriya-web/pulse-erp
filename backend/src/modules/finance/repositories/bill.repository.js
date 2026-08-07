@@ -8,6 +8,7 @@ class BillRepository {
       subtotal, tax_amount, total_amount,
       notes, created_by, company_id,
       tds_section, tds_rate, tds_amount,
+      currency = 'INR', exchange_rate = 1,
     } = data;
     const net_payable = (parseFloat(total_amount) || 0) - (parseFloat(tds_amount) || 0);
     const result = await client.query(
@@ -15,9 +16,10 @@ class BillRepository {
          bill_number, supplier_id, bill_date, due_date,
          subtotal, tax_amount, total_amount, balance,
          notes, created_by, company_id,
-         tds_section, tds_rate, tds_amount, net_payable
+         tds_section, tds_rate, tds_amount, net_payable,
+         currency, exchange_rate
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING *`,
       [
         bill_number, supplier_id, bill_date, due_date,
@@ -27,6 +29,8 @@ class BillRepository {
         parseFloat(tds_rate) || 0,
         parseFloat(tds_amount) || 0,
         net_payable,
+        currency || 'INR',
+        parseFloat(exchange_rate) || 1,
       ]
     );
     return result.rows[0];

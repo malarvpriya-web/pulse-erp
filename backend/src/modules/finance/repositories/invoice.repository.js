@@ -7,16 +7,18 @@ class InvoiceRepository {
       invoice_number, customer_id, invoice_date, due_date, subtotal, tax_amount,
       total_amount, notes, created_by, company_id, party_name = null,
       cgst = 0, sgst = 0, igst = 0, cess = 0, place_of_supply = null,
+      currency = 'INR', exchange_rate = 1,
     } = data;
     const result = await client.query(
       `INSERT INTO invoices
          (invoice_number, customer_id, party_name, invoice_date, due_date, subtotal, tax_amount,
           total_amount, balance, notes, created_by, company_id,
-          cgst, sgst, igst, cess, place_of_supply)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
+          cgst, sgst, igst, cess, place_of_supply, currency, exchange_rate)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *`,
       [invoice_number, customer_id, party_name, invoice_date, due_date, subtotal, tax_amount,
        total_amount, notes, created_by, company_id ?? null,
-       cgst, sgst, igst, cess, place_of_supply]
+       cgst, sgst, igst, cess, place_of_supply,
+       currency || 'INR', parseFloat(exchange_rate) || 1]
     );
     return result.rows[0];
   }

@@ -390,114 +390,20 @@ router.post('/:id/dispose', requirePermission('finance', 'approve'), async (req,
   }
 });
 
-/* ── POST /run-depreciation ── */
+/* ── POST /run-depreciation — RETIRED ──
+ * Depreciation now posts automatically via the monthly cron
+ * (jobs/depreciation.cron.js -> finance/services/depreciation.js,
+ * postMonthlyDepreciation()). That function knows how to skip financial
+ * years this manual route already covered (asset_depreciation_log), so the
+ * two mechanisms can't double-post — but running this route again would
+ * still write a second, independent annual entry the monthly cron doesn't
+ * know how to reconcile against. Kept as a 410 rather than deleted so any
+ * stale client gets a clear reason instead of a 404.
+ */
 router.post('/run-depreciation', requirePermission('finance', 'approve'), async (req, res) => {
-  try {
-    const companyId = cid(req);
-    const now = new Date();
-    const month = now.getMonth() + 1;
-    const fyStart = month >= 4 ? now.getFullYear() : now.getFullYear() - 1;
-    const fy = `${fyStart}-${String(fyStart + 1).slice(-2)}`;
-
-    const cidClause = companyId != null ? 'AND company_id=$1' : '';
-    const params    = companyId != null ? [companyId] : [];
-
-    const { rows: assets } = await pool.query(
-      `SELECT * FROM fixed_assets
-       WHERE status='active' AND current_book_value > salvage_value ${cidClause}`,
-      params
-    );
-
-    let processed = 0;
-    let totalDep  = 0;
-
-    for (const asset of assets) {
-      const { rows: existing } = await pool.query(
-        `SELECT id FROM asset_depreciation_log WHERE asset_id=$1 AND financial_year=$2`,
-        [asset.id, fy]
-      );
-      if (existing.length) continue;
-
-      const schedule = computeSchedule(asset);
-      const yearsElapsed = Math.floor(
-        (now - new Date(asset.purchase_date)) / (365.25 * 86400000)
-      );
-      const currentYear = schedule[yearsElapsed];
-      if (!currentYear) continue;
-
-      await pool.query(
-        `INSERT INTO asset_depreciation_log
-           (asset_id, financial_year, opening_value, depreciation_amount, closing_value, method, company_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [asset.id, fy, currentYear.opening, currentYear.depreciation, currentYear.closing,
-         asset.depreciation_method, companyId]
-      );
-      await pool.query(
-        `UPDATE fixed_assets
-         SET current_book_value=$1,
-             accumulated_depreciation=accumulated_depreciation+$2,
-             updated_at=NOW()
-         WHERE id=$3`,
-        [currentYear.closing, currentYear.depreciation, asset.id]
-      );
-
-      const accumAcctMap = {
-        'Plant & Machinery': '1110', 'plant_machinery': '1110', 'Machinery': '1110',
-        'Furniture & Fixtures': '1111', 'furniture': '1111', 'Furniture': '1111',
-        'Computers & IT': '1112', 'computers': '1112', 'IT Equipment': '1112',
-        'Vehicles': '1113', 'vehicles': '1113',
-        'Land & Building': '1114', 'building': '1114',
-      };
-      const accumAcct = accumAcctMap[asset.category] || '1110';
-      const depClient = await pool.connect();
-      try {
-        await depClient.query('BEGIN');
-        const entryNumber = await journalRepo.getNextEntryNumber();
-        const je = await journalRepo.createEntry(depClient, {
-          entry_number:   entryNumber,
-          entry_date:     `${now.getFullYear()}-03-31`,
-          entry_type:     'Depreciation',
-          reference_type: 'fixed_asset',
-          reference_id:   asset.id,
-          description:    `Depreciation — ${asset.name} (FY ${fy})`,
-          created_by:     null,
-        });
-        await journalRepo.createLine(depClient, {
-          journal_entry_id: je.id,
-          account_code:     '5040',
-          description:      `Dep expense — ${asset.name}`,
-          debit:            currentYear.depreciation,
-          credit:           0,
-        });
-        await journalRepo.createLine(depClient, {
-          journal_entry_id: je.id,
-          account_code:     accumAcct,
-          description:      `Accum dep — ${asset.name}`,
-          debit:            0,
-          credit:           currentYear.depreciation,
-        });
-        await journalRepo.postEntry(depClient, je.id);
-        await depClient.query('COMMIT');
-      } catch (jeErr) {
-        await depClient.query('ROLLBACK');
-        console.error(`[assets] Depreciation JE failed for asset ${asset.id}:`, jeErr.message);
-      } finally {
-        depClient.release();
-      }
-
-      processed++;
-      totalDep += currentYear.depreciation;
-    }
-
-    res.json({
-      financial_year:     fy,
-      assets_processed:   processed,
-      total_depreciation: parseFloat(totalDep.toFixed(2)),
-      message: processed > 0
-        ? `Depreciation run complete for FY ${fy}`
-        : `Depreciation already processed for FY ${fy} or no eligible assets`,
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  res.status(410).json({
+    error: 'This endpoint is retired. Depreciation now posts automatically on the 1st of every month.',
+  });
 });
 
 /* ── GET /depreciation-log ── */

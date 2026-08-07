@@ -54,8 +54,16 @@ export default function Invoices() {
     customer_id: '', invoice_date: new Date().toISOString().split('T')[0],
     due_date: '', notes: '', terms: 'Net 30',
     accounts_receivable_id: '', revenue_account_id: '', tax_account_id: '',
+    currency: 'INR', exchange_rate: 1,
     items: [emptyItem()],
   });
+  const [forexRates, setForexRates] = useState([]); // [{from_currency, rate}], INR excluded — see /forex/rates
+
+  const onCurrencyChange = (code) => {
+    if (code === 'INR') { setForm(f => ({ ...f, currency: code, exchange_rate: 1 })); return; }
+    const match = forexRates.find(r => r.from_currency === code);
+    setForm(f => ({ ...f, currency: code, exchange_rate: match ? match.rate : f.exchange_rate || 1 }));
+  };
   const [attachmentFile, setAttachmentFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [pendingMarkPaid, setPendingMarkPaid] = useState(null);
@@ -72,12 +80,14 @@ export default function Invoices() {
       const params = { status: statusFilter || undefined };
       if (dateFrom) params.from_date = dateFrom;
       if (dateTo)   params.to_date   = dateTo;
-      const [inv, cust] = await Promise.all([
+      const [inv, cust, forex] = await Promise.all([
         getInvoices(params),
         getParties({ party_type: 'Customer' }),
+        api.get('/forex/rates').then(r => r.data?.rates || []).catch(() => []),
       ]);
       setInvoices(Array.isArray(inv) ? inv : []);
       setCustomers(Array.isArray(cust) ? cust : []);
+      setForexRates(forex);
     } catch(e) { console.error(e); showToast('Failed to load invoices. Please refresh.', 'error'); }
     finally { setLoading(false); }
   }, [statusFilter, dateFrom, dateTo]);
@@ -136,6 +146,7 @@ export default function Invoices() {
       setForm({ customer_id:'', invoice_date:new Date().toISOString().split('T')[0],
         due_date:'', notes:'', terms:'Net 30',
         accounts_receivable_id:'', revenue_account_id:'', tax_account_id:'',
+        currency:'INR', exchange_rate:1,
         items:[emptyItem()] });
       load();
     } catch(e) {
@@ -476,6 +487,22 @@ export default function Invoices() {
                         ))}
                       </select>
                     </div>
+                    <div className="inv-field">
+                      <label>Currency</label>
+                      <select value={form.currency} onChange={e=>onCurrencyChange(e.target.value)}>
+                        <option value="INR">INR — Indian Rupee</option>
+                        {forexRates.map(r=>(
+                          <option key={r.from_currency} value={r.from_currency}>{r.from_currency} — {r.currency_name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {form.currency !== 'INR' && (
+                      <div className="inv-field">
+                        <label>Exchange Rate (1 {form.currency} = ₹)</label>
+                        <input type="number" step="0.0001" min="0" value={form.exchange_rate}
+                          onChange={e=>setForm(f=>({...f,exchange_rate:e.target.value}))}/>
+                      </div>
+                    )}
                   </div>
 
                   {/* Line Items */}

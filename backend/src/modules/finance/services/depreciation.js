@@ -17,6 +17,46 @@ const USEFUL_LIFE = {
   buildings:       30,
 };
 
+// fixed_assets.category holds free-text labels (e.g. 'IT Equipment',
+// 'Plant & Machinery') — this maps them to the USEFUL_LIFE keys above.
+// Only used as a fallback when useful_life_years isn't set on the asset.
+const CATEGORY_TO_CLASS = {
+  'machinery':          'plant_machinery',
+  'plant & machinery':  'plant_machinery',
+  'it equipment':       'computers',
+  'computers & it':     'computers',
+  'computers':          'computers',
+  'vehicles':           'vehicles',
+  'furniture':           'furniture',
+  'furniture & fixtures': 'furniture',
+  'land & building':    'buildings',
+  'building':           'buildings',
+  'buildings':          'buildings',
+};
+
+// GL accounts, by chart_of_accounts.code — same accounts the (now-retired)
+// manual "Run Depreciation" button posted to (assets.routes.js), so an
+// asset's depreciation stays in the same ledger account across its life
+// regardless of which mechanism posted it.
+const DEPRECIATION_EXPENSE_CODE = '5040';
+// NOTE: the (retired) annual route's own accumAcctMap mapped
+// 'Plant & Machinery'/'Machinery' -> '1110', but '1110' is this company's
+// Cash account, not an accumulated-depreciation account (confirmed live —
+// see MODULE_FEATURE_CONNECTION_MANUAL.md for the historical-entry finding).
+// There is no dedicated Plant & Machinery accumulated-depreciation account
+// in the live chart_of_accounts, so it falls back to the generic '1101'
+// ("Accumulated Depreciation") like any other unmapped category.
+const ACCUM_DEP_CODE_BY_CATEGORY = {
+  'furniture & fixtures': '1111',
+  'furniture':            '1111',
+  'computers & it':       '1112',
+  'it equipment':         '1112',
+  'vehicles':             '1113',
+  'land & building':      '1114',
+  'building':             '1114',
+};
+const DEFAULT_ACCUM_DEP_CODE = '1101';
+
 // Default residual value: 5% of cost (Schedule II para 4)
 const DEFAULT_RESIDUAL_PCT = 0.05;
 
@@ -45,14 +85,14 @@ function calculateWDV(openingWDV, rate) {
  * Build a full depreciation schedule for an asset.
  * Respects Companies Act 2013 useful-life defaults when not overridden.
  *
- * @param {{ purchase_cost, salvage_value, useful_life_years, asset_class,
+ * @param {{ purchase_cost, salvage_value, useful_life_years, category,
  *            depreciation_method, wdv_rate, purchase_date }} asset
  * @returns {Array<{ year, fy, opening, depreciation, closing, accumulated }>}
  */
 function buildSchedule(asset) {
   const cost      = parseFloat(asset.purchase_cost || 0);
   const life      = parseFloat(asset.useful_life_years)
-                    || USEFUL_LIFE[asset.asset_class]
+                    || USEFUL_LIFE[CATEGORY_TO_CLASS[(asset.category || '').toLowerCase()]]
                     || 5;
   const residual  = parseFloat(asset.salvage_value)
                     || parseFloat((cost * DEFAULT_RESIDUAL_PCT).toFixed(2));
@@ -91,7 +131,15 @@ function buildSchedule(asset) {
 
 /**
  * Post monthly depreciation journal entries for all active assets of a company.
- * Called by the monthly cron job.
+ * Called by the monthly cron job (jobs/depreciation.cron.js).
+ *
+ * Assets that already have an `asset_depreciation_log` row for the current
+ * financial year are skipped entirely for that year — that table is written
+ * by the legacy annual "Run Depreciation" posting (assets.routes.js, retired
+ * as a live posting path but its history stays authoritative for years it
+ * already covered), so this avoids double-posting the same FY twice under
+ * two different mechanisms. Once an asset rolls into a FY with no legacy
+ * row, monthly posting picks it up automatically.
  *
  * @param {string|number} companyId
  * @param {string} [asOfDate]  - ISO date string; defaults to today
@@ -102,6 +150,8 @@ async function postMonthlyDepreciation(companyId, asOfDate) {
   const month     = depDate.getMonth() + 1;
   const year      = depDate.getFullYear();
   const periodKey = `${year}-${String(month).padStart(2, '0')}`;
+  const fyYear    = month >= 4 ? year : year - 1;
+  const fyLabel   = `${fyYear}-${String(fyYear + 1).slice(-2)}`;
 
   const client = await pool.connect();
   let posted = 0, skipped = 0;
@@ -110,92 +160,92 @@ async function postMonthlyDepreciation(companyId, asOfDate) {
   try {
     await client.query('BEGIN');
 
-    // Load all active assets
+    // Load all active, not-yet-fully-depreciated assets
     const { rows: assets } = await client.query(
       `SELECT * FROM fixed_assets
-       WHERE company_id = $1 AND status = 'active' AND purchase_cost > 0`,
+       WHERE company_id = $1 AND status = 'active' AND purchase_cost > 0
+         AND current_book_value > salvage_value`,
       [companyId]
     );
 
     for (const asset of assets) {
+      // Per-asset savepoint: one asset's failure must not poison the shared
+      // transaction and silently roll back assets already posted this run.
+      await client.query('SAVEPOINT sp_asset');
       try {
-        // Skip if already posted this period
-        const { rows: [existing] } = await client.query(
+        // Already posted this calendar month?
+        const { rows: [existingMonth] } = await client.query(
           `SELECT id FROM journal_entries
-           WHERE company_id = $1
-             AND reference_type = 'depreciation'
-             AND reference_id   = $2
-             AND to_char(entry_date, 'YYYY-MM') = $3
+           WHERE reference_type = 'depreciation'
+             AND reference_id   = $1
+             AND to_char(entry_date, 'YYYY-MM') = $2
            LIMIT 1`,
-          [companyId, asset.id, periodKey]
+          [asset.id, periodKey]
         );
-        if (existing) { skipped++; continue; }
+        if (existingMonth) { skipped++; await client.query('RELEASE SAVEPOINT sp_asset'); continue; }
+
+        // Already covered for this FY by the legacy annual mechanism?
+        const { rows: [legacyFy] } = await client.query(
+          `SELECT id FROM asset_depreciation_log WHERE asset_id = $1 AND financial_year = $2 LIMIT 1`,
+          [asset.id, fyLabel]
+        );
+        if (legacyFy) { skipped++; await client.query('RELEASE SAVEPOINT sp_asset'); continue; }
 
         const schedule = buildSchedule(asset);
-        const fyYear   = month >= 4 ? year : year - 1;
-        const fyLabel  = `${fyYear}-${String(fyYear + 1).slice(-2)}`;
         const fyEntry  = schedule.find(s => s.fy === fyLabel);
-        if (!fyEntry || fyEntry.depreciation <= 0) { skipped++; continue; }
+        if (!fyEntry || fyEntry.depreciation <= 0) {
+          skipped++;
+          await client.query('RELEASE SAVEPOINT sp_asset');
+          continue;
+        }
 
         const monthlyDep = parseFloat((fyEntry.depreciation / 12).toFixed(2));
-
-        // Resolve GL accounts for depreciation expense and accumulated depreciation
-        const { rows: [depExpAcc] } = await client.query(
-          `SELECT id FROM chart_of_accounts
-           WHERE account_code = ANY(ARRAY['6100','6101','6000'])
-             AND (company_id = $1 OR company_id IS NULL) AND is_active = true
-           ORDER BY company_id DESC NULLS LAST LIMIT 1`,
-          [companyId]
-        );
-        const { rows: [accDepAcc] } = await client.query(
-          `SELECT id FROM chart_of_accounts
-           WHERE account_code = ANY(ARRAY['1600','1601','1610'])
-             AND (company_id = $1 OR company_id IS NULL) AND is_active = true
-           ORDER BY company_id DESC NULLS LAST LIMIT 1`,
-          [companyId]
-        );
-
-        if (!depExpAcc || !accDepAcc) { skipped++; continue; }
+        const assetLabel = asset.name || asset.asset_code || String(asset.id);
+        const accumCode  = ACCUM_DEP_CODE_BY_CATEGORY[(asset.category || '').toLowerCase()] || DEFAULT_ACCUM_DEP_CODE;
 
         const entryNumber = await journalRepo.getNextEntryNumber();
         const entry = await journalRepo.createEntry(client, {
-          company_id:     companyId,
           entry_number:   entryNumber,
           entry_date:     depDate.toISOString().split('T')[0],
           entry_type:     'Depreciation',
           reference_type: 'depreciation',
           reference_id:   asset.id,
-          description:    `Depreciation ${asset.asset_name || asset.id} — ${periodKey}`,
+          description:    `Depreciation — ${assetLabel} — ${periodKey}`,
         });
 
+        // account_code is resolved against chart_of_accounts by journalRepo
+        // itself — same resolution the (retired) annual route relied on.
         await journalRepo.createLine(client, {
           journal_entry_id: entry.id,
-          account_id:       depExpAcc.id,
-          description:      `Depreciation expense — ${asset.asset_name || asset.id}`,
-          debit:            monthlyDep,
-          credit:           0,
+          account_code:     DEPRECIATION_EXPENSE_CODE,
+          description:      `Depreciation expense — ${assetLabel}`,
+          debit:             monthlyDep,
+          credit:            0,
+          company_id:        companyId,
         });
         await journalRepo.createLine(client, {
           journal_entry_id: entry.id,
-          account_id:       accDepAcc.id,
-          description:      `Accumulated depreciation — ${asset.asset_name || asset.id}`,
-          debit:            0,
-          credit:           monthlyDep,
+          account_code:     accumCode,
+          description:      `Accumulated depreciation — ${assetLabel}`,
+          debit:             0,
+          credit:            monthlyDep,
+          company_id:        companyId,
         });
         await journalRepo.postEntry(client, entry.id);
 
-        // Update accumulated depreciation on the asset record
         await client.query(
           `UPDATE fixed_assets
            SET accumulated_depreciation = COALESCE(accumulated_depreciation, 0) + $1,
-               book_value               = purchase_cost - COALESCE(accumulated_depreciation, 0) - $1,
+               current_book_value       = current_book_value - $1,
                updated_at               = NOW()
            WHERE id = $2`,
           [monthlyDep, asset.id]
         );
 
         posted++;
+        await client.query('RELEASE SAVEPOINT sp_asset');
       } catch (assetErr) {
+        await client.query('ROLLBACK TO SAVEPOINT sp_asset');
         errors.push(`Asset ${asset.id}: ${assetErr.message}`);
       }
     }

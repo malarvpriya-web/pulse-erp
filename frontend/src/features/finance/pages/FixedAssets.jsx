@@ -109,7 +109,6 @@ export default function FixedAssets() {
   const [scheduleAsset, setScheduleAsset] = useState(null);
   const [schedule, setSchedule]         = useState([]);
   const [schedLoading, setSchedLoading] = useState(false);
-  const [runningDep, setRunningDep]     = useState(false);
   const [disposeAsset, setDisposeAsset] = useState(null);
   const [disposeForm, setDisposeForm]   = useState({ disposal_date:'', disposal_value:'', notes:'' });
   const [disposeResult, setDisposeResult] = useState(null);
@@ -166,17 +165,6 @@ export default function FixedAssets() {
       setSchedule(rows.map((r, i) => ({ ...r, year: r.year ?? `Yr ${i + 1}` })));
     } catch { setSchedule(buildScheduleJS(asset)); }
     finally   { setSchedLoading(false); }
-  };
-
-  const runDepreciation = async () => {
-    setRunningDep(true);
-    try {
-      await api.post('/fixed-assets/run-depreciation');
-      flash('Depreciation run completed for current FY');
-      loadAll();
-    } catch (err) {
-      flash(err.response?.data?.message || 'Depreciation run failed — please check logs', 'error');
-    } finally { setRunningDep(false); }
   };
 
   const handleDispose = async (e) => {
@@ -638,12 +626,9 @@ export default function FixedAssets() {
                   {assets.map(a => <option key={a.id} value={a.id}>{a.asset_code} — {a.name}</option>)}
                 </select>
               </div>
-              {!readOnly && (
-                <button onClick={runDepreciation} disabled={runningDep}
-                  style={{ background:'#16a34a', color:'#fff', border:'none', borderRadius:8, padding:'9px 20px', cursor:'pointer', fontWeight:600, fontSize:13 }}>
-                  {runningDep ? 'Running…' : '▶ Run Depreciation (Current FY)'}
-                </button>
-              )}
+              <span style={{ fontSize:12, color:'#6b7280', fontStyle:'italic' }}>
+                Depreciation posts automatically on the 1st of every month
+              </span>
             </div>
 
             {scheduleAsset && (

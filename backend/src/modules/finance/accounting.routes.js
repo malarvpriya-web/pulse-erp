@@ -720,8 +720,8 @@ router.post('/periods/:id/close', requirePermission('finance', 'approve'), async
 
     const { rows: summary } = await pool.query(
       `SELECT
-         COALESCE(SUM(je.total_debit),0) AS total_debits,
-         COALESCE(SUM(je.total_credit),0) AS total_credits,
+         COALESCE(SUM(jl.debit),0) AS total_debits,
+         COALESCE(SUM(jl.credit),0) AS total_credits,
          SUM(CASE WHEN coa.account_type='Revenue' THEN jl.credit - jl.debit ELSE 0 END) -
          SUM(CASE WHEN coa.account_type='Expense' THEN jl.debit - jl.credit ELSE 0 END) AS net_income
        FROM journal_entries je

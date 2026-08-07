@@ -32,14 +32,14 @@ export const getFinanceDashboard = async (req, res) => {
       // Accounts receivable — open invoices
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
                 FROM invoices WHERE LOWER(status) NOT IN ('paid','cancelled')`),
-      // Accounts payable — open supplier bills
+      // Accounts payable — open bills
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
-                FROM supplier_bills WHERE LOWER(status) NOT IN ('paid','cancelled')`),
+                FROM bills WHERE LOWER(status) NOT IN ('paid','cancelled')`),
       // Month revenue — invoices issued this month
       safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM invoices
                 WHERE invoice_date >= $1 AND invoice_date < $2`, [monthStart, nextMonth]),
       // Month expenses — bills issued this month
-      safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM supplier_bills
+      safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM bills
                 WHERE bill_date >= $1 AND bill_date < $2`, [monthStart, nextMonth]),
       // Overdue invoices count (due_date < today and not paid)
       safeRows(`SELECT COUNT(*) AS value FROM invoices
@@ -48,7 +48,7 @@ export const getFinanceDashboard = async (req, res) => {
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
                 FROM invoices WHERE due_date < NOW() AND LOWER(status) NOT IN ('paid','cancelled')`),
       // Bills due in next 7 days
-      safeRows(`SELECT COUNT(*) AS value FROM supplier_bills
+      safeRows(`SELECT COUNT(*) AS value FROM bills
                 WHERE due_date BETWEEN NOW() AND NOW() + INTERVAL '7 days'
                   AND LOWER(status) NOT IN ('paid','cancelled')`),
     ]);
@@ -119,8 +119,8 @@ export const getFinanceDashboard = async (req, res) => {
 export const getCFODashboard = async (req, res) => {
   try {
     // chart_of_accounts is a global (company_id NULL) table by design — not scoped.
-    // Revenue is company-scoped via invoices. supplier_bills has no company_id column
-    // in the base schema, so expenses remain unscoped (safeRows-guarded).
+    // Revenue is company-scoped via invoices; expenses via bills — both have a real
+    // company_id column, so both are scoped the same way (safeRows-guarded).
     const companyId = req.scope?.company_id ?? null;
     const invCid = companyId != null ? ' AND company_id = $1' : '';
     const invParams = companyId != null ? [companyId] : [];
@@ -131,8 +131,8 @@ export const getCFODashboard = async (req, res) => {
                 FROM chart_of_accounts WHERE account_type = 'Liability' AND is_active = true`),
       safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM invoices
                 WHERE invoice_date >= date_trunc('year', NOW())${invCid}`, invParams),
-      safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM supplier_bills
-                WHERE bill_date >= date_trunc('year', NOW())`),
+      safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM bills
+                WHERE bill_date >= date_trunc('year', NOW())${invCid}`, invParams),
       safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM invoices
                 WHERE invoice_date >= date_trunc('year', NOW()) - INTERVAL '1 year'
                   AND invoice_date <  date_trunc('year', NOW())${invCid}`, invParams),
@@ -398,8 +398,8 @@ export const closePeriod = async (req, res) => {
     if (companyId != null) { summaryParams.push(companyId); summaryScope = ` AND je.company_id = $${summaryParams.length}`; }
     const { rows: summary } = await pool.query(
       `SELECT
-         COALESCE(SUM(je.total_debit),0) AS total_debits,
-         COALESCE(SUM(je.total_credit),0) AS total_credits,
+         COALESCE(SUM(jl.debit),0) AS total_debits,
+         COALESCE(SUM(jl.credit),0) AS total_credits,
          SUM(CASE WHEN coa.account_type='Revenue' THEN jl.credit - jl.debit ELSE 0 END) -
          SUM(CASE WHEN coa.account_type='Expense' THEN jl.debit - jl.credit ELSE 0 END) AS net_income
        FROM journal_entries je
@@ -518,7 +518,7 @@ export const getBills = async (req, res) => {
   try {
     const limit = Math.min(500, Math.max(1, parseInt(req.query.limit) || 200));
     const result = await pool.query(
-      "SELECT * FROM supplier_bills ORDER BY bill_date DESC LIMIT $1", [limit]
+      "SELECT * FROM bills ORDER BY bill_date DESC LIMIT $1", [limit]
     );
     res.json(result.rows);
   } catch (err) {

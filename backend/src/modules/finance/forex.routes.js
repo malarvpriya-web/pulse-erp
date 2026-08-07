@@ -161,7 +161,7 @@ router.get('/exposure', async (req, res) => {
         FROM invoices
         WHERE company_id = $1
           AND currency IS NOT NULL AND currency != 'INR'
-          AND status IN ('sent','overdue','partial')
+          AND LOWER(status) NOT IN ('paid','cancelled')
         GROUP BY currency
       `, [companyId]);
       rows.forEach(r => { recByCcy[r.currency] = parseFloat(r.total); });
@@ -172,10 +172,10 @@ router.get('/exposure', async (req, res) => {
     try {
       const { rows } = await pool.query(`
         SELECT currency, SUM(total_amount) as total
-        FROM supplier_bills
+        FROM bills
         WHERE company_id = $1
           AND currency IS NOT NULL AND currency != 'INR'
-          AND status IN ('pending','partial','approved')
+          AND LOWER(status) NOT IN ('paid','cancelled')
         GROUP BY currency
       `, [companyId]);
       rows.forEach(r => { payByCcy[r.currency] = parseFloat(r.total); });
@@ -243,13 +243,13 @@ router.post('/revalue', async (req, res) => {
     // Invoices
     try {
       const { rows } = await pool.query(`
-        SELECT invoice_number AS reference, customer_name AS party,
+        SELECT invoice_number AS reference, party_name AS party,
                currency, total_amount AS foreign_amount,
                COALESCE(exchange_rate, 1) AS booked_rate
         FROM invoices
         WHERE company_id = $1
           AND currency IS NOT NULL AND currency != 'INR'
-          AND status IN ('sent','overdue','partial')
+          AND LOWER(status) NOT IN ('paid','cancelled')
       `, [companyId]);
       rows.forEach(r => details.push(buildRevalLine(r, rateMap)));
     } catch (_) {}
@@ -257,13 +257,13 @@ router.post('/revalue', async (req, res) => {
     // Bills
     try {
       const { rows } = await pool.query(`
-        SELECT bill_number AS reference, supplier_name AS party,
+        SELECT bill_number AS reference, party_name AS party,
                currency, total_amount AS foreign_amount,
                COALESCE(exchange_rate, 1) AS booked_rate
-        FROM supplier_bills
+        FROM bills
         WHERE company_id = $1
           AND currency IS NOT NULL AND currency != 'INR'
-          AND status IN ('pending','partial','approved')
+          AND LOWER(status) NOT IN ('paid','cancelled')
       `, [companyId]);
       rows.forEach(r => details.push(buildRevalLine(r, rateMap)));
     } catch (_) {}
@@ -337,7 +337,7 @@ router.get('/transactions', async (req, res) => {
     try {
       const { rows: invRows } = await pool.query(`
         SELECT 'invoice' AS type, id, invoice_number AS reference,
-               customer_name AS party, currency, total_amount AS foreign_amount,
+               party_name AS party, currency, total_amount AS foreign_amount,
                COALESCE(exchange_rate, 1) AS exchange_rate, invoice_date AS transaction_date,
                status, created_at
         FROM invoices
@@ -352,10 +352,10 @@ router.get('/transactions', async (req, res) => {
     try {
       const { rows: billRows } = await pool.query(`
         SELECT 'bill' AS type, id, bill_number AS reference,
-               supplier_name AS party, currency, total_amount AS foreign_amount,
+               party_name AS party, currency, total_amount AS foreign_amount,
                COALESCE(exchange_rate, 1) AS exchange_rate, bill_date AS transaction_date,
                status, created_at
-        FROM supplier_bills
+        FROM bills
         WHERE company_id = $1
           AND currency IS NOT NULL AND currency != 'INR'
         ORDER BY bill_date DESC

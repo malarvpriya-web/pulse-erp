@@ -79,8 +79,12 @@ class PartiesRepository {
     }
 
     if (filters.party_type) {
+      // Callers pass both casings ('Supplier' and 'supplier' both exist in the
+      // live codebase) against a column that's stored Title-cased ('Customer'/
+      // 'Supplier'/'Both') — an exact match silently returned zero rows for
+      // any lowercase caller, so compare case-insensitively.
       params.push(filters.party_type);
-      query += ` AND (p.party_type = $${params.length} OR p.party_type = 'Both')`;
+      query += ` AND (LOWER(p.party_type) = LOWER($${params.length}) OR p.party_type = 'Both')`;
     }
 
     if (filters.is_active !== undefined) {

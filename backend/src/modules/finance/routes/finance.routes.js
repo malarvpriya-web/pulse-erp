@@ -139,7 +139,16 @@ router.post('/parties', requirePermission('finance', 'add'), async (req, res) =>
 
 router.get('/parties', requirePermission('finance', 'view'), async (req, res) => {
   try {
-    const parties = await partiesRepo.findAll({ ...req.query, company_id: req.scope?.company_id ?? null });
+    // `type` is what most callers (Quotations/SalesOrders/Subscriptions) actually
+    // send — findAll()'s filter reads `party_type`, so `type` was silently
+    // ignored and every call returned all parties regardless of type. Map it
+    // here rather than renaming query params app-wide.
+    const { type, ...rest } = req.query;
+    const parties = await partiesRepo.findAll({
+      ...rest,
+      party_type: rest.party_type || type,
+      company_id: req.scope?.company_id ?? null,
+    });
     res.json(parties);
   } catch (error) {
     res.status(500).json({ error: error.message });

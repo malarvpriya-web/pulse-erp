@@ -48,6 +48,7 @@ const EMPTY_FORM = () => ({
   tds_applicable: false,
   tds_section: '', tds_payee_type: 'company',
   tds_rate: 0, pan_available: true,
+  currency: 'INR', exchange_rate: 1,
 });
 
 export default function SupplierBills() {
@@ -71,6 +72,13 @@ export default function SupplierBills() {
   const [submitting,     setSubmitting]     = useState(false);
 
   const [form, setForm] = useState(EMPTY_FORM());
+  const [forexRates, setForexRates] = useState([]); // [{from_currency, rate}], INR excluded — see /forex/rates
+
+  const onCurrencyChange = (code) => {
+    if (code === 'INR') { setForm(f => ({ ...f, currency: code, exchange_rate: 1 })); return; }
+    const match = forexRates.find(r => r.from_currency === code);
+    setForm(f => ({ ...f, currency: code, exchange_rate: match ? match.rate : f.exchange_rate || 1 }));
+  };
 
   const [payForm, setPayForm] = useState({
     amount: '', payment_date: today(),
@@ -86,10 +94,11 @@ export default function SupplierBills() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [billsRes, suppRes, statsRes] = await Promise.allSettled([
+      const [billsRes, suppRes, statsRes, forexRes] = await Promise.allSettled([
         api.get('/finance/bills', { params: { date_from: dateFrom, date_to: dateTo } }),
         api.get('/finance/parties', { params: { party_type: 'Supplier' } }),
         api.get('/finance/bills/stats'),
+        api.get('/forex/rates'),
       ]);
       const raw = billsRes.status === 'fulfilled'
         ? (billsRes.value.data?.rows || billsRes.value.data?.bills || billsRes.value.data || [])
@@ -97,6 +106,7 @@ export default function SupplierBills() {
       setBills(Array.isArray(raw) ? raw.map(b => ({ ...b, status: normalizeStatus(b.status) })) : []);
       setSuppliers(suppRes.status === 'fulfilled' ? (suppRes.value.data || []) : []);
       if (statsRes.status === 'fulfilled') setApiStats(statsRes.value.data);
+      setForexRates(forexRes.status === 'fulfilled' ? (forexRes.value.data?.rates || []) : []);
     } catch (err) {
       setBills([]);
       showToast('Failed to load bills. Please refresh.', 'error');
@@ -880,6 +890,22 @@ export default function SupplierBills() {
                   <input type="date" value={form.due_date}
                     onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))}/>
                 </div>
+                <div className="sb-field">
+                  <label>Currency</label>
+                  <select value={form.currency} onChange={e => onCurrencyChange(e.target.value)}>
+                    <option value="INR">INR — Indian Rupee</option>
+                    {forexRates.map(r => (
+                      <option key={r.from_currency} value={r.from_currency}>{r.from_currency} — {r.currency_name}</option>
+                    ))}
+                  </select>
+                </div>
+                {form.currency !== 'INR' && (
+                  <div className="sb-field">
+                    <label>Exchange Rate (1 {form.currency} = ₹)</label>
+                    <input type="number" step="0.0001" min="0" value={form.exchange_rate}
+                      onChange={e => setForm(f => ({ ...f, exchange_rate: e.target.value }))}/>
+                  </div>
+                )}
               </div>
 
               {/* Line items */}
