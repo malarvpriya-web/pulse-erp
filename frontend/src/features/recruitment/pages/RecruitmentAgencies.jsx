@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { fmtDate } from '@/utils/dateFormatter';
+import Drawer from '../shared/components/Drawer';
 
 const EMPTY_FORM = {
   name: '', contact_person: '', email: '', phone: '', website: '',
@@ -204,8 +205,7 @@ function CandidatesPanel({ agency, onClose }) {
   };
 
   return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', zIndex:1000, display:'flex', justifyContent:'flex-end' }}>
-      <div style={{ background:'#fff', width:440, height:'100%', overflowY:'auto', boxShadow:'-4px 0 20px rgba(0,0,0,.15)', display:'flex', flexDirection:'column' }}>
+    <Drawer overflowY="auto">
         <div style={{ padding:'20px 24px', borderBottom:'1px solid #f0f0f4', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <div>
             <h2 style={{ fontSize:15, fontWeight:700, color:'#1f2937', margin:0 }}>Candidates from {agency.name}</h2>
@@ -243,8 +243,7 @@ function CandidatesPanel({ agency, onClose }) {
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Drawer>
   );
 }
 

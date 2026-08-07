@@ -5,6 +5,8 @@ import { Calendar, Clock, Video, Building2, Phone, User, Link2, FileText, CheckC
 import './InterviewScheduler.css';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate as fmtDateStr } from '@/utils/dateFormatter';
+import { CAT_STYLE, DIFF_STYLE } from '../shared/constants';
+import Drawer from '../shared/components/Drawer';
 
 const STATUS_META = {
   scheduled:   { label: 'Scheduled',   bg: '#dbeafe', color: '#1d4ed8', icon: Clock },
@@ -40,19 +42,6 @@ const fmtDate = (d) => {
 };
 
 // ── Suggested Questions side panel ───────────────────────────────────────────
-const CAT_STYLE = {
-  HR:             { bg: '#dbeafe', color: '#1d4ed8' },
-  Technical:      { bg: '#ede9fe', color: '#6d28d9' },
-  Behavioural:    { bg: '#fce7f3', color: '#9d174d' },
-  Situational:    { bg: '#fef3c7', color: '#92400e' },
-  'Cultural Fit': { bg: '#d1fae5', color: '#065f46' },
-  Domain:         { bg: '#f0fdf4', color: '#15803d' },
-};
-const DIFF_STYLE = {
-  easy:   { bg: '#dcfce7', color: '#15803d' },
-  medium: { bg: '#fef3c7', color: '#92400e' },
-  hard:   { bg: '#fee2e2', color: '#b91c1c' },
-};
 
 function SuggestedQuestionsPanel({ interview, onClose }) {
   const toast = useToast();
@@ -80,8 +69,7 @@ function SuggestedQuestionsPanel({ interview, onClose }) {
   const categories = [...new Set(questions.map(q => q.category))].sort();
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}>
-      <div style={{ background: '#fff', width: 460, height: '100%', display: 'flex', flexDirection: 'column', boxShadow: '-4px 0 24px rgba(0,0,0,.15)' }}>
+    <Drawer width={460} boxShadow="-4px 0 24px rgba(0,0,0,.15)">
 
         {/* Header */}
         <div style={{ padding: '18px 20px', borderBottom: '1px solid #f0f0f4', flexShrink: 0 }}>
@@ -209,8 +197,7 @@ function SuggestedQuestionsPanel({ interview, onClose }) {
             </button>
           </div>
         )}
-      </div>
-    </div>
+    </Drawer>
   );
 }
 

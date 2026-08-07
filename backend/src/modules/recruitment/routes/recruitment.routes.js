@@ -331,6 +331,29 @@ router.post('/candidates/:id/move-stage', async (req, res) => {
       console.warn('[Drive] moveResumeOnStageChange failed:', err.message)
     );
 
+    // Auto-create the employee record the moment a candidate reaches Hired
+    // (kanban drag/stage-button on CandidatePipeline/CandidateDetail/
+    // RecruitmentDashboard all land here) instead of leaving it for a human
+    // to find in the Auto-Creation queue. Fire-and-forget: a slow/failed
+    // employee creation shouldn't block or fail the stage-move response —
+    // failures land in recruitment_employee_creation_log with status
+    // 'failed', same as today's manual-trigger failure path, and the queue
+    // page still offers a manual retry. See AUTOMATION_OPPORTUNITY_AUDIT.md §10.1.
+    if ((new_stage || '').toLowerCase() === 'hired') {
+      recruitmentRepository.autoCreateEmployeeFromCandidate(
+        req.params.id, cid(req), req.user?.userId ?? req.user?.id ?? null
+      ).catch(err => console.warn('[Recruitment] auto-create-on-hire failed:', err.message));
+    }
+
+    // Same auto-draft as the submit-feedback path (AUTOMATION_OPPORTUNITY_AUDIT.md
+    // §10.3) for candidates moved to Offer directly via kanban/stage-button
+    // rather than through interview feedback. autoDraftOfferForCandidate is
+    // idempotent, so this can't double-draft one already created there.
+    if ((new_stage || '').toLowerCase() === 'offer') {
+      recruitmentRepository.autoDraftOfferForCandidate(req.params.id, cid(req))
+        .catch(err => console.warn('[Recruitment] auto-draft-offer failed:', err.message));
+    }
+
     res.json({ message: 'Candidate moved to new stage' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -446,7 +469,12 @@ router.post('/interviews', async (req, res) => {
       // notify() below silently no-op'd on every interview scheduled.
       const empRes = await pool.query('SELECT id AS user_id FROM users WHERE employee_id = $1', [interview.interviewer_id]).catch(() => ({ rows: [] }));
       const interviewerUserId = empRes.rows[0]?.user_id;
-      notify(interviewerUserId, 'recruitment', interview.id,
+      // notifications.reference_id is integer — interview.id is the
+      // interview_schedules UUID PK, so passing it here threw 22P02 on every
+      // call, silently swallowed by notify()'s own .catch(). Use the
+      // candidate's integer id instead, matching every other notify() call
+      // in this file.
+      notify(interviewerUserId, 'recruitment', interview.candidate_id,
         `Interview scheduled on ${interview.interview_date} — check your calendar`);
     }
     triggerEmail('interview_l1_scheduled', {
@@ -563,7 +591,13 @@ router.post('/interviews/:id/submit-feedback', async (req, res) => {
         `${candidate.full_name} passed L1 — schedule 2nd Level Interview`);
     } else if (nextStage === 'offer') {
       notify(req.user?.userId ?? req.user?.id, 'recruitment', parseInt(schedule.candidate_id),
-        `${candidate.full_name} passed L2 — create offer letter`);
+        `${candidate.full_name} passed L2 — offer letter auto-drafted, review before sending`);
+      // Auto-draft the offer instead of leaving the recruiter a bare reminder
+      // and a blank form. Fire-and-forget: drafting is a convenience, not a
+      // requirement for this response to succeed. See
+      // AUTOMATION_OPPORTUNITY_AUDIT.md §10.3.
+      recruitmentRepository.autoDraftOfferForCandidate(schedule.candidate_id, company_id)
+        .catch(err => console.warn('[Recruitment] auto-draft-offer failed:', err.message));
     }
 
     logAudit({
@@ -694,6 +728,14 @@ router.post('/offers/:id/accept', async (req, res) => {
   try {
     const offer = await recruitmentRepository.acceptOffer(req.params.id, cid(req));
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'offer', action: 'accept', newData: offer, req });
+
+    // acceptOffer() always flips the candidate straight to Hired — same
+    // auto-creation hook as the move-stage route above. See
+    // AUTOMATION_OPPORTUNITY_AUDIT.md §10.1.
+    recruitmentRepository.autoCreateEmployeeFromCandidate(
+      offer.candidate_id, cid(req), req.user?.userId ?? req.user?.id ?? null
+    ).catch(err => console.warn('[Recruitment] auto-create-on-hire failed:', err.message));
+
     res.json(offer);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -834,94 +876,33 @@ router.get('/auto-creation/pending', async (req, res) => {
 });
 
 // POST /recruitment/auto-creation/:candidateId/trigger — create employee from hired candidate
+// (manual fallback — the same logic now also fires automatically when a candidate
+// reaches Hired via move-stage or offer-accept below, see recruitmentRepository
+// .autoCreateEmployeeFromCandidate and AUTOMATION_OPPORTUNITY_AUDIT.md §10.1)
 router.post('/auto-creation/:candidateId/trigger', async (req, res) => {
   try {
     const company_id = cid(req);
     const candidate_id = req.params.candidateId; // UUID — do NOT parseInt
     const triggered_by = req.user?.userId ?? req.user?.id ?? null;
 
-    // Fetch candidate + offer data
-    const { rows: candidates } = await pool.query(`
-      SELECT c.*, jo.job_title, jo.department, jo.location, jo.employment_type,
-             o.offered_salary, o.joining_date
-        FROM candidates c
-        LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
-        LEFT JOIN offer_letters o ON o.candidate_id = c.id AND o.offer_status = 'accepted'
-       WHERE c.id = $1 AND c.company_id = $2
-    `, [candidate_id, company_id]);
-
-    if (!candidates.length) return res.status(404).json({ error: 'Candidate not found' });
-    const c = candidates[0];
-    if ((c.current_stage || '').toLowerCase() !== 'hired') return res.status(400).json({ error: 'Candidate must be in Hired stage' });
-
-    // Check if already created
-    const { rows: existing } = await pool.query(
-      `SELECT * FROM recruitment_employee_creation_log WHERE candidate_id = $1 AND company_id = $2 AND status = 'completed'`,
-      [candidate_id, company_id]
-    );
-    if (existing.length) return res.status(409).json({ error: 'Employee already created for this candidate', employee_code: existing[0].employee_code });
-
-    // Create log entry first (pending) — employee_code is filled in once
-    // hireCandidate() generates it below, so this can't drift from the
-    // number actually assigned to the employee row.
-    const { rows: logRows } = await pool.query(`
-      INSERT INTO recruitment_employee_creation_log
-        (company_id, candidate_id, candidate_name, job_opening_id, job_title, status, triggered_by)
-      VALUES ($1,$2,$3,$4,$5,'in_progress',$6)
-      ON CONFLICT DO NOTHING
-      RETURNING *
-    `, [company_id, candidate_id, c.full_name, c.job_opening_id, c.job_title, triggered_by]);
-
-    const logId = logRows[0]?.id;
-
-    try {
-      // Same underlying employee-creation transaction as /candidates/:id/hire
-      // (recruitmentRepository.hireCandidate) — this handler previously
-      // reimplemented employee creation, payroll enrollment, and login
-      // provisioning separately, and each fix made to one path (payroll
-      // enrollment, login provisioning) had to be re-applied to the other by
-      // hand. Passing `pool` (not a transaction client) preserves this
-      // route's original non-transactional behavior.
-      const { employee, employeeId, payrollEnrolled, loginProvisioned } =
-        await recruitmentRepository.hireCandidate(candidate_id, company_id, pool, {
-          employmentType: c.employment_type,
-          offeredSalary: parseFloat(c.offered_salary),
-          sourceCandidateId: candidate_id,
-        });
-
-      const checklist_items = [
-        { task: 'Employee record created', done: true, note: `Code: ${employeeId}` },
-        { task: 'Login account created', done: loginProvisioned },
-        { task: 'Official email request pending', done: false },
-        { task: 'Onboarding checklist to be created', done: false },
-        { task: 'Attendance profile to be configured', done: false },
-        { task: 'Leave profile to be configured', done: false },
-        { task: 'Payroll profile configured', done: payrollEnrolled },
-        { task: 'Document folder to be created', done: false },
-        { task: 'Org chart node to be added', done: false },
-      ];
-
-      await pool.query(`
-        UPDATE recruitment_employee_creation_log
-           SET status = 'completed', employee_id = $1, employee_code = $2, completed_at = NOW(),
-               checklist_items = $3
-         WHERE id = $4
-      `, [employee.id, employeeId, JSON.stringify(checklist_items), logId]);
-
-      notify(triggered_by, 'recruitment', candidate_id,
-        `Employee ${employeeId} created for ${c.full_name} — pending onboarding setup`);
-
-      res.status(201).json({
-        message: 'Employee created successfully',
-        employee_id: employee.id,
-        employee_code: employeeId,
-        candidate_name: c.full_name,
-        next_steps: ['Configure payroll profile', 'Set up leave balance', 'Create email account', 'Add to org chart'],
+    const result = await recruitmentRepository.autoCreateEmployeeFromCandidate(candidate_id, company_id, triggered_by);
+    if (result.status !== 201) {
+      return res.status(result.status).json({
+        error: result.error,
+        ...(result.employee_code ? { employee_code: result.employee_code } : {}),
       });
-    } catch (empErr) {
-      await pool.query(`UPDATE recruitment_employee_creation_log SET status='failed', error_log=$1 WHERE id=$2`, [empErr.message, logId]);
-      return res.status(500).json({ error: `Employee creation failed: ${empErr.message}` });
     }
+
+    notify(triggered_by, 'recruitment', candidate_id,
+      `Employee ${result.employeeId} created for ${result.candidateName} — pending onboarding setup`);
+
+    res.status(201).json({
+      message: 'Employee created successfully',
+      employee_id: result.employee.id,
+      employee_code: result.employeeId,
+      candidate_name: result.candidateName,
+      next_steps: ['Configure payroll profile', 'Set up leave balance', 'Create email account', 'Add to org chart'],
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

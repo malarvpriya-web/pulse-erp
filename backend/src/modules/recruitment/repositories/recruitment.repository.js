@@ -1,6 +1,7 @@
 import pool from '../../shared/db.js';
 import { createEmployeeLogin } from '../../../employees/employee.service.js';
 import { pickUpdatable } from '../../../shared/safeUpdate.js';
+import { initOnboardingChecklist } from '../../hr/onboarding.service.js';
 
 const recruitmentRepository = {
   // ==================== JOB REQUISITIONS ====================
@@ -564,6 +565,47 @@ const recruitmentRepository = {
     return result.rows[0];
   },
 
+  // Auto-drafts an offer_letters row the moment a candidate reaches the Offer
+  // stage (called from submit-feedback and move-stage in recruitment.routes.js)
+  // instead of leaving recruiters a bare "create offer letter" reminder and a
+  // blank form. Reuses createOffer() verbatim — same draft status, same
+  // moveCandidateStage('offer') call — so the record is identical to one a
+  // human would have created by hand, still requiring review/edit before
+  // PUT /offers/:id → Approval Center can ever send it. See
+  // AUTOMATION_OPPORTUNITY_AUDIT.md §10.3. Idempotent: a candidate who already
+  // has any non-deleted offer (draft or further along) is skipped, so this is
+  // safe to call from more than one stage-transition path for the same candidate.
+  async autoDraftOfferForCandidate(candidateId, companyId) {
+    const { rows: existing } = await pool.query(
+      `SELECT id FROM offer_letters WHERE candidate_id = $1 AND company_id = $2 AND deleted_at IS NULL LIMIT 1`,
+      [candidateId, companyId]
+    );
+    if (existing.length) return null;
+
+    const { rows: candRows } = await pool.query(
+      `SELECT c.applied_job_id, jo.salary_min, jo.salary_max
+         FROM candidates c
+         LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
+        WHERE c.id = $1 AND c.company_id = $2`,
+      [candidateId, companyId]
+    );
+    const cand = candRows[0];
+    if (!cand) return null;
+
+    const offeredSalary = cand.salary_min != null && cand.salary_max != null
+      ? (Number(cand.salary_min) + Number(cand.salary_max)) / 2
+      : Number(cand.salary_max ?? cand.salary_min ?? 0);
+
+    return this.createOffer({
+      candidate_id: candidateId,
+      job_opening_id: cand.applied_job_id,
+      offered_salary: offeredSalary,
+      joining_date: null,
+      notes: 'Auto-drafted when candidate reached Offer stage — review salary, joining date and terms before sending.',
+      company_id: companyId,
+    });
+  },
+
   async findOffers(filters = {}) {
     let query = `
       SELECT ol.*, c.full_name AS candidate_name, c.email AS candidate_email,
@@ -911,6 +953,19 @@ const recruitmentRepository = {
       console.error('[hireCandidate] login provisioning failed:', e.message);
     }
 
+    // 4d. Auto-init the onboarding checklist - covers both callers of this
+    // function (POST /candidates/:id/hire and POST /auto-creation/:id/trigger)
+    // instead of leaving it as a manual POST /onboarding/progress/:id/init
+    // call HR had to remember to make. See AUTOMATION_OPPORTUNITY_AUDIT.md
+    // section 9.1.
+    let onboardingInitialized = false;
+    try {
+      await initOnboardingChecklist(client, companyId, employee.id);
+      onboardingInitialized = true;
+    } catch (e) {
+      console.error('[hireCandidate] onboarding checklist init failed:', e.message);
+    }
+
     // 5. Mark candidate as hired
     await client.query(
       `UPDATE candidates
@@ -934,7 +989,84 @@ const recruitmentRepository = {
       [cand.job_opening_id]
     );
 
-    return { employee, employeeId, payrollEnrolled, loginProvisioned };
+    return { employee, employeeId, payrollEnrolled, loginProvisioned, onboardingInitialized };
+  },
+
+  // ==================== AUTO-CREATE EMPLOYEE FROM HIRED CANDIDATE ====================
+  // Extracted from the POST /auto-creation/:candidateId/trigger route body so the
+  // same logic can run automatically the moment a candidate reaches Hired status
+  // (moveCandidateStage / acceptOffer in recruitment.routes.js), not only when a
+  // human opens the Auto-Creation queue and clicks Trigger. See
+  // AUTOMATION_OPPORTUNITY_AUDIT.md §10.1. Returns a {status, ...} result instead
+  // of writing an HTTP response so both the manual route and the fire-and-forget
+  // callers can use it; never throws for expected outcomes (not-hired,
+  // already-created) — only a genuine hireCandidate() failure is caught and
+  // reported via the log row's 'failed' status.
+  async autoCreateEmployeeFromCandidate(candidateId, companyId, triggeredBy = null) {
+    const { rows: candidates } = await pool.query(`
+      SELECT c.*, jo.job_title, jo.department, jo.location, jo.employment_type,
+             o.offered_salary, o.joining_date
+        FROM candidates c
+        LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
+        LEFT JOIN offer_letters o ON o.candidate_id = c.id AND o.offer_status = 'accepted'
+       WHERE c.id = $1 AND c.company_id = $2
+    `, [candidateId, companyId]);
+
+    if (!candidates.length) return { status: 404, error: 'Candidate not found' };
+    const c = candidates[0];
+    if ((c.current_stage || '').toLowerCase() !== 'hired') {
+      return { status: 400, error: 'Candidate must be in Hired stage' };
+    }
+
+    const { rows: existing } = await pool.query(
+      `SELECT * FROM recruitment_employee_creation_log WHERE candidate_id = $1 AND company_id = $2 AND status = 'completed'`,
+      [candidateId, companyId]
+    );
+    if (existing.length) {
+      return { status: 409, error: 'Employee already created for this candidate', employee_code: existing[0].employee_code };
+    }
+
+    const { rows: logRows } = await pool.query(`
+      INSERT INTO recruitment_employee_creation_log
+        (company_id, candidate_id, candidate_name, job_opening_id, job_title, status, triggered_by)
+      VALUES ($1,$2,$3,$4,$5,'in_progress',$6)
+      ON CONFLICT DO NOTHING
+      RETURNING *
+    `, [companyId, candidateId, c.full_name, c.job_opening_id, c.job_title, triggeredBy]);
+    const logId = logRows[0]?.id;
+
+    try {
+      const { employee, employeeId, payrollEnrolled, loginProvisioned, onboardingInitialized } =
+        await this.hireCandidate(candidateId, companyId, pool, {
+          employmentType: c.employment_type,
+          offeredSalary: parseFloat(c.offered_salary),
+          sourceCandidateId: candidateId,
+        });
+
+      const checklist_items = [
+        { task: 'Employee record created', done: true, note: `Code: ${employeeId}` },
+        { task: 'Login account created', done: loginProvisioned },
+        { task: 'Official email request pending', done: false },
+        { task: 'Onboarding checklist to be created', done: onboardingInitialized },
+        { task: 'Attendance profile to be configured', done: false },
+        { task: 'Leave profile to be configured', done: false },
+        { task: 'Payroll profile configured', done: payrollEnrolled },
+        { task: 'Document folder to be created', done: false },
+        { task: 'Org chart node to be added', done: false },
+      ];
+
+      await pool.query(`
+        UPDATE recruitment_employee_creation_log
+           SET status = 'completed', employee_id = $1, employee_code = $2, completed_at = NOW(),
+               checklist_items = $3
+         WHERE id = $4
+      `, [employee.id, employeeId, JSON.stringify(checklist_items), logId]);
+
+      return { status: 201, employee, employeeId, candidateName: c.full_name };
+    } catch (empErr) {
+      await pool.query(`UPDATE recruitment_employee_creation_log SET status='failed', error_log=$1 WHERE id=$2`, [empErr.message, logId]);
+      return { status: 500, error: `Employee creation failed: ${empErr.message}` };
+    }
   },
 
   // ==================== REPORTS ====================

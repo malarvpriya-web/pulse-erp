@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast as useGlobalToast } from '@/context/ToastContext';
+import { matchesSearch } from '../shared/search';
 
 // ── Type config ───────────────────────────────────────────────────────────────
 const TYPE_CFG = {
@@ -498,11 +499,11 @@ export default function EmailTemplates({ setPage }) {
 
   // Filter
   const filtered = templates.filter(t => {
-    const q = search.toLowerCase();
-    const matchSearch = !q
-      || t.template_name.toLowerCase().includes(q)
-      || t.subject.toLowerCase().includes(q)
-      || (TYPE_CFG[t.template_type]?.label || '').toLowerCase().includes(q);
+    const matchSearch = matchesSearch(t, [
+      'template_name',
+      'subject',
+      tt => TYPE_CFG[tt.template_type]?.label,
+    ], search);
     const matchType = typeFilter === 'all' || t.template_type === typeFilter;
     return matchSearch && matchType;
   });

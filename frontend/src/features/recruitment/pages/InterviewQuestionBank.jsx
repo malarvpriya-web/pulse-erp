@@ -6,24 +6,10 @@ import {
   Pencil, Trash2, Copy, Check, BookOpen,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { CAT_STYLE, DIFF_STYLE } from '../shared/constants';
 
 const CATEGORIES = ['HR', 'Technical', 'Behavioural', 'Situational', 'Cultural Fit', 'Domain'];
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
-
-const DIFF_STYLE = {
-  easy:   { bg: '#dcfce7', color: '#15803d', label: 'Easy' },
-  medium: { bg: '#fef3c7', color: '#92400e', label: 'Medium' },
-  hard:   { bg: '#fee2e2', color: '#b91c1c', label: 'Hard' },
-};
-
-const CAT_STYLE = {
-  HR:           { bg: '#dbeafe', color: '#1d4ed8' },
-  Technical:    { bg: '#ede9fe', color: '#6d28d9' },
-  Behavioural:  { bg: '#fce7f3', color: '#9d174d' },
-  Situational:  { bg: '#fef3c7', color: '#92400e' },
-  'Cultural Fit': { bg: '#d1fae5', color: '#065f46' },
-  Domain:       { bg: '#f0fdf4', color: '#15803d' },
-};
 
 const EMPTY_FORM = {
   question: '', category: 'HR', difficulty: 'medium',

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
+import { matchesSearch } from '../shared/search';
 import './JobOpenings.css';
 
 const STATUS_META = {
@@ -116,11 +117,10 @@ export default function JobOpenings({ setPage }) {
     setDrawer(true);
   };
 
-  const displayed = jobs.filter(j => {
-    const q = search.toLowerCase();
-    return (!q || j.job_title?.toLowerCase().includes(q) || j.department?.toLowerCase().includes(q) || j.location?.toLowerCase().includes(q))
-        && (!fStatus || j.status === fStatus);
-  });
+  const displayed = jobs.filter(j =>
+    matchesSearch(j, ['job_title', 'department', 'location'], search)
+    && (!fStatus || j.status === fStatus)
+  );
 
   const counts = { open: 0, draft: 0, closed: 0, paused: 0 };
   jobs.forEach(j => { if (counts[j.status] !== undefined) counts[j.status]++; });
