@@ -162,6 +162,23 @@ function TabOverview({ data }) {
   const issues = data.issues || [];
   const tasks = data.tasks || [];
 
+  // AI health narrative (Automation Opportunity Audit §27.2) — a lightweight,
+  // self-contained fetch independent of this page's main /project-360/:id
+  // payload, so a slow/unconfigured AI backend never blocks the rest of the tab.
+  const [narrative, setNarrative] = useState(null);
+  const [narrativeLoading, setNarrativeLoading] = useState(false);
+  useEffect(() => {
+    if (!proj.id) return;
+    let cancelled = false;
+    setNarrativeLoading(true);
+    api.get(`/ai/predict/project-health/${proj.id}`)
+      .then(res => { if (!cancelled) setNarrative(res.data?.data || null); })
+      .catch(() => { if (!cancelled) setNarrative(null); })
+      .finally(() => { if (!cancelled) setNarrativeLoading(false); });
+    return () => { cancelled = true; };
+  }, [proj.id]);
+  const bandColor = { critical: C.red, watchlist: C.amber, healthy: C.green }[narrative?.risk_band] || C.gray;
+
   const budgetData = [
     { name: 'Revenue',   value: parseFloat(fin.revenue || 0) },
     { name: 'Total Cost', value: parseFloat(fin.total_cost || 0) },
@@ -189,6 +206,27 @@ function TabOverview({ data }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* AI Health Summary */}
+      <SectionCard title="AI Health Summary" icon="🧠">
+        {narrativeLoading ? (
+          <div style={{ fontSize: 12, color: C.gray }}>Analyzing…</div>
+        ) : narrative ? (
+          <div>
+            <span style={{
+              display: 'inline-block', fontSize: 10, fontWeight: 700, padding: '2px 8px',
+              borderRadius: 6, marginBottom: 8, background: bandColor + '18', color: bandColor,
+            }}>
+              {narrative.risk_band.toUpperCase()}
+            </span>
+            {narrative.narrative.split('\n').filter(Boolean).map((line, i) => (
+              <div key={i} style={{ fontSize: 12, color: '#374151', marginBottom: 4, lineHeight: 1.5 }}>{line}</div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: C.gray }}>No health summary available.</div>
+        )}
+      </SectionCard>
+
       {/* KPI bar */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
         <KpiCard label="Revenue" value={fmtINR(fin.revenue)} color={C.primary} />

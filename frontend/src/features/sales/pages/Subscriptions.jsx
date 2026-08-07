@@ -20,7 +20,7 @@ function fmtL(n) {
   return `₹${Math.round(v).toLocaleString('en-IN')}`;
 }
 
-const EMPTY = { customer_name:'', plan_name:'', amount:'', currency:'INR', billing_cycle:'monthly', start_date:'', next_billing_date:'', auto_renew:true };
+const EMPTY = { customer_id:'', plan_name:'', amount:'', currency:'INR', billing_cycle:'monthly', start_date:'', next_billing_date:'', auto_renew:true };
 
 function KPICard({ icon: Icon, label, value, color }) {
   return (
@@ -40,6 +40,7 @@ export default function Subscriptions() {
   const toast = useToast();
   const [subs,      setSubs]      = useState([]);
   const [stats,     setStats]     = useState({ total:0, active:0, paused:0, cancelled:0, expired:0, mrr:0, arr:0, churn_count:0 });
+  const [customers, setCustomers] = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [showForm,  setShowForm]  = useState(false);
@@ -63,9 +64,18 @@ export default function Subscriptions() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Customer picker sources the real customer master (parties, type=customer)
+  // — same source Quotations/Sales Orders already use — so a subscription
+  // links to a real customer_id instead of a free-text name with no FK.
+  useEffect(() => {
+    api.get('/finance/parties', { params: { type: 'customer' } })
+      .then(r => setCustomers(Array.isArray(r.data) ? r.data : []))
+      .catch(() => {});
+  }, []);
+
   async function handleSave(e) {
     e.preventDefault();
-    if (!form.customer_name || !form.plan_name || !form.amount || !form.start_date) return;
+    if (!form.customer_id || !form.plan_name || !form.amount || !form.start_date) return;
     setSaving(true);
     try {
       await api.post('/sales/subscriptions', { ...form, amount: Number(form.amount) });
@@ -190,10 +200,12 @@ export default function Subscriptions() {
             <form onSubmit={handleSave} style={{ display:'flex', flexDirection:'column', gap:14 }}>
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
                 <div style={{ gridColumn:'1/-1' }}>
-                  <label style={{ fontSize:12, fontWeight:600, color:'#374151', display:'block', marginBottom:4 }}>Customer Name</label>
-                  <input required value={form.customer_name} onChange={e => setForm(f => ({...f, customer_name: e.target.value}))}
-                    placeholder="e.g. Acme Corp"
-                    style={{ width:'100%', padding:'8px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+                  <label style={{ fontSize:12, fontWeight:600, color:'#374151', display:'block', marginBottom:4 }}>Customer *</label>
+                  <select required value={form.customer_id} onChange={e => setForm(f => ({...f, customer_id: e.target.value}))}
+                    style={{ width:'100%', padding:'8px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', background:'#fff', boxSizing:'border-box' }}>
+                    <option value="">Select customer…</option>
+                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
                 </div>
                 <div>
                   <label style={{ fontSize:12, fontWeight:600, color:'#374151', display:'block', marginBottom:4 }}>Plan Name *</label>

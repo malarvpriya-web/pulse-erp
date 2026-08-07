@@ -380,9 +380,9 @@ async function checkDiscountApprovalGate(quotation, companyId, req) {
   const requestedBy = req.user?.name || req.user?.email || 'system';
   await pool.query(
     `INSERT INTO discount_approvals
-       (company_id, discount_rule_id, quotation_id, requested_discount_pct, requested_by, status, order_value)
-     VALUES ($1,$2,$3,$4,$5,'pending',$6)`,
-    [companyId, rule.id, quotation.id, discountPct, requestedBy, quotation.total_amount || 0]
+       (company_id, discount_rule_id, quotation_id, requested_discount_pct, requested_by, requested_by_employee_id, status, order_value)
+     VALUES ($1,$2,$3,$4,$5,$6,'pending',$7)`,
+    [companyId, rule.id, quotation.id, discountPct, requestedBy, req.user?.employee_id ?? null, quotation.total_amount || 0]
   );
   return {
     status: 409,
@@ -2186,8 +2186,24 @@ router.get('/subscriptions', async (req, res) => {
 router.post('/subscriptions', async (req, res) => {
   try {
     const cid = companyOf(req);
-    const { customer_name, plan_name, amount, currency, billing_cycle, start_date, next_billing_date, end_date, auto_renew } = req.body;
-    if (!customer_name || !plan_name || !amount || !start_date) return res.status(400).json({ error: 'customer_name, plan_name, amount, start_date required' });
+    const { customer_id, customer_name, plan_name, amount, currency, billing_cycle, start_date, next_billing_date, end_date, auto_renew } = req.body;
+    if (!plan_name || !amount || !start_date) return res.status(400).json({ error: 'plan_name, amount, start_date required' });
+    if (!customer_id && !customer_name) return res.status(400).json({ error: 'customer_id or customer_name required' });
+
+    // `customer_id` links to `parties.id` (uuid) — the same customer master
+    // AMC/service contracts/invoices resolve against. Previously this route
+    // only ever stored a free-text customer_name with no FK, which is why
+    // subscriptions were invisible in Customer 360 and /renew's invoice step
+    // silently never fired (it's gated on customer_id being present). Resolve
+    // the name from the party record when an id is given, rather than trusting
+    // whatever the client sends, so the two can't drift.
+    let resolvedName = customer_name || null;
+    if (customer_id) {
+      const { rows: partyRows } = await pool.query(`SELECT name FROM parties WHERE id = $1`, [customer_id]);
+      if (!partyRows.length) return res.status(400).json({ error: 'customer_id not found' });
+      resolvedName = partyRows[0].name;
+    }
+
     let computedNextBilling = next_billing_date || null;
     if (!computedNextBilling && start_date) {
       const d = new Date(start_date);
@@ -2198,9 +2214,9 @@ router.post('/subscriptions', async (req, res) => {
       computedNextBilling = d.toISOString().split('T')[0];
     }
     const { rows } = await pool.query(
-      `INSERT INTO subscriptions (company_id, customer_name, plan_name, amount, currency, billing_cycle, start_date, next_billing_date, end_date, auto_renew)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [cid, customer_name||null, plan_name, amount, currency||'INR', billing_cycle||'monthly',
+      `INSERT INTO subscriptions (company_id, customer_id, customer_name, plan_name, amount, currency, billing_cycle, start_date, next_billing_date, end_date, auto_renew)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [cid, customer_id||null, resolvedName, plan_name, amount, currency||'INR', billing_cycle||'monthly',
        start_date, computedNextBilling, end_date||null, auto_renew !== false]
     );
     res.status(201).json(rows[0]);
