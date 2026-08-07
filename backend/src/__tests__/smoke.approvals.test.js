@@ -44,6 +44,7 @@ vi.mock('../config/db.js', () => ({ default: { query: vi.fn() } }));
 import request         from 'supertest';
 import pool            from '../config/db.js';
 import approvalsRoutes from '../modules/approvals/approvals.routes.js';
+import * as approvalsController from '../modules/approvals/approvals.controller.js';
 import { verifyToken } from '../middlewares/auth.middleware.js';
 import { buildApp }    from './helpers/testApp.js';
 import { adminToken, managerToken } from './helpers/tokens.js';
@@ -231,6 +232,43 @@ describe('POST /api/approvals/:id/escalate', () => {
       .send({ reason: 'Requires senior approval' });
 
     expect(res.status).toBe(200);
+  });
+});
+
+// ── GET /api/approvals (getAllApprovals) — visibility scoping ──────────────────
+//
+// The shared verifyToken mock above hardcodes every caller as
+// role: 'manager' (a supervisor), so the non-supervisor branch can't be
+// exercised through the HTTP layer without changing that shared mock for
+// every other test in this file. Call the controller directly instead.
+
+describe('getAllApprovals — non-supervisor callers are scoped to their own approver_id', () => {
+  const mockRes = () => {
+    const res = {};
+    res.status = vi.fn(() => res);
+    res.json   = vi.fn(() => res);
+    return res;
+  };
+
+  it('supervisor role gets no approver_id filter (company-wide)', async () => {
+    pool.query.mockResolvedValue({ rows: [] });
+    const req = { user: { userId: 1, role: 'manager' }, scope: { company_id: 5 }, query: {} };
+
+    await approvalsController.getAllApprovals(req, mockRes());
+
+    const [sql] = pool.query.mock.calls[0];
+    expect(sql).not.toMatch(/approver_id/);
+  });
+
+  it('non-supervisor role is filtered to approver_id = caller', async () => {
+    pool.query.mockResolvedValue({ rows: [] });
+    const req = { user: { userId: 4, role: 'employee' }, scope: { company_id: 5 }, query: {} };
+
+    await approvalsController.getAllApprovals(req, mockRes());
+
+    const [sql, params] = pool.query.mock.calls[0];
+    expect(sql).toMatch(/approver_id/);
+    expect(params).toContain(4);
   });
 });
 

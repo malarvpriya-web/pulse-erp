@@ -1,9 +1,43 @@
 import pool from '../../../config/db.js';
 import { sendPushToUser, isPushConfigured } from '../services/pushSender.js';
+import { sendNotificationEmail, isEmailConfigured } from '../../../utils/mailer.js';
+
+// notification_rules (migrations/20260623000001_notification_rules_rebuild.js)
+// declares a per-event `channel` CSV keyed by `event_key`, scoped by company —
+// this is the only place anything reads it. event_key defaults to
+// `${module_name}.${notification_type}` so every existing and future create()
+// call is covered without per-call-site wiring, but a caller may pass an
+// explicit `event_key` instead when its stored module_name/notification_type
+// aren't themselves a meaningful key (e.g. WorkflowNotificationService.js's
+// module_name is a human-readable label like 'Purchase Request', and its
+// notification_type is a UI badge class like 'success' — neither is safe to
+// change since both are already relied on elsewhere: module_name for existing
+// notifications.findByUser filters, notification_type for the frontend's
+// icon/colour mapping in NotificationDropdown.jsx / Topbar.jsx). A call whose
+// resolved event_key has no enabled rule row just no-ops here, same as before
+// this existed.
+async function dispatchRuleChannels(userId, eventKey, title, message) {
+  const { rows } = await pool.query(
+    `SELECT nr.channel
+     FROM notification_rules nr
+     JOIN users u ON u.company_id = nr.company_id
+     WHERE u.id = $1 AND nr.event_key = $2 AND nr.enabled = true
+     LIMIT 1`,
+    [userId, eventKey]
+  );
+  const channels = (rows[0]?.channel || '').split(',').map((c) => c.trim());
+  if (!channels.includes('email')) return;
+
+  const { rows: userRows } = await pool.query(`SELECT email FROM users WHERE id = $1`, [userId]);
+  const toEmail = userRows[0]?.email;
+  if (!toEmail) return;
+
+  await sendNotificationEmail(toEmail, { title, message });
+}
 
 const notificationsRepository = {
   async create(data) {
-    const { user_id, title, message, module_name, reference_id, notification_type } = data;
+    const { user_id, title, message, module_name, reference_id, notification_type, event_key } = data;
     const result = await pool.query(
       `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -17,6 +51,10 @@ const notificationsRepository = {
         body: message || '',
         data: { module: module_name, ref: reference_id, type: notification_type },
       }).catch(() => {});
+    }
+    const resolvedEventKey = event_key || (module_name && notification_type ? `${module_name}.${notification_type}` : null);
+    if (isEmailConfigured() && user_id != null && resolvedEventKey) {
+      dispatchRuleChannels(user_id, resolvedEventKey, title, message).catch(() => {});
     }
     return result.rows[0];
   },
