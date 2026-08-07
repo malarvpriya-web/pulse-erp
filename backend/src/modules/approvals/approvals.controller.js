@@ -3,6 +3,8 @@ import { notifyWorkflowEvent } from "../../services/WorkflowNotificationService.
 import { logAudit } from "../../services/AuditService.js";
 import { canOverride, canClaimCategory, isApproverRole } from "./approvals.authz.js";
 import { assertCanDecideAmount } from "../procurement/procurement.authz.js";
+import { authorizeManagerApproval, DENIED_MESSAGE } from "../../shared/managerApprovalAuthz.js";
+import { assertCanDecideFor } from "../attendance/attendance.authz.js";
 import { getEmployeeApprovals } from "../../home/home.service.js";
 import { triggerEmail } from "../../services/emailTrigger.js";
 import recruitmentRepository from "../recruitment/repositories/recruitment.repository.js";
@@ -365,13 +367,19 @@ async function pendingCentral(userId, companyId) {
 export const getAllApprovals = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
+    const userId    = uid(req);
     const companyId = cid(req);
+    const isAdmin   = isSupervisor(req);
     const { status, module_name, limit = 100, offset = 0 } = req.query;
 
     const conditions = ['1=1'];
     const params = [];
 
     if (companyId != null) { params.push(companyId); conditions.push(`company_id = $${params.length}`); }
+    // Non-supervisors only see rows assigned to them — same visibility rule as
+    // getPendingApprovals below. Previously ungated: any authenticated user of
+    // any role could pull every company's approvals via this endpoint.
+    if (!isAdmin) { params.push(userId); conditions.push(`approver_id = $${params.length}`); }
     if (status)      { params.push(status);      conditions.push(`status = $${params.length}`); }
     if (module_name) { params.push(module_name); conditions.push(`module_name = $${params.length}`); }
     params.push(parseInt(limit, 10), parseInt(offset, 10));
@@ -694,15 +702,68 @@ async function assertCanDecidePR(req, prId, action) {
   }
 }
 
+// Same reporting-manager/delegate/HR/admin identity gate leaves.routes.js's L1
+// approval and Travel's manager-review use (shared/managerApprovalAuthz.js).
+// Needed here too because this dispatch function is a SECOND write path to the
+// same leave_applications/expense_claims rows — canActOnApproval only checks
+// that the actor holds an approver role (see approvals.authz.js's own comment:
+// "no ownership record exists to check against" for source pseudo-ids), so
+// without this a manager-role user could bypass the hierarchy check on the
+// primary route entirely by approving through the Approval Center instead.
+async function assertCanActByHierarchy(req, table, sourceId) {
+  const rows = await safeQuery(
+    `SELECT employee_id, delegate_approver_id FROM ${table} WHERE id = $1`,
+    [sourceId]
+  );
+  const row = rows[0];
+  if (!row) return; // let the UPDATE's own WHERE clause no-op as before
+  const auth = await authorizeManagerApproval({
+    actorEmployeeId: await myEmployeeId(req),
+    actorRole: req.user?.role,
+    requesterEmployeeId: row.employee_id,
+    delegateApproverId: row.delegate_approver_id,
+  });
+  if (!auth.authorized) {
+    const err = new Error(DENIED_MESSAGE);
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
+// Same gate the direct PUT /attendance/regularize/:id/approve|reject routes use
+// (assertCanDecideFor, attendance.authz.js) -- needed here for the same reason
+// assertCanActByHierarchy is needed for leave/exp above: the Approval Center is
+// a second write path to the same row. Deliberately reuses assertCanDecideFor
+// rather than managerApprovalAuthz.js's authorizeManagerApproval(): attendance's
+// hierarchy source of truth is org_relationships + attendance_approval_delegations,
+// not employees.reporting_manager_id -- using the wrong one here would silently
+// diverge from what the direct route decides for the same request.
+async function assertCanActOnRegularization(req, sourceId) {
+  const rows = await safeQuery(
+    `SELECT employee_id, company_id FROM attendance_regularization_requests WHERE id = $1`,
+    [sourceId]
+  );
+  const row = rows[0];
+  if (!row) return; // let the UPDATE's own WHERE clause no-op as before
+  const decide = await assertCanDecideFor(pool, req, row.employee_id, row.company_id, 'regularization');
+  if (decide) {
+    const err = new Error(decide.body?.message || decide.body?.error || 'Forbidden');
+    err.statusCode = decide.status;
+    throw err;
+  }
+}
+
 async function approveSourceItem(modulePrefix, sourceId, userId, req) {
   switch (modulePrefix) {
     case 'leave':
+      await assertCanActByHierarchy(req, 'leave_applications', sourceId);
       await safeQuery(
         `UPDATE leave_applications SET status = 'approved', manager_status = 'approved', manager_approved_at = NOW() WHERE id = $1::integer`,
         [sourceId]
       );
       break;
     case 'reg': {
+      await assertCanActOnRegularization(req, sourceId);
       const regRows = await safeQuery(
         `SELECT * FROM attendance_regularization_requests WHERE id = $1`,
         [sourceId]
@@ -750,6 +811,7 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
       );
       break;
     case 'exp':
+      await assertCanActByHierarchy(req, 'expense_claims', sourceId);
       await safeQuery(
         `UPDATE expense_claims SET status = 'Approved', approved_by = $2, approved_at = NOW() WHERE id = $1::integer`,
         [sourceId, userId]
@@ -810,12 +872,14 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
 async function rejectSourceItem(modulePrefix, sourceId, userId, comment, req) {
   switch (modulePrefix) {
     case 'leave':
+      await assertCanActByHierarchy(req, 'leave_applications', sourceId);
       await safeQuery(
         `UPDATE leave_applications SET status = 'rejected', manager_status = 'rejected', manager_comments = $2, manager_approved_at = NOW() WHERE id = $1::integer`,
         [sourceId, comment]
       );
       break;
     case 'reg': {
+      await assertCanActOnRegularization(req, sourceId);
       await safeQuery(
         `UPDATE attendance_regularization_requests
             SET status = 'rejected', manager_remarks = $2, manager_id = $3, manager_actioned_at = NOW()
@@ -850,6 +914,7 @@ async function rejectSourceItem(modulePrefix, sourceId, userId, comment, req) {
       );
       break;
     case 'exp':
+      await assertCanActByHierarchy(req, 'expense_claims', sourceId);
       await safeQuery(
         `UPDATE expense_claims SET status = 'Rejected', rejection_reason = $2, approved_at = NOW() WHERE id = $1::integer`,
         [sourceId, comment]

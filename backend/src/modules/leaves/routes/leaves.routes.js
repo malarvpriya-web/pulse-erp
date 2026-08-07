@@ -1480,12 +1480,31 @@ router.get('/:id/workflow', requirePermission('leaves', 'view'), async (req, res
   }
 });
 
+// Same reporting-manager/delegate/HR/admin identity gate the primary
+// /approve|reject/manager/:id routes use (shared/managerApprovalAuthz.js).
+// This is a second write path to the same leave_applications row via the
+// generic WorkflowService engine — advanceWorkflow() itself only checks
+// role, so without this gate anyone holding 'leaves.approve' could bypass
+// the hierarchy check entirely by calling this route directly instead of
+// the primary one (Automation Opportunity Audit §30.2).
 router.post('/:id/workflow/advance', requirePermission('leaves', 'approve'), async (req, res) => {
   try {
     const { getWorkflowStatus, advanceWorkflow } = await import('../../../services/WorkflowService.js');
     const { action, comments } = req.body;
     if (!['approve', 'reject'].includes(action))
       return res.status(400).json({ error: 'action must be approve or reject' });
+    const { rows: [leaveRow] } = await pool.query(
+      `SELECT employee_id, delegate_approver_id FROM leave_applications WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!leaveRow) return res.status(404).json({ error: 'Leave application not found' });
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: req.user?.employee_id,
+      actorRole: req.user?.role,
+      requesterEmployeeId: leaveRow.employee_id,
+      delegateApproverId: leaveRow.delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
     const instance = await getWorkflowStatus('leaves', parseInt(req.params.id));
     if (!instance || instance.status === 'no_workflow')
       return res.status(404).json({ error: 'No active workflow for this leave' });

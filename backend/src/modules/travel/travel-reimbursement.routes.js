@@ -17,7 +17,7 @@ import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../shared/scope.js';
-import { authorizeManagerApproval, DENIED_MESSAGE } from './travelApprovalAuthz.js';
+import { authorizeManagerApproval, DENIED_MESSAGE } from '../../shared/managerApprovalAuthz.js';
 
 const router = express.Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -307,7 +307,7 @@ router.post('/claims/:id/submit', async (req, res) => {
 });
 
 // ── PUT /reimbursement/claims/:id/manager-approve ─────────────────────────────
-// Identity-gated (reporting manager/delegate/HR/admin — travelApprovalAuthz.js),
+// Identity-gated (reporting manager/delegate/HR/admin — shared/managerApprovalAuthz.js),
 // not a bare role check — claim.employee_id is a real employees.id here
 // (unlike travel_advances, see that file's comment).
 router.put('/claims/:id/manager-approve', async (req, res) => {

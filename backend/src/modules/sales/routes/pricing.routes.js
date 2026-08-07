@@ -4,6 +4,7 @@ import pool from '../../../config/db.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
+import { authorizeManagerApproval, DENIED_MESSAGE } from '../../../shared/managerApprovalAuthz.js';
 
 const router = Router();
 
@@ -348,9 +349,9 @@ router.post('/discount-rules/request-approval', async (req, res) => {
   try {
     const { discount_rule_id, lead_id, order_id, requested_discount_pct, requested_by, order_value } = req.body;
     const result = await pool.query(
-      `INSERT INTO discount_approvals (company_id, discount_rule_id, lead_id, order_id, requested_discount_pct, requested_by, status, order_value)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7) RETURNING *`,
-      [cid, discount_rule_id, lead_id, order_id, requested_discount_pct, requested_by, order_value || 0]
+      `INSERT INTO discount_approvals (company_id, discount_rule_id, lead_id, order_id, requested_discount_pct, requested_by, requested_by_employee_id, status, order_value)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8) RETURNING *`,
+      [cid, discount_rule_id, lead_id, order_id, requested_discount_pct, requested_by, req.user?.employee_id ?? null, order_value || 0]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -381,14 +382,33 @@ router.get('/discount-approvals', async (req, res) => {
 // PUT /discount-approvals/:id — approve/reject. Gated on 'sales'.'approve':
 // role_permissions already seeds sales_manager with can_approve=true and
 // sales_exec with can_approve=false for the 'sales' module (its own seed
-// description says "no pricing approval"), but nothing enforced it here —
-// any authenticated user hitting this endpoint directly could self-approve
-// their own pending discount request.
+// description says "no pricing approval"), but that only stopped
+// non-manager roles — any sales_manager could approve ANY rep's discount
+// request, not just their own reports (confirmed live: both existing rows
+// in this DB were requested AND approved by the same superadmin account —
+// the exact self-approval shape Automation Opportunity Audit §30.2 flagged
+// for Travel/Leave before shared/managerApprovalAuthz.js fixed those; this
+// table never got the same treatment). Added the same hierarchy gate here.
 router.put('/discount-approvals/:id', requirePermission('sales', 'approve'), async (req, res) => {
   const cid = companyOf(req);
   try {
     const { id } = req.params;
     const { status, reason } = req.body;
+
+    const { rows: [existing] } = await pool.query(
+      `SELECT requested_by_employee_id FROM discount_approvals WHERE id=$1 AND company_id=$2`,
+      [id, cid]
+    );
+    if (!existing) return res.status(404).json({ error: 'Discount approval not found' });
+
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: req.user?.employee_id ?? null,
+      actorRole: req.user?.role,
+      requesterEmployeeId: existing.requested_by_employee_id,
+      delegateApproverId: null,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+
     // PricingEngine.jsx's Approvals tab never sends approved_by at all —
     // resolve it from the acting user server-side, same convention as
     // checkDiscountApprovalGate's requested_by.

@@ -4,7 +4,8 @@ import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../shared/scope.js';
-import { authorizeManagerApproval, DENIED_MESSAGE } from './travelApprovalAuthz.js';
+import { authorizeManagerApproval, DENIED_MESSAGE } from '../../shared/managerApprovalAuthz.js';
+import { initiateWorkflow, getWorkflowStatus, advanceWorkflow, cancelWorkflow } from '../../services/WorkflowService.js';
 
 const router = express.Router();
 
@@ -386,16 +387,19 @@ router.get('/approvals', async (req, res) => {
 // This is the endpoint the Travel Approvals screen actually calls (not the
 // multi-level /level-approve flow above, which no frontend page uses today).
 // Approve/Reject are identity-gated (reporting manager/delegate/HR/admin —
-// see travelApprovalAuthz.js); Pending/Cancelled keep the old role-only gate
+// see shared/managerApprovalAuthz.js); Pending/Cancelled keep the old role-only gate
 // since those aren't the "approval" act the role-gate bug was about.
 router.put('/requests/:id/status', async (req, res) => {
   try {
-    const { status } = req.body;
+    const { status, comments } = req.body;
     if (!VALID_TRAVEL_STATUSES.has(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${[...VALID_TRAVEL_STATUSES].join(', ')}` });
     }
     const { rows: [old] } = await pool.query(`SELECT * FROM travel_requests WHERE id=$1`, [req.params.id]);
     if (!old) return res.status(404).json({ error: 'Request not found' });
+
+    const actorId = req.user?.userId ?? req.user?.id;
+    let advancedViaEngine = false;
 
     if (status === 'Approved' || status === 'Rejected') {
       const auth = await authorizeManagerApproval({
@@ -405,8 +409,35 @@ router.put('/requests/:id/status', async (req, res) => {
         delegateApproverId: old.delegate_approver_id,
       });
       if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
-    } else if (!TRAVEL_APPROVE_ROLES.includes(String(req.user?.role || '').toLowerCase())) {
-      return res.status(403).json({ error: 'Insufficient role for this action' });
+
+      // Route through the generic WorkflowService when this request has a live
+      // instance (created after the travel_approval workflow seed shipped) —
+      // best-effort: the direct travel_requests.status update below stays the
+      // source of truth regardless, so a ledger failure here never blocks
+      // approval (Automation Opportunity Audit §30.1 Travel pilot).
+      try {
+        const instance = await getWorkflowStatus('travel', old.id);
+        if (instance && !['approved', 'rejected', 'cancelled'].includes(instance.status)) {
+          await advanceWorkflow(instance.id, status === 'Approved' ? 'approve' : 'reject', actorId, comments || '');
+          advancedViaEngine = true;
+        }
+      } catch (e) {
+        console.warn('[travel] advanceWorkflow failed, continuing with direct status update:', e.message);
+      }
+    } else {
+      if (!TRAVEL_APPROVE_ROLES.includes(String(req.user?.role || '').toLowerCase())) {
+        return res.status(403).json({ error: 'Insufficient role for this action' });
+      }
+      // Mirror a cancel the same best-effort way as approve/reject above —
+      // without this, a cancelled request's shadow instance would sit
+      // 'pending' forever instead of reflecting that it's closed.
+      if (status === 'Cancelled') {
+        try {
+          await cancelWorkflow('travel', old.id, actorId);
+        } catch (e) {
+          console.warn('[travel] cancelWorkflow failed, continuing with direct status update:', e.message);
+        }
+      }
     }
 
     const { rows: [updated] } = await pool.query(
@@ -414,7 +445,6 @@ router.put('/requests/:id/status', async (req, res) => {
       [status, req.params.id]
     );
 
-    const actorId = req.user?.userId ?? req.user?.id;
     logAudit({
       userId: actorId,
       module: 'travel',
@@ -426,11 +456,17 @@ router.put('/requests/:id/status', async (req, res) => {
       req,
     });
 
-    if (status === 'Approved' || status === 'Rejected') {
+    // advanceWorkflow() already fired the approved/rejected notification
+    // (correctly addressed to the real initiator) when routed through the
+    // engine above — only send the manual one on the fallback path, and
+    // address it to created_by (a real users.id) rather than employee_id,
+    // which was silently mis-addressing this notification (employee_id is an
+    // employees.id; notifyWorkflowEvent's submitterUserId expects users.id).
+    if (!advancedViaEngine && (status === 'Approved' || status === 'Rejected')) {
       notifyWorkflowEvent(status === 'Approved' ? 'approved' : 'rejected', {
         module: 'Travel',
         recordId: updated.id,
-        submitterUserId: updated.employee_id,
+        submitterUserId: updated.created_by,
       });
     }
 
@@ -503,6 +539,8 @@ router.post('/requests', async (req, res) => {
        mode, hotel_required ?? false, advance_required ?? false, notes,
        req.user?.userId ?? req.user?.id]
     );
+    initiateWorkflow('travel', rows[0].id, 'travel_request', req.user?.userId ?? req.user?.id)
+      .catch((e) => console.warn('[travel] initiateWorkflow failed:', e.message));
     res.status(201).json(rows[0]);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -643,7 +681,7 @@ router.get('/review-entries', async (req, res) => {
 //           → (finance disburse) Disbursed → (bill paid) Partially Settled / Settled
 // Finance reject → Finance Rejected → employee resubmits (fix details / upload doc) → Pending Finance
 const ADVANCE_FINANCE_ROLES = ['admin', 'super_admin', 'finance'];
-// Manager-review authorization is identity-based (travelApprovalAuthz.js), not
+// Manager-review authorization is identity-based (shared/managerApprovalAuthz.js), not
 // a role list — see /advances/:id/manager-review below.
 
 // Statuses an advance can hold, in workflow order — also drives the UI filter.
@@ -1182,6 +1220,11 @@ router.post('/requests/v2', async (req, res) => {
       [req_.id]
     );
     logAudit({ userId: actorId, module: 'travel', recordId: req_.id, recordType: 'travel_request', action: 'create', newData: req_ });
+    // TravelRequests.jsx (the real frontend creation page) posts here, not to
+    // the plain /requests above — that route's initiateWorkflow call alone
+    // never actually fired for any request created through the live UI.
+    initiateWorkflow('travel', req_.id, 'travel_request', actorId)
+      .catch((e) => console.warn('[travel] initiateWorkflow failed:', e.message));
     res.status(201).json(req_);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1191,7 +1234,7 @@ router.post('/requests/v2', async (req, res) => {
 // ── Multi-level approval ──────────────────────────────────────────────────────
 // Level 1 (Reporting Manager) is identity-gated — the actor must actually be
 // the requester's employees.reporting_manager_id, an assigned delegate, or an
-// HR/admin override (see travelApprovalAuthz.js). Levels 2/3 (Department
+// HR/admin override (see shared/managerApprovalAuthz.js). Levels 2/3 (Department
 // Head/Management) have no per-employee identity in the schema to check
 // against, so they stay role-gated as before.
 const LEVEL_NAMES = ['', 'Reporting Manager', 'Department Head', 'Management'];
