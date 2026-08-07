@@ -914,10 +914,101 @@ insertReminder() to asset's assigned_to + production/maintenance roles
 
 ## 27. AI
 
-Full existing footprint and gap analysis already lives in `AI_OPPORTUNITY_MAP.md` — summarized here, not repeated:
-- ✅ Already built: revenue forecast, department attrition rate, device-failure prediction (26.2), CEO narrative summarization (`ceo-insights`), cross-module prescriptive recommendations (`/prescriptive`), nav-search, smart-search.
-- 🟡 Partial: `/predict/inventory` stub (see 6.2).
-- 🔴 Real gaps: department-level narrative digests (pairs with 1.1), ticket/complaint thread summarization for Service Desk handoffs, project-health narrative on top of EVM/CPI/SPI, quality defect-rate prediction from existing batch/quality-rating data, individual-level attrition risk, vendor delivery-delay prediction, extend `/prescriptive` to Sales/Service using the existing `customerHealth.service.js` scores, lead/opportunity prioritization ranking, in-context drafting assist (draft button reusing `/llm-chat` inside specific forms).
+Full existing footprint and gap analysis already lives in `AI_OPPORTUNITY_MAP.md` —
+restated here as two cards so this section matches the rest of the audit's format,
+not repeated in full.
+
+### 27.1 Existing predict/recommend/summarize/assist footprint
+**Status:** ✅ Already Implemented — full inventory in `AI_OPPORTUNITY_MAP.md`: revenue
+forecast, department attrition rate, device-failure prediction (26.2), CEO narrative
+summarization (`ceo-insights`), cross-module prescriptive recommendations
+(`/prescriptive`), nav-search, smart-search, and — as of 2026-08-05 — a genuinely
+velocity-driven inventory prediction (6.2, no longer a stub). All GPT-optional with a
+rule-based fallback; never fabricates numbers.
+**Priority:** N/A (already delivering value)
+
+### 27.2 Real gaps in the AI footprint
+**Status:** 🟡 Extend Existing (7/9 done) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §69/§70/§71/§74/§75/§77/§78/§79.
+Extending `/prescriptive` to Sales/Service was found already wired by a concurrent session
+(`ai.routes.js:852-878`, reusing `customerHealth.service.js`'s
+`getSalesDashboard`/`getServiceDashboard`) — but live-testing it end-to-end surfaced the wiring
+had never actually produced output: `customer_health_scores.customer_id` was `INTEGER` while the
+real customer identity space (`parties.id`) is `uuid`, so every write to the Customer Health Score
+engine (Phase 49F) had thrown and been silently swallowed since it shipped 2026-06-16 — not just
+for `/prescriptive`, for all five of its dashboard readers plus its own early-warning alerts. Fixed
+via migration `20260806000005` (§71) and live-verified: the Sales rec now fires for real flagged
+accounts for the first time ever. Department-level narrative digests were built fresh 2026-08-06:
+`departmentDigest.cron.js` sends a monthly per-department narrative (reusing `narrateKpis()`
+untouched) to leadership, live-verified end-to-end against the real dev DB (39 real notifications
+inserted across 13 departments, dedup confirmed, test rows cleaned up). Vendor delivery-delay
+prediction was also built 2026-08-06 (§74): a 9th `/prescriptive` recommendation ranks vendors by
+historical late-delivery rate who currently have an open PO. Checked whether the pre-existing
+Vendor Health Engine (Phase 49G, `vendorHealth.service.js`) already covered this first and found it
+doesn't — the same "looks wired, never fires" shape as Customer Health above: `vendor_health_scores`
+has zero rows, two of its source queries reference columns that don't exist on
+`goods_receipt_notes`/`purchase_orders` and are silently swallowed. Flagged, not fixed (separate,
+larger task); built the new rec instead using only verified-real columns, live-verified both the
+correctly-empty real-data case and the positive-match case via a rolled-back transaction.
+Lead/opportunity prioritization ranking was built the same day (§75): a new `GET
+/api/ai/predict/lead-priority` endpoint, mirroring `/predict/device-failure`'s transparent
+driver-based scoring (revenue at stake, pipeline stage, closing-date urgency, staleness, missing
+next-step) rather than a `/prescriptive` blurb, since "work these first" is inherently a ranked list.
+Wired into `ERPIntelligence.jsx`'s Predictive tab as a new "Lead Priority Queue" panel. Live-verified
+against the 6 real open opportunities in the dev DB — produced a genuinely differentiated ranking.
+Given the same day (§77), also wired into `OpportunitiesKanban.jsx` itself — the actual pipeline page
+a sales rep works daily, as a third "Priority" view alongside Kanban/List — since the AI Hub is a
+separate nav item reps have no routine reason to visit; browser-verified end-to-end (real login, real
+click, screenshotted). Same endpoint, two homes, no gap-count change.
+Project-health narrative was built the same day (§78): checked Project 360's own health-score
+engine first (the audit's own suggested integration point) and found 3 of its ~28 source queries
+reference tables that don't exist (`service_tickets`, `goods_receipts`, `lifecycle_events`),
+silently swallowed by `Promise.allSettled` — a third confirmed instance of the "looks wired, never
+fires" shape found twice already this same day (§71 Customer Health, §74 Vendor Health). Flagged,
+not fixed. Built a new `GET /api/ai/predict/project-health/:id` instead, self-contained off
+`projects`' own always-populated columns, GPT-optional/rule-based narrative sibling to
+`kpiNarrator.js`, wired into `Project360.jsx`'s Overview tab as an "AI Health Summary" card.
+Live-verified against the 3 real active/planning projects in the dev DB.
+Quality defect-rate prediction and ticket-thread summarization were both built the same day (§79)
+despite near-zero real data to verify against — `quality_tests` has zero rows and `ncr_reports`'
+8 rows are synthetic QA-fixture data with no real item/batch/vendor linkage; only 1 real comment
+exists across all 15 real support tickets. Surfaced this data-thinness to the user directly rather
+than silently working around it; user asked for both to be built anyway, synthetic-verified. New
+`GET /api/ai/predict/quality-risk` (transparent driver-based batch risk score) and `GET
+/api/ai/predict/ticket-summary/:id` (GPT-optional/rule-based, but the rule-based fallback
+deliberately surfaces the real thread verbatim rather than attempting to compress prose — a rules
+engine can't reliably summarize free text without risking misrepresentation). Live-verified: real
+data correctly returns empty/minimal results where genuinely nothing exists; synthetic
+transaction-based tests (rolled back after) proved both endpoints' logic fires correctly when real
+signal is present. Wired into `AllTickets.jsx`'s ticket detail drawer as an "AI Handoff Summary"
+panel.
+Remaining 2 gaps below are still unbuilt (re-confirmed via grep before §70 was written — see §70 in
+the manual for the exact search). Every gap here reuses the same
+GPT-optional-with-rule-based-fallback pattern already proven in `ceo-insights`/`/prescriptive`, or
+the transparent driver-based scoring pattern proven in `/predict/device-failure`; none needs new AI
+infrastructure, only a new call site on top of data that already exists.
+**Current Process:** individual-level attrition risk (flagged in this audit as needing
+appetite confirmation first — more sensitive than a department rollup), and in-context
+drafting assist (a "draft this" button reusing `/llm-chat` inside specific forms) — neither
+has a code path today.
+**Pain Point:** the narrate/rank/predict-from-live-data pattern is proven and cheap to
+repeat, but it's so far only been applied to Finance/Inventory/HR/CEO — each of the
+above is a department or persona that gets none of it yet.
+**Automation Flow:**
+```
+Pick one gap above
+   ↓
+Reuse the same GPT-optional-with-rule-based-fallback pattern already proven in ceo-insights/prescriptive
+   ↓
+Ship as an extension of an existing endpoint, not a new surface
+```
+**Existing Components Reused:** existing AI infrastructure pattern, underlying data
+(`customerHealth.service.js` scores, EVM/CPI/SPI numbers, batch/quality-rating data).
+**New Components Needed:** varies per item — see `AI_OPPORTUNITY_MAP.md` for the
+full per-item breakdown.
+**Implementation Complexity:** Medium
+**Business Impact:** Medium
+**Estimated Time:** Varies (2 days – 1 week per item)
+**Priority:** ⭐⭐⭐⭐⭐
 
 ---
 
@@ -970,7 +1061,7 @@ Add a WhatsApp send call alongside the existing in-app insert, reusing whatsapp.
 ## 30. Approval Engine
 
 ### 30.1 Extend the generic Workflow Engine beyond Leave/Projects
-**Status:** 🟡 Extend Existing
+**Status:** ⚪ Superseded for its original security rationale (2026-08-06) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §68. The reason this was raised (hierarchy fixes have to be made N times instead of once) turned out cheap enough to solve without the full migration: §30.2's additive `shared/managerApprovalAuthz.js` gate closed the real security gap in Discounts in a few hours with zero behavior-change risk, instead of a 2-3-week per-module engine migration. Checked Procurement and ECN specifically (the audit's other named candidates): neither is exposed to the underlying bug — Procurement's vendor-approval chain is functional-role-gated (no "reporting manager" concept applies to a vendor registration), ECN is gated per explicit named `approver_id`, not by role. **Separately, a Travel Requests shadow-mode pilot was built the same day** (see `MODULE_FEATURE_CONNECTION_MANUAL.md` §72) — `travel_requests.status` stays authoritative; `initiateWorkflow`/`advanceWorkflow`/`cancelWorkflow` mirror state into `workflow_instances` fire-and-forget, giving the engine its first real production exercise of `advanceWorkflow` (never fired for any module before this) without gating anything real on it. Live-verified end-to-end (approve/reject/cancel + pre-existing-row regression check). This does not reopen the full-migration recommendation above — it was scoped from the start as a low-risk engine exploration, not a security fix — but Travel Requests is no longer purely hand-rolled the way Procurement/ECN/Discounts remain. Not recommended for further module migrations beyond this pilot.
 **Current Process:** `WorkflowService.js` + `workflows/workflow_steps/workflow_transitions/workflow_instances` are a real, generic, multi-step, role-routed approval engine (`migrations/20260429000001_workflow_engine.js`) — but only `leaves.routes.js` and `projects.routes.js` actually call it. Procurement, Travel, ECN, and Discounts each hand-roll their own status columns and approve/reject checks instead.
 **Pain Point:** Every new module reinvents approval routing instead of configuring the engine that already exists — meaning fixes (like manager-hierarchy routing, below) have to be made N times instead of once.
 **Automation Flow:**
@@ -989,7 +1080,26 @@ Route submit/approve/reject through WorkflowService.initiateWorkflow/advanceWork
 **Priority:** ⭐⭐⭐⭐
 
 ### 30.2 Manager-hierarchy-aware routing
-**Status:** 🔴 New Automation
+**Status:** ✅ Done (2026-08-06) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §65. Travel, Travel
+Reimbursement, and Leave's L1 step were already fixed (2026-07-28, `shared/managerApprovalAuthz.js`).
+The one remaining live instance of this bug — `PUT /pricing/discount-approvals/:id`, where any
+`sales_manager` could approve any rep's discount request (confirmed: both existing rows in the dev DB
+were self-approved by the same admin account) — now reuses the same helper via a new
+`discount_approvals.requested_by_employee_id` FK column. Live-verified: hierarchy match allows, an
+unrelated same-role user is denied, admin override still works.
+
+**Follow-up (2026-08-06, same day) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §68**: one more live gap
+found on re-scoping: `POST /leaves/:id/workflow/advance` called `WorkflowService.advanceWorkflow()`
+directly (gated only by `requirePermission('leaves','approve')`) — a second write path to the same leave
+rows that bypassed the hierarchy gate the primary `/approve|reject/manager/:id` routes enforce, since
+`advanceWorkflow()` itself only checks role, never hierarchy. Not called by the frontend, but reachable via
+direct API call by anyone holding `leaves.approve`. Fixed the same way as every other instance in this
+series — added the `authorizeManagerApproval()` gate before the `advanceWorkflow()` call. Live-verified via
+real HTTP: a test department_head correctly passed the gate for their own report's leave (reached the next
+check, 404 no-active-workflow) and was correctly denied (403) for an unrelated employee's leave. §30.1
+(migrate other hand-rolled approval flows onto the generic Workflow Engine) recommended closed as
+superseded — see its own status line above; the additive-gate pattern already achieved the real goal
+without the full migration's risk. Leaving the rest of this entry as historical record of the original ask.
 **Current Process:** Every role-based approval check (clearest example: Travel's `req.user.role === 'manager'` in `travel.routes.js:1097` and `travel-reimbursement.routes.js`) checks only the role, never `reporting_manager_id` on `employees` — confirmed by the prior Business Process Architecture audit. Any holder of the `manager` role can approve any employee's request, not just their own reports.
 **Pain Point:** This is a real authorization gap, not just a missing convenience — it's the same underlying issue as the "0 real automation" finding for hierarchy routing in the infrastructure inventory (section 0).
 **Automation Flow:**
@@ -1095,16 +1205,16 @@ the list is left short rather than padded — per the audit's no-wishlist rule.
 ## Top 10 AI Automations
 1. Device-failure prediction ✅ already implemented (26.2) — cite as the model to extend elsewhere.
 2. CEO narrative summarization (`ceo-insights`) ✅ already implemented.
-3. Cross-module prescriptive recommendations (`/prescriptive`) ✅ already implemented — Inventory/Finance/HR only today.
-4. Fix inventory-prediction stub (6.2) — wire real consumption velocity.
-5. Extend `/prescriptive` to Sales/Service using existing `customerHealth.service.js` scores.
-6. Department-level narrative digests (pairs with 1.1/27).
-7. Ticket/complaint thread summarization for Service Desk handoffs.
-8. Project-health narrative on top of existing EVM/CPI/SPI numbers.
-9. Quality defect-rate prediction from existing batch/quality-rating data.
-10. Lead/opportunity prioritization ranking for Sales.
+3. Cross-module prescriptive recommendations (`/prescriptive`) ✅ already implemented — now spans Inventory/Finance/HR/Sales/Service (Sales/Service wiring existed but was silently dead until the `customer_health_scores` uuid fix, §27.2/§71).
+4. Inventory-prediction stub ✅ done (6.2) — real consumption velocity wired 2026-08-05.
+5. Extend `/prescriptive` to Sales/Service using existing `customerHealth.service.js` scores ✅ done (27.2/§71) — see #3 above.
+6. Department-level narrative digests ✅ done (27.2/§70) — `departmentDigest.cron.js`, monthly to leadership.
+7. Ticket/complaint thread summarization for Service Desk handoffs (27.2).
+8. Project-health narrative on top of existing EVM/CPI/SPI numbers (27.2).
+9. Quality defect-rate prediction from existing batch/quality-rating data (27.2).
+10. Lead/opportunity prioritization ranking for Sales (27.2).
 
-*(Vendor delivery-delay prediction and individual-level attrition risk are real candidates too but land past 10 — noted in section 27, not dropped, just not in the top slice.)*
+*(Vendor delivery-delay prediction and individual-level attrition risk are real candidates too but land past 10 — noted in section 27.2, not dropped, just not in the top slice.)*
 
 ## Top 10 "Zero-Code" Automations (schema/function/config already fully built — only scheduling or wiring needed)
 1. Monthly depreciation cron (7.2) — function fully built, needs only a cron registration.
@@ -1152,7 +1262,7 @@ the list is left short rather than padded — per the audit's no-wishlist rule.
 7. Quotation auto-expiry 🔴 (3.2) — keeps the customer-facing pipeline honest.
 8. SLA escalation 🔴 (19.2) — protects response-time commitments.
 9. Asset/warranty expiry reminders 🔴 (24.2).
-10. Department digest narratives 🔴 (27) — indirect, improves how fast internal teams respond to customer-facing signals.
+10. Department digest narratives 🔴 (27.2) — indirect, improves how fast internal teams respond to customer-facing signals.
 
 ## Top 10 Employee Productivity Automations
 1. Reorder → auto-draft PR (5.1) — removes a recurring manual task from procurement staff.
@@ -1164,7 +1274,7 @@ the list is left short rather than padded — per the audit's no-wishlist rule.
 7. F&F auto-trigger (9.3).
 8. Lead/opportunity follow-up reminders (2.2) — removes manual pipeline-checking from sales reps.
 9. Vendor auto-selection suggestion on PR→PO (5.2).
-10. In-context AI drafting assist (27) — reduces manual composition time across HR/QC/CRM forms.
+10. In-context AI drafting assist (27.2) — reduces manual composition time across HR/QC/CRM forms.
 
 ## Top 10 Manufacturing Automations
 1. Sales Order → Production Order auto-creation ✅ (14.1).

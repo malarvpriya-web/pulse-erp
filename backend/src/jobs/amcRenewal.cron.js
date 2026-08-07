@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import pool from '../config/db.js';
 import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
+import { sendWhatsAppMessage } from '../modules/integrations/whatsapp.routes.js';
 
 const REMINDER_DAYS = parseInt(process.env.AMC_RENEWAL_REMINDER_DAYS || '30', 10);
 
@@ -13,6 +14,19 @@ async function getReceivers() {
      ORDER BY id`
   );
   return rows.map((r) => r.id);
+}
+
+// Automation Opportunity Audit §29.2 — whatsapp.routes.js's send implementation
+// is real (Meta Graph API) but had zero callers; AMC renewal is the audit's
+// own suggested pilot flow. Reuses the same once-per-day dedup as the in-app
+// insert below (this only runs when that insert wasn't already a no-op), so
+// it can't double-send even if the cron somehow fires twice in a day.
+async function getReceiverPhone(userId) {
+  const { rows } = await pool.query(
+    `SELECT e.phone FROM users u JOIN employees e ON e.id = u.employee_id WHERE u.id = $1 AND e.phone IS NOT NULL`,
+    [userId]
+  );
+  return rows[0]?.phone || null;
 }
 
 async function insertReminder(userId, contract, notificationType) {
@@ -38,6 +52,15 @@ async function insertReminder(userId, contract, notificationType) {
     reference_id: contract.id,
     notification_type: notificationType,
   });
+
+  const phone = await getReceiverPhone(userId);
+  if (phone) {
+    await sendWhatsAppMessage({
+      to: phone,
+      template_name: 'amc_renewal_due',
+      template_params: [contract.customer_name, contract.end_date, String(contract.days_left)],
+    }).catch(() => {});
+  }
 }
 
 // `service_contracts` (manual-entry, ServiceContracts.jsx) and `amc_contracts`
