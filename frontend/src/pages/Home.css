@@ -107,44 +107,6 @@
   display: flex; flex-direction: column;
 }
 
-/* ── Quick access — slim clickable chip row ── */
-.hm-quick-strip {
-  flex-shrink: 0;
-  display: flex; align-items: center; gap: 8px;
-  flex-wrap: wrap;
-  padding: 10px 24px;
-  background: #fff;
-  border-bottom: 1px solid #E8E1FC;
-  box-shadow: 0 2px 8px rgba(75,45,206,.05);
-}
-.hm-quick-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 12px !important;
-  background: #F7F5FF !important;
-  border: 1px solid #E8E1FC;
-  border-radius: 999px;
-  cursor: pointer; color: #374151;
-  font-size: 11px !important; font-weight: 600; line-height: 1;
-  font-family: inherit;
-  transition: all .15s; white-space: nowrap;
-}
-.hm-quick-chip svg { color: var(--c, #5B35D5); flex-shrink: 0; }
-.hm-quick-chip:hover {
-  background: #fff !important;
-  border-color: var(--c, #a5b4fc);
-  color: #111827;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--c, #5B35D5) 20%, transparent);
-}
-.hm-quick-refresh { margin-left: auto; }
-.hm-quick-refresh svg { color: #5B35D5; }
-.hm-quick-chip:focus-visible { outline: 2px solid #5B35D5; outline-offset: 2px; }
-.hm-console-label {
-  font-size: 10px; font-weight: 800; color: #5B35D5;
-  letter-spacing: .08em; text-transform: uppercase;
-  padding-right: 2px; flex-shrink: 0;
-}
-
 /* ── Section header (legacy) ── */
 .hm-section { margin-bottom: 28px; }
 .hm-section-hd {

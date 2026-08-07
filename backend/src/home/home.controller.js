@@ -70,8 +70,8 @@ export const getAllHolidays = async (req, res) => {
   }
 };
 
-// Single role-aware Home Dashboard payload. Shape varies by req.user.role and
-// is company-scoped via req.scope.company_id throughout.
+// Home Dashboard payload — identical shape for every role, company-scoped via
+// req.scope.company_id throughout.
 export const getHomeSummary = async (req, res) => {
   try {
     const summary = await homeService.getHomeSummary(req.user, req.scope);

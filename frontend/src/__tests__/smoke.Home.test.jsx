@@ -1,14 +1,13 @@
 /**
  * smoke.Home.test.jsx — render smoke tests for the consolidated Home dashboard.
  *
- * REWRITTEN 2026-07-17. This file was asserting against a Home that no longer
- * exists and had 13 of 22 tests failing. Home was consolidated to a single
- * role-aware `GET /home/summary` (see the Home dashboard consolidation work),
- * but the tests still stubbed five endpoints the page had stopped calling
- * (/projects/tasks, /approvals/pending, /announcements/active,
- * /dashboard/live-kpis, /attendance/today) and looked for a quick-access button
- * row, a "Live Activity Feed" and an "Attendance Today"/"Revenue YTD" metrics bar
- * that were all removed in the redesign.
+ * REWRITTEN 2026-07-17, then again 2026-08-06. Home was made fully uniform
+ * across every role (no `management` block, no Revenue MTD / attendance-rate /
+ * Task Board / "View All" nav — see the Home uniform-grid revert work): the
+ * hero is always the 3 personal counters (To Action / My Tasks / My Requests,
+ * both approval buttons routing to `MyRequests`), and the summary payload has
+ * no `management` key at all — `myTasks`/`myApprovals` are always populated,
+ * for every role.
  *
  * The page itself is LOCKED — these tests were brought to the page, not the other
  * way round.
@@ -48,14 +47,6 @@ import Home from '../pages/Home.jsx';
 // ── /home/summary payload ─────────────────────────────────────────────────────
 const summary = (over = {}) => ({
   identity: { name: 'Arun Kumar', email: 'arun@manifest.in' },
-  management: {
-    attendance: { rate: 92 },
-    revenue: { mtd: 500000 },
-    pendingApprovalsCount: 3,
-    openTasksCount: 2,
-    openTasks: [],
-    approvalsQueue: [],
-  },
   myTasks: [],
   myApprovals: { awaitingMyAction: [], awaitingOthers: [] },
   announcements: [],
@@ -122,18 +113,17 @@ describe('Home — smoke', () => {
   it('renders all 6 body slots', async () => {
     stubApi();
     render(<Home setPage={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Open Tasks', { selector: '.hm-card-title' })).toBeDefined());
-    ['Pending Approvals', 'Announcements', 'Policies', 'Brand Vault', "Today's Celebrations"]
+    await waitFor(() => expect(screen.getByText('My Open Tasks', { selector: '.hm-card-title' })).toBeDefined());
+    ['My Pending Approvals', 'Announcements', 'Policies', 'Brand Vault', "Today's Celebrations"]
       .forEach(t => expect(screen.getByText(t, { selector: '.hm-card-title' })).toBeDefined());
   });
 
-  it('renders the management hero KPIs', async () => {
+  it('renders the hero KPIs — same for every role', async () => {
     stubApi();
     render(<Home setPage={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Attendance')).toBeDefined());
-    expect(screen.getByText('Approvals')).toBeDefined();
-    expect(screen.getByText('Open Tasks', { selector: '.hm-kpi-label' })).toBeDefined();
-    expect(screen.getByText('Revenue MTD')).toBeDefined();
+    await waitFor(() => expect(screen.getByText('To Action')).toBeDefined());
+    expect(screen.getByText('My Tasks', { selector: '.hm-kpi-label' })).toBeDefined();
+    expect(screen.getByText('My Requests')).toBeDefined();
   });
 
   // ── Loading state ─────────────────────────────────────────────────────────
@@ -153,10 +143,11 @@ describe('Home — smoke', () => {
     await waitFor(() => expect(screen.getByText('All caught up!')).toBeDefined());
   });
 
-  it('shows "No pending approvals." when the approvals queue is empty', async () => {
+  it('shows the awaiting-mine/awaiting-others empty copy when approvals are empty', async () => {
     stubApi();
     render(<Home setPage={() => {}} />);
-    await waitFor(() => expect(screen.getByText('No pending approvals.')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('Nothing needs your sign-off.')).toBeDefined());
+    expect(screen.getByText('You have no requests pending sign-off.')).toBeDefined();
   });
 
   it('shows "No active announcements." when announcements list is empty', async () => {
@@ -180,14 +171,14 @@ describe('Home — smoke', () => {
   // ── Data population ───────────────────────────────────────────────────────
 
   it('renders task rows after data loads', async () => {
-    stubApi(summary({ management: { ...summary().management, openTasks: mockTasks } }));
+    stubApi(summary({ myTasks: mockTasks }));
     render(<Home setPage={() => {}} />);
     await waitFor(() => expect(screen.getByText('Fix login bug')).toBeDefined());
     expect(screen.getByText('Write unit tests')).toBeDefined();
   });
 
   it('renders approval rows after data loads', async () => {
-    stubApi(summary({ management: { ...summary().management, approvalsQueue: mockApprovals } }));
+    stubApi(summary({ myApprovals: { awaitingMyAction: mockApprovals, awaitingOthers: [] } }));
     render(<Home setPage={() => {}} />);
     await waitFor(() => expect(screen.getByText('Priya Nair')).toBeDefined());
     expect(screen.getByText('Leave request')).toBeDefined();
@@ -200,49 +191,28 @@ describe('Home — smoke', () => {
     expect(screen.getByText('Company holiday')).toBeDefined();
   });
 
-  it('renders the attendance rate after load', async () => {
-    stubApi();
-    render(<Home setPage={() => {}} />);
-    await waitFor(() => expect(screen.getByText('92%')).toBeDefined());
-  });
-
   // ── Navigation ────────────────────────────────────────────────────────────
+  // Both approval-related hero KPIs route to the read-only MyRequests page
+  // (never ApprovalCenter — that page is section-gated and dead-ends roles
+  // without approval authority; MyRequests is a PERSONAL_PAGES entry, always
+  // reachable regardless of role).
 
-  it('calls setPage("ApprovalCenter") when the Approvals KPI is clicked', async () => {
+  it('calls setPage("MyRequests") when To Action is clicked', async () => {
     stubApi();
     const setPage = vi.fn();
     render(<Home setPage={setPage} />);
-    await waitFor(() => expect(screen.getByText('Approvals')).toBeDefined());
-    fireEvent.click(screen.getByText('Approvals'));
-    expect(setPage).toHaveBeenCalledWith('ApprovalCenter');
+    await waitFor(() => expect(screen.getByText('To Action')).toBeDefined());
+    fireEvent.click(screen.getByText('To Action'));
+    expect(setPage).toHaveBeenCalledWith('MyRequests');
   });
 
-  it('calls setPage("KanbanBoard") when Task Board is clicked', async () => {
+  it('calls setPage("MyRequests") when My Requests is clicked', async () => {
     stubApi();
     const setPage = vi.fn();
     render(<Home setPage={setPage} />);
-    await waitFor(() => expect(screen.getByText('Task Board')).toBeDefined());
-    fireEvent.click(screen.getByText('Task Board'));
-    expect(setPage).toHaveBeenCalledWith('KanbanBoard');
-  });
-
-  it('calls setPage("ApprovalCenter") when View All approvals clicked', async () => {
-    stubApi();
-    const setPage = vi.fn();
-    render(<Home setPage={setPage} />);
-    await waitFor(() => expect(screen.getByText('No pending approvals.')).toBeDefined());
-    // Two "View All" buttons exist: [0] = Approvals, [1] = Announcements
-    fireEvent.click(screen.getAllByText('View All')[0]);
-    expect(setPage).toHaveBeenCalledWith('ApprovalCenter');
-  });
-
-  it('calls setPage("Announcements") when View All announcements clicked', async () => {
-    stubApi();
-    const setPage = vi.fn();
-    render(<Home setPage={setPage} />);
-    await waitFor(() => expect(screen.getByText('No active announcements.')).toBeDefined());
-    fireEvent.click(screen.getAllByText('View All')[1]);
-    expect(setPage).toHaveBeenCalledWith('Announcements');
+    await waitFor(() => expect(screen.getByText('My Requests')).toBeDefined());
+    fireEvent.click(screen.getByText('My Requests'));
+    expect(setPage).toHaveBeenCalledWith('MyRequests');
   });
 
   // ── Refresh ───────────────────────────────────────────────────────────────
@@ -259,23 +229,31 @@ describe('Home — smoke', () => {
   });
 
   // ── Role gating ───────────────────────────────────────────────────────────
+  // Home has zero role branching — every role gets the same hero/grid shape.
 
-  it('hides the Revenue MTD KPI when the summary has no revenue', async () => {
-    stubApi(summary({ management: { ...summary().management, revenue: null } }));
-    render(<Home setPage={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Attendance')).toBeDefined());
-    expect(screen.queryByText('Revenue MTD')).toBeNull();
-  });
-
-  it('shows employee-shaped KPIs and hides management ones for an employee', async () => {
+  it('shows the same hero KPIs for an employee as for admin', async () => {
     mockAuth = { user: { name: 'Ravi', email: 'ravi@manifest.in', employee_id: 7 }, role: 'employee' };
     stubApi(summary({ myTasks: mockTasks }));
     render(<Home setPage={() => {}} />);
     await waitFor(() => expect(screen.getByText('My Tasks')).toBeDefined());
     expect(screen.getByText('To Action')).toBeDefined();
     expect(screen.getByText('My Requests')).toBeDefined();
-    // Revenue is management-only and must never reach an employee's Home.
-    expect(screen.queryByText('Revenue MTD')).toBeNull();
+  });
+
+  it('shows a granular role\'s own label, not "Employee"', () => {
+    mockAuth = { user: { name: 'Priya', email: 'priya@manifest.in' }, role: 'service_manager' };
+    api.get.mockReturnValue(new Promise(() => {}));
+    render(<Home setPage={() => {}} />);
+    expect(document.querySelector('.hm-role-badge').textContent).toBe('Service Manager');
+  });
+
+  it('falls back to a humanized label for a role not in ROLE_LABEL', () => {
+    // A hypothetical future role code — the fallback must produce a readable
+    // guess, never the misleading "Employee" default the map used to fall back to.
+    mockAuth = { user: { name: 'Priya', email: 'priya@manifest.in' }, role: 'branch_auditor' };
+    api.get.mockReturnValue(new Promise(() => {}));
+    render(<Home setPage={() => {}} />);
+    expect(document.querySelector('.hm-role-badge').textContent).toBe('Branch Auditor');
   });
 
   it('renders the clock-in strip for a linked employee', async () => {

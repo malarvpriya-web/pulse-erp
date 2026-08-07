@@ -1,5 +1,4 @@
 import pool from "../config/db.js";
-import { APPROVER_ROLES, APPROVER_CATEGORY_SCOPE } from "../modules/approvals/approvals.authz.js";
 
 export const getActiveAnnouncements = async () => {
   const result = await pool.query(`
@@ -319,96 +318,33 @@ export const getEmployeeApprovals = async (userId, employeeId, companyId) => {
   };
 };
 
-// Mirrors approvals.authz.js's canClaimCategory, applied across every role the
-// caller holds (home.service.js has no req object here, only the role list).
-// Roles absent from APPROVER_ROLES entirely (project_manager, sales_manager,
-// service_manager — F16 pass) get an empty queue, not the raw company-wide
-// count: that mismatch (Home showing "7 Approvals" while ApprovalCenter shows
-// "0 Pending") was confirmed live for service_manager. Roles present in
-// APPROVER_CATEGORY_SCOPE (procurement_manager/production_manager/qc_manager)
-// get only the categories they can actually claim. A dual-role holder is never
-// more restricted than their most permissive role, same as canClaimCategory.
-const scopeApprovalQueueForCaller = (queue, roles) => {
-  const heldApprover = roles.filter(r => APPROVER_ROLES.includes(r));
-  if (!heldApprover.length) return [];
-  if (heldApprover.some(r => !APPROVER_CATEGORY_SCOPE[r])) return queue;
-  const allowedCats = new Set(heldApprover.flatMap(r => APPROVER_CATEGORY_SCOPE[r]));
-  return queue.filter(item => allowedCats.has(String(item.type || '').toLowerCase()));
-};
-
-// Company-wide management metrics + queues (non-employee roles).
-// Drives the management hero KPIs (attendance, revenue MTD, open tasks,
-// pending approvals) and the Approvals queue / Open Tasks cards.
-const getManagementMetrics = async (companyId, roles) => {
-  const cf = companyId != null ? ` AND company_id = $1` : '';
-  const cp = companyId != null ? [companyId] : [];
-  const tf = companyId != null ? ` AND (p.company_id = $1 OR p.company_id IS NULL)` : '';
-
-  const [revMtd, attRow, tasks, openTasksCount, queue] = await Promise.all([
-    safeVal(`SELECT COALESCE(SUM(COALESCE(total_amount,amount,0)),0)::numeric AS v
-               FROM invoices WHERE created_at >= DATE_TRUNC('month', NOW()) AND LOWER(status) NOT IN ('cancelled')`),
-    safeRows(`SELECT COUNT(*) FILTER (WHERE status = 'present') AS present,
-                     (SELECT COUNT(*) FROM employees WHERE LOWER(status) IN ('active','probation')${cf}) AS total
-                FROM attendance WHERE date = CURRENT_DATE`, cp),
-    safeRows(`SELECT t.id, t.task_title, t.priority, t.status, t.due_date, p.project_name
-                FROM tasks t
-                LEFT JOIN projects p ON p.id = t.project_id
-               WHERE t.status <> 'done' AND t.deleted_at IS NULL
-                 AND t.due_date IS NOT NULL
-               ORDER BY t.due_date ASC NULLS LAST
-               LIMIT 8`),
-    safeVal(`SELECT COUNT(*)::int AS v FROM tasks t
-               LEFT JOIN projects p ON p.id = t.project_id
-              WHERE t.status <> 'done' AND t.deleted_at IS NULL${tf}`, cp),
-    pendingApprovalUnion(companyId),
-  ]);
-
-  const present = Number(attRow?.[0]?.present || 0);
-  const total   = Number(attRow?.[0]?.total || 0);
-  const attRate = total > 0 ? Math.round((present / total) * 100) : 0;
-  const scopedQueue = scopeApprovalQueueForCaller(queue, roles || []);
-
-  return {
-    attendance: { rate: attRate, total, present },
-    revenue:    { mtd: Number(revMtd) || 0 },
-    pendingApprovalsCount: scopedQueue.length,
-    openTasks:             tasks,
-    openTasksCount:        Number(openTasksCount) || 0,
-    approvalsQueue:        scopedQueue.slice(0, 8),
-  };
-};
-
 // Main orchestrator. `user` = req.user (JWT), `scope` = req.scope.
+// Home is identical for every role — everyone gets their own personal open
+// tasks and pending approvals (no company-wide management metrics band).
 export const getHomeSummary = async (user, scope) => {
   const role       = String(user?.role || '').toLowerCase();
   const userId     = user?.userId ?? user?.id ?? null;
   const employeeId = user?.employee_id ?? null;
   const companyId  = scope?.company_id ?? null;      // BUG 1: company_id, not companyId
 
-  // Roles are many-to-many, so this can't be `role === 'employee'` — that read
-  // only the primary role and would drop someone into the cut-down self-service
-  // Home despite them also holding, say, project_manager.
-  //
-  // The rule: you get the employee-only view only if `employee` is ALL you are.
-  // Hold any second role and you get the management view, because every other
-  // role in the registry implies visibility beyond your own record.
   const roles = Array.isArray(user?.roles) && user.roles.length
     ? user.roles.map(r => String(r).toLowerCase())
     : [role].filter(Boolean);
-  const isEmployee = roles.length > 0 && roles.every(r => r === 'employee');
 
   // Shared across every role. Attendance is included for any login linked to an
   // employee record — managers/HR/finance punch in from Home too, not just the
   // `employee` role. Returns null for unlinked logins (admin trio).
-  const [identity, announcements, policies, brandAssets, myAttendance] = await Promise.all([
+  const [identity, announcements, policies, brandAssets, myAttendance, myTasks, myApprovals] = await Promise.all([
     getUserIdentity(userId),
     getActiveAnnouncements(),
     getCompanyDocuments('policy', companyId),
     getCompanyDocuments('brand_assets', companyId),
     getMyAttendanceToday(employeeId, companyId),
+    getMyOpenTasks(employeeId),
+    getEmployeeApprovals(userId, employeeId, companyId),
   ]);
 
-  const base = {
+  return {
     identity: {
       name:  identity?.name || user?.email?.split('@')[0] || 'User',
       email: user?.email || identity?.email || '',
@@ -418,18 +354,8 @@ export const getHomeSummary = async (user, scope) => {
     announcements: (announcements || []).slice(0, 6),
     policies,
     brandAssets,
-    isEmployee,
     myAttendance,
+    myTasks,
+    myApprovals,
   };
-
-  if (isEmployee) {
-    const [myTasks, myApprovals] = await Promise.all([
-      getMyOpenTasks(employeeId),
-      getEmployeeApprovals(userId, employeeId, companyId),
-    ]);
-    return { ...base, myTasks, myApprovals };
-  }
-
-  const management = await getManagementMetrics(companyId, roles);
-  return { ...base, management };
 };
