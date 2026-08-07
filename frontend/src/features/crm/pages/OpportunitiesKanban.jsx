@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, RefreshCw, X, CheckCircle, XCircle, BarChart2, List, Rocket } from 'lucide-react';
+import { Plus, RefreshCw, X, CheckCircle, XCircle, BarChart2, List, Rocket, Target } from 'lucide-react';
 import api from '@/services/api/client';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
@@ -33,6 +33,9 @@ const STAGES = [
 
 const CLOSED_STAGES = new Set(['Won', 'Lost']);
 
+const bandColor = band => (band === 'high' ? '#ef4444' : band === 'medium' ? '#f59e0b' : '#6b7280');
+const bandLight = band => (band === 'high' ? '#fef2f2' : band === 'medium' ? '#fffbeb' : '#f3f4f6');
+
 const emptyForm = () => ({
   opportunity_name: '', company_name: '', expected_value: '',
   probability_percentage: 50, stage: 'Prospecting',
@@ -45,7 +48,9 @@ export default function OpportunitiesKanban({ setPage } = {}) {
   const [stats,          setStats]          = useState(null);
   const [leads,          setLeads]          = useState([]);
   const [loading,        setLoading]        = useState(false);
-  const [view,           setView]           = useState('kanban'); // 'kanban' | 'list'
+  const [view,           setView]           = useState('kanban'); // 'kanban' | 'list' | 'priority'
+  const [priorityQueue,  setPriorityQueue]  = useState([]);
+  const [priorityLoading, setPriorityLoading] = useState(false);
   const [drawer,         setDrawer]         = useState(false);
   const [form,           setForm]           = useState(emptyForm());
   const [submitting,     setSubmitting]     = useState(false);
@@ -157,6 +162,20 @@ export default function OpportunitiesKanban({ setPage } = {}) {
 
   useEffect(() => { load(); }, [load]);
 
+  const loadPriorityQueue = useCallback(async () => {
+    setPriorityLoading(true);
+    try {
+      const res = await api.get('/ai/predict/lead-priority');
+      setPriorityQueue(res.data?.data ?? []);
+    } catch {
+      setPriorityQueue([]);
+    } finally {
+      setPriorityLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { if (view === 'priority') loadPriorityQueue(); }, [view, loadPriorityQueue]);
+
   const handleCreate = async () => {
     if (!form.opportunity_name || !form.expected_value) return showToast('Name and value are required', 'error');
     setSubmitting(true);
@@ -236,7 +255,11 @@ export default function OpportunitiesKanban({ setPage } = {}) {
             className={`ok-view-btn ${view === 'list' ? 'active' : ''}`}
             onClick={() => setView('list')} title="List view"
           ><List size={14} /></button>
-          <button className="ok-icon-btn" onClick={load}><RefreshCw size={14} /></button>
+          <button
+            className={`ok-view-btn ${view === 'priority' ? 'active' : ''}`}
+            onClick={() => setView('priority')} title="Priority queue — AI-ranked, work these first"
+          ><Target size={14} /></button>
+          <button className="ok-icon-btn" onClick={() => (view === 'priority' ? loadPriorityQueue() : load())}><RefreshCw size={14} /></button>
           {!readOnly && (
             <button className="ok-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer(true); }}>
               <Plus size={14} /> New Opportunity
@@ -279,6 +302,57 @@ export default function OpportunitiesKanban({ setPage } = {}) {
 
       {loading ? (
         <div className="ok-loading"><div className="ok-spinner" /></div>
+      ) : view === 'priority' ? (
+        /* ── Priority Queue view — AI-ranked "work these first" ── */
+        <div className="ok-list-wrap">
+          {priorityLoading ? (
+            <div className="ok-loading"><div className="ok-spinner" /></div>
+          ) : priorityQueue.length === 0 ? (
+            <div style={{ padding: 48, textAlign: 'center', color: '#9ca3af' }}>
+              <Target size={36} style={{ marginBottom: 12, opacity: 0.3 }} />
+              <div style={{ fontWeight: 600, color: '#374151' }}>No open opportunities to rank</div>
+            </div>
+          ) : (
+            <table className="ok-table">
+              <thead>
+                <tr>
+                  <th>Priority</th><th>Name</th><th>Stage</th><th>Value</th>
+                  <th>Why</th><th>Recommendation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {priorityQueue.map(o => (
+                  <tr key={o.opportunity_id}>
+                    <td>
+                      <span
+                        className="ok-stage-badge"
+                        style={{ background: bandLight(o.priority_band), color: bandColor(o.priority_band) }}
+                        title={`Score: ${o.priority_score}/100`}
+                      >
+                        {o.priority_band} &middot; {o.priority_score}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        className="ok-link"
+                        onClick={() => {
+                          const found = allOpps.find(a => a.id === o.opportunity_id);
+                          if (found) setDetailOpp(found);
+                        }}
+                      >
+                        {o.opportunity_name}
+                      </button>
+                    </td>
+                    <td>{o.stage}</td>
+                    <td style={{ fontWeight: 600 }}>{fmt(o.expected_value)}</td>
+                    <td style={{ color: '#6b7280', fontSize: 12 }}>{o.top_driver || '—'}</td>
+                    <td style={{ fontSize: 12 }}>{o.recommendation}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       ) : view === 'list' ? (
         /* ── List view ── */
         <div className="ok-list-wrap">

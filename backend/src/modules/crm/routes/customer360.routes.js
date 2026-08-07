@@ -474,6 +474,41 @@ router.get('/customer360/:partyId/amc', requirePermission('crm', 'view'), async 
   });
 });
 
+// ── GET /customer360/:partyId/subscriptions — SaaS-style recurring billing ────
+// Subscriptions (Sales module) and AMC (above) are legitimately different
+// commercial products — service contract vs. recurring billing plan — and
+// deliberately stay separate tables (see MODULE_FEATURE_CONNECTION_MANUAL.md
+// §18/§62). What was actually missing wasn't a schema merge, it was that
+// `subscriptions.customer_id` (uuid, same parties.id space as everything else
+// on this page) was never populated by the creation form, so no query could
+// ever have surfaced them here even if one existed. Fixed at the source in
+// `sales.routes.js`'s POST /subscriptions; this is the read side.
+router.get('/customer360/:partyId/subscriptions', requirePermission('crm', 'view'), async (req, res) => {
+  const { partyId } = req.params;
+  try {
+    const { rows: subs } = await pool.query(
+      `SELECT id, plan_name, amount, currency, billing_cycle, status,
+              start_date, next_billing_date, end_date, auto_renew, created_at
+       FROM subscriptions WHERE customer_id = $1
+       ORDER BY created_at DESC`,
+      [partyId]
+    );
+    const active = subs.filter(s => s.status === 'active');
+    const mrr = active.reduce((sum, s) => {
+      const amt = parseFloat(s.amount) || 0;
+      if (s.billing_cycle === 'quarterly') return sum + amt / 3;
+      if (s.billing_cycle === 'annual')    return sum + amt / 12;
+      return sum + amt;
+    }, 0);
+    res.json({
+      subscriptions: subs,
+      summary: { total: subs.length, active: active.length, mrr },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /customer360/:partyId/manufacturing — production orders ───────────────
 router.get('/customer360/:partyId/manufacturing', requirePermission('crm', 'view'), async (req, res) => {
   const { partyId } = req.params;

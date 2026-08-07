@@ -31,6 +31,10 @@ async function calcRevenueScore(customerId, companyId) {
 
   try {
     // Total revenue (paid invoices)
+    // customerId is parties.id (uuid); invoices.customer_id is the live uuid FK.
+    // invoices.party_id is a separate, dead legacy integer column (always NULL) —
+    // querying it here always threw (invalid uuid → integer), silently caught
+    // below, so this dimension always fell back to the initial score=0.
     const r = await pool.query(
       `SELECT
          COALESCE(SUM(CASE WHEN status='paid' THEN total_amount ELSE 0 END),0)           AS revenue,
@@ -43,7 +47,7 @@ async function calcRevenueScore(customerId, companyId) {
          COUNT(DISTINCT CASE WHEN status='paid' AND created_at >= NOW()-INTERVAL '12 months'
                              THEN id END)::int                                            AS orders_12m
        FROM invoices
-       WHERE party_id=$1`,
+       WHERE customer_id=$1`,
       [customerId]
     );
     const d = r.rows[0];
@@ -88,6 +92,10 @@ async function calcCollectionScore(customerId, companyId) {
   let details = {};
 
   try {
+    // Same party_id (dead legacy int, always NULL) vs customer_id (live uuid FK)
+    // drift as calcRevenueScore above — a thrown query here previously left
+    // score at its initial value of 20 (a false "perfect" collection score for
+    // every real customer, not a neutral default).
     const r = await pool.query(
       `SELECT
          COUNT(CASE WHEN status='overdue' THEN 1 END)::int                          AS overdue_count,
@@ -101,7 +109,7 @@ async function calcCollectionScore(customerId, companyId) {
          COALESCE(ROUND(AVG(CASE WHEN status='paid' AND updated_at > created_at
                                THEN EXTRACT(EPOCH FROM (updated_at-created_at))/86400
                                END))::int, 0)                                       AS avg_days_to_pay
-       FROM invoices WHERE party_id=$1`,
+       FROM invoices WHERE customer_id=$1`,
       [customerId]
     );
     const d = r.rows[0];
@@ -138,11 +146,17 @@ async function calcMarginScore(customerId, companyId) {
 
   try {
     // Project margin
+    // projects has no customer_id column at all (only customer_name/client_name
+    // free text) — this always threw "column does not exist", silently caught,
+    // leaving score at its initial value of 0. Same name-bridge into parties
+    // already used by calcQualityScore below.
     const r = await pool.query(
       `SELECT
-         COALESCE(SUM(budget_amount),0) AS total_budget,
-         COALESCE(SUM(actual_cost),0)   AS total_actual
-       FROM projects WHERE customer_id=$1 AND deleted_at IS NULL AND status='completed'`,
+         COALESCE(SUM(p.budget_amount),0) AS total_budget,
+         COALESCE(SUM(p.actual_cost),0)   AS total_actual
+       FROM projects p
+       JOIN parties pt ON LOWER(pt.name) = LOWER(COALESCE(p.customer_name, p.client_name))
+       WHERE pt.id=$1 AND p.deleted_at IS NULL AND p.status='completed'`,
       [customerId]
     );
     const d = r.rows[0];
@@ -186,16 +200,19 @@ async function calcProjectScore(customerId, companyId) {
   let details = {};
 
   try {
+    // Same missing-customer_id / name-bridge fix as calcMarginScore above.
     const r = await pool.query(
       `SELECT
          COUNT(*)::int                                                             AS total,
-         COUNT(CASE WHEN status='completed' THEN 1 END)::int                     AS completed,
-         COUNT(CASE WHEN status='completed' AND end_date IS NOT NULL
-                    AND end_date < actual_end_date THEN 1 END)::int              AS delayed,
-         COUNT(CASE WHEN status IN ('cancelled','failed') THEN 1 END)::int       AS failed,
-         COUNT(CASE WHEN status='active' AND end_date IS NOT NULL
-                    AND end_date < NOW() THEN 1 END)::int                        AS overdue_active
-       FROM projects WHERE customer_id=$1 AND deleted_at IS NULL`,
+         COUNT(CASE WHEN p.status='completed' THEN 1 END)::int                   AS completed,
+         COUNT(CASE WHEN p.status='completed' AND p.end_date IS NOT NULL
+                    AND p.end_date < p.actual_end_date THEN 1 END)::int          AS delayed,
+         COUNT(CASE WHEN p.status IN ('cancelled','failed') THEN 1 END)::int     AS failed,
+         COUNT(CASE WHEN p.status='active' AND p.end_date IS NOT NULL
+                    AND p.end_date < NOW() THEN 1 END)::int                      AS overdue_active
+       FROM projects p
+       JOIN parties pt ON LOWER(pt.name) = LOWER(COALESCE(p.customer_name, p.client_name))
+       WHERE pt.id=$1 AND p.deleted_at IS NULL`,
       [customerId]
     );
     const d = r.rows[0];
@@ -352,6 +369,15 @@ async function calcAMCScore(customerId, companyId) {
   let details = {};
 
   try {
+    // KNOWN BROKEN, not fixed here: amc_contracts has no customer_id column
+    // (only project_id, nullable) and no annual_value column (contract_value/
+    // renewal_amount exist instead) — this query always throws, silently
+    // caught, leaving score at its initial value of 0. Unlike the revenue/
+    // collection/margin/project fixes above, this couldn't be live-verified:
+    // both amc_contracts and service_contracts (two separate AMC-like tables
+    // in this schema) are empty in this DB, and it's unclear which
+    // table/column this dimension should even read from. Flagged, not
+    // guessed at.
     const r = await pool.query(
       `SELECT
          COUNT(*)::int                                                                        AS total,
@@ -1072,9 +1098,9 @@ export async function getFinanceDashboard(companyId) {
               chs.collection_score, chs.margin_score, chs.payment_default_risk,
               p.name AS customer_name, p.city,
               (SELECT COALESCE(SUM(total_amount),0) FROM invoices
-               WHERE party_id=chs.customer_id AND status IN ('overdue','pending')) AS outstanding,
+               WHERE customer_id=chs.customer_id AND status IN ('overdue','pending')) AS outstanding,
               (SELECT COUNT(*)::int FROM invoices
-               WHERE party_id=chs.customer_id AND status='overdue'
+               WHERE customer_id=chs.customer_id AND status='overdue'
                AND created_at < NOW()-INTERVAL '90 days') AS overdue_90d
        FROM customer_health_scores chs
        JOIN parties p ON p.id=chs.customer_id
@@ -1103,12 +1129,12 @@ export async function getProjectDashboard(companyId) {
               chs.project_score, chs.project_escalation_risk,
               chs.fat_success_pct, chs.sat_success_pct, chs.commissioning_success_pct,
               p.name AS customer_name, p.city,
-              (SELECT COUNT(*)::int FROM projects
-               WHERE customer_id=chs.customer_id AND deleted_at IS NULL
-               AND status='active' AND end_date IS NOT NULL AND end_date < NOW()) AS overdue_projects,
-              (SELECT COUNT(*)::int FROM projects
-               WHERE customer_id=chs.customer_id AND deleted_at IS NULL
-               AND status='active') AS active_projects
+              (SELECT COUNT(*)::int FROM projects pr
+               WHERE LOWER(COALESCE(pr.customer_name, pr.client_name))=LOWER(p.name) AND pr.deleted_at IS NULL
+               AND pr.status='active' AND pr.end_date IS NOT NULL AND pr.end_date < NOW()) AS overdue_projects,
+              (SELECT COUNT(*)::int FROM projects pr
+               WHERE LOWER(COALESCE(pr.customer_name, pr.client_name))=LOWER(p.name) AND pr.deleted_at IS NULL
+               AND pr.status='active') AS active_projects
        FROM customer_health_scores chs
        JOIN parties p ON p.id=chs.customer_id
        WHERE chs.company_id=$1
@@ -1152,22 +1178,29 @@ export async function getActiveAlerts(companyId) {
 export async function recalculateAll(companyId) {
   let customers = [];
   try {
+    // parties.type doesn't exist (real column is party_type) and the company
+    // filter was a "first company in the table" subquery instead of an actual
+    // scope — both always failed silently (parties.company_id does exist
+    // directly, the "if company_id not on parties" comment below was stale).
     const r = await pool.query(
       `SELECT DISTINCT p.id FROM parties p
-       WHERE (p.type='customer' OR p.type IS NULL)
-       AND (SELECT company_id FROM companies LIMIT 1) = $1
+       WHERE (LOWER(p.party_type)='customer' OR p.party_type IS NULL)
+       AND p.company_id = $1
        ORDER BY p.id`,
       [companyId]
     );
     customers = r.rows;
   } catch (_) {}
 
-  // If company_id not on parties, use invoices as proxy
+  // Fallback: customers only reachable via an invoice (e.g. party_type unset).
+  // invoices.customer_id is the live uuid FK — invoices.party_id is a separate,
+  // dead legacy integer column that's always NULL (same drift fixed in the
+  // scoring dimensions above).
   if (customers.length === 0) {
     try {
       const r = await pool.query(
-        `SELECT DISTINCT party_id AS id FROM invoices
-         WHERE company_id=$1 AND party_id IS NOT NULL`,
+        `SELECT DISTINCT customer_id AS id FROM invoices
+         WHERE company_id=$1 AND customer_id IS NOT NULL`,
         [companyId]
       );
       customers = r.rows;

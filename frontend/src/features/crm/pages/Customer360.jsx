@@ -111,7 +111,7 @@ function Card({ children, style = {} }) {
   return <div style={{ ...C.card, ...style }}>{children}</div>;
 }
 
-function SectionHeader({ title, count, color = C.primary }) {
+function SectionHeader({ title, count, color = C.primary, extra }) {
   return (
     <div style={{
       padding: '14px 18px', borderBottom: '1px solid #f0f0f4',
@@ -124,6 +124,7 @@ function SectionHeader({ title, count, color = C.primary }) {
           fontSize: 11, fontWeight: 700, padding: '1px 8px',
         }}>{count}</span>
       )}
+      {extra && <span style={{ marginLeft: 'auto', fontSize: 12, color: '#6b7280', fontWeight: 600 }}>{extra}</span>}
     </div>
   );
 }
@@ -889,6 +890,7 @@ export default function Customer360() {
   const [projects, setProjects]       = useState(null);
   const [service, setService]         = useState(null);
   const [amc, setAmc]                 = useState(null);
+  const [subscriptions, setSubscriptions] = useState(null);
   const [manufacturing, setMfg]       = useState(null);
   const [commissioning, setComm]      = useState(null);
   const [health, setHealth]           = useState(null);
@@ -915,7 +917,7 @@ export default function Customer360() {
     setLoadingCore(true);
     setError('');
     setCore(null); setPipeline(null); setProjects(null);
-    setService(null); setAmc(null); setMfg(null); setComm(null);
+    setService(null); setAmc(null); setSubscriptions(null); setMfg(null); setComm(null);
     setHealth(null); setTimeline(null); setDrive(null);
     setTenders(null); setTravel(null);
     setDriveFolders(null); setDriveFiles(null);
@@ -942,6 +944,7 @@ export default function Customer360() {
       safeGet(`/crm/customer360/${id}/projects`,        setProjects),
       safeGet(`/crm/customer360/${id}/service`,         setService),
       safeGet(`/crm/customer360/${id}/amc`,             setAmc),
+      safeGet(`/crm/customer360/${id}/subscriptions`,   setSubscriptions),
       safeGet(`/crm/customer360/${id}/manufacturing`,   setMfg),
       safeGet(`/crm/customer360/${id}/commissioning`,   setComm),
       safeGet(`/crm/customer360/${id}/health-score`,    setHealth),
@@ -1595,7 +1598,7 @@ export default function Customer360() {
           </Card>
 
           {amc.warranty_records.length > 0 && (
-            <Card style={{ padding: 0 }}>
+            <Card style={{ marginBottom: 20, padding: 0 }}>
               <SectionHeader title="Warranty Register" count={amc.warranty_records.length} />
               <Table
                 headers={['Product', 'Serial No.', 'Type', 'Warranty Start', 'Warranty End', 'Status']}
@@ -1608,6 +1611,34 @@ export default function Customer360() {
                     <TD>{fmtDate(w.warranty_start)}</TD>
                     <TD>{fmtDate(w.warranty_end)}</TD>
                     <td style={{ padding: '9px 14px', borderBottom: '1px solid #f8f8fc' }}><Badge status={w.status} /></td>
+                  </tr>
+                ))}
+              />
+            </Card>
+          )}
+
+          {/* Subscriptions — a separate commercial product (SaaS-style recurring
+              billing vs. AMC's service contracts), deliberately a different table,
+              surfaced here so both renewal tracks for this customer are visible
+              in one place instead of two disconnected modules. */}
+          {subscriptions && (
+            <Card style={{ padding: 0 }}>
+              <SectionHeader
+                title="Subscriptions"
+                count={subscriptions.subscriptions.length}
+                extra={subscriptions.summary.active > 0 ? `${subscriptions.summary.active} active · MRR ${fmtINR(subscriptions.summary.mrr)}` : undefined}
+              />
+              <Table
+                headers={['Plan', 'Amount', 'Cycle', 'Next Billing', 'Auto-Renew', 'Status']}
+                emptyMsg="No subscriptions"
+                rows={subscriptions.subscriptions.map(s => (
+                  <tr key={s.id}>
+                    <TD bold>{s.plan_name}</TD>
+                    <TD>{fmtINR(s.amount)}</TD>
+                    <TD>{s.billing_cycle || '—'}</TD>
+                    <TD>{fmtDate(s.next_billing_date)}</TD>
+                    <TD>{s.auto_renew ? 'Yes' : 'No'}</TD>
+                    <td style={{ padding: '9px 14px', borderBottom: '1px solid #f8f8fc' }}><Badge status={s.status} /></td>
                   </tr>
                 ))}
               />

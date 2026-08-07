@@ -8,9 +8,41 @@ import * as drive from '../../../services/googleDrive.service.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { nextProjectCode, nextLifecycleNumber } from '../../../shared/docNumber.js';
+import { resolveAutoAssignee } from '../services/leadAssignment.service.js';
+import { convertOpportunityToProject } from '../services/opportunityConversion.service.js';
+import notificationsRepository from '../../notifications/repositories/notifications.repository.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+// assigned_to on leads/opportunities FKs employees, not users — resolve to a login
+// via users.employee_id (set on every login addEmployee auto-creates), falling back
+// to the company_email <-> email match for accounts predating that column.
+async function resolveEmployeeUserId(employeeId) {
+  if (!employeeId) return null;
+  const { rows } = await pool.query(
+    `SELECT u.id
+       FROM employees e
+       JOIN users u ON (u.employee_id = e.id OR LOWER(u.email) = LOWER(e.company_email))
+      WHERE e.id = $1 AND u.is_active = true
+      ORDER BY (u.employee_id = e.id) DESC
+      LIMIT 1`,
+    [employeeId]
+  );
+  return rows[0]?.id || null;
+}
+
+async function notifyAutoAssignment({ userId, referenceId, recordType, label }) {
+  if (!userId) return;
+  await notificationsRepository.create({
+    user_id: userId,
+    title: `New ${recordType} Assigned`,
+    message: `${label} was auto-assigned to you.`,
+    module_name: 'crm',
+    reference_id: referenceId,
+    notification_type: `${recordType.toLowerCase()}_auto_assigned`,
+  });
+}
 
 // ── Accounts ──────────────────────────────────────────────────────────────────
 router.get('/accounts', requirePermission('crm', 'view'), async (req, res) => {
@@ -550,29 +582,24 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
       } catch (_) {}
     }
 
-    // Auto-assign via assignment rules when auto_assign_owner is enabled
-    let assignedTo = req.body.assigned_to || userId;
-    if (crmSettings.auto_assign_owner && crmSettings.lead_assignment_method === 'round_robin' && company_id) {
+    // Auto-assign when auto_assign_owner is enabled — resolveAutoAssignee covers
+    // crm_assignment_rules matches plus real round-robin/load-balanced rotation
+    // across active sales_exec/sales_manager employees.
+    let assignedTo = req.body.assigned_to;
+    let autoAssignedId = null;
+    if (!assignedTo && crmSettings.auto_assign_owner && company_id) {
       try {
-        const rules = await pool.query(
-          `SELECT * FROM crm_assignment_rules
-           WHERE company_id = $1 AND is_active = true ORDER BY priority ASC`,
-          [company_id]
-        );
-        for (const rule of rules.rows) {
-          const fieldVal = (req.body[rule.condition_field] || '').toString().toLowerCase();
-          if (fieldVal === (rule.condition_value || '').toLowerCase()) {
-            // Find employee by name match
-            const emp = await pool.query(
-              `SELECT id FROM employees WHERE LOWER(name) = LOWER($1) AND company_id = $2
-               AND LOWER(status) IN ('active','probation') LIMIT 1`,
-              [rule.assign_to_name, company_id]
-            );
-            if (emp.rowCount > 0) { assignedTo = emp.rows[0].id; break; }
-          }
-        }
+        autoAssignedId = await resolveAutoAssignee(company_id, crmSettings.lead_assignment_method, req.body);
+        if (autoAssignedId) assignedTo = autoAssignedId;
       } catch (_) {}
     }
+    // assigned_to FKs employees (see leadAssignment.service.js), not users — userId
+    // here is a users.id and would silently break every downstream employees-join
+    // read of this lead's owner (same bug class as stock_ledger.created_by).
+    // req.user.employee_id is null for logins with no linked employee (e.g. the
+    // superadmin/admin system accounts), in which case leaving it unowned is
+    // correct — a wrong owner is worse than none.
+    assignedTo = assignedTo || (req.user?.employee_id ?? null);
 
     // Compute lead score from scoring rules when auto_score_on_create is enabled
     let lead_score = parseInt(req.body.lead_score) || 0;
@@ -601,6 +628,17 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
       company_id,
       assigned_to: assignedTo,
     });
+
+    if (autoAssignedId) {
+      const assigneeUserId = await resolveEmployeeUserId(autoAssignedId);
+      await notifyAutoAssignment({
+        userId: assigneeUserId,
+        referenceId: lead.id,
+        recordType: 'Lead',
+        label: `${lead.iem_no || lead.company_name || 'A lead'}`,
+      }).catch(() => {});
+    }
+
     res.status(201).json(lead);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -707,6 +745,19 @@ router.post('/leads/import', requirePermission('crm', 'add'), upload.single('fil
     let skipped  = 0;
     const errors = [];
 
+    // Previously always self-assigned to the importer, bypassing auto_assign_owner
+    // entirely — fetched once since it's the same setting for the whole file.
+    let crmSettings = {};
+    if (company_id) {
+      try {
+        const sr = await pool.query(
+          `SELECT auto_assign_owner, lead_assignment_method FROM crm_settings WHERE company_id = $1`,
+          [company_id]
+        );
+        crmSettings = sr.rows[0] || {};
+      } catch (_) {}
+    }
+
     for (const row of rows) {
       const email = row.email?.trim();
       try {
@@ -719,7 +770,14 @@ router.post('/leads/import', requirePermission('crm', 'add'), upload.single('fil
           if (dup.rowCount > 0) { skipped++; continue; }
         }
 
-        await leadsRepository.create({
+        let autoAssignedId = null;
+        if (crmSettings.auto_assign_owner && company_id) {
+          try {
+            autoAssignedId = await resolveAutoAssignee(company_id, crmSettings.lead_assignment_method, row);
+          } catch (_) {}
+        }
+
+        const lead = await leadsRepository.create({
           company_name:   row.company_name   || row.company   || '',
           contact_person: row.contact_name   || row.contact   || '',
           email:          email || null,
@@ -731,8 +789,20 @@ router.post('/leads/import', requirePermission('crm', 'add'), upload.single('fil
           status:         row.status         || 'New',
           created_by:     userId,
           company_id,
-          assigned_to:    userId,
+          // assigned_to FKs employees, not users — see the same fix in POST /leads.
+          assigned_to:    autoAssignedId || (req.user?.employee_id ?? null),
         });
+
+        if (autoAssignedId) {
+          const assigneeUserId = await resolveEmployeeUserId(autoAssignedId);
+          await notifyAutoAssignment({
+            userId: assigneeUserId,
+            referenceId: lead.id,
+            recordType: 'Lead',
+            label: `${lead.iem_no || lead.company_name || 'A lead'}`,
+          }).catch(() => {});
+        }
+
         imported++;
       } catch (err) {
         skipped++;
@@ -844,6 +914,24 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
       ? (lead.probability ?? 50)
       : parseInt(probability_percentage, 10);
 
+    // Only reached when the lead itself had no owner either — a normal
+    // conversion just carries the lead's existing assigned_to forward.
+    let autoAssignedId = null;
+    let finalAssignedTo = assigned_to || lead.assigned_to || null;
+    if (!finalAssignedTo && lead.company_id) {
+      try {
+        const sr = await client.query(
+          `SELECT auto_assign_owner, lead_assignment_method FROM crm_settings WHERE company_id = $1`,
+          [lead.company_id]
+        );
+        const s = sr.rows[0] || {};
+        if (s.auto_assign_owner) {
+          autoAssignedId = await resolveAutoAssignee(lead.company_id, s.lead_assignment_method, lead);
+          finalAssignedTo = autoAssignedId;
+        }
+      } catch (_) {}
+    }
+
     // Create the opportunity — inherit company_id from the lead
     const oppRes = await client.query(
       `INSERT INTO opportunities
@@ -859,7 +947,7 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
         Math.min(100, Math.max(0, Number.isNaN(prob) ? 50 : prob)),
         expected_closing_date || null,
         stage || 'Qualification',
-        assigned_to || lead.assigned_to || null,
+        finalAssignedTo,
         userId,
         lead.company_id || null,
         lead.zone || null,
@@ -900,6 +988,15 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
     import('../../../services/WorkflowNotificationService.js').then(({ notifyWorkflowEvent }) => {
       notifyWorkflowEvent('submitted', { module: 'CRM', recordId: opportunity.id, submitterId: userId, recipientIds: assignedUserId ? [assignedUserId] : [] }).catch(() => {});
     }).catch(() => {});
+
+    if (autoAssignedId) {
+      resolveEmployeeUserId(autoAssignedId).then((assigneeUserId) => notifyAutoAssignment({
+        userId: assigneeUserId,
+        referenceId: opportunity.id,
+        recordType: 'Opportunity',
+        label: opportunity.opportunity_name || 'An opportunity',
+      })).catch(() => {});
+    }
 
     res.status(201).json({
       opportunity,
@@ -1087,6 +1184,26 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
       }
     }
 
+    // Same auto-assign resolution as POST /leads, tried before the self-assign
+    // fallback — previously this endpoint only ever self-assigned to the creator.
+    let autoAssignedId = null;
+    let finalAssignedTo = assigned_to;
+    if (!finalAssignedTo && company_id) {
+      try {
+        const sr = await client.query(
+          `SELECT auto_assign_owner, lead_assignment_method FROM crm_settings WHERE company_id = $1`,
+          [company_id]
+        );
+        const s = sr.rows[0] || {};
+        if (s.auto_assign_owner) {
+          autoAssignedId = await resolveAutoAssignee(company_id, s.lead_assignment_method, req.body);
+          finalAssignedTo = autoAssignedId;
+        }
+      } catch (_) {}
+    }
+    // assigned_to FKs employees, not users — see the same fix in POST /leads.
+    finalAssignedTo = finalAssignedTo || (req.user?.employee_id ?? null);
+
     const oppRes = await client.query(
       `INSERT INTO opportunities
          (lead_id, opportunity_name, expected_value, probability_percentage,
@@ -1094,7 +1211,7 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
           estimate_value, held_by, follow_up_date)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [lead_id || null, opportunity_name, expected_value, probability_percentage,
-       expected_closing_date || null, stage, assigned_to || userId, notes || null, userId, company_id,
+       expected_closing_date || null, stage, finalAssignedTo, notes || null, userId, company_id,
        estimate_value === '' || estimate_value == null ? null : estimate_value,
        held_by || null, follow_up_date || null]
     );
@@ -1109,6 +1226,16 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
     }
 
     await client.query('COMMIT');
+
+    if (autoAssignedId) {
+      resolveEmployeeUserId(autoAssignedId).then((assigneeUserId) => notifyAutoAssignment({
+        userId: assigneeUserId,
+        referenceId: opportunity.id,
+        recordType: 'Opportunity',
+        label: opportunity.opportunity_name || 'An opportunity',
+      })).catch(() => {});
+    }
+
     res.status(201).json(opportunity);
   } catch (error) {
     await client.query('ROLLBACK');
@@ -1170,6 +1297,41 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
 
     await client.query('COMMIT');
     res.json(rows[0]);
+
+    // Auto-convert on Won — mirrors the Sales Order path's auto-bootstrap
+    // (sales.routes.js) so a Won opportunity gets a project regardless of
+    // which path it reaches Won through, instead of depending on someone
+    // clicking "Convert to Project" (Automation Opportunity Audit §13.3).
+    // Fire-and-forget on its own connection, after the response is already
+    // sent: project creation is a side effect of the stage change, not a
+    // precondition for it, and convertOpportunityToProject()'s own
+    // opportunity_id idempotency check makes this safe to layer on top of
+    // the Sales Order path without risking a duplicate project.
+    if (stageLc === 'won') {
+      (async () => {
+        // bgClient acquired inside the try — pool exhaustion throwing here
+        // would otherwise reject outside any catch, and this IIFE is
+        // intentionally not awaited by the caller, so nothing else would
+        // handle it (Node treats an unhandled rejection as fatal).
+        let bgClient;
+        try {
+          bgClient = await pool.connect();
+          await bgClient.query('BEGIN');
+          const result = await convertOpportunityToProject(bgClient, req.params.id, cid, {
+            userId, employeeId: req.user?.employee_id ?? null, userEmail: req.user?.email ?? null, userName: req.user?.name ?? null,
+          });
+          await bgClient.query('COMMIT');
+          if (result && !result.already_existed) {
+            logAudit({ userId, module: 'CRM', recordId: req.params.id, recordType: 'opportunity', action: 'convert_to_project', newData: { project_id: result.project.id, project_code: result.project.project_code, auto: true }, req });
+          }
+        } catch (err) {
+          if (bgClient) await bgClient.query('ROLLBACK').catch(() => {});
+          console.error(`[crm.routes] auto-convert-to-project failed for opportunity ${req.params.id}:`, err.message);
+        } finally {
+          if (bgClient) bgClient.release();
+        }
+      })();
+    }
   } catch (error) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: error.message });
@@ -1275,6 +1437,10 @@ router.post('/opportunities/:id/create-quotation', requirePermission('sales', 'a
 // creates a real `projects` row via the `opportunity_id` bridge column (see
 // Project Master / delivery-tracker), then still creates the lifecycle
 // instance for Operations tracking — but linked to the new project this time.
+// Computation lives in opportunityConversion.service.js so PATCH
+// /opportunities/:id/stage can auto-fire the same logic when an opportunity
+// reaches 'won' (Automation Opportunity Audit §13.3) instead of this needing
+// to be triggered by hand.
 router.post('/opportunities/:id/convert-to-project', requirePermission('projects', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
@@ -1282,66 +1448,20 @@ router.post('/opportunities/:id/convert-to-project', requirePermission('projects
     const cid_val = companyOf(req);
     const userId  = req.user?.userId ?? req.user?.id ?? null;
 
-    const oppRes = await client.query(
-      `SELECT o.*, COALESCE(a.name, a.account_name) AS customer_name
-       FROM opportunities o
-       LEFT JOIN accounts a ON a.id = o.account_id
-       WHERE o.id=$1 AND o.deleted_at IS NULL AND ($2::int IS NULL OR o.company_id=$2)
-       FOR UPDATE OF o`,
-      [req.params.id, cid_val]
-    );
-    if (!oppRes.rows[0]) {
+    const result = await convertOpportunityToProject(client, req.params.id, cid_val, {
+      userId, employeeId: req.user?.employee_id ?? null, userEmail: req.user?.email ?? null, userName: req.user?.name ?? null,
+    });
+    if (!result) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Opportunity not found' });
     }
-    const opp = oppRes.rows[0];
-
-    // Idempotent — re-clicking (or a race) must not spawn a second project.
-    const existingRes = await client.query(
-      `SELECT * FROM projects WHERE opportunity_id=$1 AND deleted_at IS NULL LIMIT 1`,
-      [opp.id]
-    );
-    if (existingRes.rows[0]) {
-      await client.query('ROLLBACK');
-      return res.status(200).json({ project: existingRes.rows[0], already_existed: true });
-    }
-
-    // projects.created_by FKs employees(id), not users(id) — resolve like
-    // projects.routes.js's actingEmployeeId does.
-    let createdByEmployeeId = req.user?.employee_id ?? null;
-    if (createdByEmployeeId == null && req.user?.email) {
-      const empRes = await client.query(
-        `SELECT id FROM employees WHERE company_email=$1 AND deleted_at IS NULL LIMIT 1`,
-        [req.user.email]
-      );
-      createdByEmployeeId = empRes.rows[0]?.id ?? null;
-    }
-
-    const projectCode = await nextProjectCode(client);
-    const { rows: pRows } = await client.query(
-      `INSERT INTO projects
-         (project_code, project_name, customer_name, start_date, status, budget_amount,
-          description, created_by, company_id, opportunity_id)
-       VALUES ($1,$2,$3,CURRENT_DATE,'planning',$4,$5,$6,$7,$8) RETURNING *`,
-      [projectCode, opp.opportunity_name, opp.customer_name || null, opp.expected_value || 0,
-       `Converted from opportunity ${opp.opportunity_number || opp.id}`,
-       createdByEmployeeId, cid_val, opp.id]
-    );
-    const project = pRows[0];
-
-    const lifecycleNumber = await nextLifecycleNumber(client);
-    await client.query(
-      `INSERT INTO lifecycle_instances
-        (lifecycle_number, project_id, customer_id, current_stage, status, stage_notes, created_by, created_by_name, company_id)
-       VALUES ($1,$2,$3,'order','active',$4,$5,$6,$7)`,
-      [lifecycleNumber, project.id, opp.account_id || null,
-       `Created from opportunity: ${opp.opportunity_name}`, userId, req.user?.name || null, cid_val]
-    ).catch(() => {}); // best-effort — Operations tracking is secondary to the project record itself
-
     await client.query('COMMIT');
 
-    logAudit({ userId, module: 'CRM', recordId: opp.id, recordType: 'opportunity', action: 'convert_to_project', newData: { project_id: project.id, project_code: project.project_code }, req });
-    res.status(201).json({ project });
+    if (result.already_existed) {
+      return res.status(200).json(result);
+    }
+    logAudit({ userId, module: 'CRM', recordId: req.params.id, recordType: 'opportunity', action: 'convert_to_project', newData: { project_id: result.project.id, project_code: result.project.project_code }, req });
+    res.status(201).json({ project: result.project });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
