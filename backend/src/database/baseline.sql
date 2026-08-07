@@ -1809,6 +1809,42 @@ ALTER SEQUENCE public.bank_transactions_id_seq OWNED BY public.bank_transactions
 
 
 --
+-- Name: bill_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bill_items (
+    id integer NOT NULL,
+    bill_id integer NOT NULL,
+    description text NOT NULL,
+    quantity numeric(10,2) DEFAULT 1 NOT NULL,
+    unit_price numeric(15,2) NOT NULL,
+    tax_rate numeric(5,2) DEFAULT 0,
+    amount numeric(15,2) NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: bill_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.bill_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: bill_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.bill_items_id_seq OWNED BY public.bill_items.id;
+
+
+--
 -- Name: bills; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1848,7 +1884,9 @@ CREATE TABLE public.bills (
     tds_section character varying(20),
     tds_rate numeric(5,2) DEFAULT 0,
     tds_amount numeric(15,2) DEFAULT 0,
-    net_payable numeric(15,2)
+    net_payable numeric(15,2),
+    currency character varying(3) DEFAULT 'INR'::character varying NOT NULL,
+    exchange_rate numeric(15,6) DEFAULT 1 NOT NULL
 );
 
 
@@ -4388,7 +4426,28 @@ CREATE TABLE public.crm_settings (
     duplicate_detection_leads boolean DEFAULT true,
     duplicate_detection_contacts boolean DEFAULT true,
     duplicate_detection_accounts boolean DEFAULT true,
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    deal_scoring_enabled boolean DEFAULT true,
+    lead_lifetime_days integer DEFAULT 90,
+    auto_assign_owner boolean DEFAULT false,
+    duplicate_detection boolean DEFAULT true,
+    activity_reminders boolean DEFAULT true,
+    lead_sources text[] DEFAULT ARRAY['Website'::text, 'Referral'::text, 'LinkedIn'::text, 'Cold Call'::text, 'Exhibition'::text, 'Direct'::text],
+    lead_statuses text[] DEFAULT ARRAY['New'::text, 'Contacted'::text, 'Qualified'::text, 'Unqualified'::text, 'Converted'::text],
+    default_lead_score integer DEFAULT 0,
+    auto_score_on_create boolean DEFAULT true,
+    fiscal_year_start integer DEFAULT 4,
+    show_lost_reasons boolean DEFAULT true,
+    show_win_reasons boolean DEFAULT true,
+    required_fields_to_close text[] DEFAULT ARRAY['value'::text, 'expected_close_date'::text],
+    email_tracking_enabled boolean DEFAULT false,
+    email_click_tracking boolean DEFAULT false,
+    bcc_crm_email character varying(255) DEFAULT ''::character varying,
+    lead_assignment_method character varying(20) DEFAULT 'manual'::character varying,
+    stale_lead_alert_days integer DEFAULT 7,
+    auto_close_lost_after_days integer DEFAULT 0,
+    default_report_period character varying(20) DEFAULT 'this_month'::character varying,
+    include_lost_in_pipeline boolean DEFAULT false
 );
 
 
@@ -9691,7 +9750,9 @@ CREATE TABLE public.invoices (
     party_id integer,
     company_id integer,
     attachment_url text,
-    tally_synced boolean DEFAULT false
+    tally_synced boolean DEFAULT false,
+    currency character varying(3) DEFAULT 'INR'::character varying NOT NULL,
+    exchange_rate numeric(15,6) DEFAULT 1 NOT NULL
 );
 
 
@@ -10039,7 +10100,8 @@ CREATE TABLE public.journal_entries (
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     deleted_at timestamp without time zone,
     company_id integer,
-    status character varying(20) DEFAULT 'draft'::character varying
+    status character varying(20) DEFAULT 'draft'::character varying,
+    reversal_of_id uuid
 );
 
 
@@ -11190,7 +11252,7 @@ ALTER SEQUENCE public.maintenance_schedules_id_seq OWNED BY public.maintenance_s
 
 CREATE TABLE public.marketing_campaigns (
     id integer NOT NULL,
-    campaign_name character varying(300) NOT NULL,
+    campaign_name character varying(300),
     description text,
     campaign_type character varying(50),
     status character varying(20) DEFAULT 'draft'::character varying,
@@ -12729,6 +12791,39 @@ CREATE SEQUENCE public.password_reset_otps_id_seq
 --
 
 ALTER SEQUENCE public.password_reset_otps_id_seq OWNED BY public.password_reset_otps.id;
+
+
+--
+-- Name: payment_allocations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.payment_allocations (
+    id integer NOT NULL,
+    payment_id integer NOT NULL,
+    bill_id integer,
+    allocated_amount numeric(15,2) NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: payment_allocations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.payment_allocations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: payment_allocations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.payment_allocations_id_seq OWNED BY public.payment_allocations.id;
 
 
 --
@@ -16171,6 +16266,39 @@ CREATE SEQUENCE public.rd_patents_id_seq
 --
 
 ALTER SEQUENCE public.rd_patents_id_seq OWNED BY public.rd_patents.id;
+
+
+--
+-- Name: receipt_allocations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.receipt_allocations (
+    id integer NOT NULL,
+    receipt_id integer NOT NULL,
+    invoice_id integer NOT NULL,
+    allocated_amount numeric(15,2) NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: receipt_allocations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.receipt_allocations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: receipt_allocations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.receipt_allocations_id_seq OWNED BY public.receipt_allocations.id;
 
 
 --
@@ -23672,6 +23800,13 @@ ALTER TABLE ONLY public.bank_transactions ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: bill_items id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bill_items ALTER COLUMN id SET DEFAULT nextval('public.bill_items_id_seq'::regclass);
+
+
+--
 -- Name: bills id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -25359,6 +25494,13 @@ ALTER TABLE ONLY public.password_reset_otps ALTER COLUMN id SET DEFAULT nextval(
 
 
 --
+-- Name: payment_allocations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.payment_allocations ALTER COLUMN id SET DEFAULT nextval('public.payment_allocations_id_seq'::regclass);
+
+
+--
 -- Name: payment_batch_items id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -25888,6 +26030,13 @@ ALTER TABLE ONLY public.rd_artifacts ALTER COLUMN id SET DEFAULT nextval('public
 --
 
 ALTER TABLE ONLY public.rd_patents ALTER COLUMN id SET DEFAULT nextval('public.rd_patents_id_seq'::regclass);
+
+
+--
+-- Name: receipt_allocations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receipt_allocations ALTER COLUMN id SET DEFAULT nextval('public.receipt_allocations_id_seq'::regclass);
 
 
 --
@@ -27400,6 +27549,14 @@ ALTER TABLE ONLY public.bank_statement_lines
 
 ALTER TABLE ONLY public.bank_transactions
     ADD CONSTRAINT bank_transactions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: bill_items bill_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bill_items
+    ADD CONSTRAINT bill_items_pkey PRIMARY KEY (id);
 
 
 --
@@ -30187,6 +30344,14 @@ ALTER TABLE ONLY public.password_reset_otps
 
 
 --
+-- Name: payment_allocations payment_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.payment_allocations
+    ADD CONSTRAINT payment_allocations_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: payment_batch_items payment_batch_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -30984,6 +31149,14 @@ ALTER TABLE ONLY public.rd_artifacts
 
 ALTER TABLE ONLY public.rd_patents
     ADD CONSTRAINT rd_patents_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: receipt_allocations receipt_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receipt_allocations
+    ADD CONSTRAINT receipt_allocations_pkey PRIMARY KEY (id);
 
 
 --
@@ -33219,6 +33392,13 @@ CREATE INDEX idx_bank_txns_reconciled ON public.bank_transactions USING btree (b
 
 
 --
+-- Name: idx_bill_items_bill; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_bill_items_bill ON public.bill_items USING btree (bill_id);
+
+
+--
 -- Name: idx_bills_bill_date; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -35403,6 +35583,13 @@ CREATE INDEX idx_job_req_company ON public.job_requisitions USING btree (company
 
 
 --
+-- Name: idx_journal_entries_reversal_of_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_journal_entries_reversal_of_id ON public.journal_entries USING btree (reversal_of_id);
+
+
+--
 -- Name: idx_journal_lines_account_id_entry; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -36236,6 +36423,20 @@ CREATE INDEX idx_parties_party_type ON public.parties USING btree (party_type);
 
 
 --
+-- Name: idx_payment_alloc_bill; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_payment_alloc_bill ON public.payment_allocations USING btree (bill_id);
+
+
+--
+-- Name: idx_payment_alloc_payment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_payment_alloc_payment ON public.payment_allocations USING btree (payment_id);
+
+
+--
 -- Name: idx_payment_batches_company_date; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -37059,6 +37260,20 @@ CREATE INDEX idx_rd_artifacts_family ON public.rd_artifacts USING btree (company
 --
 
 CREATE INDEX idx_rd_patents_status ON public.rd_patents USING btree (company_id, status);
+
+
+--
+-- Name: idx_receipt_alloc_invoice; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_receipt_alloc_invoice ON public.receipt_allocations USING btree (invoice_id);
+
+
+--
+-- Name: idx_receipt_alloc_receipt; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_receipt_alloc_receipt ON public.receipt_allocations USING btree (receipt_id);
 
 
 --
@@ -39344,6 +39559,14 @@ ALTER TABLE ONLY public.bank_transactions
 
 
 --
+-- Name: bill_items bill_items_bill_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bill_items
+    ADD CONSTRAINT bill_items_bill_id_fkey FOREIGN KEY (bill_id) REFERENCES public.bills(id) ON DELETE CASCADE;
+
+
+--
 -- Name: bills bills_journal_entry_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -41528,6 +41751,14 @@ ALTER TABLE ONLY public.job_requisitions
 
 
 --
+-- Name: journal_entries journal_entries_reversal_of_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.journal_entries
+    ADD CONSTRAINT journal_entries_reversal_of_id_fkey FOREIGN KEY (reversal_of_id) REFERENCES public.journal_entries(id);
+
+
+--
 -- Name: journal_entry_lines journal_entry_lines_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -42493,6 +42724,22 @@ ALTER TABLE ONLY public.org_relationships
 
 ALTER TABLE ONLY public.password_reset_otps
     ADD CONSTRAINT password_reset_otps_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: payment_allocations payment_allocations_bill_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.payment_allocations
+    ADD CONSTRAINT payment_allocations_bill_id_fkey FOREIGN KEY (bill_id) REFERENCES public.bills(id);
+
+
+--
+-- Name: payment_allocations payment_allocations_payment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.payment_allocations
+    ADD CONSTRAINT payment_allocations_payment_id_fkey FOREIGN KEY (payment_id) REFERENCES public.payments(id) ON DELETE CASCADE;
 
 
 --
@@ -43717,6 +43964,22 @@ ALTER TABLE ONLY public.rd_patents
 
 ALTER TABLE ONLY public.rd_patents
     ADD CONSTRAINT rd_patents_product_line_id_fkey FOREIGN KEY (product_line_id) REFERENCES public.product_lines(id) ON DELETE SET NULL;
+
+
+--
+-- Name: receipt_allocations receipt_allocations_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receipt_allocations
+    ADD CONSTRAINT receipt_allocations_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id);
+
+
+--
+-- Name: receipt_allocations receipt_allocations_receipt_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receipt_allocations
+    ADD CONSTRAINT receipt_allocations_receipt_id_fkey FOREIGN KEY (receipt_id) REFERENCES public.receipts(id) ON DELETE CASCADE;
 
 
 --

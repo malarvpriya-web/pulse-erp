@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-30T02:41:58.607Z",
+  "generated_at": "2026-08-05T10:47:06.315Z",
   "source": "Pulse@localhost:5432",
   "migrations": [
     "20260330000000_core_schema.js",
@@ -277,6 +277,15 @@
     "20260729000003_discount_approval_gate.js",
     "20260730000001_credit_limits_customer_id_uuid.js",
     "20260730000002_inspection_reports_missing_columns.js",
-    "20260730000002_quotation_items_missing_columns.js"
+    "20260730000002_quotation_items_missing_columns.js",
+    "20260804000001_notification_rules_cron_events.js",
+    "20260804000002_payment_receipt_allocations.js",
+    "20260804000003_journal_entries_reversal_of_id.js",
+    "20260805000001_invoice_bill_currency.js",
+    "20260805000002_bill_items.js",
+    "20260805000003_notification_rules_workflow_submitted.js",
+    "20260805000004_notification_rules_marketing_campaign.js",
+    "20260805000005_marketing_campaigns_campaign_name_nullable.js",
+    "20260805000006_crm_settings_missing_columns.js"
   ]
 }
