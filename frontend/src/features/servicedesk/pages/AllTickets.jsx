@@ -39,7 +39,23 @@ export default function AllTickets() {
   const [comment,    setComment]    = useState('');
   const [toast,      setToast]      = useState(null);
   const [pendingHandleDelete, setPendingHandleDelete] = useState(null);
+  const [aiSummary,  setAiSummary]  = useState(null);
+  const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
   const fileRef = useRef(null);
+
+  // AI handoff summary (Automation Opportunity Audit §27.2) — own lightweight
+  // fetch, independent of the main ticket-detail load, so a slow/unconfigured
+  // AI backend never blocks opening the drawer.
+  useEffect(() => {
+    if (!detail?.id) { setAiSummary(null); return; }
+    let cancelled = false;
+    setAiSummaryLoading(true);
+    api.get(`/ai/predict/ticket-summary/${detail.id}`)
+      .then(res => { if (!cancelled) setAiSummary(res.data?.data || null); })
+      .catch(() => { if (!cancelled) setAiSummary(null); })
+      .finally(() => { if (!cancelled) setAiSummaryLoading(false); });
+    return () => { cancelled = true; };
+  }, [detail?.id]);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -433,6 +449,23 @@ export default function AllTickets() {
               {detail.description && (
                 <div className="at-detail-desc">{detail.description}</div>
               )}
+
+              {/* AI Handoff Summary */}
+              <div style={{ margin: '12px 0', padding: '10px 12px', borderRadius: 8, background: '#f5f3ff', border: '1px solid #ddd6fe' }}>
+                <h4 style={{ margin: '0 0 6px', fontSize: 12, color: '#5b21b6', fontWeight: 700 }}>
+                  <MessageSquare size={13} style={{ marginRight: 5, verticalAlign: 'middle' }} />
+                  AI Handoff Summary
+                </h4>
+                {aiSummaryLoading ? (
+                  <div style={{ fontSize: 12, color: '#7c7c8a' }}>Summarizing…</div>
+                ) : aiSummary ? (
+                  aiSummary.summary.split('\n').filter(Boolean).map((line, i) => (
+                    <div key={i} style={{ fontSize: 12, color: '#374151', marginBottom: 3, lineHeight: 1.5 }}>{line}</div>
+                  ))
+                ) : (
+                  <div style={{ fontSize: 12, color: '#7c7c8a' }}>No summary available.</div>
+                )}
+              </div>
 
               {/* Attachments */}
               <div className="at-attachments">

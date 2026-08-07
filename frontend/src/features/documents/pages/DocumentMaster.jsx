@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { fmtDate } from '@/utils/dateFormatter';
 
 const P = '#6366f1';
 const BORDER = '#e5e7eb';
@@ -57,6 +58,40 @@ function ApprovalBadge({ status }) {
   );
 }
 
+function ExpiryCell({ doc, onChange }) {
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <input type="date" autoFocus defaultValue={doc.expiry_date ? doc.expiry_date.slice(0, 10) : ''}
+        onBlur={e => { setEditing(false); onChange(e.target.value || null); }}
+        onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditing(false); }}
+        style={{ padding: '3px 6px', border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 11, width: 130 }} />
+    );
+  }
+  if (!doc.expiry_date) {
+    return (
+      <button onClick={() => setEditing(true)}
+        style={{ padding: '2px 8px', background: '#f3f4f6', color: '#9ca3af', border: 'none', borderRadius: 20, fontSize: 11, cursor: 'pointer' }}>
+        + Set expiry
+      </button>
+    );
+  }
+  const [ey, em, ed] = doc.expiry_date.slice(0, 10).split('-').map(Number);
+  const expiryLocal = new Date(ey, em - 1, ed);
+  const todayLocal = new Date(new Date().toDateString());
+  const daysLeft = Math.round((expiryLocal - todayLocal) / 86400000);
+  const overdue = daysLeft < 0;
+  const soon = !overdue && daysLeft <= 30;
+  const color = overdue ? '#dc2626' : soon ? '#d97706' : '#6b7280';
+  const bg    = overdue ? '#fee2e2' : soon ? '#fef3c7' : '#f3f4f6';
+  return (
+    <span onClick={() => setEditing(true)} title="Click to change"
+      style={{ padding: '2px 8px', background: bg, color, borderRadius: 20, fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+      {fmtDate(doc.expiry_date)}{overdue ? ' (expired)' : soon ? ` (${daysLeft}d)` : ''}
+    </span>
+  );
+}
+
 function formatBytes(bytes) {
   if (!bytes) return '—';
   if (bytes < 1024) return `${bytes} B`;
@@ -75,6 +110,7 @@ function UploadModal({ onClose, onUploaded }) {
     revision_label: '',
     is_confidential: false,
     access_level: 'internal',
+    expiry_date: '',
   });
   const [uploading, setUploading] = useState(false);
   const [err, setErr]             = useState(null);
@@ -163,11 +199,19 @@ function UploadModal({ onClose, onUploaded }) {
           </div>
         </div>
 
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Revision Label</label>
-          <input value={form.revision_label} onChange={e => set('revision_label', e.target.value)}
-            placeholder="e.g. Rev B (auto-generated if blank)"
-            style={{ width: '100%', padding: '8px 12px', border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 13, boxSizing: 'border-box' }} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Revision Label</label>
+            <input value={form.revision_label} onChange={e => set('revision_label', e.target.value)}
+              placeholder="e.g. Rev B (auto-generated if blank)"
+              style={{ width: '100%', padding: '8px 12px', border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 13, boxSizing: 'border-box' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Expiry Date</label>
+            <input type="date" value={form.expiry_date} onChange={e => set('expiry_date', e.target.value)}
+              title="Only for time-bound documents (certs, licenses, contracts) — leave blank otherwise"
+              style={{ width: '100%', padding: '8px 12px', border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 13, color: '#374151', boxSizing: 'border-box' }} />
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 16, marginBottom: 18 }}>
@@ -202,6 +246,7 @@ function UploadModal({ onClose, onUploaded }) {
    MAIN PAGE
    ══════════════════════════════════════════════════════════════════════════ */
 export default function DocumentMaster() {
+  const toast = useToast();
   const [docs, setDocs]           = useState([]);
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState(null);
@@ -245,6 +290,15 @@ export default function DocumentMaster() {
   const reject = async (id) => {
     try { await api.post(`/document-master/${id}/reject`); load(); }
     catch (e) { toast.error(e?.response?.data?.error || 'Failed'); }
+  };
+
+  const updateExpiry = async (id, expiry_date) => {
+    try {
+      const r = await api.patch(`/document-master/${id}/expiry`, { expiry_date });
+      setDocs(prev => prev.map(d => d.id === id ? r.data.data : d));
+    } catch (e) {
+      toast.error(e?.response?.data?.error || 'Failed to update expiry date');
+    }
   };
 
   const toggleExpand = (id) => setExpanded(prev => {
@@ -361,7 +415,7 @@ export default function DocumentMaster() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: '#f9fafb', borderBottom: `1px solid ${BORDER}` }}>
-                {['File', 'Module / Entity', 'Rev', 'Size', 'Approval', 'Drive', 'Uploaded', 'Actions'].map(h => (
+                {['File', 'Module / Entity', 'Rev', 'Size', 'Approval', 'Expiry', 'Drive', 'Uploaded', 'Actions'].map(h => (
                   <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -388,6 +442,9 @@ export default function DocumentMaster() {
                     </td>
                     <td style={{ padding: '11px 14px', color: '#9ca3af', fontSize: 12 }}>{formatBytes(doc.file_size_bytes)}</td>
                     <td style={{ padding: '11px 14px' }}><ApprovalBadge status={doc.approval_status} /></td>
+                    <td style={{ padding: '11px 14px' }}>
+                      <ExpiryCell doc={doc} onChange={val => updateExpiry(doc.id, val)} />
+                    </td>
                     <td style={{ padding: '11px 14px' }}>
                       {doc.drive_file_id
                         ? <span style={{ color: '#16a34a', fontSize: 11, fontWeight: 600 }}>✓ Drive</span>
@@ -430,7 +487,7 @@ export default function DocumentMaster() {
                   </tr>,
                   isExpanded && (
                     <tr key={`${doc.id}-detail`} style={{ background: '#fafafa', borderBottom: '1px solid #f3f4f6' }}>
-                      <td colSpan={8} style={{ padding: '12px 20px' }}>
+                      <td colSpan={9} style={{ padding: '12px 20px' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 10, fontSize: 12, color: '#374151' }}>
                           {doc.checksum_sha256 && <div><span style={{ color: '#9ca3af' }}>SHA-256: </span><code style={{ fontSize: 10 }}>{doc.checksum_sha256.slice(0, 20)}…</code></div>}
                           {doc.drive_file_id   && <div><span style={{ color: '#9ca3af' }}>Drive ID: </span>{doc.drive_file_id}</div>}

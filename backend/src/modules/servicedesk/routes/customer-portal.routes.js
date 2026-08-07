@@ -11,6 +11,7 @@ import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { nextTicketNumber } from '../../../shared/docNumber.js';
+import { sendNotificationEmail } from '../../../utils/mailer.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -466,11 +467,37 @@ router.get('/tickets', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Automation Opportunity Audit §21.1 — staff could update a portal ticket's
+// status with no notification going out; the customer only found out by
+// polling GET /portal/tickets. The reverse direction (21.2, portal ticket ->
+// internal ticket) was already automatic. Best-effort, never throws into the
+// caller — same contract as every other mailer.js fire-and-forget call.
+async function notifyCustomerOfStatusChange(ticket) {
+  const { rows } = await pool.query(
+    `SELECT email, customer_name FROM customer_portal_users WHERE id = $1`,
+    [ticket.customer_portal_user_id]
+  );
+  const customer = rows[0];
+  if (!customer?.email) return;
+  await sendNotificationEmail(customer.email, {
+    title: `Ticket ${ticket.ticket_number} — Status Updated to ${ticket.status}`,
+    message: `Your support ticket ${ticket.ticket_number} ("${ticket.subject}") status has been updated to "${ticket.status}".${ticket.resolution_notes ? `\n\nNotes: ${ticket.resolution_notes}` : ''}\n\nLog in to the customer portal for full details.`,
+  });
+}
+
 // PUT /customer-portal/tickets/:id — update status/assignment
 router.put('/tickets/:id', verifyToken, async (req, res) => {
   try {
     const { status, assigned_engineer_id, assigned_engineer_name, resolution_notes } = req.body;
     const resolved_at = status === 'closed' ? new Date().toISOString() : null;
+
+    const before = await pool.query(
+      `SELECT status FROM customer_portal_tickets WHERE id = $1 AND company_id = $2`,
+      [req.params.id, cid(req)]
+    );
+    if (!before.rows.length) return res.status(404).json({ error: 'Ticket not found' });
+    const prevStatus = before.rows[0].status;
+
     const { rows } = await pool.query(
       `UPDATE customer_portal_tickets
           SET status = COALESCE($1, status),
@@ -484,6 +511,12 @@ router.put('/tickets/:id', verifyToken, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
     res.json(rows[0]);
+
+    if (status && status !== prevStatus) {
+      notifyCustomerOfStatusChange(rows[0]).catch((err) =>
+        console.error(`[customer-portal.routes] status-change email failed for ticket ${rows[0].id}:`, err.message)
+      );
+    }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -533,3 +566,4 @@ router.get('/dashboard', verifyToken, async (req, res) => {
 });
 
 export default router;
+export { notifyCustomerOfStatusChange };

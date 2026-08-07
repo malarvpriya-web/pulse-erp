@@ -70,6 +70,7 @@ router.post('/upload', upload.single('file'), safe(async (req, res) => {
     is_confidential = false,
     access_level = 'internal',
     company_id,
+    expiry_date,
   } = req.body;
 
   const cid = company_id ?? req.scope?.company_id ?? null;
@@ -118,8 +119,8 @@ router.post('/upload', upload.single('file'), safe(async (req, res) => {
         revision, revision_label, supersedes_id,
         checksum_sha256, approval_status, signed_status,
         is_confidential, access_level,
-        uploaded_by, uploaded_by_name, company_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft','unsigned',$15,$16,$17,$18,$19)
+        uploaded_by, uploaded_by_name, company_id, expiry_date)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft','unsigned',$15,$16,$17,$18,$19,$20)
      RETURNING *`,
     [
       driveResult?.file_name    || req.file.originalname,
@@ -141,6 +142,7 @@ router.post('/upload', upload.single('file'), safe(async (req, res) => {
       userId(req),
       userName(req),
       cid,
+      expiry_date || null,
     ]
   );
 
@@ -230,6 +232,22 @@ router.post('/:id/reject', safe(async (req, res) => {
      SET approval_status='rejected', updated_at=NOW()
      WHERE id=$1 AND deleted_at IS NULL RETURNING *`,
     [req.params.id]
+  );
+  if (!rows[0]) return res.status(404).json({ success: false, error: 'Not found' });
+  res.json({ success: true, data: rows[0] });
+}));
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SET/UPDATE EXPIRY — powers documentExpiry.cron.js (§25.1); most rows
+   never set this, only genuinely time-bound documents (certs, licenses,
+   contracts stored as plain document_master rows).
+   ══════════════════════════════════════════════════════════════════════════ */
+router.patch('/:id/expiry', safe(async (req, res) => {
+  const { expiry_date } = req.body;
+  const { rows } = await pool.query(
+    `UPDATE document_master SET expiry_date=$2, updated_at=NOW()
+     WHERE id=$1 AND deleted_at IS NULL RETURNING *`,
+    [req.params.id, expiry_date || null]
   );
   if (!rows[0]) return res.status(404).json({ success: false, error: 'Not found' });
   res.json({ success: true, data: rows[0] });
