@@ -6,7 +6,7 @@ import {
 import {
   Brain, Cpu, Zap, Search, ArrowRight, TrendingUp, TrendingDown,
   IndianRupee, Lightbulb, Download, AlertTriangle, History,
-  Users, Package, Calendar, ChevronRight, BarChart2,
+  Users, Package, Calendar, ChevronRight, BarChart2, Truck,
   Send, Bot, User, Loader, Sparkles, RotateCcw, ThumbsUp, ThumbsDown, MessageSquare,
 } from 'lucide-react';
 import { aiIntelligenceService } from '../services/aiIntelligenceService';
@@ -55,6 +55,8 @@ const PrescriptiveIcon = ({ iconKey }) => {
     package: <Package size={20} />,
     trending: <TrendingUp size={20} />,
     calendar: <Calendar size={20} />,
+    alert: <AlertTriangle size={20} />,
+    truck: <Truck size={20} />,
   };
   return map[iconKey] || <Lightbulb size={20} />;
 };
@@ -94,6 +96,7 @@ const ERPIntelligence = ({ setPage }) => {
   const [inventory,     setInventory]    = useState([]);
   const [anomalies,     setAnomalies]    = useState([]);
   const [prescriptiveRecs, setPrescriptiveRecs] = useState([]);
+  const [leadPriority,  setLeadPriority]  = useState([]);
 
   const [queryHistory, setQueryHistory] = useState([]);
   const inputRef = useRef(null);
@@ -172,18 +175,20 @@ const ERPIntelligence = ({ setPage }) => {
 
   useEffect(() => {
     (async () => {
-      const [atr, sal, inv, ano, presc] = await Promise.allSettled([
+      const [atr, sal, inv, ano, presc, lead] = await Promise.allSettled([
         aiIntelligenceService.getAttritionPrediction(),
         aiIntelligenceService.getSalesForecast(30),
         aiIntelligenceService.getInventoryDemand(),
         aiIntelligenceService.getAnomalies(),
         aiIntelligenceService.getPrescriptiveRecommendations?.(),
+        aiIntelligenceService.getLeadPriority?.(),
       ]);
       setAttrition(atr.status === 'fulfilled' && atr.value?.data?.length ? atr.value.data : []);
       setSalesForecast(sal.status === 'fulfilled' && sal.value?.data?.length ? sal.value.data : []);
       setInventory(inv.status === 'fulfilled' && inv.value?.data?.length ? inv.value.data : []);
       setAnomalies(ano.status === 'fulfilled' && ano.value?.data?.length ? ano.value.data : []);
       setPrescriptiveRecs(presc?.status === 'fulfilled' && presc.value?.data?.length ? presc.value.data : []);
+      setLeadPriority(lead?.status === 'fulfilled' && lead.value?.data?.length ? lead.value.data : []);
     })();
   }, []);
 
@@ -463,6 +468,30 @@ const ERPIntelligence = ({ setPage }) => {
                     <Bar dataKey="current_stock" fill="#6B3FDB" radius={[0, 4, 4, 0]} name="Current Stock" />
                   </BarChart>
                 </ResponsiveContainer>
+              )}
+            </div>
+
+            <div className="chart-panel glassmorphism">
+              <h3>Lead Priority Queue</h3>
+              {leadPriority.length === 0 ? (
+                <div style={{ height: 160 }}><ChartEmptyState setPage={setPage} /></div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {leadPriority.slice(0, 8).map((lead) => (
+                    <div
+                      key={lead.opportunity_id}
+                      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255,255,255,0.04)' }}
+                    >
+                      <span className={`prec-badge prio-badge-${lead.priority_band}`}>{lead.priority_band}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <strong style={{ display: 'block', fontSize: 14 }}>{lead.opportunity_name}</strong>
+                        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>
+                          {lead.stage} · ₹{(lead.expected_value / 100000).toFixed(1)}L · {lead.top_driver}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>

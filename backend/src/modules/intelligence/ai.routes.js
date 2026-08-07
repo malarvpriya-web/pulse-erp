@@ -2,6 +2,10 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { narrateKpis } from './kpiNarrator.js';
+import { detectAnomalies } from './anomalyDetector.js';
+import { getSalesDashboard, getServiceDashboard } from '../crm/customerHealth.service.js';
+import { scoreProjectHealth, narrateProjectHealth } from './projectHealthNarrator.js';
+import { narrateTicketThread } from './ticketThreadNarrator.js';
 
 const router = express.Router();
 
@@ -125,11 +129,6 @@ router.post('/feedback', (req, res) => {
 });
 
 /* ─── helpers ──────────────────────────────────────────────────── */
-const mean = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-const stdDev = (arr) => {
-  const m = mean(arr);
-  return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length || 1));
-};
 const linReg = (points) => {
   const n = points.length;
   if (n < 2) return { slope: 0, intercept: points[0]?.[1] || 0 };
@@ -292,107 +291,11 @@ router.post('/chat', async (req, res) => {
 });
 
 /* ─── GET /api/ai/anomalies ─────────────────────────────────────── */
+// Detection logic lives in anomalyDetector.js so anomalyDetection.cron.js
+// can reuse it and push flagged anomalies to the relevant role daily,
+// instead of only surfacing them when someone opens this endpoint.
 router.get('/anomalies', async (req, res) => {
-  const anomalies = [];
-
-  // 1. Invoice outliers (>2.5σ from 90-day mean)
-  try {
-    const { rows } = await pool.query(`SELECT id,invoice_number,client_name,total_amount FROM invoices WHERE invoice_date >= NOW()-INTERVAL '90 days'`);
-    if (rows.length >= 5) {
-      const amounts = rows.map(r => parseFloat(r.total_amount));
-      const m = mean(amounts), sd = stdDev(amounts);
-      rows.forEach(r => {
-        const amt = parseFloat(r.total_amount);
-        if (Math.abs(amt - m) > 2.5 * sd) {
-          anomalies.push({ type:'Invoice Amount Outlier', severity: amt > m ? 'high' : 'medium',
-            description:`Invoice ${r.invoice_number} ₹${(amt/100000).toFixed(2)}L is ${((Math.abs(amt-m)/sd)).toFixed(1)}σ from mean (₹${(m/100000).toFixed(2)}L)`,
-            affected_id:r.id, affected_name:r.client_name, variance_amount:Math.round(Math.abs(amt-m)), detected_at:new Date().toISOString() });
-        }
-      });
-    }
-  } catch (_) {}
-
-  // 2. Low attendance (<75% this month)
-  try {
-    const { rows } = await pool.query(`
-      SELECT e.id,e.name,e.department,
-             COUNT(a.id) FILTER (WHERE a.status='present') AS pdays, COUNT(a.id) AS tdays
-      FROM employees e LEFT JOIN attendance a ON a.employee_id=e.id
-        AND DATE_TRUNC('month',a.date)=DATE_TRUNC('month',CURRENT_DATE)
-      WHERE e.status='active' GROUP BY e.id,e.name,e.department
-      HAVING COUNT(a.id)>0 AND COUNT(a.id) FILTER(WHERE a.status='present')::float/COUNT(a.id)<0.75
-    `);
-    rows.forEach(r => {
-      const pct = Math.round(parseInt(r.pdays)/parseInt(r.tdays)*100);
-      anomalies.push({ type:'Low Attendance', severity: pct<60?'high':'medium',
-        description:`${r.name} (${r.department}) attendance ${pct}% this month (${r.pdays}/${r.tdays} days)`,
-        affected_id:r.id, affected_name:r.name, variance_amount:0, detected_at:new Date().toISOString() });
-    });
-  } catch (_) {}
-
-  // 3. PO price >20% above 3-month avg
-  try {
-    const { rows } = await pool.query(`
-      SELECT pi.id,pi.item_name,pi.unit_price,pi.purchase_order_id,
-             AVG(pi2.unit_price) OVER (PARTITION BY pi.item_name) AS avg_price
-      FROM po_items pi JOIN po_items pi2 ON pi2.item_name=pi.item_name
-      JOIN purchase_orders po ON po.id=pi.purchase_order_id
-      WHERE po.created_at>=NOW()-INTERVAL '90 days'
-    `).catch(()=>({rows:[]}));
-    const seen = new Set();
-    rows.forEach(r => {
-      const v = (parseFloat(r.unit_price)-parseFloat(r.avg_price))/parseFloat(r.avg_price);
-      if (v>0.2 && !seen.has(r.item_name)) {
-        seen.add(r.item_name);
-        anomalies.push({ type:'PO Price Variance', severity:v>0.4?'high':'medium',
-          description:`${r.item_name} bought at ₹${parseFloat(r.unit_price).toFixed(2)} — ${Math.round(v*100)}% above avg (₹${parseFloat(r.avg_price).toFixed(2)})`,
-          affected_id:r.purchase_order_id, affected_name:r.item_name,
-          variance_amount:Math.round((parseFloat(r.unit_price)-parseFloat(r.avg_price))*100), detected_at:new Date().toISOString() });
-      }
-    });
-  } catch (_) {}
-
-  // 4. Payroll TDS mismatch (>10%)
-  try {
-    const { rows } = await pool.query(`
-      SELECT pr.id,e.name,pr.tds_deducted,pr.computed_tds FROM payroll_runs pr
-      JOIN employees e ON e.id=pr.employee_id
-      WHERE pr.computed_tds>0 AND ABS(pr.tds_deducted-pr.computed_tds)/pr.computed_tds>0.10
-      AND pr.month_year>=TO_CHAR(NOW()-INTERVAL '1 month','YYYY-MM')
-    `).catch(()=>({rows:[]}));
-    rows.forEach(r => {
-      const diff = Math.abs(parseFloat(r.tds_deducted)-parseFloat(r.computed_tds));
-      const pct  = Math.round(diff/parseFloat(r.computed_tds)*100);
-      anomalies.push({ type:'TDS Mismatch', severity:pct>25?'high':'low',
-        description:`${r.name} TDS recorded ₹${parseFloat(r.tds_deducted).toFixed(0)} vs computed ₹${parseFloat(r.computed_tds).toFixed(0)} (${pct}% diff)`,
-        affected_id:r.id, affected_name:r.name, variance_amount:Math.round(diff), detected_at:new Date().toISOString() });
-    });
-  } catch (_) {}
-
-  // 5. Recent PQ / production test failures (last 7 days)
-  try {
-    const { rows } = await pool.query(`
-      SELECT id, run_number, product_name, serial_number, test_stage, completed_at,
-        (SELECT COUNT(*)::INT FROM test_run_measurements
-         WHERE test_run_id = test_runs.id AND result = 'fail') AS fail_count
-      FROM test_runs
-      WHERE overall_result = 'fail'
-        AND completed_at >= NOW() - INTERVAL '7 days'
-      ORDER BY completed_at DESC LIMIT 10
-    `).catch(() => ({ rows: [] }));
-    rows.forEach(r => {
-      const fc = parseInt(r.fail_count || 0);
-      anomalies.push({
-        type: 'PQ Test Failure', severity: fc >= 3 ? 'high' : 'medium',
-        description: `${r.test_stage} run ${r.run_number} failed — ${r.product_name || 'Unknown'} S/N ${r.serial_number || 'N/A'} (${fc} measurement${fc !== 1 ? 's' : ''} out of spec)`,
-        affected_id: r.id, affected_name: r.product_name || 'Unknown Product',
-        variance_amount: fc,
-        detected_at: r.completed_at ? new Date(r.completed_at).toISOString() : new Date().toISOString(),
-      });
-    });
-  } catch (_) {}
-
-  anomalies.sort((a, b) => ({ high:0,medium:1,low:2 }[a.severity] - { high:0,medium:1,low:2 }[b.severity]));
+  const anomalies = await detectAnomalies();
   res.json({ success:true, data:anomalies, count:anomalies.length });
 });
 
@@ -611,21 +514,59 @@ router.get('/predict/sales', async (req, res) => {
 router.get('/predict/inventory', async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
-    // Surface items approaching reorder point with consumption trend
+    // Surface items approaching reorder point, weighted by actual consumption
+    // velocity from stock_ledger (quantity_out over the last 30 days) rather
+    // than a static current_stock-vs-reorder_level bucket. Mirrors the ROP
+    // formula the EOQ Planner uses (dailyDemand * leadTimeDays + safetyStock,
+    // see computeEoqMetrics in inventory.routes.js) so both endpoints agree
+    // on what "at risk" means. Items with no recent movement fall back to the
+    // old static threshold since there's no velocity to project from.
     const { rows } = await pool.query(`
-      SELECT
-        ii.id, ii.item_code, ii.item_name,
-        ii.current_stock, ii.reorder_level AS reorder_point, ii.unit_of_measure,
-        0 AS consumed_last_30d,
-        CASE
-          WHEN ii.current_stock <= COALESCE(ii.reorder_level,0) THEN 'critical'
-          WHEN ii.current_stock <= COALESCE(ii.reorder_level,0) * 1.5 THEN 'warning'
-          ELSE 'ok'
-        END AS risk_level
-      FROM inventory_items ii
-      WHERE ($1::int IS NULL OR ii.company_id = $1)
-        AND ii.current_stock <= COALESCE(ii.reorder_level, 0) * 2
-      ORDER BY risk_level, ii.current_stock ASC LIMIT 20
+      WITH consumption AS (
+        SELECT item_id, SUM(quantity_out) AS consumed_last_30d
+        FROM stock_ledger
+        WHERE transaction_date >= CURRENT_DATE - INTERVAL '30 days'
+        GROUP BY item_id
+      ), scored AS (
+        SELECT
+          ii.id, ii.item_code, ii.item_name,
+          ii.current_stock, ii.reorder_level AS reorder_point, ii.unit_of_measure,
+          COALESCE(c.consumed_last_30d, 0) AS consumed_last_30d,
+          ROUND(COALESCE(c.consumed_last_30d, 0) / 30.0, 2) AS avg_daily_consumption,
+          CASE WHEN COALESCE(c.consumed_last_30d, 0) > 0
+            THEN ROUND(ii.current_stock / (c.consumed_last_30d / 30.0), 1)
+            ELSE NULL END AS days_of_cover,
+          CASE
+            WHEN COALESCE(c.consumed_last_30d, 0) > 0 THEN
+              CASE
+                WHEN ii.current_stock <= (c.consumed_last_30d / 30.0) * COALESCE(ii.lead_time_days, 7) + COALESCE(ii.safety_stock, 0)
+                  THEN 'critical'
+                WHEN ii.current_stock <= (c.consumed_last_30d / 30.0) * COALESCE(ii.lead_time_days, 7) * 2 + COALESCE(ii.safety_stock, 0)
+                  THEN 'warning'
+                ELSE 'ok'
+              END
+            ELSE
+              CASE
+                WHEN ii.current_stock <= COALESCE(ii.reorder_level, 0) THEN 'critical'
+                WHEN ii.current_stock <= COALESCE(ii.reorder_level, 0) * 1.5 THEN 'warning'
+                ELSE 'ok'
+              END
+          END AS risk_level
+        FROM inventory_items ii
+        LEFT JOIN consumption c ON c.item_id = ii.id
+        WHERE ($1::int IS NULL OR ii.company_id = $1)
+          AND ii.deleted_at IS NULL
+          AND (
+            ii.current_stock <= COALESCE(ii.reorder_level, 0) * 2
+            OR (
+              COALESCE(c.consumed_last_30d, 0) > 0
+              AND ii.current_stock <= (c.consumed_last_30d / 30.0) * COALESCE(ii.lead_time_days, 7) * 2 + COALESCE(ii.safety_stock, 0)
+            )
+          )
+      )
+      SELECT * FROM scored
+      ORDER BY CASE risk_level WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, current_stock ASC
+      LIMIT 20
     `, [cid]);
     res.json({ success: true, data: rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -785,6 +726,263 @@ router.get('/predict/device-failure/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/* ─── Lead / opportunity prioritization (Automation Opportunity Audit §27.2) ────
+ * Same transparent driver-based scoring spirit as scoreDevice() above — no ML,
+ * every point traces to a live column: expected revenue (value × probability),
+ * pipeline stage, closing-date urgency, days since last touched, and whether a
+ * next step is even defined. CRM has pipeline data but no "work these first"
+ * ranking today; this is that ranking. */
+
+const STAGE_WEIGHT = { negotiation: 20, proposal: 15, qualification: 8, prospecting: 3 };
+
+function scoreOpportunity(o, now) {
+  const drivers = [];
+  const add = (points, factor) => { if (points > 0) drivers.push({ factor, points: Math.round(points) }); };
+
+  const expectedRevenue = (parseFloat(o.expected_value) || 0) * (parseInt(o.probability_percentage) || 0) / 100;
+  if (expectedRevenue > 500000) add(25, `₹${(expectedRevenue / 100000).toFixed(1)}L expected revenue`);
+  else if (expectedRevenue > 150000) add(15, `₹${(expectedRevenue / 100000).toFixed(1)}L expected revenue`);
+  else if (expectedRevenue > 0) add(8, `₹${(expectedRevenue / 100000).toFixed(1)}L expected revenue`);
+
+  const stageWeight = STAGE_WEIGHT[(o.stage || '').toLowerCase()] || 0;
+  if (stageWeight) add(stageWeight, `${o.stage} stage`);
+
+  if (o.expected_closing_date) {
+    const daysToClose = Math.floor((new Date(o.expected_closing_date) - now) / 86400000);
+    if (daysToClose < 0) add(Math.min(30, 15 + Math.min(-daysToClose, 60) / 4), `closing date passed ${-daysToClose}d ago`);
+    else if (daysToClose <= 14) add(20, `closing in ${daysToClose}d`);
+  }
+
+  const daysSinceUpdate = Math.floor((now - new Date(o.updated_at)) / 86400000);
+  const neverTouched = new Date(o.updated_at).getTime() === new Date(o.created_at).getTime();
+  if (neverTouched && daysSinceUpdate > 14) add(15, `no activity in ${daysSinceUpdate}d — never updated since creation`);
+  else if (daysSinceUpdate > 30) add(10, `no activity in ${daysSinceUpdate}d`);
+
+  if (!o.next_step) add(10, 'no next step defined');
+
+  const score = Math.min(100, drivers.reduce((s, x) => s + x.points, 0));
+  const band = score >= 60 ? 'high' : score >= 30 ? 'medium' : 'low';
+  drivers.sort((a, b) => b.points - a.points);
+
+  const top = drivers[0]?.factor || '';
+  const recommendation =
+    top.startsWith('closing date passed') ? 'Re-engage immediately — closing date has passed with no update'
+    : top.startsWith('no activity')       ? 'Log a follow-up — this deal has gone stale'
+    : top.startsWith('closing in')        ? 'Prioritize this week — closing date approaching'
+    : band === 'high'                     ? 'High-value deal — prioritize outreach'
+    : 'Monitor at next pipeline review';
+
+  return { score, band, drivers, recommendation };
+}
+
+/* ─── GET /api/ai/predict/lead-priority — ranked "work these first" queue ──────*/
+router.get('/predict/lead-priority', async (req, res) => {
+  try {
+    const cid = req.scope?.company_id ?? null;
+    const { rows } = await pool.query(`
+      SELECT id, opportunity_name, stage, expected_value, probability_percentage,
+             expected_closing_date, assigned_to, created_at, updated_at, next_step
+      FROM opportunities
+      WHERE deleted_at IS NULL
+        AND LOWER(stage) NOT IN ('closed_won', 'closed_lost')
+        AND ($1::int IS NULL OR company_id = $1)
+    `, [cid]);
+
+    const now = new Date();
+    const scored = rows
+      .map((o) => {
+        const r = scoreOpportunity(o, now);
+        return {
+          opportunity_id: o.id, opportunity_name: o.opportunity_name, stage: o.stage,
+          expected_value: parseFloat(o.expected_value) || 0,
+          probability_percentage: o.probability_percentage,
+          expected_closing_date: o.expected_closing_date, assigned_to: o.assigned_to,
+          priority_score: r.score, priority_band: r.band,
+          top_driver: r.drivers[0]?.factor || null, recommendation: r.recommendation,
+          drivers: r.drivers,
+        };
+      })
+      .sort((a, b) => b.priority_score - a.priority_score);
+
+    const summary = {
+      total: scored.length,
+      high: scored.filter((s) => s.priority_band === 'high').length,
+      medium: scored.filter((s) => s.priority_band === 'medium').length,
+    };
+    res.json({ success: true, summary, data: scored });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* ─── GET /api/ai/predict/project-health/:id — one-paragraph project health ────
+ * Automation Opportunity Audit §27.2. Deliberately self-contained off `projects`'
+ * own always-populated columns (see projectHealthNarrator.js header) rather than
+ * project_cost_summary (empty) or project360.routes.js's engine (3 of ~28 source
+ * queries reference tables that don't exist). Same driver-based risk score as
+ * scoreDevice()/scoreOpportunity() above, plus a GPT-optional/rule-based
+ * narrative on top, same discipline as ceo-insights. */
+router.get('/predict/project-health/:id', async (req, res) => {
+  try {
+    const cid = req.scope?.company_id ?? null;
+    const { rows } = await pool.query(
+      `SELECT id, project_name, status, budget_amount, budget, actual_cost,
+              progress_percentage, start_date, end_date
+       FROM projects
+       WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, cid]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'project not found' });
+    const project = rows[0];
+
+    const scoreResult = scoreProjectHealth(project);
+    const { reply, source } = await narrateProjectHealth(project, scoreResult);
+
+    res.json({ success: true, data: {
+      project_id: project.id, project_name: project.project_name,
+      risk_score: scoreResult.score, risk_band: scoreResult.band,
+      drivers: scoreResult.drivers, narrative: reply, narrative_source: source,
+    } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* ─── Quality defect-rate prediction (Automation Opportunity Audit §27.2) ──────
+ * "This batch's defect rate is trending toward the NCR threshold before it's
+ * inspected." Same transparent driver-based convention as scoreDevice() above:
+ * every point traces to a live quality_tests/production_orders signal — the
+ * fail rate of tests already recorded on an open batch, scrap rate so far, and
+ * how this item's fail rate compares to its own historical baseline across
+ * completed batches. No NCR-per-batch driver here — ncr_reports.reference_id
+ * is a loosely-typed polymorphic column with no reliable production_order
+ * linkage in this codebase (confirmed live: every existing row has it NULL),
+ * so a join on it would be an unverifiable assumption, not a real signal.
+ *
+ * Note: quality_tests is empty in this pilot's dev DB (module unused so far),
+ * so this correctly returns zero risk rows today — the query itself was
+ * verified separately against synthetic data (see manual writeup) since real
+ * data can't exercise it yet. */
+
+function scoreBatchDefectRisk(b) {
+  const drivers = [];
+  const add = (points, factor) => { if (points > 0) drivers.push({ factor, points: Math.round(points) }); };
+
+  const testsTotal = parseInt(b.tests_total) || 0;
+  const testsFailed = parseInt(b.tests_failed) || 0;
+  if (testsTotal > 0) {
+    const failRate = testsFailed / testsTotal;
+    if (failRate > 0.5) add(40, `${Math.round(failRate * 100)}% of tests so far have failed`);
+    else if (failRate > 0.25) add(25, `${Math.round(failRate * 100)}% of tests so far have failed`);
+    else if (failRate > 0.1) add(12, `${Math.round(failRate * 100)}% of tests so far have failed`);
+  }
+
+  const planned = parseFloat(b.quantity_planned) || 0;
+  const scrapped = parseFloat(b.quantity_scrapped) || 0;
+  if (planned > 0 && scrapped > 0) {
+    const scrapRate = scrapped / planned;
+    if (scrapRate > 0.2) add(20, `${Math.round(scrapRate * 100)}% scrap rate so far`);
+    else if (scrapRate > 0.05) add(10, `${Math.round(scrapRate * 100)}% scrap rate so far`);
+  }
+
+  const histTotal = parseInt(b.hist_tests_total) || 0;
+  const histFailed = parseInt(b.hist_tests_failed) || 0;
+  if (histTotal >= 3) {
+    const histFailRate = histFailed / histTotal;
+    if (histFailRate > 0.3) add(15, `${b.product_name} has a ${Math.round(histFailRate * 100)}% historical fail rate across past batches`);
+  }
+
+  const score = Math.min(100, drivers.reduce((s, x) => s + x.points, 0));
+  const band = score >= 50 ? 'high' : score >= 20 ? 'medium' : 'low';
+  drivers.sort((a, b2) => b2.points - a.points);
+  return { score, band, drivers };
+}
+
+/* ─── GET /api/ai/predict/quality-risk — open-batch defect risk ranking ────────*/
+router.get('/predict/quality-risk', async (req, res) => {
+  try {
+    const cid = req.scope?.company_id ?? null;
+    const { rows } = await pool.query(`
+      WITH open_batches AS (
+        SELECT po.id, po.production_order_no, po.product_name,
+               po.quantity_planned, po.quantity_scrapped,
+               COUNT(qt.id) FILTER (WHERE qt.result IN ('pass', 'fail')) AS tests_total,
+               COUNT(qt.id) FILTER (WHERE qt.result = 'fail')            AS tests_failed
+        FROM production_orders po
+        LEFT JOIN quality_tests qt ON qt.production_order_id = po.id
+        WHERE po.status NOT IN ('completed', 'cancelled')
+          AND ($1::int IS NULL OR po.company_id = $1)
+        GROUP BY po.id, po.production_order_no, po.product_name, po.quantity_planned, po.quantity_scrapped
+      ),
+      item_history AS (
+        SELECT po.product_name,
+               COUNT(qt.id) FILTER (WHERE qt.result IN ('pass', 'fail')) AS hist_tests_total,
+               COUNT(qt.id) FILTER (WHERE qt.result = 'fail')            AS hist_tests_failed
+        FROM quality_tests qt
+        JOIN production_orders po ON po.id = qt.production_order_id
+        WHERE po.status = 'completed'
+          AND ($1::int IS NULL OR po.company_id = $1)
+        GROUP BY po.product_name
+      )
+      SELECT ob.*, ih.hist_tests_total, ih.hist_tests_failed
+      FROM open_batches ob
+      LEFT JOIN item_history ih ON ih.product_name = ob.product_name
+    `, [cid]);
+
+    const scored = rows
+      .map((b) => {
+        const r = scoreBatchDefectRisk(b);
+        return {
+          production_order_id: b.id, production_order_no: b.production_order_no,
+          product_name: b.product_name, tests_total: parseInt(b.tests_total) || 0,
+          tests_failed: parseInt(b.tests_failed) || 0,
+          risk_score: r.score, risk_band: r.band,
+          top_driver: r.drivers[0]?.factor || null, drivers: r.drivers,
+        };
+      })
+      .filter((b) => b.risk_score > 0)
+      .sort((a, b) => b.risk_score - a.risk_score);
+
+    const summary = {
+      total_open_batches: rows.length,
+      flagged: scored.length,
+      high: scored.filter((s) => s.risk_band === 'high').length,
+      medium: scored.filter((s) => s.risk_band === 'medium').length,
+    };
+    res.json({ success: true, summary, data: scored });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* ─── GET /api/ai/predict/ticket-summary/:id — Service Desk handoff summary ────
+ * Automation Opportunity Audit §27.2. See ticketThreadNarrator.js header for
+ * why the rule-based fallback surfaces the real thread rather than attempting
+ * to compress it. */
+router.get('/predict/ticket-summary/:id', async (req, res) => {
+  try {
+    const cid = req.scope?.company_id ?? null;
+    const { rows: ticketRows } = await pool.query(
+      `SELECT id, ticket_number, title, description, priority, status,
+              sla_breached, created_at, resolved_at
+       FROM support_tickets
+       WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, cid]
+    );
+    if (!ticketRows.length) return res.status(404).json({ error: 'ticket not found' });
+    const ticket = ticketRows[0];
+
+    const { rows: comments } = await pool.query(
+      `SELECT id, author, body, is_internal, created_at
+       FROM ticket_comments
+       WHERE ticket_id = $1
+       ORDER BY created_at ASC`,
+      [ticket.id]
+    );
+
+    const { reply, source } = await narrateTicketThread(ticket, comments);
+
+    res.json({ success: true, data: {
+      ticket_id: ticket.id, ticket_number: ticket.ticket_number,
+      comment_count: comments.length, summary: reply, summary_source: source,
+    } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 /* ─── GET /api/ai/prescriptive ──────────────────────────────────────────────── */
 // Generates ranked, DB-grounded prescriptive recommendations.
 // Never invents data — each rec is derived from a live query result.
@@ -907,6 +1105,85 @@ router.get('/prescriptive', async (req, res) => {
         action: `Review ${cnt} open purchase order(s) for cash planning`,
         rationale: `₹${(amt / 100000).toFixed(2)}L in committed but unprocessed spend`,
         impact: 'Improve procurement visibility and cash flow forecasting',
+      });
+    }),
+
+    // 7. Sales — customer accounts flagged by health score (churn risk)
+    getSalesDashboard(cid).then((d) => {
+      const atRisk = d?.at_risk || [];
+      const needsAttention = d?.needs_attention || [];
+      const flagged = [...atRisk, ...needsAttention];
+      if (!flagged.length) return;
+      const names = flagged.slice(0, 5).map(c => c.customer_name).filter(Boolean).join(', ');
+      recs.push({
+        category: 'Sales', iconKey: 'users', priority: atRisk.length ? 'high' : 'medium',
+        action: `Review ${flagged.length} customer account(s) flagged by health score`,
+        rationale: `${atRisk.length} critical, ${needsAttention.length} watchlist — ${names}`,
+        impact: 'Prevent churn and protect renewal revenue',
+      });
+    }),
+
+    // 8. Service — customers with critical open escalations
+    getServiceDashboard(cid).then((d) => {
+      const esc = d?.open_escalations || [];
+      if (!esc.length) return;
+      const names = esc.slice(0, 5).map(c => c.customer_name).filter(Boolean).join(', ');
+      recs.push({
+        category: 'Service', iconKey: 'alert', priority: 'high',
+        action: `Resolve critical escalations for ${esc.length} customer(s)`,
+        rationale: `Open critical ticket(s) at: ${names}`,
+        impact: 'Prevent SLA breaches and customer churn',
+      });
+    }),
+
+    // 9. Procurement — vendors with a history of late delivery who currently
+    // have open PO(s), i.e. forward-looking delay risk rather than a PO
+    // that's already overdue (deliveryFollowup.cron.js already covers that).
+    // "Expected" delivery falls back to order_date + vendor.lead_time_days
+    // when a PO never got an explicit expected_delivery_date (common in this
+    // pilot's data) — the same lead-time field the EOQ Planner already uses,
+    // not a new assumption.
+    pool.query(`
+      WITH po_expected AS (
+        SELECT po.id, po.supplier_id, po.status,
+          COALESCE(po.expected_delivery_date, po.order_date + (v.lead_time_days || ' days')::interval) AS implied_expected_date
+        FROM purchase_orders po
+        JOIN vendors v ON v.id = po.supplier_id
+        WHERE po.deleted_at IS NULL AND ($1::int IS NULL OR po.company_id = $1)
+      ),
+      vendor_history AS (
+        SELECT pe.supplier_id AS vendor_id,
+          COUNT(*) AS delivered_pos,
+          COUNT(*) FILTER (WHERE grn.received_date::date > pe.implied_expected_date::date) AS late_pos
+        FROM po_expected pe
+        JOIN goods_receipt_notes grn ON grn.po_id = pe.id AND grn.deleted_at IS NULL
+        GROUP BY pe.supplier_id
+        HAVING COUNT(*) >= 2
+      ),
+      open_at_risk AS (
+        SELECT pe.supplier_id, COUNT(*) AS open_pos
+        FROM po_expected pe
+        WHERE pe.status NOT IN ('received', 'cancelled')
+        GROUP BY pe.supplier_id
+      )
+      SELECT v.vendor_name, vh.delivered_pos, vh.late_pos,
+        ROUND(vh.late_pos::numeric / vh.delivered_pos * 100) AS late_pct,
+        oar.open_pos
+      FROM vendor_history vh
+      JOIN vendors v ON v.id = vh.vendor_id
+      JOIN open_at_risk oar ON oar.supplier_id = vh.vendor_id
+      WHERE (vh.late_pos::numeric / vh.delivered_pos) >= 0.34
+      ORDER BY late_pct DESC
+      LIMIT 5
+    `, [cid]).then(({ rows }) => {
+      if (!rows.length) return;
+      const openTotal = rows.reduce((s, r) => s + parseInt(r.open_pos), 0);
+      const names = rows.map(r => `${r.vendor_name} (${r.late_pct}% late historically)`).join(', ');
+      recs.push({
+        category: 'Procurement', iconKey: 'truck', priority: 'medium',
+        action: `Plan buffer time for ${openTotal} open PO(s) with high-delay-risk vendors`,
+        rationale: names,
+        impact: 'Avoid production/project delays caused by vendors with a track record of late delivery',
       });
     }),
   ]);

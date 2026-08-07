@@ -35,4 +35,9 @@ export const aiIntelligenceService = {
     const { data } = await api.get('/ai/prescriptive');
     return data;
   },
+
+  async getLeadPriority() {
+    const { data } = await api.get('/ai/predict/lead-priority');
+    return data;
+  },
 };
