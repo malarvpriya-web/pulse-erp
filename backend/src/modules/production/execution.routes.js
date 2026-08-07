@@ -149,13 +149,33 @@ async function backflushMaterials(client, orderId, companyId, operationId, actor
 
 /* ── Record finished goods receipt into inventory ── */
 async function receiveFG(client, order, actorId, actorName, employeeId) {
-  if (!order.product_id) return;
+  // order.product_id is never actually populated by any live creation path --
+  // the sales-order auto-bootstrap only resolves a bom_id (name-matched) and
+  // product_name (free text), and the manual "Create Production Order" page
+  // (ProductionOrders.jsx) has no product picker at all, only a free-text
+  // product_name field. So this guard silently no-op'd FG receipt for every
+  // production order in the system, regardless of how it was created. Falls
+  // back to the same name-match convention already used for BOM matching
+  // (autoBootstrapLifecycleOnOrderAccept) and component lookup (the GRN
+  // shortage check above) rather than requiring a product_id nothing sets.
+  let productId = order.product_id;
+  if (!productId && order.product_name) {
+    const { rows: [match] } = await client.query(
+      `SELECT id FROM inventory_items
+       WHERE item_name ILIKE $1 AND is_active = true
+         AND ($2::int IS NULL OR company_id = $2)
+       LIMIT 1`,
+      [order.product_name, order.company_id || null]
+    );
+    productId = match?.id || null;
+  }
+  if (!productId) return;
   const fgQty = parseFloat(order.quantity_completed || order.quantity_planned);
   // Dual-written to stock_ledger + inventory_items.current_stock (see
   // backflushMaterials above) so finished-goods receipt is visible to the
   // same ledger-driven Inventory reports that raw-material consumption now is.
   await postStock(client, {
-    itemId: order.product_id, inQty: fgQty, txnType: 'production_receipt',
+    itemId: productId, inQty: fgQty, txnType: 'production_receipt',
     refType: 'production_order', refId: order.id,
     remarks: `FG receipt — order #${order.id} (${order.product_name || ''})`,
     createdBy: employeeId ?? null, companyId: order.company_id,
@@ -165,8 +185,8 @@ async function receiveFG(client, order, actorId, actorName, employeeId) {
     INSERT INTO wip_transactions
       (company_id, production_order_id, transaction_type, item_id, item_name, quantity, unit, actor_id, actor_name, to_location)
     VALUES ($1,$2,'complete',$3,$4,$5,'pcs',$6,$7,'Finished Goods Store')
-  `, [order.company_id, order.id, order.product_id, order.product_name,
-      parseFloat(order.quantity_completed || order.quantity_planned), actorId, actorName]);
+  `, [order.company_id, order.id, productId, order.product_name,
+      fgQty, actorId, actorName]);
 
   // Update actual cost
   const { rows: [costRow] } = await client.query(
@@ -1389,6 +1409,27 @@ router.post('/operations/:id/complete', requirePermission('production', 'edit'),
     const { quantity_out = 0, quantity_scrap = 0, remarks, scrap_reason } = req.body;
     const a = actor(req);
     await client.query('BEGIN');
+
+    // Same on_hold + open-NCR stop-ship guard /operations/:id/start already has
+    // (see its comment) -- without it here, /complete was a second, unguarded
+    // way to advance an operation on a QC-held order: it could mark an
+    // operation 'completed' (bypassing /start's block entirely, including on
+    // an operation never actually started) while the order itself stayed
+    // on_hold with the NCR still open. hasOpenNcr's own downstream check below
+    // still correctly kept material/FG movement blocked either way, but the
+    // operation row itself shouldn't reach 'completed' while the hold stands.
+    const { rows: preRows } = await client.query(
+      `SELECT po.status AS order_status, o.production_order_id
+       FROM production_operations o
+       JOIN production_orders po ON po.id = o.production_order_id
+       WHERE o.id=$1 AND po.company_id=$2`,
+      [req.params.id, cid]
+    );
+    if (!preRows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Operation not found' }); }
+    if (preRows[0].order_status === 'on_hold' && await hasOpenNcr(client, preRows[0].production_order_id)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Order is on hold with an open NCR — resolve/close it before completing operations' });
+    }
 
     const opResult = await client.query(
       `UPDATE production_operations

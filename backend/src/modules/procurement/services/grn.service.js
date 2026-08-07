@@ -102,15 +102,28 @@ class GRNService {
 
       await client.query('COMMIT');
 
-      // Audit log after commit
+      // Audit log after commit. This call used a parameter shape
+      // (entity_type/entity_id/description/user_id) that never matched
+      // AuditService.logAudit's real signature (module/recordId/recordType/
+      // userId) — module was always undefined, which violates audit_logs'
+      // NOT NULL on module_name, so this threw on every single GRN (caught
+      // by the try/catch below, so GRN creation itself never failed, but no
+      // audit row was ever written). userId here is this function's own
+      // `userId` param, which the route populates with req.user.employee_id
+      // (stock_ledger.created_by needs an employees.id — see the route's own
+      // comment) — not the users.id logAudit's userId field expects, and
+      // audit_logs.user_id has no FK to catch the mismatch either way. Left
+      // null rather than mislabel it with the wrong ID space; the route
+      // doesn't currently thread the real actor's users.id into this service.
       try {
-        await logAudit({
+        logAudit({
           company_id: data.company_id,
-          user_id: userId,
-          action: 'CREATE',
-          entity_type: 'GRN',
-          entity_id: grn.id,
-          description: `GRN ${grnNumber} created against PO ${po?.po_number || data.po_id}`
+          userId: null,
+          module: 'procurement',
+          recordId: grn.id,
+          recordType: 'grn',
+          action: 'create',
+          newData: grn,
         });
       } catch (_) { /* audit failure must not break the transaction */ }
 

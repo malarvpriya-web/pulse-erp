@@ -9,6 +9,7 @@ import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationServi
 import { nextRfqNumber, nextPurchaseOrderNumber } from '../../../shared/docNumber.js';
 import { uploadFile } from '../../../services/StorageService.js';
 import { checkAndCreateAlerts } from '../../../services/stockAlerts.js';
+import { sendPurchaseOrderToVendor } from '../../../utils/mailer.js';
 import { companyOf } from '../../../shared/scope.js';
 import { hasRole, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { requiredBand, assertCanDecideAmount } from '../procurement.authz.js';
@@ -277,17 +278,50 @@ router.patch('/purchase-requests/:id/convert-to-po', async (req, res) => {
         0
       );
 
+      // Automation Opportunity Audit §5.2 — a caller-supplied supplier_id
+      // always wins; only when the buyer left it blank do we suggest the
+      // lowest-quoting vendor from an RFQ raised for this PR (rfqs.pr_id is
+      // varchar while purchase_requests.id is integer — real schema drift,
+      // cast rather than assume). A vendor can only quote once per RFQ
+      // (rfq_quotes has one row per rfq_id/vendor_id), so ordering by
+      // total_amount (falling back to unit_price) and taking the first row
+      // is the lowest total quote, matching the same MIN() the /rfqs list
+      // endpoint already surfaces. This is a suggestion, not a lock — the
+      // buyer still reviews/overrides the resulting draft PO before it goes
+      // for approval.
+      let supplierId = req.body.supplier_id || null;
+      let autoSelectedSupplier = false;
+      if (!supplierId) {
+        const { rows: quoteRows } = await client.query(
+          `SELECT rq.vendor_id
+           FROM rfqs r
+           JOIN rfq_quotes rq ON rq.rfq_id = r.id
+           WHERE r.pr_id = $1::text AND rq.vendor_id IS NOT NULL
+           ORDER BY COALESCE(rq.total_amount, rq.unit_price) ASC NULLS LAST
+           LIMIT 1`,
+          [String(pr.id)]
+        );
+        if (quoteRows[0]) {
+          supplierId = quoteRows[0].vendor_id;
+          autoSelectedSupplier = true;
+        }
+      }
+
       const poNumber = await poRepo.getNextNumber();
       const po = await poRepo.create(client, {
         po_number:      poNumber,
         pr_id:          pr.id,
-        supplier_id:    req.body.supplier_id || null,
+        supplier_id:    supplierId,
         order_date:     new Date().toISOString().slice(0, 10),
         subtotal,
         tax_amount:     0,
         total_amount:   subtotal,
         notes:          pr.notes,
-        created_by:     req.user?.userId ?? req.user?.id,
+        // purchase_orders.created_by FKs employees(id), not users(id) — same
+        // recurring bug as stock_ledger.created_by (project_stock_ledger_created_by_fk).
+        // Surfaced live while verifying §5.2: this 500'd on every convert for
+        // any actor without a matching employees row, including super_admin.
+        created_by:     req.user?.employee_id ?? null,
         company_id:     cid(req),
       });
 
@@ -315,7 +349,12 @@ router.patch('/purchase-requests/:id/convert-to-po', async (req, res) => {
         oldData: null, newData: po, req,
       });
 
-      res.status(201).json({ po_id: po.id, po_number: po.po_number });
+      res.status(201).json({
+        po_id: po.id,
+        po_number: po.po_number,
+        supplier_id: supplierId,
+        auto_selected_supplier: autoSelectedSupplier,
+      });
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -350,7 +389,8 @@ router.post('/purchase-orders', async (req, res) => {
         ...req.body,
         po_number:  poNumber,
         company_id: cid(req),
-        created_by: req.user.userId ?? req.user.id
+        // Same purchase_orders.created_by FK-to-employees bug as convert-to-po above.
+        created_by: req.user?.employee_id ?? null
       });
 
       for (const item of req.body.items) {
@@ -546,6 +586,28 @@ router.patch('/purchase-orders/:id/approve', async (req, res) => {
         notifyWorkflowEvent('approved', { module: 'Purchase Order', recordId: po.id });
       }
 
+      // Automation Opportunity Audit §5.4 — the notification above is
+      // internal-only (WorkflowNotificationService never reaches an
+      // external party); this is the separate external leg. Fire-and-forget,
+      // same contract as sendPurchaseOrderToVendor() itself (never throws) —
+      // a delivery failure must not affect a PO approval that already
+      // committed. No PDF pipeline exists for POs, so this sends the same
+      // header + line items poRepo.findById/getItems already expose.
+      if (po.supplier_id) {
+        poRepo.findById(po.id).then(async (fullPo) => {
+          if (!fullPo?.supplier_email) return;
+          const items = await poRepo.getItems(po.id);
+          await sendPurchaseOrderToVendor(fullPo.supplier_email, {
+            poNumber: fullPo.po_number,
+            vendorName: fullPo.supplier_name,
+            items,
+            totalAmount: fullPo.total_amount,
+            expectedDeliveryDate: fullPo.expected_delivery_date,
+            termsConditions: fullPo.terms_conditions,
+          });
+        }).catch((err) => console.error('[procurement] vendor PO email failed:', err.message));
+      }
+
       res.json({ ...po, approval_level: required });
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
@@ -601,6 +663,29 @@ router.post('/grn', async (req, res) => {
     if (wid && Array.isArray(req.body.items)) {
       for (const item of req.body.items) {
         checkAndCreateAlerts(item.item_id, wid);
+      }
+    }
+
+    // Automation Opportunity Audit §5.6 — three-way match itself was already
+    // fully automatic once invoked (variance classification, auto-bill on
+    // match); the only manual step was a human calling POST /three-way-match
+    // separately after the GRN. "Invoice already on file" here means the
+    // receiving clerk had it in hand at receipt time and included it in this
+    // same request — goods_receipt_notes has no invoice columns of its own to
+    // check after the fact, so vendor_invoice_no's presence in this request
+    // body IS "on file". A match failure (e.g. no PO total yet) must not
+    // undo a GRN that already committed.
+    if (grn.po_id && req.body.vendor_invoice_no) {
+      try {
+        await createThreeWayMatchRecord(cid(req), {
+          po_id: grn.po_id,
+          grn_id: grn.id,
+          vendor_invoice_no: req.body.vendor_invoice_no,
+          vendor_invoice_date: req.body.vendor_invoice_date,
+          vendor_invoice_amount: req.body.vendor_invoice_amount,
+        });
+      } catch (err) {
+        console.error(`[procurement] auto three-way-match failed for GRN ${grn.id}:`, err.message);
       }
     }
 
@@ -974,40 +1059,47 @@ router.get('/three-way-match', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Extracted so §5.6's GRN-creation auto-trigger can run the exact same
+// matching logic as the manual POST below instead of a second
+// re-implementation. Behavior unchanged from the original inline handler.
+async function createThreeWayMatchRecord(companyId, { po_id, grn_id, vendor_invoice_no, vendor_invoice_date, vendor_invoice_amount }) {
+  if (!po_id) throw Object.assign(new Error('po_id is required'), { status: 400 });
+  const { rows: poRows } = await pool.query('SELECT total_amount FROM purchase_orders WHERE id=$1', [po_id]);
+  const po_amount  = parseFloat(poRows[0]?.total_amount || 0);
+  const inv_amount = parseFloat(vendor_invoice_amount  || 0);
+  let grn_amount   = 0;
+  if (grn_id) {
+    // goods_receipt_notes has no value column — derive the GRN leg from its own
+    // lines. Value the ACCEPTED quantity (received - rejected), since that is
+    // what entered stock and what the vendor should be paid for. Errors are no
+    // longer swallowed: a silent catch here is what pinned grn_amount at 0 and
+    // made every 3-way match classify as a discrepancy.
+    const { rows: gr } = await pool.query(
+      `SELECT COALESCE(SUM(
+                GREATEST(COALESCE(gi.quantity_received, 0) - COALESCE(gi.quantity_rejected, 0), 0)
+                * COALESCE(gi.rate, 0)
+              ), 0) AS amt
+       FROM grn_items gi WHERE gi.grn_id = $1`, [grn_id]
+    );
+    grn_amount = parseFloat(gr[0]?.amt || 0);
+  }
+  let match_status = 'pending';
+  if (po_amount > 0) {
+    const pct = Math.max(Math.abs(po_amount - inv_amount), Math.abs(po_amount - grn_amount)) / po_amount;
+    match_status = pct <= 0.01 ? 'matched' : 'discrepancy';
+  }
+  const { rows } = await pool.query(`
+    INSERT INTO three_way_matches (company_id, po_id, grn_id, vendor_invoice_no, vendor_invoice_date, vendor_invoice_amount, po_amount, grn_amount, match_status)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
+  `, [companyId, po_id, grn_id || null, vendor_invoice_no || null, vendor_invoice_date || null, inv_amount, po_amount, grn_amount, match_status]);
+  return rows[0];
+}
+
 router.post('/three-way-match', async (req, res) => {
   try {
-    const { po_id, grn_id, vendor_invoice_no, vendor_invoice_date, vendor_invoice_amount } = req.body;
-    if (!po_id) return res.status(400).json({ error: 'po_id is required' });
-    const { rows: poRows } = await pool.query('SELECT total_amount FROM purchase_orders WHERE id=$1', [po_id]);
-    const po_amount  = parseFloat(poRows[0]?.total_amount || 0);
-    const inv_amount = parseFloat(vendor_invoice_amount  || 0);
-    let grn_amount   = 0;
-    if (grn_id) {
-      // goods_receipt_notes has no value column — derive the GRN leg from its own
-      // lines. Value the ACCEPTED quantity (received - rejected), since that is
-      // what entered stock and what the vendor should be paid for. Errors are no
-      // longer swallowed: a silent catch here is what pinned grn_amount at 0 and
-      // made every 3-way match classify as a discrepancy.
-      const { rows: gr } = await pool.query(
-        `SELECT COALESCE(SUM(
-                  GREATEST(COALESCE(gi.quantity_received, 0) - COALESCE(gi.quantity_rejected, 0), 0)
-                  * COALESCE(gi.rate, 0)
-                ), 0) AS amt
-         FROM grn_items gi WHERE gi.grn_id = $1`, [grn_id]
-      );
-      grn_amount = parseFloat(gr[0]?.amt || 0);
-    }
-    let match_status = 'pending';
-    if (po_amount > 0) {
-      const pct = Math.max(Math.abs(po_amount - inv_amount), Math.abs(po_amount - grn_amount)) / po_amount;
-      match_status = pct <= 0.01 ? 'matched' : 'discrepancy';
-    }
-    const { rows } = await pool.query(`
-      INSERT INTO three_way_matches (company_id, po_id, grn_id, vendor_invoice_no, vendor_invoice_date, vendor_invoice_amount, po_amount, grn_amount, match_status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
-    `, [cid(req), po_id, grn_id || null, vendor_invoice_no || null, vendor_invoice_date || null, inv_amount, po_amount, grn_amount, match_status]);
-    res.status(201).json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const match = await createThreeWayMatchRecord(cid(req), req.body);
+    res.status(201).json(match);
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
 // ── Create vendor ─────────────────────────────────────────────────────────────

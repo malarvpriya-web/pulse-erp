@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pool from '../shared/db.js';
 import { nextEcnNumber } from '../../shared/docNumber.js';
+import notificationsRepository from '../notifications/repositories/notifications.repository.js';
 
 const router = Router();
 
@@ -20,6 +21,38 @@ async function logEvent(client, engineeringChangeId, eventName, req, eventNote =
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [engineeringChangeId, eventName, eventNote, actor.id, actor.name, JSON.stringify(eventData || {})]
   );
+}
+
+// Automation Opportunity Audit §18.2 — submit/approve/reject/implement only
+// ever called logEvent(), writing an audit row nobody sees unless they open
+// the ECN. Production, Quality, and Procurement are the three departments an
+// engineering change actually affects; none of them were told. Named roles
+// straight from the audit's own automation flow, resolved the same way
+// vendorDocExpiry.cron.js resolves its receivers (role code, not permission
+// grant, since these are specific named departments, not "whoever can edit
+// module X").
+async function notifyEcnImplemented(ecn) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT u.id
+     FROM users u
+     JOIN user_roles ur ON ur.user_id = u.id
+     JOIN roles r ON r.id = ur.role_id
+     LEFT JOIN employees e ON e.id = u.employee_id
+     WHERE u.is_active = true
+       AND r.code IN ('production_manager', 'qc_manager', 'procurement_manager')
+       AND COALESCE(e.company_id, u.company_id) = $1`,
+    [ecn.company_id]
+  );
+  for (const { id: userId } of rows) {
+    await notificationsRepository.create({
+      user_id: userId,
+      title: `ECN Implemented: ${ecn.ecn_number}`,
+      message: `${ecn.title} (${ecn.ecn_number}) has been implemented. Review affected specs/stock/purchasing for impact.`,
+      module_name: 'engineering',
+      reference_id: ecn.id,
+      notification_type: 'ecn_implemented',
+    });
+  }
 }
 
 router.get('/changes', async (req, res) => {
@@ -342,6 +375,12 @@ router.post('/changes/:id/implement', async (req, res) => {
     await logEvent(client, req.params.id, 'implemented', req, implementation_note || 'Engineering change implemented');
     await client.query('COMMIT');
     res.json({ ...rows[0], promoted_boms: promoted });
+
+    // Best-effort, after the response is sent — notification failure must not
+    // undo an implementation that already committed.
+    notifyEcnImplemented(rows[0]).catch((err) =>
+      console.error(`[ecn.routes] implement notify failed for ECN ${rows[0].id}:`, err.message)
+    );
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: e.message });
@@ -387,3 +426,4 @@ router.get('/changes/:id/signatures', async (req, res) => {
 });
 
 export default router;
+export { notifyEcnImplemented };
