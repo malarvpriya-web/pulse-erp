@@ -110,6 +110,7 @@ api.interceptors.response.use(
         err.response?.data?.message || 'You do not have permission to perform this action.'
       );
       wrapped.status = 403;
+      wrapped.response = err.response;
       wrapped.originalError = err;
       return Promise.reject(wrapped);
     }
@@ -121,6 +122,7 @@ api.interceptors.response.use(
         'A server error occurred. Please try again later.'
       );
       wrapped.status = status;
+      wrapped.response = err.response;
       wrapped.originalError = err;
       return Promise.reject(wrapped);
     }

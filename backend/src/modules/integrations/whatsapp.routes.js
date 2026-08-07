@@ -25,27 +25,25 @@ function buildTemplate(template_name, params = []) {
   return templates[template_name] || { name: template_name, language: { code: 'en' }, components };
 }
 
-/* ── POST /api/integrations/whatsapp/send ── */
-router.post('/send', async (req, res) => {
-  const { to, template_name, template_params = [] } = req.body;
-  if (!to || !template_name) {
-    return res.status(400).json({ success: false, message: 'to and template_name are required' });
-  }
-
+// Automation Opportunity Audit §29.2 — this was a fully built, real send
+// implementation with zero business-flow callers, all of it inlined in the
+// route handler below. Extracted so a cron can call the same logic directly
+// (fetch + whatsapp_log write included) instead of firing an HTTP request at
+// its own server. Route handler is now a thin wrapper preserving the exact
+// prior response shapes/status codes.
+export async function sendWhatsAppMessage({ to, template_name, template_params = [] }) {
   const token   = process.env.WHATSAPP_TOKEN;
   const phoneId = process.env.WHATSAPP_PHONE_ID;
 
   if (!token || !phoneId) {
-    // Log attempt even without config
-
     await pool.query(`INSERT INTO whatsapp_log (to_number,template_name,status,response_json) VALUES($1,$2,$3,$4)`,
       [to, template_name, 'skipped_no_config', JSON.stringify({ error: 'WHATSAPP_TOKEN or WHATSAPP_PHONE_ID not set' })]).catch(() => {});
-    return res.json({
+    return {
       success: false,
       simulated: true,
       message: 'WhatsApp not configured. Set WHATSAPP_TOKEN and WHATSAPP_PHONE_ID env vars.',
       would_send: { to, template_name, template_params },
-    });
+    };
   }
 
   const payload = {
@@ -66,19 +64,29 @@ router.post('/send', async (req, res) => {
     );
     const data = await response.json();
 
-
     await pool.query(
       `INSERT INTO whatsapp_log (to_number,template_name,status,response_json) VALUES($1,$2,$3,$4)`,
       [to, template_name, response.ok ? 'sent' : 'failed', JSON.stringify(data)]
     ).catch(() => {});
 
     if (!response.ok) {
-      return res.status(502).json({ success: false, message: 'WhatsApp API error', details: data });
+      return { success: false, message: 'WhatsApp API error', details: data, status: 502 };
     }
-    return res.json({ success: true, message_id: data.messages?.[0]?.id, data });
+    return { success: true, message_id: data.messages?.[0]?.id, data };
   } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
+    return { success: false, message: err.message, status: 500 };
   }
+}
+
+/* ── POST /api/integrations/whatsapp/send ── */
+router.post('/send', async (req, res) => {
+  const { to, template_name, template_params = [] } = req.body;
+  if (!to || !template_name) {
+    return res.status(400).json({ success: false, message: 'to and template_name are required' });
+  }
+
+  const result = await sendWhatsAppMessage({ to, template_name, template_params });
+  return res.status(result.status || 200).json(result);
 });
 
 /* ── POST /api/integrations/whatsapp/webhook ── */

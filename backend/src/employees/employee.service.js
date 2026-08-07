@@ -2,6 +2,7 @@
 import bcrypt from "bcryptjs";
 import { validatePAN } from "../utils/gst.js";
 import { syncPrimaryRole } from "../services/userRoles.js";
+import { initOnboardingChecklist } from "../modules/hr/onboarding.service.js";
 
 // Initial password every auto-created employee login gets. Employees should
 // change it after their first sign-in. Overridable per-deployment via env.
@@ -304,6 +305,15 @@ export const addEmployee = async (data) => {
       );
     } catch (e) {
       console.error('[addEmployee] payroll auto-enrollment failed:', e.message);
+    }
+
+    // Auto-init the onboarding checklist (previously required a separate
+    // manual POST /onboarding/progress/:employee_id/init call HR had to
+    // remember to make - see AUTOMATION_OPPORTUNITY_AUDIT.md section 9.1).
+    try {
+      await initOnboardingChecklist(client, company_id ?? null, emp.id);
+    } catch (e) {
+      console.error('[addEmployee] onboarding checklist init failed:', e.message);
     }
 
     await client.query("COMMIT");

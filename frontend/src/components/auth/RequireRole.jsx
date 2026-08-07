@@ -7,13 +7,13 @@ import { Lock } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 
 export function RequireRole({ roles = [], children, fallback = null }) {
-  const { isLoggedIn, role } = useAuth();
+  const { isLoggedIn, hasAnyRole } = useAuth();
 
   if (!isLoggedIn) {
     return <Navigate to="/" replace />;
   }
 
-  if (roles.length > 0 && !roles.includes(role)) {
+  if (roles.length > 0 && !hasAnyRole(...roles)) {
     return fallback || (
       <div style={{ padding: 60, textAlign: 'center', color: '#9ca3af', fontFamily: 'system-ui, sans-serif' }}>
         <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center' }}><Lock size={48} color="#9ca3af" strokeWidth={1.5} /></div>

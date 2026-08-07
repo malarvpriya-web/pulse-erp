@@ -26,6 +26,33 @@ export function isEmailConfigured() {
   return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
 }
 
+// Generic mirror of an in-app notification, used by notifications.repository.js
+// when notification_rules says an event's channel includes 'email'. Unlike every
+// other function in this file, it never throws in production — it's a
+// fire-and-forget side effect of create(), same contract as the push mirror, and
+// a delivery failure here must not affect the notification write.
+export async function sendNotificationEmail(toEmail, { title, message }) {
+  const mailer = createTransport();
+  if (!mailer) {
+    console.log(`[mailer] SMTP not configured — notification email skipped for ${toEmail}: ${title}`);
+    return { sent: false };
+  }
+  await mailer.transport.sendMail({
+    from: mailer.from,
+    to: toEmail,
+    subject: title || 'Pulse ERP Notification',
+    text: message || '',
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111">
+        <h2 style="color:#7c3aed;margin-bottom:4px">${title || 'Pulse ERP'}</h2>
+        <p style="white-space:pre-wrap">${message || ''}</p>
+        <p style="color:#9ca3af;font-size:12px;margin-top:24px">This is an automated message from Pulse ERP. Please do not reply.</p>
+      </div>
+    `,
+  });
+  return { sent: true };
+}
+
 export async function sendPayslipEmail(toEmail, { empName, month, year, periodLabel, gross, netPay, totalDeductions }) {
   const mailer = createTransport();
   if (!mailer) {
@@ -178,6 +205,75 @@ export async function sendSignerOtp(toEmail, otp, { documentTitle } = {}) {
       <p>Use this code to verify your identity and sign ${documentTitle ? `<strong>${documentTitle}</strong>` : 'the document'}:</p>
       <div style="font-size:32px;font-weight:800;letter-spacing:8px;color:#7c3aed;background:#f5f3ff;border-radius:8px;padding:16px 24px;text-align:center;margin:16px 0;font-family:monospace">${otp}</div>
       <p style="color:#6b7280;font-size:14px">This code expires in <strong>10 minutes</strong>.</p>`),
+  });
+  return { sent: true };
+}
+
+// ── Procurement ──────────────────────────────────────────────────────────────
+
+// Automation Opportunity Audit §5.4 — approving a PO only ever notified the
+// internal creator; the vendor learned about it by phone/email a human sent
+// separately. Fire-and-forget like sendNotificationEmail() (never throws) —
+// a delivery failure here must not undo a PO approval that already
+// committed. No PDF pipeline exists for POs anywhere in this codebase yet
+// (checked before building one) so this sends the same PO PDF/summary the
+// audit's flow describes as either/or — a formatted HTML/text summary of
+// the header + line items, not a generated PDF attachment.
+export async function sendPurchaseOrderToVendor(toEmail, { poNumber, vendorName, items, totalAmount, expectedDeliveryDate, termsConditions }) {
+  const mailer = createTransport();
+  if (!mailer) {
+    console.log(`[mailer] SMTP not configured — PO email skipped for ${toEmail}: ${poNumber}`);
+    return { sent: false };
+  }
+
+  const fmt = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const rows = (items || []).map((it) =>
+    `  ${it.item_name || it.item_code || 'Item'} — Qty ${it.quantity} ${it.unit_of_measure || ''} @ ${fmt(it.rate)} = ${fmt(it.total_amount)}`
+  ).join('\n');
+  const htmlRows = (items || []).map((it) => `
+    <tr>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee">${it.item_name || it.item_code || 'Item'}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right">${it.quantity} ${it.unit_of_measure || ''}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right">${fmt(it.rate)}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right">${fmt(it.total_amount)}</td>
+    </tr>`).join('');
+
+  await mailer.transport.sendMail({
+    from: mailer.from,
+    to: toEmail,
+    subject: `Purchase Order ${poNumber} — Approved`,
+    text: [
+      `Dear ${vendorName || 'Vendor'},`, '',
+      `Purchase Order ${poNumber} has been approved and issued to you.`, '',
+      rows, '',
+      `Total: ${fmt(totalAmount)}`,
+      expectedDeliveryDate ? `Expected delivery: ${expectedDeliveryDate}` : '',
+      termsConditions ? `\nTerms: ${termsConditions}` : '',
+      '', 'This is an automated message from Pulse ERP. Please do not reply.',
+    ].filter(Boolean).join('\n'),
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#111">
+        <h2 style="color:#7c3aed;margin-bottom:4px">Purchase Order ${poNumber}</h2>
+        <p>Dear <strong>${vendorName || 'Vendor'}</strong>,</p>
+        <p>This Purchase Order has been approved and issued to you.</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+          <tr style="background:#f5f3ff">
+            <td style="padding:8px 12px;font-weight:600">Item</td>
+            <td style="padding:8px 12px;font-weight:600;text-align:right">Qty</td>
+            <td style="padding:8px 12px;font-weight:600;text-align:right">Rate</td>
+            <td style="padding:8px 12px;font-weight:600;text-align:right">Amount</td>
+          </tr>
+          ${htmlRows}
+          <tr>
+            <td colspan="3" style="padding:10px 12px;font-weight:700;text-align:right">Total</td>
+            <td style="padding:10px 12px;font-weight:700;text-align:right">${fmt(totalAmount)}</td>
+          </tr>
+        </table>
+        ${expectedDeliveryDate ? `<p>Expected delivery: <strong>${expectedDeliveryDate}</strong></p>` : ''}
+        ${termsConditions ? `<p style="color:#6b7280;font-size:13px">Terms: ${termsConditions}</p>` : ''}
+        <p style="color:#9ca3af;font-size:12px;margin-top:24px">This is an automated message from Pulse ERP. Please do not reply.</p>
+      </div>
+    `,
   });
   return { sent: true };
 }
