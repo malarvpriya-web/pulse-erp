@@ -2,6 +2,7 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
+import { initOnboardingChecklist } from './onboarding.service.js';
 
 const router = express.Router();
 const HR_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'HR', 'Admin', 'SuperAdmin'];
@@ -62,25 +63,7 @@ router.post('/progress/:employee_id/init', async (req, res) => {
   const empId = parseInt(req.params.employee_id, 10);
   const companyId = cid(req);
   try {
-    const { rows: templates } = await pool.query(`
-      SELECT * FROM hr_onboarding_checklist_templates
-      WHERE is_active = true AND (company_id IS NULL OR company_id = $1)
-    `, [companyId]);
-
-    // Get employee joining_date to compute due_dates
-    const { rows: [emp] } = await pool.query(`SELECT joining_date FROM employees WHERE id=$1`, [empId]);
-    const joining = emp?.joining_date ? new Date(emp.joining_date) : new Date();
-
-    for (const t of templates) {
-      const dueDate = new Date(joining);
-      dueDate.setDate(dueDate.getDate() + (t.default_offset_days || 0));
-      await pool.query(`
-        INSERT INTO hr_onboarding_checklist_progress
-          (company_id, employee_id, category, item_label, assignee, due_date)
-        VALUES ($1,$2,$3,$4,$5,$6)
-        ON CONFLICT (employee_id, category, item_label) DO NOTHING
-      `, [companyId, empId, t.category, t.item_label, t.default_assignee, dueDate.toISOString().split('T')[0]]);
-    }
+    await initOnboardingChecklist(pool, companyId, empId);
     logAudit({ userId: req.user?.id, module: 'onboarding', recordId: empId, recordType: 'onboarding_checklist', action: 'INIT_ONBOARDING', newData: { employee_id: empId }, req });
     res.json({ message: 'Onboarding checklist initialized', employee_id: empId });
   } catch (err) { res.status(500).json({ message: err.message }); }

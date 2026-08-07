@@ -341,11 +341,15 @@ router.get('/skills/matrix', async (req, res) => {
 router.get('/dashboard', async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND company_id=${companyId}` : '';
+  // training_costs has no company_id of its own (see /cost-by-type) — scope via
+  // its parent program instead, or this silently resolves to 0 under
+  // Promise.allSettled for every scoped (non-super_admin) caller.
+  const tcSc = companyId != null ? ` AND (tp.company_id IS NULL OR tp.company_id=${companyId})` : '';
   try {
     const [monthRes,complRes,costRes,trainedRes,gapRes,mandRes,certRes] = await Promise.allSettled([
       pool.query(`SELECT COUNT(*) FROM training_programs WHERE DATE_TRUNC('month',scheduled_date)=DATE_TRUNC('month',CURRENT_DATE) AND deleted_at IS NULL${sc}`),
       pool.query(`SELECT ROUND(100.0*COUNT(CASE WHEN status='completed' THEN 1 END)/NULLIF(COUNT(*),0),1) AS rate FROM training_enrollments WHERE 1=1${sc}`),
-      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM training_costs WHERE 1=1${sc}`),
+      pool.query(`SELECT COALESCE(SUM(tc.amount),0) AS total FROM training_costs tc JOIN training_programs tp ON tp.id=tc.program_id WHERE 1=1${tcSc}`),
       pool.query(`SELECT COUNT(DISTINCT employee_id) FROM training_enrollments WHERE status='completed'${sc}`),
       pool.query(`SELECT COUNT(*) FROM (SELECT skill_name FROM skill_matrix WHERE 1=1${sc} GROUP BY skill_name HAVING AVG(proficiency_level)<3) g`),
       pool.query(`SELECT COUNT(*) FROM training_programs WHERE is_mandatory=true AND status!='completed' AND deleted_at IS NULL${sc}`),
@@ -385,7 +389,6 @@ router.get('/certifications/expiring', async (req, res) => {
 /* ── GET /cost-trend ─────────────────────────────────────────── */
 router.get('/cost-trend', async (req, res) => {
   const companyId = cid(req);
-  const sc = companyId != null ? ` AND tc.company_id=${companyId}` : '';
   try {
     const { rows } = await pool.query(`
       SELECT TO_CHAR(DATE_TRUNC('month', tp.scheduled_date),'Mon YYYY') AS month,
@@ -424,16 +427,18 @@ router.get('/cost-by-type', async (req, res) => {
 });
 
 /* ── POST /programs/:id/costs ────────────────────────────────── */
+// training_costs has no company_id column of its own (see /cost-by-type above) —
+// inserting one 500'd unconditionally for every caller with "column company_id
+// does not exist". Tenant anchor is the parent program, not this row.
 router.post('/programs/:id/costs', async (req, res) => {
   if (!MGR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { cost_type, amount, description } = req.body;
   if (!cost_type || !amount) return res.status(400).json({ error: 'cost_type and amount required' });
-  const companyId = cid(req);
   try {
     const { rows } = await pool.query(`
-      INSERT INTO training_costs (program_id,cost_type,amount,description,company_id)
-      VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [req.params.id, cost_type, amount, description||null, companyId]
+      INSERT INTO training_costs (program_id,cost_type,amount,description)
+      VALUES ($1,$2,$3,$4) RETURNING *`,
+      [req.params.id, cost_type, amount, description||null]
     );
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
