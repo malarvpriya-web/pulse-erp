@@ -261,4 +261,7 @@ async function postMonthlyDepreciation(companyId, asOfDate) {
   return { posted, skipped, errors };
 }
 
-export { USEFUL_LIFE, calculateSLM, calculateWDV, buildSchedule, postMonthlyDepreciation };
+export {
+  USEFUL_LIFE, calculateSLM, calculateWDV, buildSchedule, postMonthlyDepreciation,
+  ACCUM_DEP_CODE_BY_CATEGORY, DEFAULT_ACCUM_DEP_CODE,
+};
