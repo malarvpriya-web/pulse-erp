@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
+import { setupSwagger } from "./src/docs/swaggerSetup.js";
 import pool from "./src/config/db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -206,8 +207,14 @@ import intelligenceRoutes     from "./src/modules/intelligence/intelligence.rout
 // ── Phase 49H — CEO Intelligence Dashboard ────────────────────────────────────
 import ceoIntelligenceRoutes  from "./src/modules/intelligence/ceo-intelligence.routes.js";
 import analyticsRoutes        from "./src/analytics/routes/analytics.routes.js";
+import {
+  analyticsPolicy, dashboardPolicy, aiPolicy, intelligencePolicy, reportsPolicy,
+  withOpenPaths, DASHBOARD_PUBLIC_PATHS,
+} from "./src/shared/analyticsAuthz.js";
 import aiPayrollRoutes        from "./src/modules/analytics/aiPayroll.routes.js";
 import userDashboardRoutes    from "./src/modules/analytics/user-dashboard.routes.js";
+import managerRoutes         from "./src/modules/manager/manager.routes.js";
+import meetingsRoutes        from "./src/modules/manager/meetings.routes.js";
 
 import helmet from "helmet";
 import { verifyToken, allowRoles } from "./src/middlewares/auth.middleware.js";
@@ -241,6 +248,7 @@ import { startCampaignLifecycleCron } from "./src/jobs/campaignLifecycle.cron.js
 import { startReorderPrCron } from "./src/jobs/reorderPr.cron.js";
 import { startDepreciationCron } from "./src/jobs/depreciation.cron.js";
 import { startFnfAutoTriggerCron } from "./src/jobs/fnfAutoTrigger.cron.js";
+import { startExitStatusSyncCron } from "./src/jobs/exitStatusSync.cron.js";
 import { startVendorDocExpiryCron } from "./src/jobs/vendorDocExpiry.cron.js";
 import { startInterviewReminderCron } from "./src/jobs/interviewReminder.cron.js";
 import { startComplianceRemindersCron } from "./src/jobs/complianceReminders.cron.js";
@@ -254,6 +262,7 @@ import { startSlaEscalationCron } from "./src/jobs/slaEscalation.cron.js";
 import { startWorkflowEscalationCron } from "./src/jobs/workflowEscalation.cron.js";
 import { startDocumentExpiryCron } from "./src/jobs/documentExpiry.cron.js";
 import { startCustomerHealthRecalcCron } from "./src/jobs/customerHealthRecalc.cron.js";
+import { startVendorHealthRecalcCron } from "./src/jobs/vendorHealthRecalc.cron.js";
 import { startDepartmentDigestCron } from "./src/jobs/departmentDigest.cron.js";
 import './src/jobs/attendance.cron.js';
 import './src/jobs/leave.cron.js';
@@ -632,7 +641,12 @@ v1Router.use("/project-cost-engine",  verifyToken, projectCostEngineRoutes);
 v1Router.use("/sales-funnel",         verifyToken, salesFunnelRoutes);
 
 // SUPPORT
-v1Router.use("/reports",         verifyToken, reportsRoutes);
+// Reports — guarded by reportsPolicy, generated from modules/reports/reportCatalog.js
+// so each report takes the permission its owning module would require. This
+// router previously carried verifyToken alone: every authenticated user could
+// read leave-encashment liability (salary-derived, per named employee), the AR
+// ledger, the GST summary and payroll totals.
+v1Router.use("/reports",         verifyToken, reportsPolicy, reportsRoutes);
 v1Router.use("/documents",       verifyToken, documentsRoutes);
 v1Router.use("/signatures",      verifyToken, signaturesRoutes);
 // Public no-login signing surface — token-gated inside the router (like customer-portal)
@@ -645,7 +659,12 @@ v1Router.use("/notifications",   verifyToken, notificationsRoutes);
 v1Router.use("/audit",           verifyToken, auditRoutes);
 v1Router.use("/orgchart",        orgChartRoutes);
 v1Router.use("/approvals",       verifyToken, approvalsRoutes);
-v1Router.use("/dashboard",       verifyToken, dashboardRoutes);
+// Analytics & AI read surface — see src/shared/analyticsAuthz.js.
+// These three routers previously carried verifyToken and nothing else, leaving
+// 72 endpoints (full P&L, salary bands, named performance ratings) readable by
+// any authenticated user. Each mount now applies a path-prefix permission policy
+// that denies by default, so new routes inherit a guard instead of shipping open.
+v1Router.use("/dashboard",       verifyToken, withOpenPaths(dashboardPolicy, DASHBOARD_PUBLIC_PATHS), dashboardRoutes);
 // IPS (Service Master) is mounted ahead of the general servicedesk router so its
 // /ips/* paths resolve here rather than falling through that router first.
 v1Router.use("/servicedesk/ips", verifyToken, ipsRoutes);
@@ -691,11 +710,25 @@ v1Router.use("/engineering/ecn", verifyToken, ecnRoutes);
 const aiCombined = express.Router();
 aiCombined.use(aiRoutes);
 aiCombined.use(aiPayrollRoutes);
-v1Router.use("/ai",              verifyToken, aiCombined);
-v1Router.use("/intelligence",      verifyToken, intelligenceRoutes);
+v1Router.use("/ai",              verifyToken, aiPolicy, aiCombined);
+v1Router.use("/intelligence",      verifyToken, intelligencePolicy, intelligenceRoutes);
 v1Router.use("/ceo-intelligence",  verifyToken, ceoIntelligenceRoutes);
-v1Router.use("/analytics",       verifyToken, analyticsRoutes);
+v1Router.use("/analytics",       verifyToken, analyticsPolicy, analyticsRoutes);
 v1Router.use("/user-dashboard",  verifyToken, userDashboardRoutes);
+// Manager / Ops dashboard aggregates (budget vs actual, team capacity, OKR targets).
+//
+// verifyToken only, deliberately. Every endpoint in this router is already
+// anchored to the caller: /team-capacity and /targets cover their own direct
+// reports or department (company-wide only for admin/super_admin/department_head),
+// and /budget clamps a non-finance caller to their own department instead of
+// 403'ing them. Adding requirePermission('dashboard','view') on top gains nothing
+// against self-scoped data and costs a lot: 19 of 26 roles — production_manager,
+// project_manager, sales_manager, hr_manager, finance_manager among them — have
+// no `dashboard` row at all, and requirePermission fails CLOSED, so the gate
+// would 403 exactly the managerial roles this dashboard exists for and rebuild
+// the empty cards it was written to fix.
+v1Router.use("/manager",         verifyToken, managerRoutes);
+v1Router.use("/meetings",        verifyToken, meetingsRoutes);
 
 // INTEGRATIONS (additions)
 v1Router.use("/integrations/zoho-sign",  verifyToken, zohoSignRoutes);
@@ -850,6 +883,12 @@ app.get("/api/metrics", (req, res) => {
   res.send(lines.join('\n') + '\n');
 });
 
+// ── API documentation ───────────────────────────────────────────────
+// swaggerSetup mounts /api/docs and /api/docs/json. It was written but never
+// called, so the API Documentation page had no spec to download. Must be
+// registered before v1Router, whose "/" catch-all would otherwise swallow it.
+await setupSwagger(app);
+
 // ── Mount versioned routes AFTER the public endpoints above ──────────────────
 // Payment webhooks must be outside v1Router (no auth, raw body needed).
 app.use("/api/webhooks", webhooksRoutes);
@@ -909,6 +948,7 @@ async function startServer() {
     startReorderPrCron();
     startDepreciationCron();
     startFnfAutoTriggerCron();
+    startExitStatusSyncCron();
     startVendorDocExpiryCron();
     startInterviewReminderCron();
     startComplianceRemindersCron();
@@ -922,6 +962,7 @@ async function startServer() {
     startWorkflowEscalationCron();
     startDocumentExpiryCron();
     startCustomerHealthRecalcCron();
+    startVendorHealthRecalcCron();
   });
 }
 startServer().catch(err => {
