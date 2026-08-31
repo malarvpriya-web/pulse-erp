@@ -165,6 +165,81 @@ describe('POST /api/approvals/:id/approve', () => {
   });
 });
 
+// ── Overtime source items ───────────────────────────────────────────────────────
+//
+// `ot:<id>` is a source pseudo-id, so canActOnApproval only checks that the
+// caller holds an approver role and can claim the 'ot' category -- it never sees
+// the OT row. The controller therefore has to re-read the record and apply the
+// same guards the direct PUT /attendance/overtime/:id/approve route applies:
+// a pending-state check and assertCanDecideFor. Before that was added, the
+// Approval Center went straight to the UPDATE, so an already-decided record
+// could be flipped back. See ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §3.
+
+describe('Approval Center — overtime source items are re-guarded', () => {
+  const otRow = (status) => ({ rows: [{ employee_id: 42, company_id: 1, status }] });
+
+  it('409 when approving an OT record that is no longer pending', async () => {
+    pool.query.mockResolvedValueOnce(otRow('rejected')); // assertCanActOnOvertime SELECT
+
+    const res = await request(app).post('/api/approvals/ot:5/approve')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already rejected/i);
+  });
+
+  it('409 when rejecting an OT record that is already approved', async () => {
+    pool.query.mockResolvedValueOnce(otRow('approved'));
+
+    const res = await request(app).post('/api/approvals/ot:5/reject')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({ comment: 'changed my mind' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already approved/i);
+  });
+
+  it('does not reach the UPDATE when the pending guard fails', async () => {
+    pool.query.mockResolvedValueOnce(otRow('approved'));
+
+    await request(app).post('/api/approvals/ot:5/approve')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({});
+
+    // Exactly one query: the guard's SELECT. No UPDATE, no audit row.
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    expect(pool.query.mock.calls[0][0]).toMatch(/FROM attendance_ot_records/i);
+  });
+
+  it('200 approves a pending OT record for a privileged caller', async () => {
+    // Mock caller holds super_admin, so assertCanDecideFor short-circuits to
+    // allowed and the UPDATE proceeds.
+    pool.query
+      .mockResolvedValueOnce(otRow('pending')) // guard SELECT
+      .mockResolvedValue({ rows: [] });        // UPDATE + approvals bookkeeping
+
+    const res = await request(app).post('/api/approvals/ot:5/approve')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('Approved');
+  });
+
+  it('falls through to the UPDATE when the OT record is missing', async () => {
+    // Mirrors the reg/leave cases: a vanished row lets the UPDATE no-op rather
+    // than inventing a 404 the other source types do not return.
+    pool.query.mockResolvedValue({ rows: [] });
+
+    const res = await request(app).post('/api/approvals/ot:404/approve')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({});
+
+    expect(res.status).toBe(200);
+  });
+});
+
 // ── Single reject ───────────────────────────────────────────────────────────────
 
 describe('POST /api/approvals/:id/reject', () => {

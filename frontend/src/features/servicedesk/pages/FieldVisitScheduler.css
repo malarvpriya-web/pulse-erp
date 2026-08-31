@@ -3,7 +3,7 @@ import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { Plus, X, Search, MapPin, Clock, Calendar } from 'lucide-react';
 
-const STATUS_COLOR = { Scheduled:{ bg:'#dbeafe',color:'#1e40af' }, Completed:{ bg:'#d1fae5',color:'#065f46' }, Cancelled:{ bg:'#fee2e2',color:'#991b1b' }, 'In Progress':{ bg:'#fef3c7',color:'#92400e' } };
+const STATUS_COLOR = { Scheduled:{ bg:'#dbeafe',color:'#1e40af' }, Completed:{ bg:'#d1fae5',color:'#065f46' }, Cancelled:{ bg:'#fee2e2',color:'#991b1b' }, 'In Progress':{ bg:'#ede9fe',color:'#5b21b6' } };
 const EMPTY = { customer_name:'', address:'', visit_date:'', visit_time:'09:00', engineer_name:'', purpose:'', ticket_id:'' };
 
 export default function FieldVisitScheduler() {
@@ -121,7 +121,7 @@ export default function FieldVisitScheduler() {
                       {v.status === 'Scheduled' && (
                         <div style={{ display:'flex', gap:5 }}>
                           <button onClick={() => updateStatus(v.id,'In Progress')}
-                            style={{ padding:'4px 8px', background:'#fef3c7', color:'#92400e', border:'none', borderRadius:5, cursor:'pointer', fontSize:11, fontWeight:600 }}>Start</button>
+                            style={{ padding:'4px 8px', background:'#ede9fe', color:'#5b21b6', border:'none', borderRadius:5, cursor:'pointer', fontSize:11, fontWeight:600 }}>Start</button>
                           <button onClick={() => updateStatus(v.id,'Completed')}
                             style={{ padding:'4px 8px', background:'#d1fae5', color:'#065f46', border:'none', borderRadius:5, cursor:'pointer', fontSize:11, fontWeight:600 }}>Done</button>
                         </div>

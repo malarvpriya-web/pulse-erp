@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, RefreshCw, AlertCircle, X, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  Plus, Edit2, Trash2, RefreshCw, AlertCircle, X, ChevronDown,
+  ChevronUp, Target,
+} from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const inp = { background: 'var(--color-background)', border: '1px solid var(--color-border-tertiary)', borderRadius: 8, padding: '8px 12px', fontSize: 13, width: '100%', color: 'var(--color-text-primary)' };
 
@@ -76,7 +80,18 @@ export default function KRAManagement() {
   }
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Performance"
+        title="KRA Framework"
+        actions={isHR && (
+          <button className="plh-cta" onClick={openNew}>
+            <Plus size={15} /> New KRA
+          </button>
+        )}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingDeactivate}
@@ -87,14 +102,6 @@ export default function KRAManagement() {
         onConfirm={deactivate}
         onCancel={() => setPendingDeactivate(null)}
       />
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: 'var(--color-text-primary)' }}>KRA Framework</h1>
-        {isHR && (
-          <button onClick={openNew} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: 'var(--color-primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            <Plus size={15} /> New KRA
-          </button>
-        )}
-      </div>
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 24, borderBottom: '1px solid var(--color-border-tertiary)' }}>
@@ -213,6 +220,6 @@ export default function KRAManagement() {
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

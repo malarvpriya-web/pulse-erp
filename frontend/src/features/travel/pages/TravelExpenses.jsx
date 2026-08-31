@@ -3,6 +3,7 @@ import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { Plus, X, Search, Receipt, Link, Upload, CheckCircle, IndianRupee } from 'lucide-react';
 import { STATUS_COLOR, fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EXPENSE_CATEGORIES = [
   { group:'Travel', items:['Flight','Train','Bus','Taxi / Cab','Fuel'] },
@@ -96,25 +97,22 @@ export default function TravelExpenses() {
   const labelStyle = { display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:5 };
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Expense Reimbursement</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
-            {filtered.length} entries · Base {fmt(totalAmt)} · GST {fmt(totalGST)} · Total {fmt(totalAll)}
-          </p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Travel"
+        title="Expense Reimbursement"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15}/> Add Expense
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Summary cards */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20 }}>
         {[
           { label:'Base Amount', value: fmt(totalAmt), color:'#6366f1' },
-          { label:'GST Amount', value: fmt(totalGST), color:'#f59e0b' },
+          { label:'GST Amount', value: fmt(totalGST), color:'#7c5cf0' },
           { label:'Total Claim', value: fmt(totalAll), color:'#10b981' },
         ].map(k => (
           <div key={k.label} style={{ background:'#fff', borderRadius:12, padding:'16px 20px', border:'1px solid #f0f0f4' }}>
@@ -185,7 +183,7 @@ export default function TravelExpenses() {
                       {e.po_number && <div style={{ fontSize:11, color:'#9ca3af' }}>PO: {e.po_number}</div>}
                     </td>
                     <td style={{ padding:'10px 16px', color:'#374151', fontWeight:500 }}>{fmt(e.amount)}</td>
-                    <td style={{ padding:'10px 16px', color:'#f59e0b' }}>{fmt(e.gst_amount||0)}</td>
+                    <td style={{ padding:'10px 16px', color:'#7c5cf0' }}>{fmt(e.gst_amount||0)}</td>
                     <td style={{ padding:'10px 16px', color:'#10b981', fontWeight:600 }}>{fmt(e.total_amount||e.amount)}</td>
                     <td style={{ padding:'10px 16px' }}>
                       {e.google_drive_link
@@ -299,6 +297,6 @@ export default function TravelExpenses() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

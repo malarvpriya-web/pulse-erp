@@ -27,7 +27,19 @@ const WEIGHTS = {
 };
 
 // ── Health status thresholds ────────────────────────────────────────────────────
-export function classifyHealth(score) {
+/**
+ * `hasEvidence` is whether this supplier has any operational history at all --
+ * a PO, a receipt, an inspection or an NCR. Without one, the composite is built
+ * almost entirely out of the defaults in the dimension scorers, and those
+ * defaults are not neutral: scoreDelivery's no-data otdPct of 75 falls through
+ * to `base = 0` (the >= 80 bucket is the lowest that scores anything) and
+ * scoreQuality's no-data passRate of 75 lands on `base = 20`. A supplier nobody
+ * has ever ordered from therefore scored ~37 and was labelled 'Critical' --
+ * indistinguishable, on the dashboard and in vendors.classification, from one
+ * that had genuinely failed. 'Unrated' says what is actually true.
+ */
+export function classifyHealth(score, hasEvidence = true) {
+  if (!hasEvidence) return 'Unrated';
   if (score >= 90) return 'Preferred';
   if (score >= 75) return 'Approved';
   if (score >= 50) return 'Watchlist';
@@ -73,7 +85,17 @@ export function scoreQuality({ totalInspections = 0, passedInspections = 0,
   return {
     score: Math.max(0, Math.min(100, base - penalty)),
     passRate: parseFloat(passRate.toFixed(2)),
+    // `passRate` is the 75 default above when nobody has inspected anything.
+    // That prior is fine inside the composite and a lie everywhere else, so
+    // every consumer that publishes or alerts on the number must check this.
+    passRateMeasured: totalInspections > 0,
     capaClosurePct: parseFloat(capaClosurePct.toFixed(2)),
+    capaMeasured: totalCAPAs > 0,
+    // Anything at all to judge quality on: an inspection, a receipt to reject
+    // from, an NCR, or a CAPA. With none of them the score above is the bare
+    // `base = 20` default and must not enter the composite.
+    measured: totalInspections > 0 || totalReceivedQty > 0
+              || openNCR > 0 || repeatNCR > 0 || criticalNCR > 0 || totalCAPAs > 0,
     openNCR,
     criticalNCR,
   };
@@ -106,6 +128,10 @@ export function scoreDelivery({ totalGRNs = 0, onTimeGRNs = 0,
   return {
     score: Math.max(0, Math.min(100, base - penalty)),
     otdPct: parseFloat(otdPct.toFixed(2)),
+    // See scoreQuality: 75 is the no-receipts prior, not a delivery record.
+    otdMeasured: totalGRNs > 0,
+    measured: totalGRNs > 0,
+    totalGRNs,
     avgDelayDays: parseFloat(avgDelayDays.toFixed(1)),
   };
 }
@@ -113,7 +139,11 @@ export function scoreDelivery({ totalGRNs = 0, onTimeGRNs = 0,
 // ── 49G-5  COST SCORE (0–100) ───────────────────────────────────────────────────
 // Inputs: { priceVariancePct, rfqCompetitive, escalationCount, last12mPOCount }
 export function scoreCost({ priceVariancePct = 0, rfqCompetitive = true,
-  escalationCount = 0, last12mPOCount = 1 } = {}) {
+  escalationCount = 0, last12mPOCount = 1,
+  // Explicit, because a priceVariancePct of 0 is produced BOTH by a supplier
+  // whose prices never moved and by one with no price history to compare --
+  // and the first deserves 100 while the second deserves no vote at all.
+  hasPriceHistory = true } = {}) {
 
   // Price stability: variance < 5% is stable
   let base;
@@ -130,6 +160,7 @@ export function scoreCost({ priceVariancePct = 0, rfqCompetitive = true,
 
   return {
     score: Math.max(0, Math.min(100, base - penalty)),
+    measured: hasPriceHistory,
     priceVariancePct: parseFloat(priceVariancePct.toFixed(2)),
     escalationCount,
   };
@@ -142,7 +173,7 @@ export function scoreSupport({ storedSupportScore = null,
 
   // Prefer stored scorecard value if available
   if (storedSupportScore != null && storedSupportScore > 0) {
-    return { score: Math.min(100, parseFloat(storedSupportScore)), source: 'stored' };
+    return { score: Math.min(100, parseFloat(storedSupportScore)), measured: true, source: 'stored' };
   }
 
   // Compute from response time
@@ -157,7 +188,13 @@ export function scoreSupport({ storedSupportScore = null,
     ? (resolvedIssues / (openIssues + resolvedIssues)) * 100 : 80;
   if (resolutionRate >= 90) base = Math.min(100, base + 10);
 
-  return { score: Math.max(0, Math.min(100, base)), source: 'computed' };
+  // avgResponseHours defaults to 24 and nothing in this schema measures it, so
+  // without a stored scorecard value the whole dimension is the 70 default.
+  return {
+    score: Math.max(0, Math.min(100, base)),
+    measured: openIssues + resolvedIssues > 0,
+    source: 'computed',
+  };
 }
 
 // ── 49G-7  COMPLIANCE SCORE (0–100) ─────────────────────────────────────────────
@@ -184,7 +221,9 @@ export function scoreCompliance({ hasGST = false, hasPAN = false,
   score -= docsExpiringSoon * 5;   // -5 per doc expiring in 30 days
   score -= expiredDocs * 15;       // -15 per expired doc
 
-  return { score: Math.max(0, Math.min(100, score)), hasGST, hasPAN, hasISO, hasMSME };
+  // Always measured: these are vendor-master facts. A missing GST certificate
+  // is a finding about the supplier, not a gap in our data about them.
+  return { score: Math.max(0, Math.min(100, score)), measured: true, hasGST, hasPAN, hasISO, hasMSME };
 }
 
 // ── 49G-8  FINANCIAL STABILITY SCORE (0–100) ────────────────────────────────────
@@ -215,7 +254,7 @@ export function scoreFinancial({ annualTurnover = 0, bankVerified = false,
   const ratingMap = { 'AAA': 5, 'AA': 4, 'A': 3, 'BBB': 0, 'BB': -5, 'B': -10, 'C': -20, 'D': -30 };
   score += (ratingMap[creditRating] || 0);
 
-  return { score: Math.max(0, Math.min(100, score)), bankVerified, annualTurnover };
+  return { score: Math.max(0, Math.min(100, score)), measured: true, bankVerified, annualTurnover };
 }
 
 // ── 49G-9  DEPENDENCY SCORE (0–100) ─────────────────────────────────────────────
@@ -227,7 +266,7 @@ export function scoreDependency({ isSingleSource = false, isCriticalSupplier = f
 
   // Single source = worst case
   if (isSingleSource) {
-    return { score: 20, isSingleSource: true, isCriticalSupplier, isLongLead };
+    return { score: 20, measured: true, isSingleSource: true, isCriticalSupplier, isLongLead };
   }
 
   let score = 100;
@@ -246,6 +285,7 @@ export function scoreDependency({ isSingleSource = false, isCriticalSupplier = f
 
   return {
     score: Math.max(0, Math.min(100, score)),
+    measured: true,
     isSingleSource, isCriticalSupplier, isLongLead, alternativeCount,
   };
 }
@@ -255,13 +295,19 @@ export function scoreDependency({ isSingleSource = false, isCriticalSupplier = f
 //           supplyInterruptions, complianceViolations }
 export function scoreRiskEvents({ lateDeliveries12m = 0, criticalNCR12m = 0,
   failedAudits12m = 0, supplyInterruptions = 0,
-  complianceViolations = 0 } = {}) {
+  complianceViolations = 0,
+  // "No bad events on record" is trivially true for a supplier nobody has ever
+  // transacted with, and it scores 100 -- a clean record earned by never being
+  // used. Explicit, like scoreCost's hasPriceHistory.
+  hasHistory = true } = {}) {
 
   // Any critical event = major penalty
   if (criticalNCR12m > 0 || failedAudits12m > 0 || supplyInterruptions > 0) {
     const penalty = criticalNCR12m * 20 + failedAudits12m * 25 + supplyInterruptions * 30;
     return {
       score: Math.max(0, 100 - penalty),
+      // A recorded critical event IS history, whatever hasHistory says.
+      measured: true,
       severity: 'Major',
       criticalNCR12m, failedAudits12m, supplyInterruptions,
     };
@@ -275,6 +321,7 @@ export function scoreRiskEvents({ lateDeliveries12m = 0, criticalNCR12m = 0,
 
   return {
     score: Math.max(0, Math.min(100, score)),
+    measured: hasHistory || complianceViolations > 0,
     severity, lateDeliveries12m, complianceViolations,
   };
 }
@@ -289,6 +336,9 @@ export function computeVendorHealth({
   financialInputs = {},
   dependencyInputs = {},
   riskEventInputs = {},
+  // Any operational history at all. Defaults true so an existing caller that
+  // does not pass it keeps the old behaviour rather than silently going Unrated.
+  hasEvidence = true,
 } = {}) {
 
   const qualityResult     = scoreQuality(qualityInputs);
@@ -300,30 +350,69 @@ export function computeVendorHealth({
   const dependencyResult  = scoreDependency(dependencyInputs);
   const riskEventsResult  = scoreRiskEvents(riskEventInputs);
 
-  const health_score = (
-    qualityResult.score    * WEIGHTS.quality    +
-    deliveryResult.score   * WEIGHTS.delivery   +
-    costResult.score       * WEIGHTS.cost       +
-    supportResult.score    * WEIGHTS.support    +
-    complianceResult.score * WEIGHTS.compliance +
-    financialResult.score  * WEIGHTS.financial  +
-    dependencyResult.score * WEIGHTS.dependency +
-    riskEventsResult.score * WEIGHTS.risk_events
-  );
+  // ── Weight ONLY the dimensions that have evidence ──────────────────────────
+  //
+  // The weights are a fixed 1.0 split, so an unmeasured dimension used to vote
+  // its default straight into the composite -- and the defaults are not neutral
+  // in either direction. scoreDelivery's no-receipts prior scores 0 (its 75%
+  // otdPct falls below the >= 80 bucket) and scoreQuality's scores 20, while
+  // scoreCost and scoreRiskEvents both score 100 for having no history to fault.
+  // A supplier with one NCR and no deliveries was taking a hard 0 on 20% of its
+  // index for deliveries that were never scheduled.
+  //
+  // Renormalising over the measured weights asks the only answerable question:
+  // "on what we have actually observed, how is this supplier doing?" A vendor
+  // measured only on compliance and financials is scored on compliance and
+  // financials -- and `coverage_pct` says so, so nobody mistakes a narrow
+  // reading for a comprehensive one.
+  const dimensions = [
+    ['quality',     qualityResult],
+    ['delivery',    deliveryResult],
+    ['cost',        costResult],
+    ['support',     supportResult],
+    ['compliance',  complianceResult],
+    ['financial',   financialResult],
+    ['dependency',  dependencyResult],
+    ['risk_events', riskEventsResult],
+  ];
+
+  let weighted = 0;
+  let measuredWeight = 0;
+  const measuredDimensions = [];
+  for (const [key, result] of dimensions) {
+    if (result.measured === false) continue;
+    weighted       += result.score * WEIGHTS[key];
+    measuredWeight += WEIGHTS[key];
+    measuredDimensions.push(key);
+  }
+
+  // measuredWeight is never 0 in practice -- compliance, financial and
+  // dependency are always measured -- but a caller stubbing the scorers could
+  // make it so, and dividing by it must not yield NaN.
+  const health_score = measuredWeight > 0 ? weighted / measuredWeight : 0;
 
   const roundedScore = parseFloat(health_score.toFixed(2));
 
+  // An unmeasured dimension reports null, not its default. Storing the default
+  // would put the same fabrication back on the radar chart and in the heatmap
+  // columns that the renormalisation just took out of the composite.
+  const dim = result => (result.measured === false ? null : parseFloat(result.score.toFixed(2)));
+
   return {
     health_score:      roundedScore,
-    health_status:     classifyHealth(roundedScore),
-    quality_score:     parseFloat(qualityResult.score.toFixed(2)),
-    delivery_score:    parseFloat(deliveryResult.score.toFixed(2)),
-    cost_score:        parseFloat(costResult.score.toFixed(2)),
-    support_score:     parseFloat(supportResult.score.toFixed(2)),
-    compliance_score:  parseFloat(complianceResult.score.toFixed(2)),
-    financial_score:   parseFloat(financialResult.score.toFixed(2)),
-    dependency_score:  parseFloat(dependencyResult.score.toFixed(2)),
-    risk_score:        parseFloat(riskEventsResult.score.toFixed(2)),
+    health_status:     classifyHealth(roundedScore, hasEvidence),
+    has_evidence:      hasEvidence,
+    // Share of the total weight that had evidence behind it, 0-100.
+    coverage_pct:        parseFloat((measuredWeight * 100).toFixed(1)),
+    measured_dimensions: measuredDimensions,
+    quality_score:     dim(qualityResult),
+    delivery_score:    dim(deliveryResult),
+    cost_score:        dim(costResult),
+    support_score:     dim(supportResult),
+    compliance_score:  dim(complianceResult),
+    financial_score:   dim(financialResult),
+    dependency_score:  dim(dependencyResult),
+    risk_score:        dim(riskEventsResult),
     detail: {
       quality:     qualityResult,
       delivery:    deliveryResult,
@@ -352,7 +441,11 @@ export function detectEarlyWarnings({ vendorId, deliveryResult, qualityResult,
     complianceExpireDays  = 30,
   } = thresholds;
 
-  if (deliveryResult?.otdPct < otdThreshold) {
+  // Only warn on a delivery record that exists. Before this guard every vendor
+  // who had never shipped anything raised "On-Time Delivery 75.0% is below 85%"
+  // -- a specific, actionable-looking figure about deliveries that never
+  // happened, on 4 of this instance's 6 suppliers.
+  if (deliveryResult?.otdMeasured && deliveryResult.otdPct < otdThreshold) {
     warnings.push({
       vendor_id:       vendorId,
       warning_type:    'LOW_OTD',
@@ -374,7 +467,7 @@ export function detectEarlyWarnings({ vendorId, deliveryResult, qualityResult,
     });
   }
 
-  if (qualityResult?.capaClosurePct < 60) {
+  if (qualityResult?.capaMeasured && qualityResult.capaClosurePct < 60) {
     warnings.push({
       vendor_id:       vendorId,
       warning_type:    'CAPA_OVERDUE',

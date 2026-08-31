@@ -85,6 +85,32 @@ router.get('/', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /visit-reports/check-pending ──────────────────────────────────────────
+// Check if a travel_request has a required visit report
+router.get('/check-pending', async (req, res) => {
+  try {
+    const { travel_request_id } = req.query;
+    if (!travel_request_id) return res.json({ report_required: false, report_submitted: true });
+
+    const { rows: [tr] } = await pool.query(
+      `SELECT travel_type FROM travel_requests WHERE id=$1`, [travel_request_id]);
+    const reportRequired = tr && MANDATORY_REPORT_TYPES.has(tr.travel_type);
+
+    if (!reportRequired) return res.json({ report_required: false, report_submitted: true });
+
+    const { rows: [existing] } = await pool.query(
+      `SELECT id, status FROM visit_reports WHERE travel_request_id=$1 LIMIT 1`,
+      [travel_request_id]);
+
+    res.json({
+      report_required: true,
+      report_submitted: !!existing,
+      report_id: existing?.id || null,
+      report_status: existing?.status || null,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── GET /visit-reports/:id ────────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
@@ -259,32 +285,6 @@ router.get('/summary/by-type', async (req, res) => {
     `);
     res.json(rows);
   } catch { res.json([]); }
-});
-
-// ── GET /visit-reports/check-pending ──────────────────────────────────────────
-// Check if a travel_request has a required visit report
-router.get('/check-pending', async (req, res) => {
-  try {
-    const { travel_request_id } = req.query;
-    if (!travel_request_id) return res.json({ report_required: false, report_submitted: true });
-
-    const { rows: [tr] } = await pool.query(
-      `SELECT travel_type FROM travel_requests WHERE id=$1`, [travel_request_id]);
-    const reportRequired = tr && MANDATORY_REPORT_TYPES.has(tr.travel_type);
-
-    if (!reportRequired) return res.json({ report_required: false, report_submitted: true });
-
-    const { rows: [existing] } = await pool.query(
-      `SELECT id, status FROM visit_reports WHERE travel_request_id=$1 LIMIT 1`,
-      [travel_request_id]);
-
-    res.json({
-      report_required: true,
-      report_submitted: !!existing,
-      report_id: existing?.id || null,
-      report_status: existing?.status || null,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 export default router;

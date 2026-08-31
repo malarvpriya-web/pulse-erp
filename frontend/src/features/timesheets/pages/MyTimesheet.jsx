@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Clock, Play, Square, Plus, ChevronLeft, ChevronRight,
-  RefreshCw, X, Send, Check
+  Clock, Play, Square, Plus, ChevronLeft, ChevronRight, RefreshCw, X,
+  Send, Check, CalendarClock,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './MyTimesheet.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -190,42 +191,45 @@ export default function MyTimesheet() {
   const today = fmtDate(new Date());
 
   return (
-    <div className="mts-root">
-
-      {toast && <div className={`mts-toast mts-toast-${toast.type}`}>{toast.msg}</div>}
-
-      {/* header */}
-      <div className="mts-header">
-        <div>
-          <h2 className="mts-title">My Timesheet</h2>
-          <p className="mts-sub">
-            {weekDates[0].toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })} –{' '}
-            {weekDates[6].toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
-            {' · '}<strong>{totalHours.toFixed(1)}h</strong> this week
-          </p>
-        </div>
-        <div className="mts-header-r">
-          <button className={`mts-clock-btn${clockedIn ? ' mts-clock-active' : ''}`} onClick={toggleClock}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Timesheets"
+        title="My Timesheet"
+        actions={<>
+          {/* Week navigation is one control, not three — grouping it stops a
+              seven-button hero reading as seven equal-weight actions. */}
+          <span className="plh-group">
+            <button className="plh-cta plh-cta--icon" onClick={() => setWeekOffset(o => o - 1)} title="Previous week">
+              <ChevronLeft size={14} />
+            </button>
+            <button className="plh-cta" onClick={() => setWeekOffset(0)}>
+              {isCurrentWeek ? 'This Week' : 'Go to Today'}
+            </button>
+            <button className="plh-cta plh-cta--icon" onClick={() => setWeekOffset(o => o + 1)} disabled={weekOffset >= 0} title="Next week">
+              <ChevronRight size={14} />
+            </button>
+          </span>
+          <button className="plh-cta plh-cta--ghost plh-cta--icon" onClick={load} title="Refresh">
+            <RefreshCw size={14} />
+          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={toggleClock}>
             {clockedIn
               ? <><Square size={13} /> Clock Out {elapsedLabel() && <span className="mts-clock-timer">{elapsedLabel()}</span>}</>
               : <><Play size={13} /> Clock In</>}
           </button>
-          <div className="mts-week-nav">
-            <button className="mts-icon-btn" onClick={() => setWeekOffset(o => o - 1)}><ChevronLeft size={14} /></button>
-            <button className="mts-week-label" onClick={() => setWeekOffset(0)}>
-              {isCurrentWeek ? 'This Week' : 'Go to Today'}
-            </button>
-            <button className="mts-icon-btn" onClick={() => setWeekOffset(o => o + 1)} disabled={weekOffset >= 0}>
-              <ChevronRight size={14} />
-            </button>
-          </div>
-          <button className="mts-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="mts-btn-outline" onClick={handleSubmitWeek}><Send size={13} /> Submit Week</button>
-          <button className="mts-btn-primary" onClick={() => { setForm(emptyEntry()); setDrawer(true); }}>
+          <button className="plh-cta plh-cta--ghost" onClick={handleSubmitWeek}><Send size={13} /> Submit Week</button>
+          <button className="plh-cta" onClick={() => { setForm(emptyEntry()); setDrawer(true); }}>
             <Plus size={14} /> Add Entry
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      {toast && <div className={`mts-toast mts-toast-${toast.type}`}>{toast.msg}</div>}
+
+      {/* header */}
+
 
       {loading ? (
         <div className="mts-loading"><div className="mts-spinner" /><p>Loading…</p></div>
@@ -322,10 +326,10 @@ export default function MyTimesheet() {
           </div>
         </div>
         <div className="mts-summary-card" style={{ opacity: clockedIn ? 1 : 0.5 }}>
-          <Play size={16} color={clockedIn ? '#f59e0b' : '#9ca3af'} />
+          <Play size={16} color={clockedIn ? '#7c5cf0' : '#9ca3af'} />
           <div>
             <div className="mts-summary-label">Clock Status</div>
-            <div className="mts-summary-val" style={{ color: clockedIn ? '#f59e0b' : '#9ca3af' }}>
+            <div className="mts-summary-val" style={{ color: clockedIn ? '#7c5cf0' : '#9ca3af' }}>
               {clockedIn ? `Clocked In${elapsedLabel() ? ` · ${elapsedLabel()}` : ''}` : 'Not Clocked'}
             </div>
           </div>
@@ -394,6 +398,6 @@ export default function MyTimesheet() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

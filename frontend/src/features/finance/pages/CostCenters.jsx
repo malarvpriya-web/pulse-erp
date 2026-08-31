@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
-import { PlusCircle, Edit2, Trash2, TrendingUp, TrendingDown, BarChart2, ChevronRight } from 'lucide-react';
+import {
+  PlusCircle, Edit2, Trash2, TrendingUp, TrendingDown, BarChart2,
+  ChevronRight, IndianRupee,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = v => `₹${parseFloat(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
@@ -65,7 +69,17 @@ export default function CostCenters({ setPage }) {
   }
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="Cost Centers"
+        subtitle="Manage cost centers for departmental P&L reporting"
+        actions={<button className="plh-cta" onClick={openCreate}>
+          <PlusCircle size={15}/> Add Cost Center
+        </button>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingDel}
@@ -76,19 +90,6 @@ export default function CostCenters({ setPage }) {
         onConfirm={del}
         onCancel={() => setPendingDel(null)}
       />
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Cost Centers</h2>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>
-            Manage cost centers for departmental P&L reporting
-          </p>
-        </div>
-        <button onClick={openCreate}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px',
-            background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          <PlusCircle size={15}/> Add Cost Center
-        </button>
-      </div>
 
       {error && <div style={{ background: '#fee2e2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{error}</div>}
 
@@ -218,6 +219,6 @@ export default function CostCenters({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

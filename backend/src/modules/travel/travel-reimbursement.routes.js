@@ -17,6 +17,7 @@ import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../shared/scope.js';
+import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../shared/managerApprovalAuthz.js';
 
 const router = express.Router();
@@ -529,14 +530,42 @@ router.put('/claims/:id/pay',
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /reimbursement/filter-options ─────────────────────────────────────────
+// Departments present on claims, for the dashboard filter bar. Not narrowed by
+// the active department filter, so the dropdown keeps all its entries.
+router.get('/filter-options', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT department FROM expense_claims
+        WHERE department IS NOT NULL AND TRIM(department) <> ''
+          AND ($1::int IS NULL OR company_id = $1)
+        ORDER BY department`,
+      [cid(req)]
+    );
+    res.json({ departments: rows.map(r => r.department) });
+  } catch { res.json({ departments: [] }); }
+});
+
 // ── GET /reimbursement/dashboard ──────────────────────────────────────────────
 router.get('/dashboard', async (req, res) => {
   try {
     const companyId = cid(req);
     const employeeId = uid(req);
-    const role = req.user?.role || 'employee';
 
-    const cFilter = companyId ? `company_id=${companyId}` : '1=1';
+    // Dashboard filter bar: ?period / ?from / ?to / ?department.
+    // Claims are dated by claim_date, falling back to expense_date then
+    // created_at for older rows written before claim_date was populated.
+    const range = resolveRange(req.query, { defaultPeriod: 'fytd' });
+    const department = dimension(req.query, 'department');
+    const CLAIM_DATE = `COALESCE(claim_date, expense_date, created_at::date)`;
+
+    // $1 company, $2 range start, $3 range end, $4 department — bound, not
+    // interpolated. Each is NULL-tolerant so an absent filter is a no-op.
+    const base = [companyId, range.from, range.to, department];
+    const scope = `($1::int IS NULL OR company_id=$1)
+      AND ($2::date IS NULL OR ${CLAIM_DATE} >= $2::date)
+      AND ($3::date IS NULL OR ${CLAIM_DATE} <= $3::date)
+      AND ($4::text IS NULL OR department = $4)`;
 
     const [empStats, managerPending, accountsPending, gstRecoverable] = await Promise.all([
       pool.query(`
@@ -547,20 +576,25 @@ router.get('/dashboard', async (req, res) => {
           COUNT(*) FILTER (WHERE status LIKE '%Rejected%') AS rejected,
           COALESCE(SUM(total_amount) FILTER (WHERE status='Paid'), 0)    AS reimbursed_amount,
           COALESCE(SUM(total_amount) FILTER (WHERE status NOT IN ('Draft','Paid') AND status NOT LIKE '%Rejected%'), 0) AS pending_amount
-        FROM expense_claims WHERE employee_id=$1 AND ${cFilter}
-      `, [employeeId]),
-      pool.query(`SELECT COUNT(*) FROM expense_claims WHERE status='Submitted' AND ${cFilter}`),
-      pool.query(`SELECT COUNT(*) FROM expense_claims WHERE status='Manager Approved' AND ${cFilter}`),
-      pool.query(`SELECT COALESCE(SUM(gst_amount),0) AS total FROM expense_claims WHERE gst_verified=TRUE AND status='Paid' AND ${cFilter}`),
+        FROM expense_claims WHERE employee_id=$5 AND ${scope}
+      `, [...base, employeeId]),
+      pool.query(`SELECT COUNT(*) FROM expense_claims WHERE status='Submitted' AND ${scope}`, base),
+      pool.query(`SELECT COUNT(*) FROM expense_claims WHERE status='Manager Approved' AND ${scope}`, base),
+      pool.query(`SELECT COALESCE(SUM(gst_amount),0) AS total FROM expense_claims WHERE gst_verified=TRUE AND status='Paid' AND ${scope}`, base),
     ]);
 
+    // Named monthly_paid, but it now reports the selected period — the card
+    // label follows period_label rather than saying "this month".
     const monthlyPaid = await pool.query(`
       SELECT COALESCE(SUM(total_amount),0) AS total
       FROM expense_claims
-      WHERE status='Paid' AND DATE_TRUNC('month',paid_at)=DATE_TRUNC('month',NOW()) AND ${cFilter}
-    `);
+      WHERE status='Paid' AND ${scope}
+    `, base);
 
     res.json({
+      period:       range.period,
+      period_label: range.label,
+      department,
       // Employee view
       total_submitted:    parseInt(empStats.rows[0].total_submitted),
       pending_claims:     parseInt(empStats.rows[0].pending),

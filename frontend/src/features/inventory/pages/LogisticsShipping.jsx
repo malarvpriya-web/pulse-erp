@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Truck, FileText } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 function formatINR(n) {
   const num = parseFloat(n);
@@ -63,9 +63,16 @@ function ShipmentsTab() {
     setTrack(null); setTL(true);
     try {
       const res = await api.get(`/logistics/shipments/${shipment.id}/track`);
-      setTrack({ shipment, events: res.data.tracking?.events || [] });
-    } catch {
-      setTrack({ shipment, events: [] });
+      const t = res.data.tracking || {};
+      // With no courier token the backend answers with the milestones Pulse
+      // records itself, shaped as `checkpoints`. Map those onto the same event
+      // shape the live feed uses so the timeline renders either way.
+      const events = t.events?.length
+        ? t.events
+        : (t.checkpoints || []).map(c => ({ event: c.label, location: t.courier_partner || '', timestamp: c.date }));
+      setTrack({ shipment, events, source: res.data.source, note: res.data.note });
+    } catch (e) {
+      setTrack({ shipment, events: [], note: e?.response?.data?.error || 'Could not load tracking for this shipment.' });
     }
     setTL(false);
   };
@@ -206,8 +213,14 @@ function ShipmentsTab() {
             </div>
             <button onClick={()=>setTrack(null)} style={{ background:'none', border:'none', fontSize:20, cursor:'pointer', color:'#6b7280' }}>✕</button>
           </div>
+          {tracking.note && (
+            <p style={{
+              color: '#6b7280', fontSize: 12, lineHeight: 1.5, margin: '0 0 16px',
+              background: '#faf9fc', border: '1px solid #f0f0f4', borderRadius: 8, padding: '9px 11px',
+            }}>{tracking.note}</p>
+          )}
           {tracking.events.length === 0 && (
-            <p style={{ color:'#9ca3af', fontSize:13 }}>No tracking events available. Live tracking requires Shiprocket API credentials.</p>
+            <p style={{ color:'#9ca3af', fontSize:13 }}>Nothing recorded for this shipment yet — no dispatch or delivery date has been entered.</p>
           )}
           <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
             {tracking.events.map((ev, i)=>{
@@ -291,9 +304,9 @@ function EWayBillsTab() {
   return (
     <div>
       {/* Note banner */}
-      <div style={{ background:'#fef9c3', border:'1px solid #fde047', borderRadius:8, padding:'10px 14px', marginBottom:14, display:'flex', alignItems:'center', gap:8 }}>
+      <div style={{ background:'#ede9fe', border:'1px solid #c4b5fd', borderRadius:8, padding:'10px 14px', marginBottom:14, display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:15 }}>⚡</span>
-        <span style={{ fontSize:12, color:'#854d0e', fontWeight:500 }}>
+        <span style={{ fontSize:12, color:'#5b21b6', fontWeight:500 }}>
           E-Way Bill is required for consignment value exceeding <strong>₹50,000</strong>. Enter the bill number from the GST portal manually.
         </span>
       </div>
@@ -418,12 +431,16 @@ export default function LogisticsShipping() {
   const [tab, setTab] = useState('Shipments');
 
   return (
-    <PageLayout>
-      <PageHeader
-        title="Logistics & Shipping"
-        description="Shipment tracking, courier management, and e-way bill recording"
-        filters={
-          <div style={{ display:'flex', gap:6 }}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Truck}
+          eyebrow="Inventory"
+          title="Logistics & Shipping"
+          subtitle="Shipment tracking, courier management, and e-way bill recording"
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display:'flex', gap:6 }}>
             {['Shipments','E-Way Bills'].map(t => (
               <button
                 key={t}
@@ -434,11 +451,13 @@ export default function LogisticsShipping() {
                 {t}
               </button>
             ))}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
       {tab==='Shipments'   && <ShipmentsTab />}
       {tab==='E-Way Bills' && <EWayBillsTab />}
-    </PageLayout>
+    </PageShell>
   );
 }

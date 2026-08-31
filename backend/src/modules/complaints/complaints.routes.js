@@ -4,6 +4,7 @@ import { nextComplaintNumber, nextServiceTicketNumber } from '../../shared/docNu
 import { pickUpdatable } from '../../shared/safeUpdate.js';
 import { validateOptionalMobile } from '../../shared/validators.js';
 import { PROJECT_TYPES } from '../../shared/projectTypes.js';
+import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 
 const router = Router();
@@ -157,6 +158,20 @@ function buildWhere(req) {
 router.get('/dashboard', svc('view'), async (req, res) => {
   try {
     const companyId = cid(req);
+    // Dashboard filter bar: ?period / ?from / ?to / ?category / ?priority.
+    // $1 company, $2 from, $3 to, $4 category, $5 priority — every query below
+    // references all five via `scope`, so no parameter is left untyped.
+    const range = resolveRange(req.query, { defaultPeriod: 'all' });
+    const category = dimension(req.query, 'category');
+    const priority = dimension(req.query, 'priority');
+    const p = [companyId, range.from, range.to, category, priority];
+    const scope = `deleted_at IS NULL
+      AND ($1::int IS NULL OR company_id = $1)
+      AND ($2::date IS NULL OR created_at >= $2::date)
+      AND ($3::date IS NULL OR created_at < ($3::date + INTERVAL '1 day'))
+      AND ($4::text IS NULL OR category = $4)
+      AND ($5::text IS NULL OR priority = $5)`;
+
     const [totals, byStatus, byCategory, recent] = await Promise.all([
       pool.query(`
         SELECT
@@ -176,27 +191,26 @@ router.get('/dashboard', svc('view'), async (req, res) => {
             FILTER (WHERE resolved_at IS NOT NULL), 1
           )                                                      AS avg_resolution_days
         FROM complaints
-        WHERE deleted_at IS NULL
-          AND ($1::int IS NULL OR company_id = $1)
-      `, [companyId]),
+        WHERE ${scope}
+      `, p),
       pool.query(`
         SELECT status, COUNT(*) AS count
         FROM complaints
-        WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+        WHERE ${scope}
         GROUP BY status ORDER BY count DESC
-      `, [companyId]),
+      `, p),
       pool.query(`
         SELECT category, COUNT(*) AS count
         FROM complaints
-        WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+        WHERE ${scope}
         GROUP BY category ORDER BY count DESC LIMIT 6
-      `, [companyId]),
+      `, p),
       pool.query(`
         SELECT id, complaint_number, title, customer_name, priority, status, created_at
         FROM complaints
-        WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+        WHERE ${scope}
         ORDER BY created_at DESC LIMIT 5
-      `, [companyId]),
+      `, p),
     ]);
 
     const t = totals.rows[0];
@@ -213,11 +227,30 @@ router.get('/dashboard', svc('view'), async (req, res) => {
       by_status:    byStatus.rows,
       by_category:  byCategory.rows,
       recent:       recent.rows,
+      period:       range.period,
+      period_label: range.label,
     });
   } catch (err) {
     console.error('complaints dashboard:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── DASHBOARD FILTER OPTIONS ──────────────────────────────────────────────────
+// Distinct values across ALL complaints in scope, so selecting one doesn't
+// collapse the dropdown. Must stay above any `/:id` route in this file.
+router.get('/dashboard/filter-options', svc('view'), async (req, res) => {
+  const distinct = (col) => pool
+    .query(`SELECT DISTINCT ${col} AS v FROM complaints
+             WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+               AND ${col} IS NOT NULL AND TRIM(${col}) <> ''
+             ORDER BY v`, [cid(req)])
+    .catch(() => ({ rows: [] }));
+  const [categories, priorities] = await Promise.all([distinct('category'), distinct('priority')]);
+  res.json({
+    categories: categories.rows.map(r => r.v),
+    priorities: priorities.rows.map(r => r.v),
+  });
 });
 
 // ── LIST ──────────────────────────────────────────────────────────────────────

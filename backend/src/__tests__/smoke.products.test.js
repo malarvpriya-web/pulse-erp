@@ -127,7 +127,12 @@ describe('GET /api/admin/products', () => {
     expect(res.body[0].hsn_sac).toBe('85044030');
   });
 
-  it('200 returns empty array on DB error', async () => {
+  // This test used to assert the opposite — that a DB failure returns 200 with
+  // an empty array. That behaviour was the defect, not the contract: the Product
+  // Master screen wrote 14 columns that did not exist, every query threw, and
+  // `catch(e) { res.json([]) }` rendered it as "no products yet" for as long as
+  // the screen has existed. An empty list must never stand in for a broken query.
+  it('surfaces a DB error instead of reporting an empty catalogue', async () => {
     auth();
     pool.query.mockRejectedValueOnce(new Error('DB down'));
 
@@ -135,8 +140,8 @@ describe('GET /api/admin/products', () => {
       .get('/api/admin/products')
       .set('Authorization', `Bearer ${adminToken()}`);
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.body).not.toEqual([]);
   });
 });
 

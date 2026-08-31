@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Briefcase, Users, Calendar, CheckCircle, Clock,
-  Plus, X, ChevronRight, RefreshCw,
-  MapPin, Mail, Phone, Star, Eye, Send, Filter, Search, UserCheck
+  Briefcase, Users, Calendar, CheckCircle, Clock, Plus, X,
+  ChevronRight, RefreshCw, MapPin, Mail, Phone, Star, Eye, Send,
+  Filter, Search, UserCheck, LayoutDashboard,
 } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import {
@@ -16,6 +16,7 @@ import { fmtDate } from '@/utils/dateFormatter';
 import { STAGE_LABELS } from '../shared/constants';
 import { matchesSearch } from '../shared/search';
 import './RecruitmentDashboard.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Active Kanban stages — dead-end stages visible in All Candidates, not Kanban
 const KANBAN_STAGES = ['applied', 'screening', '1st_level', '2nd_level', 'offer', 'hired'];
@@ -25,7 +26,7 @@ const STAGE_COLORS = {
   screening:    { color: '#3b82f6', bg: '#eff6ff' },
   '1st_level':  { color: '#8b5cf6', bg: '#f5f3ff' },
   '2nd_level':  { color: '#a855f7', bg: '#faf5ff' },
-  offer:        { color: '#f59e0b', bg: '#fffbeb' },
+  offer:        { color: '#7c5cf0', bg: '#f5f3ff' },
   hired:        { color: '#22c55e', bg: '#f0fdf4' },
   not_suitable: { color: '#ef4444', bg: '#fef2f2' },
   maybe:        { color: '#06b6d4', bg: '#ecfeff' },
@@ -37,11 +38,11 @@ const STAGE_COLORS = {
 const STATUS_META = {
   open:   { color: '#15803d', bg: '#dcfce7' },
   draft:  { color: '#6b7280', bg: '#f3f4f6' },
-  paused: { color: '#92400e', bg: '#fef3c7' },
+  paused: { color: '#5b21b6', bg: '#ede9fe' },
   closed: { color: '#dc2626', bg: '#fee2e2' },
 };
 
-const SOURCE_COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#3b82f6', '#06b6d4'];
+const SOURCE_COLORS = ['#6366f1', '#22c55e', '#7c5cf0', '#ec4899', '#3b82f6', '#06b6d4'];
 
 const fmt    = (v) => v ?? 0;
 const fmtPct = (v) => v != null && isFinite(v) ? `${Number(v).toFixed(1)}%` : 'N/A';
@@ -395,7 +396,22 @@ export default function RecruitmentDashboard({ setPage }) {
   );
 
   return (
-    <div className="rec-page">
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Recruitment"
+        title="Recruitment Dashboard"
+        subtitle="Track hiring pipeline, interviews, and offers"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={loadData} disabled={loading}>
+            <RefreshCw size={15} className={loading ? 'rec-spin' : ''} /> Refresh
+          </button>
+          <button className="plh-cta" onClick={() => setPage && setPage('JobOpenings')}>
+            <Plus size={15} /> Post Job
+          </button>
+        </>}
+      />
+    }>
       {/* Schedule Interview drawer — may have a pre-selected candidate or open picker */}
       {scheduleFor !== null && (
         <ScheduleDrawer
@@ -427,20 +443,7 @@ export default function RecruitmentDashboard({ setPage }) {
       )}
 
       {/* Header */}
-      <div className="rec-header">
-        <div>
-          <h1 className="rec-title">Recruitment Dashboard</h1>
-          <p className="rec-subtitle">Track hiring pipeline, interviews, and offers</p>
-        </div>
-        <div className="rec-header-actions">
-          <button className="rec-btn-ghost" onClick={loadData} disabled={loading}>
-            <RefreshCw size={15} className={loading ? 'rec-spin' : ''} /> Refresh
-          </button>
-          <button className="rec-btn-primary" onClick={() => setPage && setPage('JobOpenings')}>
-            <Plus size={15} /> Post Job
-          </button>
-        </div>
-      </div>
+
 
       {/* KPI row */}
       <div className="rec-kpi-row">
@@ -460,11 +463,11 @@ export default function RecruitmentDashboard({ setPage }) {
             bg: '#eff6ff',
           },
           {
-            icon: <Calendar size={20} color="#f59e0b" />,
+            icon: <Calendar size={20} color="#7c5cf0" />,
             label: 'Interviews Today',
             val: fmt(kpis?.interviews_today),
             sub: 'Scheduled',
-            bg: '#fffbeb',
+            bg: '#f5f3ff',
           },
           {
             icon: <CheckCircle size={20} color="#22c55e" />,
@@ -736,7 +739,7 @@ export default function RecruitmentDashboard({ setPage }) {
               {[
                 { label: 'Open Positions',     val: fmt(kpis?.open_positions),    color: '#6366f1' },
                 { label: 'Active Candidates',  val: fmt(kpis?.active_candidates), color: '#3b82f6' },
-                { label: 'Interviews Today',   val: fmt(kpis?.interviews_today),  color: '#f59e0b' },
+                { label: 'Interviews Today',   val: fmt(kpis?.interviews_today),  color: '#7c5cf0' },
                 { label: 'Hired This Month',   val: fmt(kpis?.hired_this_month),  color: '#22c55e' },
               ].map(m => (
                 <div key={m.label} className="rec-metric-tile">
@@ -748,6 +751,6 @@ export default function RecruitmentDashboard({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

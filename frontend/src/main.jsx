@@ -15,7 +15,6 @@ if (import.meta.env.DEV && 'serviceWorker' in navigator) {
 import { AuthProvider } from '@/context/AuthContext'
 import { ToastProvider } from './context/ToastContext'
 import { FYProvider } from './context/FYContext'
-import { FilterProvider } from './context/FilterContext'
 import { initNative } from './mobile/native'
 
 // Native shell setup (status bar, splash) — a no-op in the browser.
@@ -27,9 +26,7 @@ createRoot(document.getElementById('root')).render(
       <AuthProvider>
         <ToastProvider>
           <FYProvider>
-            <FilterProvider>
-              <App />
-            </FilterProvider>
+            <App />
           </FYProvider>
         </ToastProvider>
       </AuthProvider>

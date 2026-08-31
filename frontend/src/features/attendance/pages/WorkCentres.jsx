@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Layers, Plus, Clock, Package, RefreshCw, X, Check,
-  Pencil, Trash2, Settings, ChevronDown, ChevronUp, AlertTriangle, Moon,
-  BarChart2, TrendingUp, Award, Activity, Users,
+  Layers, Plus, Clock, Package, RefreshCw, X, Check, Pencil, Trash2,
+  Settings, ChevronDown, ChevronUp, AlertTriangle, Moon, BarChart2,
+  TrendingUp, Award, Activity, Users, Factory,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -179,7 +180,7 @@ function RecordModal({ editRecord, workCentres, onSave, onClose }) {
               ))}
             </select>
             {workCentres.length === 0 && (
-              <p style={{ fontSize: 11, color: '#f59e0b', margin: '4px 0 0' }}>
+              <p style={{ fontSize: 11, color: '#7c5cf0', margin: '4px 0 0' }}>
                 No work centres configured — use "Manage Work Centres" to add them first.
               </p>
             )}
@@ -284,7 +285,7 @@ function AnalyticsTab() {
   const utilBar = (pct) => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div style={{ flex: 1, height: 8, background: '#f0f0f4', borderRadius: 4, overflow: 'hidden' }}>
-        <div style={{ width: `${pct}%`, height: '100%', background: pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444', borderRadius: 4, transition: 'width 0.4s' }} />
+        <div style={{ width: `${pct}%`, height: '100%', background: pct >= 80 ? '#10b981' : pct >= 50 ? '#7c5cf0' : '#ef4444', borderRadius: 4, transition: 'width 0.4s' }} />
       </div>
       <span style={{ fontSize: 12, fontWeight: 700, color: '#374151', minWidth: 36 }}>{pct}%</span>
     </div>
@@ -324,7 +325,7 @@ function AnalyticsTab() {
           {/* Summary KPIs */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 20 }}>
             {[
-              { label: 'Total Units Produced', value: data.summary.total_units.toLocaleString(), icon: Package, color: '#f59e0b' },
+              { label: 'Total Units Produced', value: data.summary.total_units.toLocaleString(), icon: Package, color: '#7c5cf0' },
               { label: 'Total Hours Worked', value: `${parseFloat(data.summary.total_hours).toFixed(1)}h`, icon: Clock, color: '#10b981' },
               { label: 'Avg Utilization', value: `${data.summary.avg_utilization}%`, icon: Activity, color: '#6366f1' },
               { label: 'Active Work Centres', value: data.summary.active_work_centres, icon: Layers, color: P },
@@ -422,7 +423,7 @@ function AnalyticsTab() {
             {/* Top performers */}
             <div style={{ ...CARD, padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '14px 20px', borderBottom: '1px solid #f0f0f4', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Award size={16} color='#f59e0b' />
+                <Award size={16} color='#7c5cf0' />
                 <span style={{ fontWeight: 700, fontSize: 14, color: '#1f2937' }}>Top Performers</span>
                 <span style={{ fontSize: 11, color: '#9ca3af' }}>by units produced</span>
               </div>
@@ -440,7 +441,7 @@ function AnalyticsTab() {
                   <tbody>
                     {data.top_performers.map((p, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid #f5f5f7' }}>
-                        <td style={{ padding: '10px 14px', color: i === 0 ? '#f59e0b' : '#9ca3af', fontWeight: 700, fontSize: i === 0 ? 16 : 13 }}>
+                        <td style={{ padding: '10px 14px', color: i === 0 ? '#7c5cf0' : '#9ca3af', fontWeight: 700, fontSize: i === 0 ? 16 : 13 }}>
                           {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}
                         </td>
                         <td style={{ padding: '10px 14px' }}>
@@ -631,40 +632,34 @@ export default function WorkCentres() {
   const today = new Date().toISOString().split('T')[0];
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Work Centres</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-            Manufacturing work centre attendance and production tracking
-          </p>
-        </div>
-        {activeTab === 'records' && (
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Attendance"
+        title="Work Centres"
+        subtitle="Manufacturing work centre attendance and production tracking"
+        actions={activeTab === 'records' && (
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <button
-              onClick={load}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 10, border: '1px solid #e9e4ff', background: '#fff', fontSize: 13, cursor: 'pointer' }}
-            >
+            <button className="plh-cta"
+              onClick={load}>
               <RefreshCw size={13} /> Refresh
             </button>
-            <button
-              onClick={() => setShowPanel(p => !p)}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 10, border: `1px solid ${showPanel ? P : '#e9e4ff'}`, background: showPanel ? '#f5f3ff' : '#fff', color: showPanel ? P : '#374151', fontSize: 13, cursor: 'pointer', fontWeight: showPanel ? 600 : 400 }}
-            >
+            <button className="plh-cta"
+              onClick={() => setShowPanel(p => !p)}>
               <Settings size={13} /> Manage Work Centres
               {showPanel ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
             </button>
-            <button
-              onClick={() => { setEditRecord(null); setShowForm(true); }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 18px', borderRadius: 10, border: 'none', background: P, color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}
-            >
+            <button className="plh-cta"
+              onClick={() => { setEditRecord(null); setShowForm(true); }}>
               <Plus size={16} /> Log Attendance
             </button>
           </div>
         )}
-      </div>
+      />
+    }>
+
+      {/* Header */}
+
 
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '2px solid #f0f0f4', paddingBottom: 0 }}>
@@ -714,7 +709,7 @@ export default function WorkCentres() {
           { label: 'Records Today',   value: filtered.length,              color: P,         icon: Layers },
           { label: 'Work Centres',    value: uniqueWCCnt,                  color: '#0369a1', icon: Package },
           { label: 'Total Hours',     value: `${totalHours.toFixed(1)}h`,  color: '#10b981', icon: Clock },
-          { label: 'Units Produced',  value: totalUnits,                    color: '#f59e0b', icon: Package },
+          { label: 'Units Produced',  value: totalUnits,                    color: '#7c5cf0', icon: Package },
         ].map(k => (
           <div key={k.label} style={{ ...CARD, padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ width: 40, height: 40, borderRadius: 10, background: `${k.color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -880,6 +875,6 @@ export default function WorkCentres() {
         />
       )}
       </>)}
-    </div>
+    </PageShell>
   );
 }

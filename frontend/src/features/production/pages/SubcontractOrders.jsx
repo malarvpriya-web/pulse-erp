@@ -4,9 +4,11 @@
 // materials to send), issue materials to the vendor (stock out), and receive
 // finished goods back (stock in). Drives /subcontracting.
 import { useState, useEffect, useCallback } from 'react';
+import { ShoppingCart } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB', HEAD = '#4c1d95', INK = '#374151', MUT = '#6b7280';
 const card = { background: '#fff', border: '1px solid #ede9fe', borderRadius: 12, padding: 16 };
@@ -16,7 +18,7 @@ const btnP = { background: PURPLE, color: '#fff', border: 'none', borderRadius: 
 const btnS = { background: '#ede9fe', color: PURPLE, border: 'none', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontWeight: 600, fontSize: 12 };
 const inp = { padding: '7px 10px', border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 };
 const STATUS = {
-  draft: ['#f3f4f6', INK], issued: ['#dbeafe', '#2563eb'], materials_issued: ['#fef3c7', '#d97706'],
+  draft: ['#f3f4f6', INK], issued: ['#dbeafe', '#2563eb'], materials_issued: ['#ede9fe', '#6d28d9'],
   partially_received: ['#e0f2fe', '#0369a1'], received: ['#dcfce7', '#16a34a'], closed: ['#dcfce7', '#15803d'], cancelled: ['#fee2e2', '#dc2626'],
 };
 const chip = (s) => { const [bg, fg] = STATUS[s] || ['#f3f4f6', INK]; return { background: bg, color: fg, padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 700, textTransform: 'capitalize' }; };
@@ -108,20 +110,21 @@ export default function SubcontractOrders() {
   const o = detail?.order;
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 18, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: '0 0 4px', color: HEAD, fontSize: 22 }}>🔧 Subcontracting</h2>
-          <p style={{ margin: 0, color: MUT, fontSize: 13 }}>Job-work orders — issue materials to a vendor and receive finished goods back</p>
-        </div>
-        <button style={btnP} onClick={() => setShowCreate(v => !v)}>{showCreate ? 'Close' : '+ New Order'}</button>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Production"
+        title="🔧 Subcontracting"
+        subtitle="Job-work orders — issue materials to a vendor and receive finished goods back"
+        actions={<button className="plh-cta"  onClick={() => setShowCreate(v => !v)}>{showCreate ? 'Close' : '+ New Order'}</button>}
+      />
+    }>
 
       {dash && (
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
           <KPI label="Total Orders" value={dash.total} />
           <KPI label="Open" value={dash.open} tint="#2563eb" />
-          <KPI label="At Vendor" value={dash.at_vendor} tint="#d97706" />
+          <KPI label="At Vendor" value={dash.at_vendor} tint="#6d28d9" />
           <KPI label="Completed" value={dash.completed} tint="#16a34a" />
           <KPI label="Open Value" value={`₹${Number(dash.open_value || 0).toLocaleString('en-IN')}`} tint="#7c3aed" />
         </div>
@@ -244,7 +247,7 @@ export default function SubcontractOrders() {
                 <thead><tr>{['Type', 'Item', 'Qty', 'Challan', 'Date'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
                 <tbody>
                   {detail.transactions.map(t => (
-                    <tr key={t.id}><td style={td}><span style={{ background: t.txn_type === 'material_issue' ? '#fef3c7' : '#dcfce7', color: t.txn_type === 'material_issue' ? '#d97706' : '#16a34a', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{t.txn_type === 'material_issue' ? 'issue' : 'receipt'}</span></td>
+                    <tr key={t.id}><td style={td}><span style={{ background: t.txn_type === 'material_issue' ? '#ede9fe' : '#dcfce7', color: t.txn_type === 'material_issue' ? '#6d28d9' : '#16a34a', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{t.txn_type === 'material_issue' ? 'issue' : 'receipt'}</span></td>
                       <td style={td}>{t.item_name}</td><td style={td}>{Number(t.quantity)}</td><td style={td}>{t.challan_no || '—'}</td><td style={td}>{fmtDate(t.txn_date)}</td></tr>
                   ))}
                   {detail.transactions.length === 0 && <tr><td style={{ ...td, color: MUT }} colSpan={5}>No transactions yet.</td></tr>}
@@ -254,6 +257,6 @@ export default function SubcontractOrders() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

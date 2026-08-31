@@ -31,6 +31,7 @@
 .eng-kpi-grid > *:nth-child(n+5) { animation-delay: 180ms; }
 .eng-kpi-icon {
   width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
+  background: transparent;
   background: color-mix(in srgb, var(--kc) 15%, transparent);
   color: var(--kc); flex-shrink: 0;
 }

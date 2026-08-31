@@ -68,23 +68,67 @@ router.get('/shipments/:id/track', async (req, res) => {
     const { rows: [shipment] } = await pool.query('SELECT * FROM shipments WHERE id=$1', [req.params.id]);
     if (!shipment) return res.status(404).json({ error: 'Shipment not found' });
 
+    // Without a courier token there is still real tracking information to give:
+    // the carrier, the AWB and the dispatch/delivery milestones this app records
+    // itself. Answering 503 threw all of that away and left the drawer showing an
+    // error for what is only a missing integration. The `source` field tells the
+    // UI which of the two it is looking at.
+    const localTracking = () => ({
+      courier_partner:   shipment.courier_partner || null,
+      tracking_number:   shipment.tracking_number || null,
+      current_status:    shipment.status || 'unknown',
+      dispatch_date:     shipment.dispatch_date,
+      expected_delivery: shipment.expected_delivery,
+      actual_delivery:   shipment.actual_delivery,
+      pod_image_url:     shipment.pod_image_url,
+      checkpoints: [
+        shipment.dispatch_date    && { label: 'Dispatched', date: shipment.dispatch_date },
+        shipment.expected_delivery && { label: 'Expected delivery', date: shipment.expected_delivery },
+        shipment.actual_delivery  && { label: 'Delivered', date: shipment.actual_delivery },
+      ].filter(Boolean),
+    });
+
     if (!process.env.SHIPROCKET_TOKEN) {
-      return res.status(503).json({ error: 'Live tracking unavailable: SHIPROCKET_TOKEN is not configured.' });
+      return res.json({
+        shipment,
+        tracking: localTracking(),
+        source: 'local',
+        live_tracking_available: false,
+        note: 'Showing the milestones recorded in Pulse. Live courier tracking needs SHIPROCKET_TOKEN to be set.',
+      });
     }
     if (!shipment.tracking_number) {
-      return res.status(422).json({ error: 'Shipment has no tracking number assigned.' });
+      return res.json({
+        shipment,
+        tracking: localTracking(),
+        source: 'local',
+        live_tracking_available: false,
+        note: 'This shipment has no AWB yet, so the courier has nothing to track.',
+      });
     }
 
-    const resp = await fetch(
-      `https://apiv2.shiprocket.in/v1/external/courier/track/awb/${shipment.tracking_number}`,
-      { headers: { Authorization: `Bearer ${process.env.SHIPROCKET_TOKEN}` }, signal: AbortSignal.timeout(8000) }
-    );
+    let resp;
+    try {
+      resp = await fetch(
+        `https://apiv2.shiprocket.in/v1/external/courier/track/awb/${shipment.tracking_number}`,
+        { headers: { Authorization: `Bearer ${process.env.SHIPROCKET_TOKEN}` }, signal: AbortSignal.timeout(8000) }
+      );
+    } catch {
+      // Courier unreachable or timed out — degrade to what we know rather than
+      // failing the panel outright.
+      return res.json({
+        shipment, tracking: localTracking(), source: 'local', live_tracking_available: false,
+        note: 'The courier did not respond. Showing the milestones recorded in Pulse.',
+      });
+    }
     if (!resp.ok) {
-      const body = await resp.text().catch(() => '');
-      return res.status(502).json({ error: `Shiprocket returned ${resp.status}`, detail: body });
+      return res.json({
+        shipment, tracking: localTracking(), source: 'local', live_tracking_available: false,
+        note: `The courier returned ${resp.status}. Showing the milestones recorded in Pulse.`,
+      });
     }
     const data = await resp.json();
-    res.json({ shipment, tracking: data, source: 'shiprocket' });
+    res.json({ shipment, tracking: data, source: 'shiprocket', live_tracking_available: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

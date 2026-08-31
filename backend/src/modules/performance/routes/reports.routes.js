@@ -41,8 +41,8 @@ router.get('/summary', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
-         e.employee_code, e.name AS employee_name, e.department, e.designation,
-         e.grade, e.date_of_joining,
+         e.office_id AS employee_code, e.name AS employee_name, e.department, e.designation,
+         e.grade, e.joining_date AS date_of_joining,
          pr.review_period, pr.review_type,
          pr.self_rating, pr.manager_rating, pr.final_rating,
          pr.calibrated_rating,
@@ -75,7 +75,7 @@ router.get('/pending', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
-         e.employee_code, e.name AS employee_name, e.department, e.designation,
+         e.office_id AS employee_code, e.name AS employee_name, e.department, e.designation,
          pr.review_period, pr.status,
          CASE WHEN pr.self_rating IS NOT NULL THEN 'Done' ELSE 'Pending' END AS self_review,
          CASE WHEN pr.manager_rating IS NOT NULL THEN 'Done' ELSE 'Pending' END AS manager_review,
@@ -116,7 +116,7 @@ router.get('/rating-distribution', async (req, res) => {
            ELSE 'Unsatisfactory (<1.5)'
          END AS rating_category,
          COALESCE(pr.calibrated_rating, pr.final_rating) AS rating,
-         e.employee_code, e.name AS employee_name, e.designation
+         e.office_id AS employee_code, e.name AS employee_name, e.designation
        FROM performance_reviews pr
        JOIN employees e ON e.id = pr.employee_id
        ${where}
@@ -140,7 +140,7 @@ router.get('/increments', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
-         e.employee_code, e.name AS employee_name, e.department, e.designation, e.grade,
+         e.office_id AS employee_code, e.name AS employee_name, e.department, e.designation, e.grade,
          ir.current_ctc,
          ir.recommended_increment_pct, ir.recommended_new_ctc,
          ir.final_increment_pct, ir.final_new_ctc,
@@ -171,7 +171,7 @@ router.get('/promotions', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
-         e.employee_code, e.name AS employee_name, e.department,
+         e.office_id AS employee_code, e.name AS employee_name, e.department,
          pm.current_designation, pm.proposed_designation,
          pm.current_grade, pm.proposed_grade,
          pm.years_in_role, pm.performance_rating,
@@ -201,7 +201,7 @@ router.get('/goals', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
-         e.employee_code, e.name AS employee_name, e.department,
+         e.office_id AS employee_code, e.name AS employee_name, e.department,
          pg.goal_title, pg.goal_type, pg.category,
          pg.target_value, pg.achieved_value, pg.unit,
          pg.status, pg.progress_pct, pg.weightage,
@@ -228,7 +228,7 @@ router.get('/kra-scores', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
-         e.employee_code, e.name AS employee_name, e.department, e.designation,
+         e.office_id AS employee_code, e.name AS employee_name, e.department, e.designation,
          COALESCE(ek.custom_name, kd.name) AS kra_name,
          ek.weightage, ek.target, ek.self_score, ek.manager_score, ek.final_score,
          ek.evidence
@@ -254,7 +254,7 @@ router.get('/feedback360', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
-         e.employee_code, e.name AS employee_name, e.department,
+         e.office_id AS employee_code, e.name AS employee_name, e.department,
          COUNT(pf.id)::int AS total_requested,
          COUNT(*) FILTER (WHERE pf.status = 'submitted')::int AS submitted,
          COUNT(*) FILTER (WHERE pf.status = 'pending')::int AS pending,
@@ -263,7 +263,7 @@ router.get('/feedback360', async (req, res) => {
        LEFT JOIN performance_feedback pf ON pf.employee_id = e.id
          AND pf.company_id = $1${extra}
        WHERE e.company_id = $1 AND e.deleted_at IS NULL
-       GROUP BY e.employee_code, e.name, e.department
+       GROUP BY e.office_id, e.name, e.department
        HAVING COUNT(pf.id) > 0
        ORDER BY e.department, e.name`,
       params

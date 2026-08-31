@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
+import { ShoppingCart } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const LIGHT = '#f5f3ff';
@@ -99,22 +101,17 @@ export default function ProjectRevenueSummary({ setPage }) {
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>Loading revenue data…</div>;
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111' }}>Project Revenue Summary</h2>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>
-            Quotation → Order → Invoice → Collection → Retention tracking per project
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setPage?.('ProjectProfitabilityDashboard')}
-            style={{ padding: '8px 14px', background: LIGHT, border: `1px solid ${BORDER}`, borderRadius: 8, color: P, fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Projects"
+        title="Project Revenue Summary"
+        subtitle="Quotation → Order → Invoice → Collection → Retention tracking per project"
+        actions={<button className="plh-cta" onClick={() => setPage?.('ProjectProfitabilityDashboard')}>
             ← Dashboard
-          </button>
-        </div>
-      </div>
+          </button>}
+      />
+    }>
 
       {/* Portfolio KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
@@ -179,14 +176,14 @@ export default function ProjectRevenueSummary({ setPage }) {
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
                           <span>{pct(billingPct)}</span>
                           <div style={{ width: 50, background: '#f3f4f6', borderRadius: 3, height: 6 }}>
-                            <div style={{ width: `${Math.min(100, billingPct)}%`, background: billingPct >= 80 ? '#059669' : billingPct >= 50 ? '#d97706' : '#6b7280', height: '100%', borderRadius: 3 }} />
+                            <div style={{ width: `${Math.min(100, billingPct)}%`, background: billingPct >= 80 ? '#059669' : billingPct >= 50 ? '#6d28d9' : '#6b7280', height: '100%', borderRadius: 3 }} />
                           </div>
                         </div>
                       </td>
                       <td style={{ padding: '9px 12px', textAlign: 'right', color: isLoss ? '#dc2626' : '#059669', fontWeight: 600 }}>{cr(p.profit)}</td>
                       <td style={{ padding: '9px 12px', textAlign: 'right', color: isLoss ? '#dc2626' : '#059669', fontWeight: 600 }}>{pct(p.margin_pct)}</td>
                       <td style={{ padding: '9px 12px' }}>
-                        <span style={{ background: p.status === 'active' ? '#f0fdf4' : p.status === 'completed' ? LIGHT : '#fef9c3', color: p.status === 'active' ? '#059669' : p.status === 'completed' ? P : '#92400e', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 500 }}>
+                        <span style={{ background: p.status === 'active' ? '#f0fdf4' : p.status === 'completed' ? LIGHT : '#ede9fe', color: p.status === 'active' ? '#059669' : p.status === 'completed' ? P : '#5b21b6', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 500 }}>
                           {p.status}
                         </span>
                       </td>
@@ -224,7 +221,7 @@ export default function ProjectRevenueSummary({ setPage }) {
                   { label: 'Order Value (PO)',   value: revenue.order_value,      color: P },
                   { label: 'Invoice Value',      value: revenue.invoice_value,    color: '#2563eb' },
                   { label: 'Collection Value',   value: revenue.collection_value, color: '#059669' },
-                  { label: 'Retention',          value: revenue.retention_value,  color: '#d97706' },
+                  { label: 'Retention',          value: revenue.retention_value,  color: '#6d28d9' },
                   { label: 'Pending Collection', value: revenue.pending_collection, color: '#dc2626' },
                 ].map(item => (
                   <div key={item.label} style={{ marginBottom: 12 }}>
@@ -328,6 +325,6 @@ export default function ProjectRevenueSummary({ setPage }) {
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

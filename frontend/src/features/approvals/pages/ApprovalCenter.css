@@ -124,7 +124,7 @@
 .approvals-table tbody tr:last-child td { border-bottom: none; }
 
 .row-overdue { background: #fff8f8 !important; }
-.row-warning  { background: #fffbeb !important; }
+.row-warning  { background: #f5f3ff !important; }
 .row-new      { background: #f0fdf4 !important; }
 
 /* ── Overdue badge (inline in Request cell) ── */
@@ -149,8 +149,8 @@
 .btn-approve:hover { background: #16a34a !important; color: #fff !important; }
 .btn-reject  { background: #fee2e2; color: #dc2626; }
 .btn-reject:hover { background: #dc2626 !important; color: #fff !important; }
-.btn-escalate { background: #fef3c7; color: #92400e; }
-.btn-escalate:hover { background: #f59e0b !important; color: #fff !important; }
+.btn-escalate { background: #ede9fe; color: #5b21b6; }
+.btn-escalate:hover { background: #7c5cf0 !important; color: #fff !important; }
 .badge-view-only {
   display: inline-block; padding: 5px 10px; border-radius: 6px;
   font-size: 11px; font-weight: 600; color: #6b7280; background: #f3f4f6;

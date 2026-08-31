@@ -4,9 +4,11 @@
 //   run CRP → work-centre × time-bucket load heatmap (available vs required),
 //   drill into overloaded cells, and maintain work-centre capacity attributes.
 import { useState, useEffect, useCallback } from 'react';
+import { Factory } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB', HEAD = '#4c1d95', INK = '#374151', MUT = '#6b7280';
 const card = { background: '#fff', border: '1px solid #ede9fe', borderRadius: 12, padding: 16 };
@@ -20,8 +22,8 @@ function loadColor(pct) {
   if (pct <= 0) return { bg: '#f9fafb', fg: '#9ca3af' };
   if (pct <= 70) return { bg: '#dcfce7', fg: '#15803d' };
   if (pct <= 90) return { bg: '#d1fae5', fg: '#047857' };
-  if (pct <= 100) return { bg: '#fef3c7', fg: '#b45309' };
-  if (pct <= 150) return { bg: '#fed7aa', fg: '#c2410c' };
+  if (pct <= 100) return { bg: '#ede9fe', fg: '#6d28d9' };
+  if (pct <= 150) return { bg: '#ddd6fe', fg: '#5b21b6' };
   return { bg: '#fecaca', fg: '#b91c1c' };
 }
 
@@ -94,11 +96,18 @@ export default function CRPWorkbench() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="📊 Capacity Planning (CRP)"
+        subtitle="Work-centre load vs available capacity across the planning horizon"
+      />
+    }>
       <div style={{ marginBottom: 18, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ margin: '0 0 4px', color: HEAD, fontSize: 22 }}>📊 Capacity Planning (CRP)</h2>
-          <p style={{ margin: 0, color: MUT, fontSize: 13 }}>Work-centre load vs available capacity across the planning horizon</p>
+
+
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <label style={{ fontSize: 12, color: MUT }}>Horizon (days)
@@ -146,7 +155,7 @@ export default function CRPWorkbench() {
           ) : (
             <>
               <div style={{ display: 'flex', gap: 12, marginBottom: 10, fontSize: 11, color: MUT, flexWrap: 'wrap' }}>
-                {[['≤70%', '#dcfce7'], ['71–90%', '#d1fae5'], ['91–100%', '#fef3c7'], ['101–150%', '#fed7aa'], ['>150%', '#fecaca']].map(([l, c]) => (
+                {[['≤70%', '#dcfce7'], ['71–90%', '#d1fae5'], ['91–100%', '#ede9fe'], ['101–150%', '#ddd6fe'], ['>150%', '#fecaca']].map(([l, c]) => (
                   <span key={l} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, background: c, borderRadius: 3, display: 'inline-block' }} />{l}</span>
                 ))}
                 <span style={{ marginLeft: 'auto' }}>Cell = load% · click for detail</span>
@@ -223,7 +232,7 @@ export default function CRPWorkbench() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

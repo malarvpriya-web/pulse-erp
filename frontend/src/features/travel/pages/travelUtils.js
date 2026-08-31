@@ -1,5 +1,5 @@
 export const STATUS_COLOR = {
-  Pending:   { bg:'#fef3c7', color:'#92400e' },
+  Pending:   { bg:'#ede9fe', color:'#5b21b6' },
   Approved:  { bg:'#d1fae5', color:'#065f46' },
   Rejected:  { bg:'#fee2e2', color:'#991b1b' },
   Completed: { bg:'#ede9fe', color:'#5b21b6' },
@@ -7,7 +7,7 @@ export const STATUS_COLOR = {
   Draft:     { bg:'#f3f4f6', color:'#374151' },
   Submitted: { bg:'#dbeafe', color:'#1e40af' },
   Paid:      { bg:'#ede9fe', color:'#5b21b6' },
-  'Pending Finance':   { bg:'#fef3c7', color:'#92400e' },
+  'Pending Finance':   { bg:'#ede9fe', color:'#5b21b6' },
   'Pending Manager':   { bg:'#dbeafe', color:'#1e40af' },
   'Finance Rejected':  { bg:'#fee2e2', color:'#991b1b' },
   Disbursed:           { bg:'#d1fae5', color:'#065f46' },

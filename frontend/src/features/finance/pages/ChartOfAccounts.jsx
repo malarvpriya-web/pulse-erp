@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Plus, Search, ChevronRight, ChevronDown, Edit2, ToggleLeft,
   ToggleRight, Download, Upload, X, CheckCircle, AlertTriangle,
-  FolderOpen, Folder, FileText, TrendingUp, TrendingDown,
-  IndianRupee, CreditCard, BarChart2, Briefcase
+  FolderOpen, Folder, FileText, TrendingUp, TrendingDown, IndianRupee,
+  CreditCard, BarChart2, Briefcase, Contact,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmt } from '../financeUtils';
 import './ChartOfAccounts.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── constants ───────────────────────────────────────────────────────────────
 const ACCOUNT_TYPES = ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'];
@@ -17,7 +18,7 @@ const TYPE_META = {
   Liability: { color:'#ef4444', bg:'#fff8f8', icon: CreditCard,   desc:'Amounts owed to others' },
   Equity:    { color:'#8b5cf6', bg:'#f5f3ff', icon: BarChart2,    desc:'Owner\'s stake in the business' },
   Revenue:   { color:'#10b981', bg:'#f0fdf4', icon: TrendingUp,   desc:'Income from business operations' },
-  Expense:   { color:'#f59e0b', bg:'#fffbeb', icon: TrendingDown, desc:'Costs incurred in operations' },
+  Expense:   { color:'#7c5cf0', bg:'#f5f3ff', icon: TrendingDown, desc:'Costs incurred in operations' },
 };
 
 const TYPE_CODES = {
@@ -280,7 +281,13 @@ export default function ChartOfAccounts() {
   };
 
   return (
-    <div className="coa-root">
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="Finance"
+        title="Chart of Accounts"
+      />
+    }>
 
       {/* Toast */}
       {toast && (
@@ -293,7 +300,7 @@ export default function ChartOfAccounts() {
       {/* Header */}
       <div className="coa-header">
         <div>
-          <h2 className="coa-title">Chart of Accounts</h2>
+
           <p className="coa-sub">{flat.length} accounts · {totalActive} active · {totalInactive} inactive</p>
         </div>
         <div className="coa-header-r">
@@ -636,6 +643,6 @@ export default function ChartOfAccounts() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Clock, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Clock, AlertTriangle, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 export default function OrderPolicy() {
   const [stages, setStages] = useState([]);
@@ -21,13 +22,14 @@ export default function OrderPolicy() {
   const totalDays = stages.reduce((s, st) => s + (st.sla_days || 0), 0);
 
   return (
-    <div style={{ padding: 24 }}>
-      <div className="page-header" style={{ marginBottom: 24 }}>
-        <h1 className="page-title">Order to Delivery Cycle</h1>
-        <p className="page-subtitle">
-          Manifest Technologies — standard {totalDays}-day manufacturing and delivery workflow
-        </p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title="Order to Delivery Cycle"
+      />
+    }>
+
 
       {loading && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#9ca3af', padding: 40 }}>
@@ -70,7 +72,7 @@ export default function OrderPolicy() {
                     </span>
                   </td>
                   <td style={{ padding: '10px 16px', textAlign: 'center' }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#fff7ed', color: '#c2410c', padding: '2px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#fff7ed', color: '#5b21b6', padding: '2px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600 }}>
                       <AlertTriangle size={11} />{st.escalate_after_days}d
                     </span>
                   </td>
@@ -87,6 +89,6 @@ export default function OrderPolicy() {
           </table>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { FileText, Download, RefreshCw, TrendingUp, IndianRupee, CheckSquare } from 'lucide-react';
+import {
+  FileText, Download, RefreshCw, TrendingUp, IndianRupee, CheckSquare,
+  BarChart3,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { getProjects } from '../services/projectsService';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = (n) => {
   const v = parseFloat(n || 0);
@@ -12,7 +16,7 @@ const fmt = (n) => {
 
 const pct = (n) => `${parseFloat(n || 0).toFixed(1)}%`;
 
-const STATUS_COLOR = { active: '#2563eb', completed: '#15803d', on_hold: '#ca8a04', cancelled: '#dc2626' };
+const STATUS_COLOR = { active: '#2563eb', completed: '#15803d', on_hold: '#7c5cf0', cancelled: '#dc2626' };
 
 export default function ProjectReports({ setPage }) {
   const [projects,   setProjects]   = useState([]);
@@ -77,21 +81,22 @@ export default function ProjectReports({ setPage }) {
   const selProject = projects.find(p => String(p.id) === String(selId));
 
   return (
-    <div style={{ padding: '20px 24px' }}>
-      {toast && <div style={{ position: 'fixed', top: 16, right: 16, padding: '10px 16px', borderRadius: 8, zIndex: 9999, background: toast.type === 'error' ? '#fef2f2' : '#f0fdf4', color: toast.type === 'error' ? '#dc2626' : '#15803d', border: `1px solid ${toast.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{toast.msg}</div>}
-
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Project Reports</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Status reports, P&L, milestone schedule, risk register</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={loadReport} disabled={!selId || loading} style={{ padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', cursor: 'pointer' }}><RefreshCw size={14} /></button>
-          <button onClick={exportCSV} disabled={!data} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Projects"
+        title="Project Reports"
+        subtitle="Status reports, P&L, milestone schedule, risk register"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={loadReport} disabled={!selId || loading}><RefreshCw size={14} /></button>
+          <button className="plh-cta" onClick={exportCSV} disabled={!data}>
             <Download size={14} /> Export CSV
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {toast && <div style={{ position: 'fixed', top: 16, right: 16, padding: '10px 16px', borderRadius: 8, zIndex: 9999, background: toast.type === 'error' ? '#fef2f2' : '#f0fdf4', color: toast.type === 'error' ? '#dc2626' : '#15803d', border: `1px solid ${toast.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{toast.msg}</div>}
+
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
         <select value={selId} onChange={e => setSelId(e.target.value)} style={{ flex: 1, padding: '9px 12px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', color: 'var(--color-text-primary)', fontSize: 14 }}>
@@ -144,7 +149,7 @@ export default function ProjectReports({ setPage }) {
                       { label: 'Contract Value', value: fmt(project.contract_value || project.budget_amount), color: '#0369a1' },
                       { label: 'Budget Spent', value: pct(project.budget_spent || r?.budget_utilization), color: '#6B3FDB' },
                       { label: 'Progress', value: pct(project.progress_percentage || r?.progress_percentage), color: '#15803d' },
-                      { label: 'Lifecycle Stage', value: (r?.current_stage || project.current_stage || '—').replace(/_/g, ' '), color: '#ca8a04' },
+                      { label: 'Lifecycle Stage', value: (r?.current_stage || project.current_stage || '—').replace(/_/g, ' '), color: '#7c5cf0' },
                     ].map(k => (
                       <div key={k.label} style={{ textAlign: 'center', padding: '12px 8px', background: 'var(--color-background)', borderRadius: 8 }}>
                         <div style={{ fontSize: 18, fontWeight: 700, color: k.color }}>{k.value}</div>
@@ -160,7 +165,7 @@ export default function ProjectReports({ setPage }) {
                     {r.recent_milestones.map((m, i) => (
                       <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--color-border-tertiary)', fontSize: 13 }}>
                         <span>{m.name}</span>
-                        <span style={{ color: m.status === 'completed' ? '#15803d' : '#ca8a04', fontWeight: 600 }}>{m.status}</span>
+                        <span style={{ color: m.status === 'completed' ? '#15803d' : '#7c5cf0', fontWeight: 600 }}>{m.status}</span>
                       </div>
                     ))}
                   </div>
@@ -189,7 +194,7 @@ export default function ProjectReports({ setPage }) {
                     { label: 'Contract Value', value: c.contract_value, color: '#0369a1' },
                     { label: 'Total Budget', value: c.total_budget, color: '#6366f1' },
                     { label: 'Actual Cost', value: c.actual_cost, color: '#dc2626' },
-                    { label: 'Labour Cost', value: c.labour_cost, color: '#ca8a04' },
+                    { label: 'Labour Cost', value: c.labour_cost, color: '#7c5cf0' },
                     { label: 'Material Cost', value: c.material_cost, color: '#6B3FDB' },
                     { label: 'Overhead', value: c.overhead, color: '#9ca3af' },
                   ].map(k => (
@@ -267,7 +272,7 @@ export default function ProjectReports({ setPage }) {
                           <td style={{ padding: '10px 12px', fontSize: 13, fontWeight: 500 }}>{m.name}</td>
                           <td style={{ padding: '10px 12px', fontSize: 12, color: '#6b7280' }}>{m.due_date ? new Date(m.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                           <td style={{ padding: '10px 12px', fontSize: 13, fontWeight: 600, color: '#0369a1' }}>{fmt(m.amount)}</td>
-                          <td style={{ padding: '10px 12px' }}>{m.billing_milestone ? <span style={{ padding: '2px 6px', borderRadius: 4, fontSize: 11, background: '#fef9c3', color: '#ca8a04', fontWeight: 600 }}>Billing</span> : <span style={{ fontSize: 11, color: '#9ca3af' }}>—</span>}</td>
+                          <td style={{ padding: '10px 12px' }}>{m.billing_milestone ? <span style={{ padding: '2px 6px', borderRadius: 4, fontSize: 11, background: '#ede9fe', color: '#7c5cf0', fontWeight: 600 }}>Billing</span> : <span style={{ fontSize: 11, color: '#9ca3af' }}>—</span>}</td>
                           <td style={{ padding: '10px 12px' }}>
                             <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600, background: m.status === 'completed' ? '#dcfce7' : m.status === 'in_progress' ? '#e0f2fe' : '#f3f4f6', color: m.status === 'completed' ? '#15803d' : m.status === 'in_progress' ? '#0369a1' : '#6b7280' }}>
                               {(m.status || 'pending').replace(/_/g, ' ')}
@@ -295,7 +300,7 @@ export default function ProjectReports({ setPage }) {
                   {[
                     { label: 'Total Risks', value: risks.length, color: '#6366f1', bg: '#eef2ff' },
                     { label: 'High', value: high, color: '#dc2626', bg: '#fef2f2' },
-                    { label: 'Medium', value: med, color: '#ea580c', bg: '#fff7ed' },
+                    { label: 'Medium', value: med, color: '#6d28d9', bg: '#fff7ed' },
                     { label: 'Low', value: low, color: '#15803d', bg: '#f0fdf4' },
                   ].map(k => (
                     <div key={k.label} style={{ background: k.bg, borderRadius: 8, padding: '14px 16px', border: `1px solid ${k.color}22` }}>
@@ -309,7 +314,7 @@ export default function ProjectReports({ setPage }) {
                     <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>No risks registered for this project</div>
                   ) : risks.map(r => {
                     const score = r.risk_score || (r.probability * r.impact);
-                    const riskColor = score >= 15 ? '#dc2626' : score >= 8 ? '#ea580c' : '#15803d';
+                    const riskColor = score >= 15 ? '#dc2626' : score >= 8 ? '#6d28d9' : '#15803d';
                     return (
                       <div key={r.id} style={{ background: 'var(--color-background-secondary)', border: '1px solid var(--color-border-tertiary)', borderRadius: 8, padding: '14px 16px', borderLeft: `4px solid ${riskColor}` }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -324,7 +329,7 @@ export default function ProjectReports({ setPage }) {
                           </div>
                           <div style={{ textAlign: 'right', fontSize: 12, color: '#9ca3af', flexShrink: 0, marginLeft: 16 }}>
                             <div>P: {r.probability} × I: {r.impact}</div>
-                            <div style={{ color: r.status === 'closed' ? '#15803d' : '#ca8a04', fontWeight: 600 }}>{r.status}</div>
+                            <div style={{ color: r.status === 'closed' ? '#15803d' : '#7c5cf0', fontWeight: 600 }}>{r.status}</div>
                           </div>
                         </div>
                       </div>
@@ -336,6 +341,6 @@ export default function ProjectReports({ setPage }) {
           })()}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

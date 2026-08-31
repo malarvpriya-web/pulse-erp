@@ -5,8 +5,13 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { Package, Ticket, FileText, Calendar, AlertCircle, CheckCircle, Clock, Star, Plus, X, ChevronRight, Download, Shield, Wrench } from 'lucide-react';
+import {
+  Package, Ticket, FileText, Calendar, AlertCircle, CheckCircle, Clock,
+  Star, Plus, X, ChevronRight, Download, Shield, Wrench,
+  LayoutDashboard,
+} from 'lucide-react';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 const portalApi = axios.create({ baseURL: API_BASE });
@@ -159,69 +164,23 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
   });
 
   return (
-    <div style={{ minHeight:'100vh', background:'#f8f7ff' }}>
-      {/* Header */}
-      <div style={{ background:'linear-gradient(135deg,#6B3FDB,#a855f7)', padding:'16px 28px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <Shield size={24} color="#fff" />
-          <div>
-            <div style={{ fontSize:16, fontWeight:700, color:'#fff' }}>Customer Portal</div>
-            <div style={{ fontSize:12, color:'rgba(255,255,255,.7)' }}>Welcome, {user?.customer_name}</div>
-          </div>
-        </div>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          <button onClick={() => setShowRaiseTicket(true)} style={{ background:'rgba(255,255,255,.2)', color:'#fff', border:'1px solid rgba(255,255,255,.3)', borderRadius:8, padding:'7px 14px', fontSize:13, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
-            <Plus size={14}/>Raise Ticket
-          </button>
-          <button onClick={logout} style={{ background:'rgba(255,255,255,.15)', color:'#fff', border:'1px solid rgba(255,255,255,.2)', borderRadius:8, padding:'7px 14px', fontSize:13, cursor:'pointer' }}>
-            Sign Out
-          </button>
-        </div>
-      </div>
-
-      {/* Toast */}
-      {toastMsg && (
-        <div style={{ position:'fixed', top:20, right:20, background:'#111', color:'#fff', borderRadius:10, padding:'12px 20px', fontSize:13, zIndex:9999, boxShadow:'0 4px 20px rgba(0,0,0,.3)' }}>
-          {toastMsg}
-        </div>
-      )}
-
-      <div style={{ maxWidth:1100, margin:'0 auto', padding:'16px 18px 20px' }}>
-        {/* Summary Cards */}
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:12 }}>
-          {[
-            { icon:<Package size={18}/>, label:'Equipment', value:equipment.length, color:'#6B3FDB', bg:'#f5f3ff' },
-            { icon:<Ticket size={18}/>, label:'Open Tickets', value:openTickets.length, color:'#dc2626', bg:'#fee2e2' },
-            { icon:<FileText size={18}/>, label:'Documents', value:documents.length, color:'#059669', bg:'#ecfdf5' },
-            { icon:<AlertCircle size={18}/>, label:'Warranty Expiring', value:expiring.length, color:'#d97706', bg:'#fffbeb' },
-          ].map((s, i) => (
-            <div key={s.label} className="dk-anim" style={{ background:'#fff', borderRadius:11, border:'1px solid #f0f0f4', padding:'12px 14px', display:'flex', gap:11, alignItems:'center', '--dk-i': i }}>
-              <div style={{ width:34, height:34, borderRadius:10, background:s.bg, display:'flex', alignItems:'center', justifyContent:'center', color:s.color, flexShrink:0 }}>
-                {s.icon}
-              </div>
-              <div>
-                <div style={{ fontSize:20, fontWeight:800, color:'#111' }}>{s.value}</div>
-                <div style={{ fontSize:11.5, color:'#6b7280' }}>{s.label}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Tabs */}
-        <div style={{ display:'flex', gap:4, marginBottom:20, borderBottom:'2px solid #f0f0f4', paddingBottom:0 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Service Desk"
+        title={selectedEquip.equipment_name}
+        subtitle="No service history yet"
+        actions={<>
           {[['equipment','My Equipment','📦'],['tickets','Support Tickets','🎫'],['documents','Documents','📄'],['amc','AMC & Service','🔧']].map(([t,l,ic]) => (
-            <button key={t} onClick={() => setTab(t)} style={{ padding:'10px 20px', border:'none', cursor:'pointer', background:'none', fontSize:13, fontWeight:tab===t?700:500, color:tab===t?'#6B3FDB':'#6b7280', borderBottom:tab===t?'2px solid #6B3FDB':'2px solid transparent', marginBottom:-2 }}>
+            <button className="plh-cta plh-cta--ghost" key={t} onClick={() => setTab(t)}>
               {ic} {l}
             </button>
           ))}
-        </div>
-
-        {/* Equipment Tab */}
-        {tab === 'equipment' && (
+          {tab === 'equipment' && (
           <div>
             {selectedEquip ? (
               <div>
-                <button onClick={() => setSelectedEquip(null)} style={{ background:'none', border:'none', cursor:'pointer', color:'#6B3FDB', fontSize:13, marginBottom:16, display:'flex', alignItems:'center', gap:4 }}>
+                <button className="plh-cta plh-cta--ghost" onClick={() => setSelectedEquip(null)}>
                   ← Back to equipment list
                 </button>
                 <div style={CARD}>
@@ -264,7 +223,7 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
                             <td style={{ padding:'8px 12px', fontWeight:700, color:'#6B3FDB' }}>{t.ticket_number}</td>
                             <td style={{ padding:'8px 12px' }}>{t.subject}</td>
                             <td style={{ padding:'8px 12px' }}>
-                              <span style={{ background:{open:'#fef3c7',closed:'#d1fae5',resolved:'#d1fae5'}[t.status]||'#f3f4f6', color:{open:'#92400e',closed:'#065f46',resolved:'#065f46'}[t.status]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>{t.status}</span>
+                              <span style={{ background:{open:'#ede9fe',closed:'#d1fae5',resolved:'#d1fae5'}[t.status]||'#f3f4f6', color:{open:'#5b21b6',closed:'#065f46',resolved:'#065f46'}[t.status]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>{t.status}</span>
                             </td>
                             <td style={{ padding:'8px 12px', color:'#6b7280' }}>{new Date(t.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
                             <td style={{ padding:'8px 12px', color:'#6b7280' }}>{t.resolved_at ? new Date(t.resolved_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
@@ -275,13 +234,12 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
                   ) : <div style={{ color:'#9ca3af', fontSize:13, padding:'16px 0' }}>No service history yet</div>}
 
                   {/* Documents */}
-                  {(selectedEquip.documents || []).length > 0 && (
+                  {(selectedEquip.documents || []).length> 0 && (
                     <>
                       <h3 style={{ fontSize:15, fontWeight:700, margin:'20px 0 12px' }}>Documents</h3>
                       <div style={{ display:'flex', flexWrap:'wrap', gap:10 }}>
                         {selectedEquip.documents.map(d => (
-                          <a key={d.id} href={d.external_url || d.file_path} target="_blank" rel="noreferrer"
-                            style={{ background:'#f5f3ff', border:'1px solid #e9e4ff', borderRadius:8, padding:'8px 14px', fontSize:12, fontWeight:600, color:'#6B3FDB', textDecoration:'none', display:'flex', alignItems:'center', gap:6 }}>
+                          <a className="plh-cta plh-cta--ghost" key={d.id} href={d.external_url || d.file_path} target="_blank" rel="noreferrer">
                             <Download size={12}/>{d.document_name}
                           </a>
                         ))}
@@ -323,12 +281,10 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
             )}
           </div>
         )}
-
-        {/* Tickets Tab */}
-        {tab === 'tickets' && (
+          {tab === 'tickets' && (
           <div>
             <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14 }}>
-              <button onClick={() => setShowRaiseTicket(true)} style={BTN()}><Plus size={14}/>Raise New Ticket</button>
+              <button className="plh-cta plh-cta--ghost" onClick={() => setShowRaiseTicket(true)}><Plus size={14}/>Raise New Ticket</button>
             </div>
             <div style={CARD}>
               {tickets.length ? (
@@ -340,10 +296,10 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
                         <td style={{ padding:'10px 12px', fontWeight:700, color:'#6B3FDB' }}>{t.ticket_number}</td>
                         <td style={{ padding:'10px 12px', color:'#111', maxWidth:240, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.subject}</td>
                         <td style={{ padding:'10px 12px' }}>
-                          <span style={{ background:{high:'#fee2e2',medium:'#fef3c7',low:'#f0fdf4'}[t.priority]||'#f3f4f6', color:{high:'#991b1b',medium:'#92400e',low:'#166534'}[t.priority]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>{t.priority}</span>
+                          <span style={{ background:{high:'#fee2e2',medium:'#ede9fe',low:'#f0fdf4'}[t.priority]||'#f3f4f6', color:{high:'#991b1b',medium:'#5b21b6',low:'#166534'}[t.priority]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>{t.priority}</span>
                         </td>
                         <td style={{ padding:'10px 12px' }}>
-                          <span style={{ background:{open:'#fef3c7',in_progress:'#dbeafe',resolved:'#d1fae5',closed:'#d1fae5'}[t.status]||'#f3f4f6', color:{open:'#92400e',in_progress:'#1e40af',resolved:'#065f46',closed:'#065f46'}[t.status]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>{t.status.replace('_',' ')}</span>
+                          <span style={{ background:{open:'#ede9fe',in_progress:'#dbeafe',resolved:'#d1fae5',closed:'#d1fae5'}[t.status]||'#f3f4f6', color:{open:'#5b21b6',in_progress:'#1e40af',resolved:'#065f46',closed:'#065f46'}[t.status]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>{t.status.replace('_',' ')}</span>
                         </td>
                         <td style={{ padding:'10px 12px', color:'#6b7280' }}>{t.equipment_name || '—'}</td>
                         <td style={{ padding:'10px 12px', color:'#6b7280' }}>{new Date(t.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
@@ -351,11 +307,11 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
                           {['resolved','closed'].includes(t.status) && !t.customer_rating ? (
                             <div style={{ display:'flex', gap:3 }}>
                               {[1,2,3,4,5].map(s => (
-                                <button key={s} onClick={() => rateTicket(t.id, s)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:16, color:'#d97706' }}>⭐</button>
+                                <button className="plh-cta plh-cta--ghost" key={s} onClick={() => rateTicket(t.id, s)}>⭐</button>
                               ))}
                             </div>
                           ) : t.customer_rating ? (
-                            <span style={{ color:'#d97706', fontWeight:700 }}>{'⭐'.repeat(t.customer_rating)} ({t.customer_rating}/5)</span>
+                            <span style={{ color:'#6d28d9', fontWeight:700 }}>{'⭐'.repeat(t.customer_rating)} ({t.customer_rating}/5)</span>
                           ) : '—'}
                         </td>
                       </tr>
@@ -371,14 +327,12 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
             </div>
           </div>
         )}
-
-        {/* Documents Tab */}
-        {tab === 'documents' && (
+          {tab === 'documents' && (
           <div style={CARD}>
             {documents.length ? (
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))', gap:12 }}>
                 {documents.map(d => (
-                  <a key={d.id} href={d.external_url || d.file_path} target="_blank" rel="noreferrer" style={{ display:'block', background:'#f9fafb', border:'1px solid #f0f0f4', borderRadius:10, padding:'16px', textDecoration:'none', transition:'border-color .15s' }}
+                  <a className="plh-cta" key={d.id} href={d.external_url || d.file_path} target="_blank" rel="noreferrer" 
                     onMouseEnter={e => e.currentTarget.style.borderColor='#6B3FDB'} onMouseLeave={e => e.currentTarget.style.borderColor='#f0f0f4'}>
                     <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
                       <div style={{ width:36, height:36, borderRadius:8, background:'#f5f3ff', display:'flex', alignItems:'center', justifyContent:'center', color:'#6B3FDB' }}>
@@ -402,14 +356,34 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
             )}
           </div>
         )}
-
-        {/* AMC & Service History Tab */}
-        {tab === 'amc' && (
-          <div style={CARD}>
-            <p style={{ textAlign:'center', color:'#9ca3af', fontSize:13 }}>AMC visit history will appear here as your service provider logs visits.</p>
+        </>}
+      />
+    }>
+      <div style={{ background:'linear-gradient(135deg,#6B3FDB,#a855f7)', padding:'16px 28px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <Shield size={24} color="#fff" />
+          <div>
+            <div style={{ fontSize:16, fontWeight:700, color:'#fff' }}>Customer Portal</div>
+            <div style={{ fontSize:12, color:'rgba(255,255,255,.7)' }}>Welcome, {user?.customer_name}</div>
           </div>
-        )}
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <button onClick={() => setShowRaiseTicket(true)} style={{ background:'rgba(255,255,255,.2)', color:'#fff', border:'1px solid rgba(255,255,255,.3)', borderRadius:8, padding:'7px 14px', fontSize:13, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
+            <Plus size={14}/>Raise Ticket
+          </button>
+          <button onClick={logout} style={{ background:'rgba(255,255,255,.15)', color:'#fff', border:'1px solid rgba(255,255,255,.2)', borderRadius:8, padding:'7px 14px', fontSize:13, cursor:'pointer' }}>
+            Sign Out
+          </button>
+        </div>
       </div>
+
+      {/* Toast */}
+      {toastMsg && (
+        <div style={{ position:'fixed', top:20, right:20, background:'#111', color:'#fff', borderRadius:10, padding:'12px 20px', fontSize:13, zIndex:9999, boxShadow:'0 4px 20px rgba(0,0,0,.3)' }}>
+          {toastMsg}
+        </div>
+      )}
+
 
       {/* Raise Ticket Modal */}
       {showRaiseTicket && (
@@ -460,6 +434,6 @@ export default function CustomerPortalDashboard({ companyId: propCompanyId }) {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

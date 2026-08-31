@@ -161,9 +161,19 @@ const performanceRepository = {
   },
 
   /* ───────── Analytics ───────── */
-  async getTopPerformers(limit = 10, companyId) {
+  /**
+   * @param {number} limit
+   * @param {number|null} companyId
+   * @param {{cycle_id?: number|null, department?: string|null}} [filters]
+   *   dashboard filter bar values (see shared/dashboardFilters.js)
+   */
+  async getTopPerformers(limit = 10, companyId, filters = {}) {
+    const { cycle_id = null, department = null } = filters;
     const params = [Number(limit)];
     const cw = cidWhere(companyId, params, 'pr');
+    let extra = '';
+    if (cycle_id)   { params.push(cycle_id);   extra += ` AND pr.review_cycle_id=$${params.length}`; }
+    if (department) { params.push(department); extra += ` AND e.department=$${params.length}`; }
     const result = await pool.query(`
       SELECT
         e.id, e.name, e.department, e.designation,
@@ -171,7 +181,7 @@ const performanceRepository = {
         COUNT(pr.id) AS review_count
       FROM employees e
       JOIN performance_reviews pr ON e.id = pr.employee_id
-      WHERE pr.status = 'completed' AND pr.deleted_at IS NULL${cw}
+      WHERE pr.status = 'completed' AND pr.deleted_at IS NULL${cw}${extra}
       GROUP BY e.id, e.name, e.department, e.designation
       HAVING AVG(COALESCE(pr.calibrated_rating, pr.final_rating)) >= 4.0
       ORDER BY avg_rating DESC
@@ -180,10 +190,17 @@ const performanceRepository = {
     return result.rows;
   },
 
-  async getDepartmentPerformance(companyId) {
+  async getDepartmentPerformance(companyId, filters = {}) {
+    const { cycle_id = null, department = null } = filters;
     const params = [];
     const cw_pr = cidWhere(companyId, params, 'pr');
     const cw_e  = companyId ? ` AND e.company_id=$${params.length}` : '';
+    // Cycle narrows the LEFT JOIN (keeping departments with no reviews visible);
+    // department narrows the outer WHERE.
+    let joinExtra = '';
+    if (cycle_id)   { params.push(cycle_id);   joinExtra += ` AND pr.review_cycle_id=$${params.length}`; }
+    let whereExtra = '';
+    if (department) { params.push(department); whereExtra += ` AND e.department=$${params.length}`; }
     const result = await pool.query(`
       SELECT
         e.department,
@@ -194,17 +211,23 @@ const performanceRepository = {
       LEFT JOIN performance_reviews pr
         ON e.id = pr.employee_id
         AND pr.status = 'completed'
-        AND pr.deleted_at IS NULL${cw_pr}
-      WHERE e.deleted_at IS NULL${cw_e}
+        AND pr.deleted_at IS NULL${cw_pr}${joinExtra}
+      WHERE e.deleted_at IS NULL${cw_e}${whereExtra}
       GROUP BY e.department
       ORDER BY avg_rating DESC NULLS LAST
     `, params);
     return result.rows;
   },
 
-  async getGoalCompletionRate(companyId) {
+  async getGoalCompletionRate(companyId, filters = {}) {
+    const { cycle_id = null, department = null } = filters;
     const params = [];
     const cw = cidWhere(companyId, params);
+    let extra = '';
+    // performance_goals names it `cycle_id`, not `review_cycle_id`.
+    if (cycle_id)   { params.push(cycle_id);   extra += ` AND cycle_id=$${params.length}`; }
+    // No department column here — match through employees.
+    if (department) { params.push(department); extra += ` AND employee_id IN (SELECT id FROM employees WHERE department=$${params.length})`; }
     const result = await pool.query(`
       SELECT
         review_period,
@@ -215,7 +238,7 @@ const performanceRepository = {
           2
         ) AS completion_rate
       FROM performance_goals
-      WHERE deleted_at IS NULL${cw}
+      WHERE deleted_at IS NULL${cw}${extra}
       GROUP BY review_period
       ORDER BY review_period DESC
     `, params);

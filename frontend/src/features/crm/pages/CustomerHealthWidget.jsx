@@ -8,13 +8,13 @@ import api from '@/services/api/client';
 const STATUS_STYLE = {
   Excellent: { color: '#16a34a', bg: '#dcfce7', ring: '#16a34a' },
   Good:      { color: '#2563eb', bg: '#dbeafe', ring: '#2563eb' },
-  Watchlist: { color: '#d97706', bg: '#fef3c7', ring: '#d97706' },
+  Watchlist: { color: '#6d28d9', bg: '#ede9fe', ring: '#6d28d9' },
   Critical:  { color: '#dc2626', bg: '#fee2e2', ring: '#dc2626' },
 };
 
 const RISK_DOT = {
   low:      { color: '#16a34a', label: 'Low Risk' },
-  medium:   { color: '#d97706', label: 'Medium Risk' },
+  medium:   { color: '#6d28d9', label: 'Medium Risk' },
   high:     { color: '#dc2626', label: 'High Risk' },
   critical: { color: '#9d174d', label: 'Critical Risk' },
 };
@@ -177,7 +177,7 @@ export default function CustomerHealthWidget({ customerId, compact = false }) {
             ['Risk',        health.risk_score       || 0,  5],
           ].map(([label, val, max]) => {
             const pct   = Math.min(100, (val / max) * 100);
-            const color = pct >= 80 ? '#16a34a' : pct >= 60 ? '#2563eb' : pct >= 40 ? '#d97706' : '#dc2626';
+            const color = pct >= 80 ? '#16a34a' : pct >= 60 ? '#2563eb' : pct >= 40 ? '#6d28d9' : '#dc2626';
             return (
               <div key={label} style={{ marginBottom: 6 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>

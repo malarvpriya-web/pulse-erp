@@ -14,6 +14,7 @@ import {
   getSectionForPage, canEmployeeAccessPage, canRoleAccessAdminOnlyPage,
   canRoleAccessSuperAdminPage, canRoleAccessPageBySection, canHrAccessPage,
   canFinanceAccessPage, canHrExecAccessPage, canManagerAccessPage,
+  isFinanceSelfServicePage,
 } from '@/config/menuCatalog';
 import './Layout.css';
 
@@ -135,7 +136,16 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
       return <Unauthorized setPage={setPage} />;
     }
     if (route.module) {
-      const allowed = role === 'super_admin' || role === 'admin' || hasPermission(route.module, 'view');
+      // finance/finance_manager/accounts_exec hold no real role_permissions
+      // grant on attendance/leaves/timesheets by design (self-service, not
+      // full module access) — without this carve-out this generic gate would
+      // silently re-block the exact self-service pages the checks above just
+      // approved. See isFinanceSelfServicePage's own comment for the full
+      // mechanism.
+      const financeSelfService =
+        (role === 'finance' || role === 'finance_manager' || role === 'accounts_exec') &&
+        isFinanceSelfServicePage(page);
+      const allowed = role === 'super_admin' || role === 'admin' || financeSelfService || hasPermission(route.module, 'view');
       if (!allowed) {
         const Unauthorized = ROUTES['Unauthorized'].component;
         return <Unauthorized setPage={setPage} />;

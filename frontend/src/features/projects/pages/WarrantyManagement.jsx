@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ShieldCheck, Plus, X, RefreshCw, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, Plus, X, RefreshCw, AlertTriangle, LifeBuoy } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import api from '@/services/api/client';
 import { getProjects } from '../services/projectsService';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   active:  { bg: '#dcfce7', color: '#15803d', label: 'Under Warranty' },
   expired: { bg: '#fee2e2', color: '#dc2626', label: 'Expired' },
-  claimed: { bg: '#fef9c3', color: '#ca8a04', label: 'Claimed' },
+  claimed: { bg: '#ede9fe', color: '#7c5cf0', label: 'Claimed' },
 };
 
 const empty = () => ({
@@ -94,7 +95,20 @@ export default function WarrantyManagement({ setPage }) {
   }).length;
 
   return (
-    <div style={{ padding: '20px 24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Projects"
+        title="Warranty Management"
+        subtitle="Track product warranties, expiry dates, and convert to AMC contracts"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          <button className="plh-cta" onClick={openCreate}>
+            <Plus size={14} /> Add Warranty
+          </button>
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingConvertAMC}
         title="Convert to AMC"
@@ -106,24 +120,12 @@ export default function WarrantyManagement({ setPage }) {
       />
       {toast && <div style={{ position: 'fixed', top: 16, right: 16, padding: '10px 16px', borderRadius: 8, zIndex: 9999, background: toast.type === 'error' ? '#fef2f2' : '#f0fdf4', color: toast.type === 'error' ? '#dc2626' : '#15803d', border: `1px solid ${toast.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{toast.msg}</div>}
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Warranty Management</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Track product warranties, expiry dates, and convert to AMC contracts</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{ padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', cursor: 'pointer' }}><RefreshCw size={14} /></button>
-          <button onClick={openCreate} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: '#0d9488', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
-            <Plus size={14} /> Add Warranty
-          </button>
-        </div>
-      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
         {[
           { label: 'Total', value: warranties.length, color: '#6366f1', bg: '#eef2ff' },
           { label: 'Under Warranty', value: active, color: '#15803d', bg: '#f0fdf4' },
-          { label: 'Expiring (90d)', value: expiringSoon, color: '#ea580c', bg: '#fff7ed' },
+          { label: 'Expiring (90d)', value: expiringSoon, color: '#6d28d9', bg: '#fff7ed' },
           { label: 'Expired', value: expired, color: '#dc2626', bg: '#fef2f2' },
         ].map(k => (
           <div key={k.label} style={{ background: k.bg, borderRadius: 8, padding: '14px 16px', border: `1px solid ${k.color}22` }}>
@@ -147,12 +149,12 @@ export default function WarrantyManagement({ setPage }) {
             const daysLeft = w.warranty_end_date ? Math.ceil((new Date(w.warranty_end_date) - new Date()) / 86400000) : null;
             const expSoon = daysLeft !== null && daysLeft > 0 && daysLeft <= 90;
             return (
-              <div key={w.id} style={{ background: 'var(--color-background-secondary)', border: `1px solid ${expSoon ? '#fed7aa' : 'var(--color-border-tertiary)'}`, borderRadius: 10, padding: '16px 18px', borderLeft: `4px solid ${sm.color}` }}>
+              <div key={w.id} style={{ background: 'var(--color-background-secondary)', border: `1px solid ${expSoon ? '#ddd6fe' : 'var(--color-border-tertiary)'}`, borderRadius: 10, padding: '16px 18px', borderLeft: `4px solid ${sm.color}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                       <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: sm.bg, color: sm.color }}>{sm.label}</span>
-                      {expSoon && <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#fff7ed', color: '#ea580c' }}><AlertTriangle size={10} /> Expiring in {daysLeft}d</span>}
+                      {expSoon && <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#fff7ed', color: '#6d28d9' }}><AlertTriangle size={10} /> Expiring in {daysLeft}d</span>}
                       <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, background: '#f0fdf4', color: '#15803d' }}>{(w.warranty_type || 'comprehensive').replace(/_/g, ' ')}</span>
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
@@ -249,6 +251,6 @@ export default function WarrantyManagement({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -161,8 +161,11 @@ class BillService {
           // Record in tds_transactions register when TDS is deducted
           if (tdsAmount > 0) {
             await client.query(
+              // The columns are tds_rate / payment_amount / payment_date — rate,
+              // gross_amount and deduction_date have never existed, so TDS was
+              // never actually recorded against a bill.
               `INSERT INTO tds_transactions
-                 (company_id, bill_id, party_id, section, rate, gross_amount, tds_amount, deduction_date)
+                 (company_id, bill_id, party_id, section, tds_rate, payment_amount, tds_amount, payment_date)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                ON CONFLICT DO NOTHING`,
               [

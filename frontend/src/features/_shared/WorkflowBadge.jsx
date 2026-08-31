@@ -10,7 +10,7 @@ import { GitBranch, User, Loader } from 'lucide-react';
  */
 
 const STATUS_CFG = {
-  pending:   { bg: '#fef3c7', color: '#92400e', label: 'Pending Approval' },
+  pending:   { bg: '#ede9fe', color: '#5b21b6', label: 'Pending Approval' },
   approved:  { bg: '#dcfce7', color: '#15803d', label: 'Approved'         },
   rejected:  { bg: '#fee2e2', color: '#b91c1c', label: 'Rejected'         },
   cancelled: { bg: '#f3f4f6', color: '#6b7280', label: 'Cancelled'        },

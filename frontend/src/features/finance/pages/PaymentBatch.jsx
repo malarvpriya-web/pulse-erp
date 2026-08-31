@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import {
-  Plus, Search, X, CheckCircle, AlertTriangle, Eye,
-  Download, Building2, FileText,
-  ThumbsUp, ThumbsDown, Play, Clock, IndianRupee,
+  Plus, Search, X, CheckCircle, AlertTriangle, Eye, Download,
+  Building2, FileText, ThumbsUp, ThumbsDown, Play, Clock, IndianRupee,
   ChevronRight, Banknote, Smartphone, Receipt, AlertCircle, Calendar,
+  Landmark,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmt, fmtFull, today } from '../financeUtils';
 import './PaymentBatch.css';
+import { PageHero } from '@/components/pulse-ui';
 
 const PaymentGatewayPanel = lazy(() => import('@/components/finance/PaymentGatewayPanel'));
 const BankAccountsPanel   = lazy(() => import('@/features/finance/pages/BankAccounts'));
@@ -42,7 +43,7 @@ const PAGE_TABS = [
 const statusMeta = (s) => {
   const map = {
     draft:            { bg: '#f3f4f6', color: '#6b7280', label: 'Draft'            },
-    pending_approval: { bg: '#fef3c7', color: '#92400e', label: 'Pending Approval' },
+    pending_approval: { bg: '#ede9fe', color: '#5b21b6', label: 'Pending Approval' },
     approved:         { bg: '#dbeafe', color: '#1d4ed8', label: 'Approved'         },
     processed:        { bg: '#dcfce7', color: '#16a34a', label: 'Processed'        },
     rejected:         { bg: '#fee2e2', color: '#dc2626', label: 'Rejected'         },
@@ -118,9 +119,16 @@ export default function PaymentBatch() {
   };
 
   // ── load ──────────────────────────────────────────────────────────────────
+  // The controller existed but its signal never reached the requests, so
+  // abort() was a no-op: with four filters driving the refetch, whichever
+  // response landed last won, and the superseded call's `finally` cleared
+  // `loading` while the current one was still running (empty table mid-load).
   const load = useCallback(async () => {
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
+    abortRef.current?.abort();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    const { signal } = myCtrl;
+    const isStale = () => signal.aborted || abortRef.current !== myCtrl;
     setLoading(true);
     try {
       const params = {};
@@ -130,11 +138,12 @@ export default function PaymentBatch() {
       if (dateTo)       params.to     = dateTo;
 
       const [batchRes, bankRes, suppRes, kpiRes] = await Promise.allSettled([
-        api.get('/finance/payment-batches', { params }),
-        api.get('/finance/bank-accounts'),
-        api.get('/finance/parties', { params: { party_type: 'Supplier' } }),
-        api.get('/finance/payment-batches/summary'),
+        api.get('/finance/payment-batches', { params, signal }),
+        api.get('/finance/bank-accounts', { signal }),
+        api.get('/finance/parties', { params: { party_type: 'Supplier' }, signal }),
+        api.get('/finance/payment-batches/summary', { signal }),
       ]);
+      if (isStale()) return;
 
       const raw = batchRes.status === 'fulfilled'
         ? (batchRes.value.data?.rows || batchRes.value.data?.batches || batchRes.value.data || [])
@@ -143,8 +152,8 @@ export default function PaymentBatch() {
       setBankAccounts(bankRes.status === 'fulfilled' ? (bankRes.value.data || []) : []);
       setSuppliers(suppRes.status   === 'fulfilled' ? (suppRes.value.data || []) : []);
       if (kpiRes.status === 'fulfilled') setKpis(kpiRes.value.data);
-    } catch { setBatches([]); }
-    finally  { setLoading(false); }
+    } catch { if (!isStale()) setBatches([]); }
+    finally  { if (!isStale()) setLoading(false); }
   }, [statusFilter, search, dateFrom, dateTo]);
 
   useEffect(() => { if (pageTab === 'batches') load(); }, [load, pageTab]);
@@ -468,18 +477,22 @@ export default function PaymentBatch() {
           )}
 
           {/* Header */}
-          <div className="pb-header">
-            <div>
-              <h2 className="pb-title">Payment Batches</h2>
-              <p className="pb-sub">Bulk supplier payment scheduling &amp; processing</p>
-            </div>
-            <div className="pb-header-r">
-              <button className="pb-btn-outline" onClick={exportBatchList}><Download size={14} /> Export CSV</button>
-              <button className="pb-btn-primary" onClick={() => setDrawer('create')}>
-                <Plus size={15} /> New Batch
-              </button>
-            </div>
-          </div>
+          <PageHero
+            icon={Landmark}
+            eyebrow="Finance"
+            title="Payment Batches"
+            subtitle="Bulk supplier payment scheduling & processing"
+            actions={
+              <>
+                <button className="plh-cta plh-cta--ghost" onClick={exportBatchList}>
+                  <Download size={14} /> Export CSV
+                </button>
+                <button className="plh-cta" onClick={() => setDrawer('create')}>
+                  <Plus size={15} /> New Batch
+                </button>
+              </>
+            }
+          />
 
           {/* KPI cards */}
           <div className="pb-stats">
@@ -492,7 +505,7 @@ export default function PaymentBatch() {
               </div>
             </div>
             <div className="pb-stat pb-stat-amber">
-              <div className="pb-stat-icon" style={{ background: '#fef3c7', color: '#d97706' }}><Clock size={17} /></div>
+              <div className="pb-stat-icon" style={{ background: '#ede9fe', color: '#6d28d9' }}><Clock size={17} /></div>
               <div>
                 <span className="pb-stat-label">Pending Approval</span>
                 <span className="pb-stat-val">{fmt(stats.pendingApproval)}</span>
@@ -942,10 +955,10 @@ export default function PaymentBatch() {
                       ))}
                     </div>
                     {form.payment_method_default === 'rtgs' && (
-                      <p style={{ fontSize: 11, color: '#d97706', marginTop: 4 }}>⚠ RTGS minimum ₹2,00,000 per payment</p>
+                      <p style={{ fontSize: 11, color: '#6d28d9', marginTop: 4 }}>⚠ RTGS minimum ₹2,00,000 per payment</p>
                     )}
                     {form.payment_method_default === 'imps' && (
-                      <p style={{ fontSize: 11, color: '#d97706', marginTop: 4 }}>⚠ IMPS maximum ₹5,00,000 per payment</p>
+                      <p style={{ fontSize: 11, color: '#6d28d9', marginTop: 4 }}>⚠ IMPS maximum ₹5,00,000 per payment</p>
                     )}
                   </div>
 

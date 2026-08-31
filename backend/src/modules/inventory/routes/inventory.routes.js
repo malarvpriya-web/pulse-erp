@@ -7,10 +7,12 @@ import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { validate } from '../../../services/ValidationEngineService.js';
 import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { idDimension } from '../../../shared/dashboardFilters.js';
 import purchaseRequestRepo from '../../procurement/repositories/purchaseRequest.repository.js';
 import advInventoryRouter from './advancedInventory.routes.js';
 import serialNumbersRouter from './serialNumbers.routes.js';
 import componentCatalogRouter from './componentCatalog.routes.js';
+import itemSourcingRouter from './itemSourcing.routes.js';
 import { postStock } from '../../production/subcontracting.routes.js';
 
 const router = express.Router();
@@ -129,6 +131,91 @@ router.post('/warehouses', requirePermission('inventory', 'add'), async (req, re
     if (error.code === '23505') {
       return res.status(409).json({ error: 'Warehouse code already exists' });
     }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// `name` and `warehouse_name` are kept in lockstep — the POST above writes the
+// same value to both ($1 twice), and every read orders by warehouse_name, so a
+// rename that touched only one column would leave the store sorted under its
+// old name.
+router.put('/warehouses/:id', requirePermission('inventory', 'edit'), async (req, res) => {
+  const { warehouse_name, warehouse_code, warehouse_type, location, capacity, status, department } = req.body;
+  if (warehouse_name !== undefined && !warehouse_name?.trim()) {
+    return res.status(422).json({ error: 'warehouse_name cannot be blank' });
+  }
+  try {
+    const companyId = req.scope?.company_id ?? null;
+    const sets = [];
+    const vals = [];
+    const push = (frag, val) => { vals.push(val); sets.push(`${frag} = $${vals.length}`); };
+
+    if (warehouse_name !== undefined) {
+      push('warehouse_name', warehouse_name.trim());
+      push('name',           warehouse_name.trim());
+    }
+    if (warehouse_code !== undefined) push('warehouse_code', warehouse_code?.trim() || null);
+    if (warehouse_type !== undefined) push('warehouse_type', warehouse_type?.trim() || null);
+    if (location       !== undefined) push('location',       location?.trim() || null);
+    if (department     !== undefined) push('department',     department?.trim() || null);
+    if (status         !== undefined) push('status',         status?.trim() || 'active');
+    if (capacity       !== undefined) {
+      const n = parseInt(capacity, 10);
+      push('capacity', isNaN(n) ? null : n);
+    }
+    if (sets.length === 0) return res.status(422).json({ error: 'No updatable fields supplied' });
+
+    vals.push(req.params.id);
+    const idParam = `$${vals.length}`;
+    let where = `id = ${idParam} AND deleted_at IS NULL`;
+    if (companyId != null) { vals.push(companyId); where += ` AND company_id = $${vals.length}`; }
+
+    const result = await pool.query(
+      `UPDATE warehouses SET ${sets.join(', ')} WHERE ${where} RETURNING *`,
+      vals
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Warehouse not found' });
+    res.json(result.rows[0]);
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ error: 'Warehouse code already exists' });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Soft delete. 17 tables carry a warehouse_id FK, so a hard delete would either
+// fail on the constraint or orphan stock history. A store that still holds
+// stock is refused outright — retiring it would hide that stock from every
+// summary while the ledger rows kept pointing at it.
+router.delete('/warehouses/:id', requirePermission('inventory', 'delete'), async (req, res) => {
+  try {
+    const companyId = req.scope?.company_id ?? null;
+    const { rows: stock } = await pool.query(
+      `SELECT COALESCE(SUM(quantity_available), 0) AS qty
+         FROM inventory_batches
+        WHERE warehouse_id = $1
+          AND deleted_at IS NULL
+          AND COALESCE(quantity_available, 0) > 0`,
+      [req.params.id]
+    );
+    if (Number(stock[0]?.qty || 0) > 0) {
+      return res.status(409).json({
+        error: 'This store still holds stock. Transfer or write off the remaining quantity before retiring it.',
+      });
+    }
+
+    const vals = [req.params.id];
+    let where = 'id = $1 AND deleted_at IS NULL';
+    if (companyId != null) { vals.push(companyId); where += ' AND company_id = $2'; }
+
+    const result = await pool.query(
+      `UPDATE warehouses SET deleted_at = NOW(), status = 'inactive' WHERE ${where} RETURNING id, warehouse_name`,
+      vals
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Warehouse not found' });
+    res.json({ success: true, deleted: result.rows[0] });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
@@ -525,18 +612,46 @@ router.get('/dashboard', requirePermission('inventory', 'view'), async (req, res
     })();
 
     const companyId = req.scope?.company_id ?? null;
-    const cid = companyId != null ? companyId : 0;
+
+    // Dashboard filter bar: ?warehouse_id / ?category_id. Deliberately NO period
+    // — every figure here is a point-in-time balance (stock on hand, open POs),
+    // not period activity, so a date range would be meaningless. The frontend
+    // renders the bar with showPeriod={false}.
+    const warehouseId = idDimension(req.query, 'warehouse_id');
+    const categoryId = idDimension(req.query, 'category_id');
+
+    // $1 company, $2 warehouse, $3 category — each NULL-tolerant. Every query
+    // references only what it needs, with its own param list.
+    const itemScope = [companyId, categoryId];
+    const ledgerScope = [companyId, warehouseId, categoryId];
 
     const [totalItemsRes, lowStock, totalValueRes, pendingPosRes] = await Promise.all([
       pool.query(
-        `SELECT COUNT(*) as count FROM inventory_items WHERE is_active = true AND deleted_at IS NULL${companyId != null ? ' AND company_id = $1' : ''}`,
-        companyId != null ? [companyId] : []
+        `SELECT COUNT(*) as count FROM inventory_items
+          WHERE is_active = true AND deleted_at IS NULL
+            AND ($1::int IS NULL OR company_id = $1)
+            AND ($2::int IS NULL OR category_id = $2)`,
+        itemScope
       ),
       stockLedgerRepo.getLowStockItems(companyId),
-      pool.query(`SELECT COALESCE(SUM((quantity_in - quantity_out) * rate), 0) as value FROM stock_ledger`),
+      // company_id was missing entirely here: total inventory value summed
+      // stock_ledger across EVERY tenant, so a scoped user saw the whole
+      // installation's stock value (and, via holding cost, a wrong carrying
+      // cost). stock_ledger has had a company_id column all along.
       pool.query(
-        `SELECT COUNT(*) as count FROM purchase_orders WHERE status IN ('pending','approved','sent') AND deleted_at IS NULL${companyId != null ? ' AND company_id = $1' : ''}`,
-        companyId != null ? [companyId] : []
+        `SELECT COALESCE(SUM((sl.quantity_in - sl.quantity_out) * sl.rate), 0) as value
+           FROM stock_ledger sl
+           LEFT JOIN inventory_items ii ON ii.id = sl.item_id
+          WHERE ($1::int IS NULL OR sl.company_id = $1)
+            AND ($2::int IS NULL OR sl.warehouse_id = $2)
+            AND ($3::int IS NULL OR ii.category_id = $3)`,
+        ledgerScope
+      ),
+      pool.query(
+        `SELECT COUNT(*) as count FROM purchase_orders
+          WHERE status IN ('pending','approved','sent') AND deleted_at IS NULL
+            AND ($1::int IS NULL OR company_id = $1)`,
+        [companyId]
       ).catch(() => ({ rows: [{ count: 0 }] })),
     ]);
 
@@ -551,10 +666,36 @@ router.get('/dashboard', requirePermission('inventory', 'view'), async (req, res
       total_holding_cost_annual: totalInventoryValue * holdingRate,
       total_holding_cost_monthly: (totalInventoryValue * holdingRate) / 12,
       pending_pos: parseInt(pendingPosRes.rows[0].count) || 0,
+      warehouse_id: warehouseId,
+      category_id: categoryId,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// =====================================================
+// DASHBOARD FILTER OPTIONS
+// Warehouses / categories for the dashboard filter bar. Not narrowed by the
+// active selection, so picking one doesn't empty the other dropdown.
+// =====================================================
+router.get('/dashboard/filter-options', requirePermission('inventory', 'view'), async (req, res) => {
+  const companyId = req.scope?.company_id ?? null;
+  const safe = (sql) => pool.query(sql, [companyId]).catch(() => ({ rows: [] }));
+  const [warehouses, categories] = await Promise.all([
+    safe(`SELECT id, warehouse_name AS name FROM warehouses
+           WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+           ORDER BY warehouse_name`),
+    // item_categories names the column `name` (not `category_name`).
+    safe(`SELECT id, name FROM item_categories
+           WHERE deleted_at IS NULL AND is_active = true
+             AND ($1::int IS NULL OR company_id = $1)
+           ORDER BY name`),
+  ]);
+  res.json({
+    warehouses: warehouses.rows.map(r => ({ value: String(r.id), label: r.name })),
+    categories: categories.rows.map(r => ({ value: String(r.id), label: r.name })),
+  });
 });
 
 // =====================================================
@@ -916,7 +1057,7 @@ router.get('/landed-costs', requirePermission('inventory', 'view'), async (req, 
              v.vendor_name
       FROM landed_costs lc
       LEFT JOIN purchase_orders po ON lc.po_id = po.id
-      LEFT JOIN vendors         v  ON po.vendor_id = v.id
+      LEFT JOIN vendors         v  ON po.supplier_id = v.id
       ORDER BY lc.created_at DESC
     `);
     res.json(result.rows);
@@ -997,10 +1138,18 @@ router.post('/landed-costs/:id/allocate', requirePermission('inventory', 'edit')
 router.get('/advanced-dashboard', requirePermission('inventory', 'view'), async (req, res) => {
   try {
     const company_id = req.scope?.company_id ?? null;
-    const p = company_id != null ? [company_id] : [];
-    const iif = company_id != null ? 'AND ii.company_id = $1' : '';   // inventory_items with alias ii
-    const inf = company_id != null ? 'AND company_id = $1' : '';       // inventory_items no alias
-    const wf  = company_id != null ? 'AND w.company_id = $1' : '';    // warehouses with alias w
+    // Dashboard filter bar: ?category_id. No period (these are valuations, i.e.
+    // point-in-time balances) and no warehouse — only some of the twelve queries
+    // below reach stock_ledger, and Postgres rejects a bound-but-unreferenced
+    // $n, so a dimension here must be one EVERY query can apply.
+    const categoryId = idDimension(req.query, 'category_id');
+    // Both params are always bound and always referenced, via the NULL-tolerant
+    // form. The previous conditional fragments silently renumbered $n whenever
+    // company_id was null.
+    const p = [company_id, categoryId];
+    const iif = 'AND ($1::int IS NULL OR ii.company_id = $1) AND ($2::int IS NULL OR ii.category_id = $2)';
+    const inf = 'AND ($1::int IS NULL OR company_id = $1) AND ($2::int IS NULL OR category_id = $2)';
+    const wf  = 'AND ($1::int IS NULL OR w.company_id = $1)';        // warehouses with alias w
 
     const [
       totalValRes,
@@ -1812,6 +1961,15 @@ router.get('/stores-dashboard', requirePermission('inventory', 'view'), async (r
     const iif = company_id != null ? 'AND ii.company_id = $1' : '';
     const wf  = company_id != null ? 'AND w.company_id = $1' : '';
 
+    // Dashboard filter bar: ?warehouse_id / ?category_id. No period — these are
+    // stock balances plus a fixed same-day activity strip.
+    const warehouseId = idDimension(req.query, 'warehouse_id');
+    const categoryId  = idDimension(req.query, 'category_id');
+    const whParams = [...p];
+    let whFilter = '';
+    if (warehouseId) { whParams.push(warehouseId); whFilter += ` AND w.id = $${whParams.length}`; }
+    if (categoryId)  { whParams.push(categoryId);  whFilter += ` AND ii.category_id = $${whParams.length}`; }
+
     const [warehouseRes, todayRes] = await Promise.all([
       pool.query(`
         SELECT
@@ -1846,11 +2004,14 @@ router.get('/stores-dashboard', requirePermission('inventory', 'view'), async (r
         ) s ON s.warehouse_id = w.id
         LEFT JOIN inventory_items ii
           ON ii.id = s.item_id AND ii.deleted_at IS NULL ${iif}
-        WHERE w.deleted_at IS NULL ${wf}
+        WHERE w.deleted_at IS NULL ${wf} ${whFilter}
         GROUP BY w.id, w.warehouse_name, w.warehouse_code
         ORDER BY total_value DESC
-      `, p),
+      `, whParams),
 
+      // company_id was missing here: today's receipt/issue/adjustment counts
+      // were summed across EVERY tenant. Same defect as the total-value query in
+      // /inventory/dashboard — stock_ledger has a company_id column.
       pool.query(`
         SELECT
           COUNT(DISTINCT CASE WHEN transaction_type = 'receipt'    THEN id END)::int AS receipts_count,
@@ -1858,7 +2019,9 @@ router.get('/stores-dashboard', requirePermission('inventory', 'view'), async (r
           COUNT(DISTINCT CASE WHEN transaction_type = 'adjustment' THEN id END)::int AS adjustments_count
         FROM stock_ledger
         WHERE transaction_date = CURRENT_DATE
-      `),
+          AND ($1::int IS NULL OR company_id = $1)
+          AND ($2::int IS NULL OR warehouse_id = $2)
+      `, [company_id, warehouseId]),
     ]);
 
     res.json({
@@ -2127,6 +2290,8 @@ router.get('/dept-cost-analysis', requirePermission('inventory', 'view'), async 
 router.use('/advanced', advInventoryRouter);
 router.use('/serials', serialNumbersRouter);
 router.use('/catalog', componentCatalogRouter);
+// Sourcing view shares the /catalog base with the price book it reads from.
+router.use('/catalog', itemSourcingRouter);
 
 export default router;
 

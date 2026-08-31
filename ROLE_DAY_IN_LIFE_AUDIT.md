@@ -304,7 +304,9 @@ matches exactly, including counts (`department_head` 17, `l2_approver` 6, `hr_ma
 `procurement_exec` 8, `production_engineer` 14, `qc_engineer` 9, `design_engineer` 10). This
 is the best evidence yet that the `module:` key / allowlist nav-gating system
 ([[project_nav_module_gating_audit]]) is solid across the full granular-role roster, not
-just the handful spot-checked before.
+just the handful spot-checked before. (`department_head` grew from 17 to 18 sections on
+2026-07-29, one day after this pass, with the addition of `Complaints` — a later
+intentional grant, not drift; see `ROLE_SIDEBAR_REACHABILITY_AUDIT.md` §F16b.)
 
 **Errors seen are all already-tracked, nothing new**: `hr_manager`/`hr_exec` hit the known
 `Learning Center` → `/api/training/cost-by-type` 500 (2 network errors each, same as HR/
@@ -313,25 +315,42 @@ super_admin before them). `department_head`/`procurement_exec`/`production_engin
 (40–60 each, same pattern as every prior role that lands there). No new backend 500s, no new
 console errors, no new network failures across all 12 roles.
 
-**Open question, not a confirmed bug**: `hr_exec`, `accounts_exec`, `sales_exec`,
-`procurement_exec`, `production_engineer`, `qc_engineer`, and `design_engineer` all have
-`'Approvals'` in their `ROLE_SECTION_ALLOWLIST` (sidebar-visible), but **none of the seven
-are in the backend's `APPROVER_ROLES`** (`approvals.authz.js:50-62`) — meaning
-`isApproverRole(req)` is `false` for all of them, so they can never claim an unassigned item
-from the shared pool. Screenshot evidence (`procurement_exec__Approvals.png` etc.) shows the
-page renders a clean, correct-looking empty state ("0 Pending", "No pending approvals ✅")
-with no crash or error — **not** the confirmed broken pattern found for `service_manager`
-above (where the Home KPI tile actively disagreed with the page). But these fresh pilot
-accounts have zero items directly assigned to them either, so this pass can't tell whether
-the page would work correctly for an item genuinely assigned to one of these users (allowed
-per `canActOnApproval`'s "already assigned to me" branch, independent of `APPROVER_ROLES`)
-or whether `'Approvals'` simply shouldn't be in these seven roles' allowlists at all, the way
-it was deliberately removed from `project_manager`/`sales_manager`/`service_manager` in F16.
-Flagging for a follow-up with real assigned data rather than asserting either way. By
-contrast, `department_head`/`hr_manager`/`payroll_admin`/`finance_manager` being unscoped
-(any category) in `APPROVER_ROLES` is explicitly BY DESIGN — the code comment at
-`approvals.authz.js:66-67` says so directly, and F16 only ever scoped/removed the
-`*_manager`/`*_engineer` tier below it, not these four.
+**Open question above — RESOLVED 2026-07-30, in two parts.** The question was real: it
+traced back to `getPendingApprovals` (`approvals.controller.js`) having no role gate at all
+on its read path, so any of these seven roles landing on a live (non-empty) queue would see
+fully clickable Approve/Reject buttons that 403 on every click. Actual affected-role count
+was **9, not 7** — this section's original framing missed `store_keeper` and
+`service_engineer`, who hold the same shape of gap. Two separate, complementary fixes
+landed the same day:
+
+1. **Nav-level fix (not made by this session):** `'Approvals'` removed from all 9 roles'
+   `ROLE_SECTION_ALLOWLIST` entries in `menuCatalog.js` — same pattern as the existing F16
+   fix for `project_manager`/`sales_manager`/`service_manager`. Confirmed live on disk:
+   `hr_exec`/`accounts_exec`/`sales_exec`/`procurement_exec`/`production_engineer`/
+   `qc_engineer`/`design_engineer` no longer carry `'Approvals'` — this session's earlier
+   sidebar-count table above (11/8/7/7/13/8/9 vs. the originally-recorded 12/7/8/8/14/9/10)
+   is now stale for these seven as a direct result; not a regression, a deliberate fix
+   applied after those crawls ran. See `Pulse/MODULE_FEATURE_CONNECTION_MANUAL.md`'s
+   "Approval Engine" section for the authoritative writeup.
+2. **Read-path fix (made by this session):** a narrower but still-real version of the same
+   defect remained for roles that genuinely **are** approvers. `getPendingApprovals` decides
+   read visibility via `isSupervisor(req)` (legacy singular `req.user.role`) — a wider set
+   (`manager`, `hr`, `super_admin`, `admin`, plus some dead `l1/l2/l3_manager` codes) than
+   `OVERRIDE_ROLES` (`super_admin`/`admin` only). A `manager`/`hr` viewer therefore saw
+   **every** company row, including ones `approver_id`-assigned to a different specific
+   person, with the same live-but-guaranteed-403 buttons. Live-verified with a real DB row
+   (a regularization request force-assigned to a specific `hr_manager` test user, deleted
+   after): a `manager`-role viewer saw it with `can_act: false`; the actual assignee saw it
+   with `can_act: true` and working buttons. Fixed by annotating each row in
+   `getPendingApprovals` with `can_act` (reusing `canOverride`/`isApproverRole`/
+   `canClaimCategory` from `approvals.authz.js` — no new authz logic) and having
+   `ApprovalCenter.jsx` render a muted "View only" badge instead of the checkbox +
+   Approve/Reject controls whenever `can_act === false`, in both the row and the detail
+   panel. Doesn't touch `ROLE_SECTION_ALLOWLIST` — complementary to fix 1, not overlapping.
+
+By contrast, `department_head`/`hr_manager`/`payroll_admin`/`finance_manager` being unscoped
+(any category) in `APPROVER_ROLES` remains explicitly BY DESIGN (`approvals.authz.js:66-67`'s
+own comment) and was untouched by either fix.
 
 Home dashboard for all 12: identical generic Business Pulse widget set (P0 above), same
 "Employee" designation-badge cosmetic gap, same company-wide unscoped Approvals-KPI-tile

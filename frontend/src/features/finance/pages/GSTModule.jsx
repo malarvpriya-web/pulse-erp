@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Download, RefreshCw, AlertCircle, CheckCircle,
-  FileSpreadsheet, Printer, X,
+  Download, RefreshCw, AlertCircle, CheckCircle, FileSpreadsheet,
+  Printer, X, FileCheck2,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useFY } from '@/context/FYContext';
 import FYSelector from '@/components/core/FYSelector';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = n => `₹${Number(n ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
@@ -52,7 +53,7 @@ function KPI({ label, value, sub, color = '#6366f1' }) {
 function FilingBadge({ status }) {
   const cfg = {
     draft:     { label: 'Draft',      bg: '#f3f4f6', color: '#6b7280' },
-    submitted: { label: 'Submitted',  bg: '#fef3c7', color: '#92400e' },
+    submitted: { label: 'Submitted',  bg: '#ede9fe', color: '#5b21b6' },
     filed:     { label: 'Filed ✓',   bg: '#dcfce7', color: '#166534' },
     nil_filed: { label: 'Nil Return', bg: '#e0f2fe', color: '#0369a1' },
   };
@@ -117,6 +118,7 @@ function MarkFiledModal({ period, returnType, onClose, onFiled }) {
 
 // ── GSTR-1 Tab ────────────────────────────────────────────────────────────────
 function GSTR1Tab({ period, setPeriod, companyGstin, periods = PERIODS }) {
+  const toast = useToast();
   const [data,          setData]          = useState(null);
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState(null);
@@ -281,7 +283,7 @@ ${companyGstin ? `<p style="margin:2px 0;font-size:13px;color:#555">GSTIN: <stro
           <KPI label="B2B Invoices"  value={s.b2b_invoices ?? 0} color="#6366f1"/>
           <KPI label="B2C Invoices"  value={s.b2c_invoices ?? 0} color="#3b82f6"/>
           <KPI label="Taxable Value" value={fmt(s.total_taxable_value)} color="#10b981"/>
-          <KPI label="Total IGST"    value={fmt(s.total_igst)} color="#f59e0b"/>
+          <KPI label="Total IGST"    value={fmt(s.total_igst)} color="#7c5cf0"/>
           <KPI label="CGST + SGST"   value={fmt((s.total_cgst ?? 0) + (s.total_sgst ?? 0))} color="#8b5cf6"/>
         </div>
       )}
@@ -442,7 +444,7 @@ function GSTR3BTab({ period, setPeriod, periods = PERIODS }) {
             </table>
           </div>
 
-          <div style={{ background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 10, padding: '12px 16px', fontSize: 12, color: '#92400e', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <div style={{ background: '#ede9fe', border: '1px solid #ddd6fe', borderRadius: 10, padding: '12px 16px', fontSize: 12, color: '#5b21b6', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }}/>
             <span>Computed summary — verify against your accounting records before filing. Due date: 20th of the following month.</span>
           </div>
@@ -554,7 +556,7 @@ function TDSTab() {
         ) : (
           <>
             {result.tds_applicable === false && (
-              <div style={{ background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#92400e', marginBottom: 16 }}>
+              <div style={{ background: '#ede9fe', border: '1px solid #ddd6fe', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#5b21b6', marginBottom: 16 }}>
                 TDS not applicable — payment ₹{Number(result.payment_amount).toLocaleString('en-IN')} is below threshold ₹{Number(result.threshold).toLocaleString('en-IN')}
               </div>
             )}
@@ -619,14 +621,13 @@ export default function GSTModule() {
   const coName = co?.name;
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: '#111827', margin: 0 }}>GST & Tax Management</h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>GSTR-1, GSTR-3B, TDS computation &amp; compliance · {fyLabel}</p>
-        </div>
-        <FYSelector />
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={FileCheck2}
+        eyebrow="Finance"
+        title="GST & Tax Management"
+      />
+    }>
 
       {gstin ? (
         <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 10, padding: '10px 16px', fontSize: 13, color: '#0369a1', marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -634,7 +635,7 @@ export default function GSTModule() {
           <span>Filing for: <strong>{coName}</strong> &nbsp;|&nbsp; GSTIN: <strong style={{ fontFamily: 'monospace' }}>{gstin}</strong></span>
         </div>
       ) : (
-        <div style={{ background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 10, padding: '10px 16px', fontSize: 13, color: '#92400e', marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ background: '#ede9fe', border: '1px solid #ddd6fe', borderRadius: 10, padding: '10px 16px', fontSize: 13, color: '#5b21b6', marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
           <AlertCircle size={14}/>
           <span>GSTIN not configured — go to <strong>Settings → Company Profile</strong> to set it up before filing.</span>
         </div>
@@ -649,6 +650,6 @@ export default function GSTModule() {
       {tab === 'gstr1'  && <GSTR1Tab  period={period} setPeriod={setPeriod} companyGstin={gstin} periods={periods}/>}
       {tab === 'gstr3b' && <GSTR3BTab period={period} setPeriod={setPeriod} periods={periods}/>}
       {tab === 'tds'    && <TDSTab/>}
-    </div>
+    </PageShell>
   );
 }

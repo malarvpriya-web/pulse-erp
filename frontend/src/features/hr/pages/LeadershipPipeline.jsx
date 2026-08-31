@@ -1,7 +1,9 @@
 // frontend/src/features/hr/pages/LeadershipPipeline.jsx
 import React, { useState, useEffect, useCallback } from 'react';
+import { Filter } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ─── style tokens ──────────────────────────────────────────── */
 const INP = { width: '100%', boxSizing: 'border-box', padding: '7px 10px',
@@ -15,7 +17,7 @@ const BTN = (v = 'primary', sm = false) => ({
   ...(v === 'outline' ? { border: '1px solid #6B3FDB', background: 'none', color: '#6B3FDB' } : {}),
 });
 
-const READY_COLORS = { 'ready-now': '#16a34a', '1-2-years': '#d97706', '3-5-years': '#6b7280', 'not_ready': '#ef4444' };
+const READY_COLORS = { 'ready-now': '#16a34a', '1-2-years': '#6d28d9', '3-5-years': '#6b7280', 'not_ready': '#ef4444' };
 const READY_LABELS = { 'ready-now': 'Ready Now', '1-2-years': '1-2 Yrs', '3-5-years': '3-5 Yrs', 'not_ready': 'Not Ready' };
 
 function Spinner() {
@@ -144,12 +146,19 @@ export default function LeadershipPipeline() {
     }
   }
 
-  const levelColors = ['#6b7280','#0891b2','#2563eb','#6B3FDB','#d97706','#dc2626'];
+  const levelColors = ['#6b7280','#0891b2','#2563eb','#6B3FDB','#6d28d9','#dc2626'];
 
   if (loading) return <div style={{ padding: 24 }}><Spinner /></div>;
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Filter}
+        eyebrow="Human Resources"
+        title="Leadership Pipeline"
+        subtitle="Track employees' progression through leadership levels"
+      />
+    }>
       <ConfirmDialog
         open={!!pendingRemoveEntry}
         title="Remove from Pipeline"
@@ -159,12 +168,7 @@ export default function LeadershipPipeline() {
         onConfirm={removeEntry}
         onCancel={() => setPendingRemoveEntry(null)}
       />
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Leadership Pipeline</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-          Track employees' progression through leadership levels
-        </p>
-      </div>
+
 
       <Flash msg={msg} />
 
@@ -419,6 +423,6 @@ export default function LeadershipPipeline() {
           })}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

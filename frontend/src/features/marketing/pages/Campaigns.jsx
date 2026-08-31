@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, Pencil, Trash2, Target } from 'lucide-react';
+import { RefreshCw, Plus, X, Pencil, Trash2, Target, Megaphone } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmtL = (n) => {
   const v = parseFloat(n) || 0;
@@ -14,7 +15,7 @@ const TYPE_COLORS = {
   email:    { bg: '#dbeafe', color: '#2563eb' },
   social:   { bg: '#e0e7ff', color: '#4f46e5' },
   event:    { bg: '#d1fae5', color: '#16a34a' },
-  content:  { bg: '#fef3c7', color: '#d97706' },
+  content:  { bg: '#ede9fe', color: '#6d28d9' },
   paid:     { bg: '#fee2e2', color: '#dc2626' },
   referral: { bg: '#f0fdf4', color: '#15803d' },
 };
@@ -22,7 +23,7 @@ const TYPE_COLORS = {
 const STATUS_COLORS = {
   draft:     { bg: '#f3f4f6', color: '#6b7280' },
   active:    { bg: '#d1fae5', color: '#16a34a' },
-  paused:    { bg: '#fef3c7', color: '#d97706' },
+  paused:    { bg: '#ede9fe', color: '#6d28d9' },
   completed: { bg: '#dbeafe', color: '#2563eb' },
   cancelled: { bg: '#fee2e2', color: '#dc2626' },
 };
@@ -120,14 +121,21 @@ export default function Campaigns() {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Megaphone}
+        eyebrow="Marketing"
+        title="Campaigns"
+        subtitle="Manage all marketing campaigns"
+      />
+    }>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Campaigns</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Manage all marketing campaigns</p>
+
+
         </div>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search campaigns…"
           style={{ padding: '7px 12px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 7, fontSize: 13, background: 'var(--color-background-secondary)', color: 'var(--color-text-primary)', width: 180 }} />
@@ -295,7 +303,7 @@ export default function Campaigns() {
                     <Pencil size={12} /> Edit
                   </button>
                   {(r.status === 'active' || r.status === 'paused') && (
-                    <button onClick={() => handleStatusToggle(r)} style={{ flex: 1, padding: '6px 0', background: 'none', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 6, cursor: 'pointer', fontSize: 12, color: r.status === 'active' ? '#d97706' : '#16a34a' }}>
+                    <button onClick={() => handleStatusToggle(r)} style={{ flex: 1, padding: '6px 0', background: 'none', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 6, cursor: 'pointer', fontSize: 12, color: r.status === 'active' ? '#6d28d9' : '#16a34a' }}>
                       {r.status === 'active' ? 'Pause' : 'Resume'}
                     </button>
                   )}
@@ -318,6 +326,6 @@ export default function Campaigns() {
         onConfirm={handleDelete}
         onCancel={() => setPendingHandleDelete(null)}
       />
-    </div>
+    </PageShell>
   );
 }

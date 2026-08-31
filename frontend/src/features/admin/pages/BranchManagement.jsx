@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, Building, Users, MapPin, Phone, Mail, Power } from 'lucide-react';
+import { Plus, X, Building, Users, MapPin, Phone, Mail, Power, Network } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const BRANCH_TYPES = ['HQ', 'Factory', 'Warehouse', 'Service Center', 'Sales Office', 'Regional Office'];
 
@@ -19,7 +20,7 @@ const TYPE_COLORS = {
   'HQ':             { bg: '#ede9fe', color: '#6B3FDB' },
   'Factory':        { bg: '#dbeafe', color: '#1e40af' },
   'Warehouse':      { bg: '#d1fae5', color: '#065f46' },
-  'Service Center': { bg: '#fef3c7', color: '#92400e' },
+  'Service Center': { bg: '#ede9fe', color: '#5b21b6' },
   'Sales Office':   { bg: '#fee2e2', color: '#991b1b' },
   'Regional Office':{ bg: '#f0fdf4', color: '#166534' },
 };
@@ -117,7 +118,17 @@ export default function BranchManagement() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Network}
+        eyebrow="Administration"
+        title="Branch Management"
+        actions={<button className="plh-cta"
+          onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); }}>
+          <Plus size={15} /> Add Branch
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeactivate}
         title="Deactivate Branch"
@@ -127,18 +138,6 @@ export default function BranchManagement() {
         onConfirm={handleDeactivate}
         onCancel={() => setPendingDeactivate(null)}
       />
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Branch Management</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>{active.length} active branches · {inactive.length} inactive</p>
-        </div>
-        <button
-          onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); }}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
-        >
-          <Plus size={15} /> Add Branch
-        </button>
-      </div>
 
       {/* Summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
@@ -282,6 +281,6 @@ export default function BranchManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

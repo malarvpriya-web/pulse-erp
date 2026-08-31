@@ -1,21 +1,22 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Plus, Search, X, CheckCircle, AlertTriangle, Eye,
-  Download, RefreshCw, Building2, CreditCard, ArrowUpRight,
-  ArrowDownRight, TrendingUp, TrendingDown, Clock, Filter,
-  ChevronRight, ChevronDown, Banknote, RotateCcw, Check,
-  AlertCircle, FileText, Edit2, Link, Unlink, Upload,
+  Plus, Search, X, CheckCircle, AlertTriangle, Eye, Download,
+  RefreshCw, Building2, CreditCard, ArrowUpRight, ArrowDownRight,
+  TrendingUp, TrendingDown, Clock, Filter, ChevronRight, ChevronDown,
+  Banknote, RotateCcw, Check, AlertCircle, FileText, Edit2, Link,
+  Unlink, Upload, Landmark,
 } from 'lucide-react';
 import './BankAccounts.css';
 import api from '@/services/api/client';
 import { fmt, fmtFull, today } from '../financeUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 
 const ACCOUNT_COLORS = {
   current: '#6366f1',
   savings: '#10b981',
-  cash:    '#f59e0b',
+  cash:    '#7c5cf0',
   od:      '#ef4444',
   cc:      '#8b5cf6',
   fixed:   '#0ea5e9',
@@ -25,7 +26,7 @@ const typeColor = (t) => {
   const map = {
     current: { bg: '#dbeafe', c: '#1d4ed8' },
     savings: { bg: '#dcfce7', c: '#15803d' },
-    cash:    { bg: '#fef3c7', c: '#92400e' },
+    cash:    { bg: '#ede9fe', c: '#5b21b6' },
     od:      { bg: '#fee2e2', c: '#b91c1c' },
     cc:      { bg: '#ede9fe', c: '#6d28d9' },
     fixed:   { bg: '#e0f2fe', c: '#0369a1' },
@@ -281,7 +282,19 @@ export default function BankAccounts() {
   const needsRecon    = accounts.filter(a => parseInt(a.unreconciled_count || 0) > 0).length;
 
   return (
-    <div className="ba-root">
+    <PageShell dock={
+      <PageHero
+        icon={Landmark}
+        eyebrow="Finance"
+        title="Bank Accounts & Reconciliation"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={loadAccounts}><RefreshCw size={14} /> Refresh</button>
+          <button className="plh-cta" onClick={() => { setEditTarget(null); setForm(EMPTY_FORM); setFormErrors({}); setDrawer('create'); }}>
+            <Plus size={15} /> Add Account
+          </button>
+        </>}
+      />
+    }>
 
       {toast && (
         <div className={`ba-toast ba-toast-${toast.type}`}>
@@ -290,21 +303,6 @@ export default function BankAccounts() {
         </div>
       )}
 
-      {/* Header */}
-      <div className="ba-header">
-        <div>
-          <h2 className="ba-title">Bank Accounts & Reconciliation</h2>
-          <p className="ba-sub">
-            {accounts.length} account{accounts.length !== 1 ? 's' : ''} · Total balance: {fmtFull(totalBalance)}
-          </p>
-        </div>
-        <div className="ba-header-r">
-          <button className="ba-btn-outline" onClick={loadAccounts}><RefreshCw size={14} /> Refresh</button>
-          <button className="ba-btn-primary" onClick={() => { setEditTarget(null); setForm(EMPTY_FORM); setFormErrors({}); setDrawer('create'); }}>
-            <Plus size={15} /> Add Account
-          </button>
-        </div>
-      </div>
 
       {/* Summary KPI strip */}
       <div className="ba-summary">
@@ -331,7 +329,7 @@ export default function BankAccounts() {
           </div>
         </div>
         <div className={`ba-sum-card ${totalUnrecon > 0 ? 'ba-sum-warn' : ''}`}>
-          <AlertCircle size={18} color={totalUnrecon > 0 ? '#f59e0b' : '#10b981'} />
+          <AlertCircle size={18} color={totalUnrecon > 0 ? '#7c5cf0' : '#10b981'} />
           <div>
             <p className="ba-sum-label">Unreconciled</p>
             <p className={`ba-sum-val ${totalUnrecon > 0 ? 'amber' : ''}`}>{totalUnrecon} transactions</p>
@@ -860,6 +858,6 @@ export default function BankAccounts() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

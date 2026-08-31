@@ -6,9 +6,10 @@ import {
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './TeamLeaves.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
-  pending:  { bg: '#fef3c7', color: '#92400e', label: 'Pending'  },
+  pending:  { bg: '#ede9fe', color: '#5b21b6', label: 'Pending'  },
   approved: { bg: '#dcfce7', color: '#15803d', label: 'Approved' },
   rejected: { bg: '#fee2e2', color: '#dc2626', label: 'Rejected' },
   cancelled:{ bg: '#f3f4f6', color: '#6b7280', label: 'Cancelled'},
@@ -105,12 +106,18 @@ export default function TeamLeaves() {
   leaves.forEach(l => { if (counts[l.status] !== undefined) counts[l.status]++; });
 
   return (
-    <div className="tl-root">
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Leave"
+        title="Team Leaves"
+      />
+    }>
       {toast && <div className={`tl-toast tl-toast-${toast.type}`}>{toast.msg}</div>}
 
       <div className="tl-header">
         <div>
-          <h2 className="tl-title">Team Leaves</h2>
+
           <p className="tl-sub">{displayed.length} request{displayed.length !== 1 ? 's' : ''}</p>
         </div>
         <div className="tl-header-r">
@@ -240,6 +247,6 @@ export default function TeamLeaves() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

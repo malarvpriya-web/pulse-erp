@@ -1,6 +1,10 @@
 import { useState, useCallback, useEffect } from 'react';
-import { Download, RefreshCw, BarChart2, FileText, TrendingDown, Users, Clock, Award, FileSpreadsheet } from 'lucide-react';
+import {
+  Download, RefreshCw, BarChart2, FileText, TrendingDown, Users, Clock,
+  Award, FileSpreadsheet, BarChart3,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const YEAR  = new Date().getFullYear();
 const YEARS = [YEAR - 2, YEAR - 1, YEAR, YEAR + 1];
@@ -50,13 +54,13 @@ async function exportXLSX(rows, columns, filename) {
   }
 }
 
-const STATUS_COLORS = { approved:{bg:'#d1fae5',color:'#065f46'}, rejected:{bg:'#fee2e2',color:'#991b1b'}, pending:{bg:'#fef3c7',color:'#92400e'} };
+const STATUS_COLORS = { approved:{bg:'#d1fae5',color:'#065f46'}, rejected:{bg:'#fee2e2',color:'#991b1b'}, pending:{bg:'#ede9fe',color:'#5b21b6'} };
 const sc = s => STATUS_COLORS[(s||'').toLowerCase()] || STATUS_COLORS.pending;
 
 const REPORTS = [
   { id:'leave',        label:'Leave Summary',          icon:FileText,    color:'#6366f1' },
   { id:'summary',      label:'Employee Balance Summary',icon:Users,       color:'#10b981' },
-  { id:'liability',    label:'Leave Liability (₹)',    icon:TrendingDown, color:'#f59e0b' },
+  { id:'liability',    label:'Leave Liability (₹)',    icon:TrendingDown, color:'#7c5cf0' },
   { id:'lop',          label:'LOP Report',             icon:BarChart2,   color:'#ef4444' },
   { id:'department',   label:'Department Summary',      icon:Award,       color:'#8b5cf6' },
   { id:'approval-performance', label:'Approval Performance', icon:Clock, color:'#0891b2' },
@@ -145,7 +149,7 @@ export default function LeaveReports() {
       {key:'approval_level',label:'Level',render:v=>({1:'L1 Manager',2:'L2 Dept Head',3:'L3 HR',0:'System'}[v]||`L${v}`)},
       {key:'total_actions',label:'Total'}, {key:'approved_count',label:'Approved'},
       {key:'rejected_count',label:'Rejected'},
-      {key:'avg_response_hours',label:'Avg Hours',render:v=><span style={{color:Number(v)>24?'#ef4444':Number(v)>8?'#f59e0b':'#10b981',fontWeight:600}}>{v}h</span>},
+      {key:'avg_response_hours',label:'Avg Hours',render:v=><span style={{color:Number(v)>24?'#ef4444':Number(v)>8?'#7c5cf0':'#10b981',fontWeight:600}}>{v}h</span>},
     ],
   };
 
@@ -166,25 +170,25 @@ export default function LeaveReports() {
   ) : null;
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ marginBottom:20, display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:12 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Leave Reports</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Comprehensive leave analytics and compliance reports</p>
-        </div>
-        {ran && data.length > 0 && (
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Leave"
+        title="Leave Reports"
+        subtitle="Comprehensive leave analytics and compliance reports"
+        actions={ran && data.length> 0 && (
           <div style={{ display:'flex', gap:8 }}>
-            <button onClick={() => exportCSV(data, cols, `${activeReport}-report-${filters.year}.csv`)}
-              style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 16px', background:'#10b981', color:'#fff', border:'none', borderRadius:8, fontWeight:600, fontSize:13, cursor:'pointer' }}>
+            <button className="plh-cta" onClick={() => exportCSV(data, cols, `${activeReport}-report-${filters.year}.csv`)}>
               <Download size={14}/> CSV
             </button>
-            <button onClick={() => exportXLSX(data, cols, `${activeReport}-report-${filters.year}.xlsx`)}
-              style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 16px', background:'#6366f1', color:'#fff', border:'none', borderRadius:8, fontWeight:600, fontSize:13, cursor:'pointer' }}>
+            <button className="plh-cta" onClick={() => exportXLSX(data, cols, `${activeReport}-report-${filters.year}.xlsx`)}>
               <FileSpreadsheet size={14}/> Excel
             </button>
           </div>
         )}
-      </div>
+      />
+    }>
+
 
       {/* Report type cards */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))', gap:10, marginBottom:20 }}>
@@ -308,6 +312,6 @@ export default function LeaveReports() {
           </>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -3,7 +3,8 @@ import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './Timesheets.css';
 import { useToast } from '@/context/ToastContext';
-import { Clock } from 'lucide-react';
+import { Clock, CalendarClock } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Role CODES, as stored in roles.code — snake_case, never display names. The
 // last three used to read 'HR Manager' / 'Finance Manager' / 'Project Manager',
@@ -27,7 +28,7 @@ const getWeekBounds = () => {
 
 const statusColor = status => ({
   draft:     '#f3f4f6',
-  submitted: '#fef3c7',
+  submitted: '#ede9fe',
   approved:  '#dcfce7',
   rejected:  '#fee2e2',
 }[status] || '#f3f4f6');
@@ -65,7 +66,7 @@ const Timesheets = () => {
       if (!isPrivileged && user?.employee_id) {
         params.employee_id = user.employee_id;
       }
-      const res = await api.get('/timesheets/all', { params });
+      const res = await api.get('/timesheets/timesheets/all', { params });
       if (!isMounted.current) return;
       const data = Array.isArray(res.data) ? res.data
                  : Array.isArray(res.data?.data) ? res.data.data
@@ -172,17 +173,19 @@ const Timesheets = () => {
   const colSpan = isPrivileged ? 8 : 7;
 
   return (
-    <div className="timesheets-page">
-      <div className="timesheets-header">
-        <h1>All Timesheets</h1>
-        <div className="header-actions">
-          <span className="total-hours">Total Hours: {getTotalHours()}h</span>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Timesheets"
+        title="All Timesheets"
+        actions={<>
           {!isPrivileged && (
-            <button className="submit-week-btn" onClick={submitWeek}>Submit Week</button>
+            <button className="plh-cta plh-cta--ghost" onClick={submitWeek}>Submit Week</button>
           )}
-          <button className="primary-btn" onClick={() => setShowForm(true)}>+ Add Entry</button>
-        </div>
-      </div>
+          <button className="plh-cta" onClick={() => setShowForm(true)}>+ Add Entry</button>
+        </>}
+      />
+    }>
 
       {showForm && (
         <div className="form-modal">
@@ -293,7 +296,7 @@ const Timesheets = () => {
           </tbody>
         </table>
       </div>
-    </div>
+    </PageShell>
   );
 };
 

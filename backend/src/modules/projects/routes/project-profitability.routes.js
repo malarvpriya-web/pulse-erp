@@ -206,9 +206,9 @@ router.get('/dashboard-kpis', async (req, res) => {
       pool.query(`
         SELECT
           COUNT(*) AS total_projects,
-          COALESCE(SUM(p.contract_value),0) AS total_revenue,
+          COALESCE(SUM(p.budget_amount),0) AS total_revenue,
           COALESCE(SUM(pcs.material_cost + pcs.labour_cost + pcs.travel_cost + pcs.procurement_overhead),0) AS total_cost,
-          COALESCE(AVG(CASE WHEN p.contract_value > 0 THEN pcs.actual_profit / p.contract_value * 100 END),0) AS avg_margin_pct,
+          COALESCE(AVG(CASE WHEN p.budget_amount > 0 THEN pcs.actual_profit / p.budget_amount * 100 END),0) AS avg_margin_pct,
           COUNT(CASE WHEN pcs.actual_profit < 0 THEN 1 END) AS loss_making_count,
           COUNT(CASE WHEN p.status = 'active' THEN 1 END) AS active_count
         FROM projects p
@@ -248,9 +248,9 @@ router.get('/budget-vs-actual', async (req, res) => {
     const companyId = cid(req);
     const cWhere = companyId ? `WHERE p.company_id=${companyId}` : '';
     const { rows } = await pool.query(`
-      SELECT p.id, p.name AS project_name, p.project_number, p.customer_name,
-             COALESCE(p.contract_value, 0) AS budget_revenue,
-             COALESCE(p.budget, p.contract_value, 0) AS budget_cost,
+      SELECT p.id, p.project_name AS project_name, p.project_number, p.customer_name,
+             COALESCE(p.budget_amount, 0) AS budget_revenue,
+             COALESCE(p.budget, p.budget_amount, 0) AS budget_cost,
              COALESCE(pcs.material_cost,0) + COALESCE(pcs.labour_cost,0) + COALESCE(pcs.travel_cost,0) + COALESCE(pcs.procurement_overhead,0) AS actual_cost,
              COALESCE(pcs.profit, 0) AS actual_profit,
              p.status
@@ -279,17 +279,17 @@ router.get('/loss-makers', async (req, res) => {
     const companyId = cid(req);
     const cWhere = companyId ? `WHERE p.company_id=${companyId}` : '';
     const { rows } = await pool.query(`
-      SELECT p.id, p.name AS project_name, p.project_number, p.customer_name, p.status,
-             COALESCE(p.contract_value, 0) AS revenue,
+      SELECT p.id, p.project_name AS project_name, p.project_number, p.customer_name, p.status,
+             COALESCE(p.budget_amount, 0) AS revenue,
              COALESCE(pcs.material_cost,0)+COALESCE(pcs.labour_cost,0)+COALESCE(pcs.travel_cost,0)+COALESCE(pcs.procurement_overhead,0) AS total_cost,
              COALESCE(pcs.profit, 0) AS actual_profit,
-             CASE WHEN COALESCE(p.contract_value,0) > 0
-               THEN ROUND((COALESCE(pcs.actual_profit,0) / p.contract_value) * 100, 2)
+             CASE WHEN COALESCE(p.budget_amount,0) > 0
+               THEN ROUND((COALESCE(pcs.actual_profit,0) / p.budget_amount) * 100, 2)
                ELSE 0 END AS margin_pct
       FROM projects p
       LEFT JOIN project_cost_summary pcs ON pcs.project_id = p.id
       ${cWhere}
-      HAVING (COALESCE(pcs.actual_profit, 0) < 0 OR (COALESCE(pcs.material_cost,0)+COALESCE(pcs.labour_cost,0)) > COALESCE(p.contract_value,0)*0.9)
+      HAVING (COALESCE(pcs.actual_profit, 0) < 0 OR (COALESCE(pcs.material_cost,0)+COALESCE(pcs.labour_cost,0)) > COALESCE(p.budget_amount,0)*0.9)
       ORDER BY actual_profit ASC LIMIT 10
     `).catch(() => ({ rows: [] }));
     res.json(rows.map(r => ({

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmt, fmtFull, today } from '../financeUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -21,7 +22,7 @@ const STATUS_STYLES = {
   paid:      { background: '#dcfce7', color: '#16a34a' },
   overdue:   { background: '#fee2e2', color: '#dc2626' },
   approved:  { background: '#dbeafe', color: '#1d4ed8' },
-  pending:   { background: '#fef3c7', color: '#92400e' },
+  pending:   { background: '#ede9fe', color: '#5b21b6' },
   draft:     { background: '#f3f4f6', color: '#6b7280' },
   rejected:  { background: '#fee2e2', color: '#991b1b' },
   cancelled: { background: '#f3f4f6', color: '#9ca3af' },
@@ -132,9 +133,16 @@ export default function ReportPurchase() {
   const [view,       setView]       = useState('transaction');
   const abortRef = useRef(null);
 
+  // Every filter change aborts the in-flight request and refires. The
+  // controller is held in a local so the superseded call can tell it no longer
+  // owns the page state — clearing `loading` from its `finally` (which runs
+  // after the replacement has started) renders the empty "no rows" table
+  // mid-load, which reads as "this filter has no data".
   const load = useCallback(async () => {
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
+    abortRef.current?.abort();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    const isStale = () => myCtrl.signal.aborted || abortRef.current !== myCtrl;
     setLoading(true);
     try {
       const params = {};
@@ -142,13 +150,14 @@ export default function ReportPurchase() {
       if (dateTo)     params.date_to     = dateTo;
       if (supplierId) params.supplier_id = supplierId;
       if (status)     params.status      = status;
-      const r = await api.get('/finance/report-purchase', { params, signal: abortRef.current.signal });
+      const r = await api.get('/finance/report-purchase', { params, signal: myCtrl.signal });
+      if (isStale()) return;
       setRows(r.data?.rows || []);
       setSummary(r.data?.summary || null);
     } catch (e) {
-      if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return;
+      if (isStale() || e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return;
       setRows([]); setSummary(null);
-    } finally { setLoading(false); }
+    } finally { if (!isStale()) setLoading(false); }
   }, [dateFrom, dateTo, supplierId, status]);
 
   useEffect(() => {
@@ -188,7 +197,7 @@ export default function ReportPurchase() {
     {
       label: 'Total GST Paid', icon: TrendingUp,
       value: +(summary?.total_gst_paid ?? totals.gst),
-      format: 'money', color: '#d97706', bg: '#fef3c7',
+      format: 'money', color: '#6d28d9', bg: '#ede9fe',
     },
     {
       label: 'Overdue Amount', icon: AlertCircle,
@@ -198,30 +207,30 @@ export default function ReportPurchase() {
   ];
 
   return (
-    <div style={S.root}>
-
-      {/* ── Header ─────────────────────────────────────────────── */}
-      <div style={S.header}>
-        <div>
-          <h1 style={S.title}>Purchase Report</h1>
-          <p style={S.subtitle}>Supplier bills &amp; purchase analytics · {rows.length} records</p>
-        </div>
-        <div style={S.hdrBtns}>
-          <button
-            style={S.btnOutline}
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Finance"
+        title="Purchase Report"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost"
+            
             onClick={() => setView(v => v === 'transaction' ? 'supplier' : 'transaction')}>
             {view === 'transaction'
               ? <><BarChart3 size={14}/> Supplier View</>
               : <><List size={14}/> Transaction View</>}
           </button>
-          <button
-            style={{ ...S.btnOutline, opacity: rows.length === 0 ? 0.5 : 1, cursor: rows.length === 0 ? 'not-allowed' : 'pointer' }}
-            onClick={() => rows.length > 0 && exportCSV(rows, dateFrom, dateTo)}
+          <button className="plh-cta"
+            
+            onClick={() => rows.length> 0 && exportCSV(rows, dateFrom, dateTo)}
             disabled={rows.length === 0}>
             <Download size={14}/> Export CSV
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      {/* ── Header ─────────────────────────────────────────────── */}
 
       {/* ── KPI Cards ──────────────────────────────────────────── */}
       <div style={S.kpiGrid}>
@@ -413,6 +422,6 @@ export default function ReportPurchase() {
         )}
       </div>
 
-    </div>
+    </PageShell>
   );
 }

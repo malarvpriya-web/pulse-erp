@@ -188,7 +188,7 @@ const timesheetRepository = {
       JOIN employees e ON te.employee_id = e.id
       JOIN projects p ON te.project_id = p.id
       WHERE te.status = 'submitted'
-        AND (p.project_manager_id = $1 OR e.manager_id = $1)
+        AND (p.project_manager_id = $1 OR e.reporting_manager_id = $1)
         AND te.deleted_at IS NULL
       ORDER BY te.submitted_at ASC
     `, [manager_id]);

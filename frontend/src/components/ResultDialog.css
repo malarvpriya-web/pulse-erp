@@ -3,6 +3,7 @@
 .rdlg-backdrop {
   position: fixed; inset: 0; z-index: 10000;
   background: rgba(0,0,0,.45);
+  -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
   display: flex; align-items: center; justify-content: center;
   animation: rdlg-bg-in .18s ease;

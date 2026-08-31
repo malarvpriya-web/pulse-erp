@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { RefreshCw, Download, TrendingUp, Package, Users, BarChart2 } from 'lucide-react';
+import {
+  RefreshCw, Download, TrendingUp, Package, Users, BarChart2,
+  BarChart3,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -104,7 +108,14 @@ export default function ProcurementReports() {
   const card = { background: '#fff', borderRadius: 12, boxShadow: '0 1px 3px rgba(0,0,0,.07)', padding: 20 };
 
   return (
-    <div style={{ padding: '24px 28px', margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Procurement"
+        title="Procurement Reports"
+        subtitle="Spend analytics, export data, and procurement insights"
+      />
+    }>
       {toast && (
         <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, padding: '10px 20px', borderRadius: 8, background: toast.type === 'error' ? '#fee2e2' : '#dcfce7', color: toast.type === 'error' ? '#991b1b' : '#166534', fontWeight: 600, fontSize: 14 }}>
           {toast.msg}
@@ -114,8 +125,8 @@ export default function ProcurementReports() {
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: '#111' }}>Procurement Reports</h1>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 14 }}>Spend analytics, export data, and procurement insights</p>
+
+
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <input type="date" style={inp} value={dateRange.from} onChange={e => setDateRange(r => ({ ...r, from: e.target.value }))} />
@@ -195,7 +206,7 @@ export default function ProcurementReports() {
             </div>
             <div style={card}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-                <Package size={18} color="#f59e0b" />
+                <Package size={18} color="#7c5cf0" />
                 <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Spend by Category</h3>
               </div>
               <SpendTable rows={spendData.by_category || []} labelKey="category" valueKey="total_spend" />
@@ -239,6 +250,6 @@ export default function ProcurementReports() {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

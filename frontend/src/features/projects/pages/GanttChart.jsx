@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { FolderKanban } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function EmptyState({ icon: Icon, title, sub, action }) {
   return (
@@ -19,7 +20,7 @@ function EmptyState({ icon: Icon, title, sub, action }) {
   );
 }
 
-const ASSIGNEE_COLORS = ['#6B3FDB','#2563eb','#16a34a','#dc2626','#d97706','#0891b2','#db2777','#65a30d','#6B3FDB','#9333ea'];
+const ASSIGNEE_COLORS = ['#6B3FDB','#2563eb','#16a34a','#dc2626','#6d28d9','#0891b2','#db2777','#65a30d','#6B3FDB','#9333ea'];
 function assigneeColor(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffffffff;
@@ -29,11 +30,20 @@ function initials(name) {
   const parts = name.trim().split(' ');
   return (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
 }
+/**
+ * A task with no start_date is normal — one is only set when the task is
+ * scheduled — but this used to `null.split('-')` and take the entire Gantt page
+ * down behind an ErrorBoundary. Returning null lets the callers below skip an
+ * unscheduled task instead of the page dying on it.
+ */
 function parseDate(str) {
-  const [y, m, d] = str.split('-').map(Number);
+  if (!str) return null;
+  const [y, m, d] = String(str).split('-').map(Number);
+  if (!y || !m || !d) return null;
   return new Date(y, m - 1, d);
 }
 function formatDate(date) {
+  if (!date) return '—';
   return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
 }
 function addDays(date, days) {
@@ -46,7 +56,7 @@ function diffDays(a, b) {
 }
 function statusColor(status) {
   if (status === 'on_track') return '#22c55e';
-  if (status === 'at_risk') return '#f59e0b';
+  if (status === 'at_risk') return '#7c5cf0';
   if (status === 'delayed') return '#ef4444';
   return '#94a3b8';
 }
@@ -78,7 +88,8 @@ function computeCriticalPath(tasks) {
     if (memo[id] !== undefined) return memo[id];
     const task = taskMap[id];
     if (!task) return { len: 0, path: [] };
-    const dur = diffDays(parseDate(task.start_date), parseDate(task.end_date)) + 1;
+    const s0 = parseDate(task.start_date), e0 = parseDate(task.end_date);
+    const dur = (s0 && e0) ? diffDays(s0, e0) + 1 : 0;
     if (successors[id].length === 0) {
       memo[id] = { len: dur, path: [id] };
       return memo[id];
@@ -133,7 +144,8 @@ export default function GanttChart() {
 
   const { minDate, maxDate } = useMemo(() => {
     if (!tasks.length) return { minDate: new Date(), maxDate: new Date() };
-    const dates = tasks.flatMap(t => [parseDate(t.start_date), parseDate(t.end_date)]);
+    // Unscheduled tasks contribute no bounds rather than a NaN date.
+    const dates = tasks.flatMap(t => [parseDate(t.start_date), parseDate(t.end_date)]).filter(Boolean);
     const min = new Date(Math.min(...dates));
     const max = new Date(Math.max(...dates));
     return { minDate: addDays(min, -14), maxDate: addDays(max, 14) };
@@ -259,12 +271,15 @@ export default function GanttChart() {
 
 
   return (
-    <div style={{ fontFamily:'Inter,sans-serif', background:'#f5f3ff', minHeight:'100vh', padding:24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Projects"
+        title="Gantt Chart"
+        subtitle="Project timeline and task dependencies"
+      />
+    }>
       {/* Page title */}
-      <div style={{ marginBottom:16 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1e1b4b', margin:0 }}>Gantt Chart</h1>
-        <p style={{ color:'#6b7280', fontSize:13, margin:'4px 0 0' }}>Project timeline and task dependencies</p>
-      </div>
 
       {/* Card wrapper */}
       <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
@@ -319,7 +334,7 @@ export default function GanttChart() {
 
           <div style={{ marginLeft:'auto', display:'flex', gap:12, alignItems:'center' }}>
             <LegendDot color="#22c55e" label="On Track" />
-            <LegendDot color="#f59e0b" label="At Risk" />
+            <LegendDot color="#7c5cf0" label="At Risk" />
             <LegendDot color="#ef4444" label="Delayed" />
             <LegendDot color="#6B3FDB" label="Milestone" isSquare={false} isDiamond />
           </div>
@@ -347,7 +362,6 @@ export default function GanttChart() {
 
           {/* RESOURCE COLUMN */}
           <div style={{ width:RESOURCE_W, minWidth:RESOURCE_W, flexShrink:0, borderRight:'1px solid #e9e4ff', zIndex:10, background:'#fff' }}>
-            {/* Header placeholder matching timeline header height */}
             <div style={{ height:HEADER_H, borderBottom:'1px solid #e9e4ff', background:'#faf9ff', display:'flex', alignItems:'center', paddingLeft:12 }}>
               <span style={{ fontSize:11, fontWeight:600, color:'#6B3FDB', textTransform:'uppercase', letterSpacing:0.5 }}>Task / Assignee</span>
             </div>
@@ -595,7 +609,7 @@ export default function GanttChart() {
           </div>
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }
 

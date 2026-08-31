@@ -194,7 +194,11 @@ async function notifyProjectMilestoneConflict(application, poolRef) {
         p.project_manager_id,
         pm.title              AS milestone_title,
         pm.due_date           AS milestone_due_date
-      FROM project_resources pr
+      -- project_resources is a phantom twin that was never created in this
+      -- schema; the real project-team table is project_members (same
+      -- project_id / employee_id / end_date shape). This query silently threw,
+      -- so a leave application never warned the PM about a milestone clash.
+      FROM project_members pr
       JOIN projects p          ON p.id = pr.project_id
       JOIN project_milestones pm ON pm.project_id = p.id
       WHERE pr.employee_id = $1
@@ -1196,7 +1200,14 @@ router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
 // Legacy alias — routes through the same full validation as POST /apply
 router.post('/', requirePermission('leaves', 'add'), handleApplyLeave);
 
-router.get('/my', requirePermission('leaves', 'view'), async (req, res) => {
+// No requirePermission gate: hard-scoped to the caller's own employee_id below,
+// so it can never return another employee's data — same self-service shape as
+// attendance's GET /employee/:id (no permission gate either). Requiring the
+// full 'leaves' module grant here would block finance/finance_manager/
+// accounts_exec from ever seeing their own leave history, defeating their
+// deliberate self-service carve-out (see FINANCE_SELF_SERVICE_PAGES in
+// menuCatalog.js) even though the frontend already lets them reach this page.
+router.get('/my', async (req, res) => {
   try {
     const employeeId = req.user?.employee_id;
     res.json(await leavesRepository.findApplications({ ...req.query, employee_id: employeeId, company_id: req.scope?.company_id ?? null }));

@@ -19,11 +19,13 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Plus, Pencil, Trash2, Download, FileText, Search, X,
   SlidersHorizontal, ArrowUp, ArrowDown, AlertCircle, Clock,
+  DraftingCompass,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmtDate } from '@/utils/dateFormatter';
 import { useAuth } from '@/context/AuthContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /**
  * Status colour is assigned EXPLICITLY rather than by indexing a series: green
@@ -33,7 +35,7 @@ import ConfirmDialog from '@/components/core/ConfirmDialog';
  */
 const STATUS_COLOR = {
   design:      '#6B3FDB', // purple — starting point
-  procurement: '#f59e0b', // amber  — waiting on parts
+  procurement: '#7c5cf0', // amber  — waiting on parts
   assembly:    '#14b8a6', // teal   — being built
   testing:     '#2563eb', // blue   — under test
   validation:  '#db2777', // pink   — sign-off
@@ -244,7 +246,14 @@ export default function EngineeringDev() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <div className="pulse-page" style={{ padding: 24, background: 'var(--color-bg-page, #f8f9fc)', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={DraftingCompass}
+        eyebrow="Engineering"
+        title="Engineering Development"
+        actions={canAdd && <button className="plh-cta" onClick={openNew}><Plus size={15} /> New</button>}
+      />
+    }>
       <ConfirmDialog
         open={!!confirmDel}
         title="Remove development record"
@@ -263,15 +272,6 @@ export default function EngineeringDev() {
       )}
 
       {/* ── header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Engineering Development</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            Development records (IPD) &middot; {total} record{total === 1 ? '' : 's'}
-          </p>
-        </div>
-        {canAdd && <button onClick={openNew} style={primaryBtn}><Plus size={15} /> New</button>}
-      </div>
 
       {/* ── toolbar ── */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -540,6 +540,6 @@ export default function EngineeringDev() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

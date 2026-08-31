@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Plus, Search, X, CheckCircle, AlertTriangle, Eye,
   Download, Upload, Phone, Mail, MapPin, Building2,
   TrendingUp, TrendingDown, IndianRupee, FileText,
   Edit2, ToggleLeft, ToggleRight,
   Users, ShoppingCart, ArrowUpRight, ArrowDownRight,
-  CreditCard, Calendar, Filter, AlertCircle
+  CreditCard, Calendar, Filter, AlertCircle, LayoutDashboard
 } from 'lucide-react';
 import {
   getParties, createParty, updateParty,
@@ -17,6 +18,7 @@ import './Parties.css';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const INDIAN_STATES = [
   'Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chhattisgarh','Goa','Gujarat',
@@ -65,7 +67,7 @@ const TypeBadge = ({ type }) => {
   const map = {
     Customer:{ bg:'#dbeafe', color:'#1d4ed8' },
     Supplier:{ bg:'#dcfce7', color:'#15803d' },
-    Both:    { bg:'#fef3c7', color:'#92400e' },
+    Both:    { bg:'#ede9fe', color:'#5b21b6' },
   };
   const s = map[type] || map.Customer;
   return <span className="pt-type-badge" style={{ background:s.bg, color:s.color }}>{type}</span>;
@@ -76,7 +78,7 @@ const StatusBadge = ({ status }) => {
     paid: { bg:'#dcfce7', color:'#15803d' },
     Paid: { bg:'#dcfce7', color:'#15803d' },
     draft: { bg:'#f1f5f9', color:'#64748b' },
-    pending: { bg:'#fef3c7', color:'#92400e' },
+    pending: { bg:'#ede9fe', color:'#5b21b6' },
     overdue: { bg:'#fee2e2', color:'#dc2626' },
     approved: { bg:'#dbeafe', color:'#1d4ed8' },
   };
@@ -85,6 +87,7 @@ const StatusBadge = ({ status }) => {
 };
 
 export default function Parties({ setPage }) {
+  const navigate = useNavigate();
   const { readOnly } = usePageAccess();
   const [parties,    setParties]   = useState([]);
   const [loading,    setLoading]   = useState(false);
@@ -99,6 +102,9 @@ export default function Parties({ setPage }) {
   const [editMode,   setEditMode]  = useState(false);
   const [gstinErr,   setGstinErr]  = useState('');
   const [deactivateTarget, setDeactivateTarget] = useState(null);
+  // Deactivated parties are kept out of the working list by default. They are
+  // never deleted — the Inactive / All chips below bring them back into view.
+  const [statusFilter, setStatusFilter] = useState('active'); // 'active' | 'inactive' | 'all'
 
   // Party detail sub-data
   const [txns,       setTxns]      = useState([]);
@@ -146,7 +152,17 @@ export default function Parties({ setPage }) {
     }
   }, [viewParty, viewTab]);
 
-  const filtered = parties.filter(p => {
+  // is_active is only false when someone explicitly deactivated the party —
+  // a legacy row with a NULL flag counts as active rather than being hidden.
+  const isInactive = (p) => p.is_active === false;
+  const isCustomer = (p) => ['Customer','Both'].includes(p.party_type);
+  const isSupplier = (p) => ['Supplier','Both'].includes(p.party_type);
+
+  const scoped = statusFilter === 'all'
+    ? parties
+    : parties.filter(p => (statusFilter === 'inactive' ? isInactive(p) : !isInactive(p)));
+
+  const filtered = scoped.filter(p => {
     const q = search.toLowerCase();
     return !q ||
       (p.name||'').toLowerCase().includes(q) ||
@@ -156,10 +172,17 @@ export default function Parties({ setPage }) {
       (p.gstin||'').toLowerCase().includes(q);
   });
 
-  const customers = parties.filter(p => ['Customer','Both'].includes(p.party_type));
-  const suppliers  = parties.filter(p => ['Supplier','Both'].includes(p.party_type));
-  const totalAR    = customers.reduce((s,p)=>s+parseFloat(p.outstanding_balance||0),0);
-  const totalAP    = suppliers.reduce((s,p)=>s+parseFloat(p.outstanding_balance||0),0);
+  // The summary cards describe the master data, not the current view: AR/AP
+  // span every party because a balance owed by a deactivated customer is still
+  // owed. Only the headline counts drop the deactivated tail, which is called
+  // out beside them so the two numbers reconcile.
+  const customers = parties.filter(isCustomer);
+  const suppliers = parties.filter(isSupplier);
+  const totalAR   = customers.reduce((s,p)=>s+parseFloat(p.outstanding_balance||0),0);
+  const totalAP   = suppliers.reduce((s,p)=>s+parseFloat(p.outstanding_balance||0),0);
+  const inactiveCustomers = customers.filter(isInactive).length;
+  const inactiveSuppliers = suppliers.filter(isInactive).length;
+  const inactiveCount     = parties.filter(isInactive).length;
 
   // ── Validation ───────────────────────────────────────────────────────────
   const handleGstinChange = (v) => {
@@ -205,7 +228,7 @@ export default function Parties({ setPage }) {
       await updateParty(party.id, { ...party, is_active: true });
     } finally {
       setParties(p => p.map(x => x.id===party.id ? {...x, is_active:true} : x));
-      showToast('Party activated');
+      showToast(statusFilter === 'inactive' ? 'Party activated — moved out of the Inactive list' : 'Party activated');
     }
   };
 
@@ -216,7 +239,7 @@ export default function Parties({ setPage }) {
       await updateParty(party.id, { ...party, is_active: false });
     } finally {
       setParties(p => p.map(x => x.id===party.id ? {...x, is_active:false} : x));
-      showToast('Party deactivated');
+      showToast(statusFilter === 'active' ? 'Party deactivated — hidden from the Active list' : 'Party deactivated');
     }
   };
 
@@ -307,7 +330,28 @@ export default function Parties({ setPage }) {
   const ageTotal = ageing ? Object.values(ageing).reduce((s,v)=>s+v,0) : 0;
 
   return (
-    <div className="pt-root">
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="Customers & Suppliers"
+        actions={<>
+          {!readOnly && (
+            <button className="plh-cta plh-cta--ghost" onClick={() => { setDrawer('import'); setImportRows([]); setImportResult(null); }}>
+              <Upload size={14}/> Import
+            </button>
+          )}
+          <button className="plh-cta plh-cta--ghost" onClick={handleExport}>
+            <Download size={14}/> Export
+          </button>
+          {!readOnly && (
+            <button className="plh-cta" onClick={openCreate}>
+              <Plus size={15}/> Add Party
+            </button>
+          )}
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={deactivateTarget !== null}
         title="Deactivate Party"
@@ -325,28 +369,6 @@ export default function Parties({ setPage }) {
         </div>
       )}
 
-      {/* Header */}
-      <div className="pt-header">
-        <div>
-          <h2 className="pt-title">Customers & Suppliers</h2>
-          <p className="pt-sub">{parties.length} parties · {customers.length} customers · {suppliers.length} suppliers</p>
-        </div>
-        <div className="pt-header-r">
-          {!readOnly && (
-            <button className="pt-btn-outline" onClick={() => { setDrawer('import'); setImportRows([]); setImportResult(null); }}>
-              <Upload size={14}/> Import
-            </button>
-          )}
-          <button className="pt-btn-outline" onClick={handleExport}>
-            <Download size={14}/> Export
-          </button>
-          {!readOnly && (
-            <button className="pt-btn-primary" onClick={openCreate}>
-              <Plus size={15}/> Add Party
-            </button>
-          )}
-        </div>
-      </div>
 
       {/* Summary cards */}
       <div className="pt-summary">
@@ -354,7 +376,10 @@ export default function Parties({ setPage }) {
           <div className="pt-sum-icon"><Users size={18}/></div>
           <div>
             <p className="pt-sum-label">Customers</p>
-            <p className="pt-sum-val">{customers.length}</p>
+            <p className="pt-sum-val">
+              {customers.length - inactiveCustomers}
+              {inactiveCustomers > 0 && <span className="pt-sum-inactive">+{inactiveCustomers} inactive</span>}
+            </p>
             <p className="pt-sum-sub">AR: {fmt(totalAR)} outstanding</p>
           </div>
           <ArrowUpRight size={14} className="pt-sum-arrow"/>
@@ -363,7 +388,10 @@ export default function Parties({ setPage }) {
           <div className="pt-sum-icon"><ShoppingCart size={18}/></div>
           <div>
             <p className="pt-sum-label">Suppliers</p>
-            <p className="pt-sum-val">{suppliers.length}</p>
+            <p className="pt-sum-val">
+              {suppliers.length - inactiveSuppliers}
+              {inactiveSuppliers > 0 && <span className="pt-sum-inactive">+{inactiveSuppliers} inactive</span>}
+            </p>
             <p className="pt-sum-sub">AP: {fmt(totalAP)} payable</p>
           </div>
           <ArrowDownRight size={14} className="pt-sum-arrow"/>
@@ -394,12 +422,14 @@ export default function Parties({ setPage }) {
             value={search} onChange={e=>setSearch(e.target.value)}/>
           {search && <button className="pt-clear" onClick={()=>setSearch('')}><X size={12}/></button>}
         </div>
+        {/* Type counts are taken over the status-scoped set, so the numbers on
+            these chips always match the rows actually rendered below. */}
         <div className="pt-filter-tabs">
           {[
-            {value:'',         label:'All',       count:parties.length},
-            {value:'Customer', label:'Customers',  count:customers.length},
-            {value:'Supplier', label:'Suppliers',  count:suppliers.length},
-            {value:'Both',     label:'Both',       count:parties.filter(p=>p.party_type==='Both').length},
+            {value:'',         label:'All',       count:scoped.length},
+            {value:'Customer', label:'Customers', count:scoped.filter(isCustomer).length},
+            {value:'Supplier', label:'Suppliers', count:scoped.filter(isSupplier).length},
+            {value:'Both',     label:'Both',      count:scoped.filter(p=>p.party_type==='Both').length},
           ].map(t=>(
             <button key={t.value}
               className={`pt-filter-tab${typeFilter===t.value?' active':''}`}
@@ -408,6 +438,27 @@ export default function Parties({ setPage }) {
               <span className="pt-filter-count">{t.count}</span>
             </button>
           ))}
+        </div>
+
+        <div className="pt-status-filter">
+          <span className="pt-filter-label">Status</span>
+          <div className="pt-filter-tabs">
+            {[
+              {value:'active',   label:'Active',   count:parties.length - inactiveCount},
+              {value:'inactive', label:'Inactive', count:inactiveCount},
+              {value:'all',      label:'All',      count:parties.length},
+            ].map(s=>(
+              <button key={s.value}
+                className={`pt-filter-tab${statusFilter===s.value?' active':''}`}
+                onClick={()=>setStatusFilter(s.value)}
+                title={s.value==='active' ? 'Hide deactivated customers and suppliers'
+                     : s.value==='inactive' ? 'Show only deactivated customers and suppliers'
+                     : 'Show active and deactivated together'}>
+                {s.label}
+                <span className="pt-filter-count">{s.count}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -426,10 +477,24 @@ export default function Parties({ setPage }) {
                   {!readOnly && <button className="pt-btn-primary" onClick={openCreate}><Plus size={14}/> Add Party</button>}
                 </div>
               </>
+            ) : scoped.length === 0 ? (
+              // parties is non-empty but the status filter alone emptied it —
+              // say so, rather than blaming a search the user never typed.
+              <>
+                <p style={{ fontWeight: 500, marginBottom: 8 }}>
+                  {statusFilter === 'inactive'
+                    ? 'No deactivated parties'
+                    : `Every party here is deactivated (${inactiveCount})`}
+                </p>
+                <button className="pt-btn-outline"
+                  onClick={() => setStatusFilter(statusFilter === 'inactive' ? 'active' : 'inactive')}>
+                  {statusFilter === 'inactive' ? 'Show active parties' : 'Show inactive parties'}
+                </button>
+              </>
             ) : (
               <>
                 <p style={{ fontWeight: 500, marginBottom: 8 }}>No parties match your search</p>
-                <button className="pt-btn-outline" onClick={() => { setSearch(''); setTypeFilter(''); }}>Clear Filters</button>
+                <button className="pt-btn-outline" onClick={() => { setSearch(''); setTypeFilter(''); setStatusFilter('active'); }}>Clear Filters</button>
               </>
             )}
           </div>
@@ -447,13 +512,15 @@ export default function Parties({ setPage }) {
               {filtered.map((party,i) => {
                 const util = creditUtil(party);
                 return (
-                  <tr key={party.id||i} className={`pt-tr ${!party.is_active?'pt-tr-inactive':''}`}>
+                  // In the Inactive view every row is inactive, so dimming them
+                  // all would just make the table look disabled.
+                  <tr key={party.id||i} className={`pt-tr ${!party.is_active && statusFilter!=='inactive' ? 'pt-tr-inactive':''}`}>
                     <td><span className="pt-code">{party.party_code}</span></td>
                     <td>
                       <button className="pt-name-btn" onClick={()=>openView(party)}>
                         <div className="pt-name-avatar"
-                          style={{background:party.party_type==='Customer'?'#dbeafe':party.party_type==='Supplier'?'#dcfce7':'#fef3c7',
-                                  color:party.party_type==='Customer'?'#1d4ed8':party.party_type==='Supplier'?'#15803d':'#92400e'}}>
+                          style={{background:party.party_type==='Customer'?'#dbeafe':party.party_type==='Supplier'?'#dcfce7':'#ede9fe',
+                                  color:party.party_type==='Customer'?'#1d4ed8':party.party_type==='Supplier'?'#15803d':'#5b21b6'}}>
                           {party.name.charAt(0)}
                         </div>
                         <div>
@@ -481,7 +548,7 @@ export default function Parties({ setPage }) {
                         <div className="pt-credit-cell">
                           <div className="pt-credit-bar-wrap">
                             <div className="pt-credit-bar"
-                              style={{width:`${util||0}%`,background:(util||0)>80?'#ef4444':(util||0)>60?'#f59e0b':'#10b981'}}/>
+                              style={{width:`${util||0}%`,background:(util||0)>80?'#ef4444':(util||0)>60?'#7c5cf0':'#10b981'}}/>
                           </div>
                           <span className="pt-credit-pct">{util||0}%</span>
                         </div>
@@ -521,8 +588,8 @@ export default function Parties({ setPage }) {
             <div className="pt-drawer-hd">
               <div className="pt-drawer-hd-left">
                 <div className="pt-view-avatar"
-                  style={{background:viewParty.party_type==='Customer'?'#dbeafe':viewParty.party_type==='Supplier'?'#dcfce7':'#fef3c7',
-                          color:viewParty.party_type==='Customer'?'#1d4ed8':viewParty.party_type==='Supplier'?'#15803d':'#92400e'}}>
+                  style={{background:viewParty.party_type==='Customer'?'#dbeafe':viewParty.party_type==='Supplier'?'#dcfce7':'#ede9fe',
+                          color:viewParty.party_type==='Customer'?'#1d4ed8':viewParty.party_type==='Supplier'?'#15803d':'#5b21b6'}}>
                   {viewParty.name.charAt(0)}
                 </div>
                 <div>
@@ -537,6 +604,15 @@ export default function Parties({ setPage }) {
                 </div>
               </div>
               <div className="pt-drawer-hd-right">
+                {/* Customers have a full 360 keyed on this exact party id.
+                    Suppliers deliberately get no equivalent link: vendors.party_id
+                    is the join to Vendor 360 and is unpopulated, so the button
+                    would dead-end. */}
+                {viewParty.party_type !== 'Supplier' && (
+                  <button className="pt-btn-outline" onClick={()=>navigate(`/Customer360?party_id=${viewParty.id}`)}>
+                    <LayoutDashboard size={13}/> Customer 360°
+                  </button>
+                )}
                 {!readOnly && <button className="pt-btn-outline" onClick={()=>openEdit(viewParty)}><Edit2 size={13}/> Edit</button>}
                 <button className="pt-icon-btn" onClick={()=>setViewParty(null)}><X size={18}/></button>
               </div>
@@ -606,7 +682,7 @@ export default function Parties({ setPage }) {
                           <div className="pt-credit-util">
                             <div className="pt-credit-util-hd"><span>Credit Utilization</span><span>{creditUtil(viewParty)||0}%</span></div>
                             <div className="pt-credit-util-bar">
-                              <div style={{width:`${creditUtil(viewParty)||0}%`,background:(creditUtil(viewParty)||0)>80?'#ef4444':(creditUtil(viewParty)||0)>60?'#f59e0b':'#10b981'}}/>
+                              <div style={{width:`${creditUtil(viewParty)||0}%`,background:(creditUtil(viewParty)||0)>80?'#ef4444':(creditUtil(viewParty)||0)>60?'#7c5cf0':'#10b981'}}/>
                             </div>
                           </div>
                         </>
@@ -711,7 +787,7 @@ export default function Parties({ setPage }) {
                       {AGEING_LABELS.map(({key,label})=>{
                         const amt = ageing[key] || 0;
                         const pct = ageTotal > 0 ? Math.round((amt/ageTotal)*100) : 0;
-                        const color = key==='current'?'#10b981':key==='1_30'?'#f59e0b':key==='31_60'?'#f97316':key==='61_90'?'#ef4444':'#991b1b';
+                        const color = key==='current'?'#10b981':key==='1_30'?'#7c5cf0':key==='31_60'?'#7c5cf0':key==='61_90'?'#ef4444':'#991b1b';
                         return (
                           <div key={key} className="pt-ageing-card" style={{borderTop:`3px solid ${color}`}}>
                             <div className="pt-ageing-label">{label}</div>
@@ -1031,6 +1107,6 @@ export default function Parties({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

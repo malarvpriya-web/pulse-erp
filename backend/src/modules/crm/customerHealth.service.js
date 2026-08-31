@@ -205,8 +205,12 @@ async function calcProjectScore(customerId, companyId) {
       `SELECT
          COUNT(*)::int                                                             AS total,
          COUNT(CASE WHEN p.status='completed' THEN 1 END)::int                   AS completed,
-         COUNT(CASE WHEN p.status='completed' AND p.end_date IS NOT NULL
-                    AND p.end_date < p.actual_end_date THEN 1 END)::int          AS delayed,
+         -- actual_end_date never existed. The schema's planned date is
+         -- baseline_end_date and end_date is the actual close, so "delayed" is
+         -- a close that landed after the baseline. The old comparison silently
+         -- killed this whole aggregate (42703), zeroing every delivery metric.
+         COUNT(CASE WHEN p.status='completed' AND p.baseline_end_date IS NOT NULL
+                    AND p.end_date > p.baseline_end_date THEN 1 END)::int        AS delayed,
          COUNT(CASE WHEN p.status IN ('cancelled','failed') THEN 1 END)::int     AS failed,
          COUNT(CASE WHEN p.status='active' AND p.end_date IS NOT NULL
                     AND p.end_date < NOW() THEN 1 END)::int                      AS overdue_active
@@ -512,8 +516,16 @@ async function calcManifestMetrics(customerId) {
 
   try {
     const fat = await pool.query(
-      `SELECT COUNT(*)::int AS total, COUNT(CASE WHEN result='passed' THEN 1 END)::int AS passed
-       FROM fat_reports WHERE customer_id=$1`,
+      // fat_reports never existed; the real table is fat_trackers, keyed on
+      // project_id. customerId here is a parties.id, so the link runs
+      // project -> opportunity -> account -> party.
+      `SELECT COUNT(*)::int AS total,
+              COUNT(CASE WHEN LOWER(ft.status) IN ('passed','completed','accepted') THEN 1 END)::int AS passed
+       FROM fat_trackers ft
+       JOIN projects p           ON p.id = ft.project_id AND p.deleted_at IS NULL
+       LEFT JOIN opportunities o ON o.id = p.opportunity_id
+       LEFT JOIN accounts a      ON a.id = o.account_id AND a.deleted_at IS NULL
+       WHERE a.party_id = $1`,
       [customerId]
     );
     const f = fat.rows[0];
@@ -522,9 +534,14 @@ async function calcManifestMetrics(customerId) {
 
   try {
     const sat = await pool.query(
+      // sat_reports never existed; the real table is sat_trackers.
       `SELECT COUNT(*)::int AS total,
-              COUNT(CASE WHEN result IN ('accepted','passed') OR status='completed' THEN 1 END)::int AS passed
-       FROM sat_reports WHERE customer_id=$1`,
+              COUNT(CASE WHEN LOWER(st.status) IN ('accepted','passed','completed') THEN 1 END)::int AS passed
+       FROM sat_trackers st
+       JOIN projects p           ON p.id = st.project_id AND p.deleted_at IS NULL
+       LEFT JOIN opportunities o ON o.id = p.opportunity_id
+       LEFT JOIN accounts a      ON a.id = o.account_id AND a.deleted_at IS NULL
+       WHERE a.party_id = $1`,
       [customerId]
     );
     const s = sat.rows[0];
@@ -544,7 +561,14 @@ async function calcManifestMetrics(customerId) {
 
   try {
     const wr = await pool.query(
-      `SELECT COUNT(*)::int AS cnt FROM warranty_register WHERE customer_id=$1`,
+      // warranty_register never existed. This metric counts CLAIMS, and
+      // warranty_claims is the table that records them; it reaches the customer
+      // through the warranty registration's sales order.
+      `SELECT COUNT(*)::int AS cnt
+         FROM warranty_claims wc
+         JOIN warranty_registrations wr ON wr.id = wc.warranty_registration_id
+         LEFT JOIN sales_orders so      ON so.id = wr.sales_order_id
+        WHERE so.customer_id = $1`,
       [customerId]
     );
     metrics.warranty_claims_count = wr.rows[0]?.cnt || 0;

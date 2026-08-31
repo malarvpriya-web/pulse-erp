@@ -4,7 +4,7 @@ import api from '@/services/api/client';
 
 const P = '#7c3aed';
 const DEPT_COLORS = [
-  '#7c3aed','#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4',
+  '#7c3aed','#6366f1','#0ea5e9','#10b981','#7c5cf0','#ef4444','#8b5cf6','#06b6d4',
 ];
 
 export default function OrgSummaryWidget({ setPage }) {

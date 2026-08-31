@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, Plus, Edit2, Trash2, ChevronDown, ChevronUp, CheckCircle, X, AlertCircle, RefreshCw, Clock, Zap, Coffee } from 'lucide-react';
+import {
+  Shield, Plus, Edit2, Trash2, ChevronDown, ChevronUp, CheckCircle, X,
+  AlertCircle, RefreshCw, Clock, Zap, Coffee, CalendarClock,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
 
 const POLICY_TYPES = [
-  { id: 'late',     label: 'Late Arrival Policy',  icon: Clock,   color: '#f59e0b', desc: 'Grace period, late marks, auto-deductions' },
+  { id: 'late',     label: 'Late Arrival Policy',  icon: Clock,   color: '#7c5cf0', desc: 'Grace period, late marks, auto-deductions' },
   { id: 'overtime', label: 'Overtime Policy',       icon: Zap,    color: '#6B3FDB', desc: 'OT multipliers, approval requirements, max hours' },
   { id: 'break',    label: 'Break Policy',          icon: Coffee, color: '#0369a1', desc: 'Lunch/tea breaks, unauthorized break tracking' },
   { id: 'field',    label: 'Field Engineer Policy', icon: Shield, color: '#10b981', desc: 'Geo-attendance, mobile punch, travel attendance' },
@@ -407,7 +411,25 @@ export default function AttendancePolicies() {
   const filtered = filter === 'all' ? policies : policies.filter(p => p.policy_type === filter);
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title="Attendance Policy Engine"
+        subtitle="Configure late, overtime, break, and compliance policies for your workforce"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={13} /> Refresh
+          </button>
+          {!showForm && (
+            <button className="plh-cta"
+              onClick={() => { setEditItem(null); setShowForm(true); }}>
+              <Plus size={15} /> New Policy
+            </button>
+          )}
+        </>}
+      />
+    }>
       {toast && (
         <div style={{
           position: 'fixed', top: 20, right: 20, zIndex: 9999,
@@ -424,27 +446,7 @@ export default function AttendancePolicies() {
       )}
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>Attendance Policy Engine</h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-            Configure late, overtime, break, and compliance policies for your workforce
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={load} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151' }}>
-            <RefreshCw size={13} /> Refresh
-          </button>
-          {!showForm && (
-            <button
-              onClick={() => { setEditItem(null); setShowForm(true); }}
-              style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: P, color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', gap: 7 }}
-            >
-              <Plus size={15} /> New Policy
-            </button>
-          )}
-        </div>
-      </div>
+
 
       {/* Policy type overview cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
@@ -493,6 +495,6 @@ export default function AttendancePolicies() {
           <PolicyCard key={p.id} policy={p} onEdit={handleEdit} onDelete={handleDelete} onToggleActive={handleToggleActive} />
         ))
       )}
-    </div>
+    </PageShell>
   );
 }

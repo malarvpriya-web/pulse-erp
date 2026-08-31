@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '@/services/api/client';
-import { Plus, X, Shield, AlertTriangle, CheckCircle, Clock, RefreshCw, Download, FileWarning } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  Plus, X, Shield, AlertTriangle, CheckCircle, Clock, RefreshCw,
+  Download, FileWarning, LifeBuoy,
+} from 'lucide-react';
 
 const EMPTY_REG = {
   serial_number: '', product_name: '', customer_name: '',
@@ -140,37 +144,35 @@ export default function WarrantyManagement() {
   const today = new Date().toISOString().slice(0, 10);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Operations"
+        title="Warranty Management"
+        subtitle="Warranty registrations, claims, and expiry tracking"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={exportWarranty}>
+            <Download size={14} /> Export
+          </button>
+          <button className="plh-cta" onClick={() => setShowRegForm(true)}>
+            <Plus size={15} /> Register Warranty
+          </button>
+        </>}
+      />
+    }>
       {toast && (
         <div style={{ position: 'fixed', top: 20, right: 24, zIndex: 9999, padding: '10px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: toast.type === 'error' ? '#fee2e2' : '#dcfce7', color: toast.type === 'error' ? '#dc2626' : '#15803d', boxShadow: '0 2px 8px rgba(0,0,0,.12)' }}>
           {toast.msg}
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Warranty Management</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>Warranty registrations, claims, and expiry tracking</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={exportWarranty}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontSize: 13, color: '#374151' }}>
-            <Download size={14} /> Export
-          </button>
-          <button onClick={() => setShowRegForm(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            <Plus size={15} /> Register Warranty
-          </button>
-        </div>
-      </div>
 
       {/* KPI strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
         {[
           { label: 'Active Warranties', value: active, icon: <CheckCircle size={18} color="#10b981" />, bg: '#d1fae5' },
           { label: 'Expired', value: expired, icon: <AlertTriangle size={18} color="#ef4444" />, bg: '#fee2e2' },
-          { label: 'Expiring ≤30 days', value: expiring30, icon: <Clock size={18} color="#f59e0b" />, bg: '#fef3c7' },
+          { label: 'Expiring ≤30 days', value: expiring30, icon: <Clock size={18} color="#7c5cf0" />, bg: '#ede9fe' },
           { label: 'Open Claims', value: openClaims, icon: <FileWarning size={18} color="#6366f1" />, bg: '#e0e7ff' },
         ].map(k => (
           <div key={k.label} style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -229,7 +231,7 @@ export default function WarrantyManagement() {
                 <tbody>
                   {filteredRegs.map((r, i) => {
                     const dl = r.days_remaining;
-                    const dlColor = r.is_expired ? '#ef4444' : dl !== null && dl <= 30 ? '#f59e0b' : '#10b981';
+                    const dlColor = r.is_expired ? '#ef4444' : dl !== null && dl <= 30 ? '#7c5cf0' : '#10b981';
                     const sc = STATUS_COLOR[r.is_expired ? 'Expired' : 'Active'] || {};
                     return (
                       <tr key={r.id || i} style={{ borderBottom: '1px solid #f9fafb', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
@@ -245,7 +247,7 @@ export default function WarrantyManagement() {
                         <td style={{ padding: '10px 12px', fontSize: 11 }}>
                           {r.coverage_parts   && <span style={{ background: '#f0fdf4', color: '#065f46', padding: '1px 6px', borderRadius: 4, marginRight: 3 }}>Parts</span>}
                           {r.coverage_labour  && <span style={{ background: '#eff6ff', color: '#1e40af', padding: '1px 6px', borderRadius: 4, marginRight: 3 }}>Labour</span>}
-                          {r.coverage_travel  && <span style={{ background: '#fefce8', color: '#854d0e', padding: '1px 6px', borderRadius: 4 }}>Travel</span>}
+                          {r.coverage_travel  && <span style={{ background: '#f5f3ff', color: '#5b21b6', padding: '1px 6px', borderRadius: 4 }}>Travel</span>}
                         </td>
                         <td style={{ padding: '10px 12px', fontWeight: 600, color: dlColor, whiteSpace: 'nowrap' }}>
                           {r.is_expired ? 'Expired' : dl !== null ? `${dl}d` : '—'}
@@ -334,7 +336,7 @@ export default function WarrantyManagement() {
                                 <button onClick={() => updateClaim(c.id, 'approved', '')}
                                   style={{ padding: '3px 8px', background: '#d1fae5', color: '#065f46', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Approve</button>
                                 <button onClick={() => setEditingClaim(c)}
-                                  style={{ padding: '3px 8px', background: '#fef3c7', color: '#92400e', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Resolve</button>
+                                  style={{ padding: '3px 8px', background: '#ede9fe', color: '#5b21b6', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Resolve</button>
                                 <button onClick={() => updateClaim(c.id, 'rejected', '')}
                                   style={{ padding: '3px 8px', background: '#fee2e2', color: '#991b1b', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Reject</button>
                               </>
@@ -493,6 +495,6 @@ export default function WarrantyManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { FileText, Download, Search, Upload, Trash2, X } from 'lucide-react';
+import { FileText, Download, Search, Upload, Trash2, X, ShoppingCart } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DOC_TYPES  = ['Proposal','Contract','Brochure','Presentation','Other'];
 const ALL_TABS   = ['All', ...DOC_TYPES];
-const TYPE_COLOR = { Proposal:'#6366f1', Contract:'#10b981', Brochure:'#f59e0b', Presentation:'#ef4444', Other:'#6b7280' };
+const TYPE_COLOR = { Proposal:'#6366f1', Contract:'#10b981', Brochure:'#7c5cf0', Presentation:'#ef4444', Other:'#6b7280' };
 
 export default function SalesDocuments() {
   const toast = useToast();
@@ -63,7 +64,16 @@ export default function SalesDocuments() {
   }
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Sales Documents"
+        actions={<button className="plh-cta" onClick={() => setShowUpload(true)}>
+          <Upload size={14}/> Upload Document
+        </button>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -75,13 +85,6 @@ export default function SalesDocuments() {
         onCancel={() => setPendingHandleDelete(null)}
       />
 
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Sales Documents</h1>
-        <button onClick={() => setShowUpload(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
-          <Upload size={14}/> Upload Document
-        </button>
-      </div>
 
       {/* Type filter tabs */}
       <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
@@ -203,6 +206,6 @@ export default function SalesDocuments() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, RefreshCw, Download, Filter, ChevronDown, ChevronRight, AlertCircle } from 'lucide-react';
+import {
+  Shield, RefreshCw, Download, Filter, ChevronDown, ChevronRight,
+  AlertCircle, CalendarClock,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -8,7 +12,7 @@ const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4'
 const ACTION_STYLES = {
   clock_in:              { bg: '#dcfce7', color: '#166534', label: 'Clock In' },
   clock_out:             { bg: '#dbeafe', color: '#1e40af', label: 'Clock Out' },
-  admin_mark:            { bg: '#fef3c7', color: '#92400e', label: 'Admin Mark' },
+  admin_mark:            { bg: '#ede9fe', color: '#5b21b6', label: 'Admin Mark' },
   bulk_mark:             { bg: '#f3e8ff', color: '#7e22ce', label: 'Bulk Mark' },
   regularize_submit:     { bg: '#e0f2fe', color: '#0369a1', label: 'Reg. Submit' },
   regularize_mgr_approve:{ bg: '#dcfce7', color: '#166534', label: 'Mgr Approved' },
@@ -148,23 +152,23 @@ export default function AttendanceAuditLogs() {
   logs.forEach(l => { actionCounts[l.action] = (actionCounts[l.action] || 0) + 1; });
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>Attendance Audit Logs</h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-            Immutable audit trail — every attendance mutation is permanently recorded
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={downloadCSV} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title="Attendance Audit Logs"
+        subtitle="Immutable audit trail — every attendance mutation is permanently recorded"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={downloadCSV}>
             <Download size={13} /> Export CSV
           </button>
-          <button onClick={load} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151' }}>
+          <button className="plh-cta" onClick={load}>
             <RefreshCw size={13} style={loading ? { animation: 'spin 1s linear infinite' } : {}} /> Refresh
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
 
       {/* Action summary chips */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
@@ -262,6 +266,6 @@ export default function AttendanceAuditLogs() {
         </div>
       )}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </PageShell>
   );
 }

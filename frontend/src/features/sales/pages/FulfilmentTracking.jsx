@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { ShoppingCart, Search, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -44,10 +46,53 @@ const inputS = {
   borderRadius: 8, fontSize: 13, boxSizing: 'border-box',
 };
 
+// ── Filter bar ──────────────────────────────────────────────────────
+// Both list endpoints return the full unpaginated set, so filtering is
+// client-side — the same shape SalesOrders uses (search box + status chips).
+const searchWrapS = {
+  display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 240,
+  background: '#fff', border: '1px solid #e9e4ff', borderRadius: 8, padding: '0 10px',
+};
+const chipS = (active) => ({
+  display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+  border: 'none', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+  background: active ? '#6B3FDB' : '#f3f4f6',
+  color:      active ? '#fff'    : '#374151',
+});
+
+function FilterBar({ query, onQuery, placeholder, chips, active, onChip }) {
+  return (
+    <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={searchWrapS}>
+        <Search size={14} color="#9ca3af" />
+        <input
+          value={query}
+          onChange={e => onQuery(e.target.value)}
+          placeholder={placeholder}
+          style={{ flex: 1, border: 'none', outline: 'none', padding: '9px 0', fontSize: 13, background: 'transparent' }}
+        />
+        {query && (
+          <button onClick={() => onQuery('')} title="Clear search" aria-label="Clear search"
+            style={{ border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', padding: 2 }}>
+            <X size={12} color="#9ca3af" />
+          </button>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {chips.map(c => (
+          <button key={c.key} onClick={() => onChip(c.key)} style={chipS(active === c.key)}>
+            {c.label}<span style={{ fontWeight: 700, opacity: 0.75 }}>{c.count}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Status badge config ──────────────────────────────────────────────────────
 const STATUS_BADGE = {
   confirmed:  { bg: '#dbeafe', color: '#1e40af', label: 'Ready'      },
-  pending:    { bg: '#fef3c7', color: '#92400e', label: 'Pending'    },
+  pending:    { bg: '#ede9fe', color: '#5b21b6', label: 'Pending'    },
   dispatched: { bg: '#ede9fe', color: '#5b21b6', label: 'In Transit' },
 };
 
@@ -197,13 +242,9 @@ function CreditLimitModal({ customer, onClose, onDone }) {
 
 // ── KPI Card ─────────────────────────────────────────────────────────────────
 function KpiCard({ label, value, color, sub }) {
-  return (
-    <div style={{ background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, padding: '18px 20px' }}>
-      <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 28, fontWeight: 800, color }}>{value ?? '—'}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} color={color} sub={sub} />;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -220,6 +261,13 @@ export default function FulfilmentTracking() {
 
   const [dispatchTarget, setDispatchTarget] = useState(null);
   const [creditTarget,   setCreditTarget]   = useState(null);
+
+  // Filters — one pair per list tab. The KPI row above the tabs stays
+  // unfiltered on purpose: it is the point-in-time backlog, not the table.
+  const [orderQuery,  setOrderQuery]  = useState('');
+  const [orderStatus, setOrderStatus] = useState('all');
+  const [creditQuery, setCreditQuery] = useState('');
+  const [creditState, setCreditState] = useState('all');
 
   const abortRef = useRef(null);
 
@@ -277,14 +325,53 @@ export default function FulfilmentTracking() {
     }
   };
 
-  return (
-    <div style={{ padding: '24px', background: '#f5f3ff', minHeight: '100vh' }}>
+  // ── Delivery-order filtering ──────────────────────────────────────
+  const orderQ = orderQuery.trim().toLowerCase();
+  const orderHitsQuery = (o) => !orderQ || [o.order_number, o.customer_name, o.carrier, o.tracking_number]
+    .some(v => (v ?? '').toString().toLowerCase().includes(orderQ));
+  // 'overdue' cuts across the status values rather than being one of them.
+  const orderHitsStatus = (o, key) => key === 'all' ? true
+    : key === 'overdue' ? !!o.is_overdue
+    : o.status === key;
 
-      {/* Header */}
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>Fulfilment & Credit Control</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 14 }}>Delivery tracking, credit limits, fulfilment analytics</p>
-      </div>
+  const orderChips = [
+    { key: 'all',        label: 'All'        },
+    { key: 'confirmed',  label: 'Ready'      },
+    { key: 'pending',    label: 'Pending'    },
+    { key: 'dispatched', label: 'In Transit' },
+    { key: 'overdue',    label: 'Overdue'    },
+  ].map(c => ({ ...c, count: orders.filter(o => orderHitsStatus(o, c.key) && orderHitsQuery(o)).length }));
+
+  const visibleOrders = orders.filter(o => orderHitsStatus(o, orderStatus) && orderHitsQuery(o));
+
+  // ── Credit-control filtering ──────────────────────────────────────
+  const creditQ = creditQuery.trim().toLowerCase();
+  const creditHitsQuery = (c) => !creditQ || (c.customer ?? '').toLowerCase().includes(creditQ);
+  // 'blocked' is an independent flag, not one of the credit_status values.
+  const creditHitsState = (c, key) => key === 'all' ? true
+    : key === 'blocked' ? !!c.is_blocked
+    : c.credit_status === key;
+
+  const creditChips = [
+    { key: 'all',      label: 'All'      },
+    { key: 'exceeded', label: 'Exceeded' },
+    { key: 'ok',       label: 'OK'       },
+    { key: 'no_limit', label: 'No Limit' },
+    { key: 'blocked',  label: 'Blocked'  },
+  ].map(c => ({ ...c, count: credit.filter(r => creditHitsState(r, c.key) && creditHitsQuery(r)).length }));
+
+  const visibleCredit = credit.filter(c => creditHitsState(c, creditState) && creditHitsQuery(c));
+
+  return (
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Fulfilment & Credit Control"
+        subtitle="Delivery tracking, credit limits, fulfilment analytics"
+      />
+    }>
+
 
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
@@ -315,10 +402,18 @@ export default function FulfilmentTracking() {
             />
           )}
 
+          <FilterBar
+            query={orderQuery} onQuery={setOrderQuery}
+            placeholder="Search order no, customer, courier or tracking…"
+            chips={orderChips} active={orderStatus} onChip={setOrderStatus}
+          />
+
           <div style={cardS}>
-            {orders.length === 0 ? (
+            {visibleOrders.length === 0 ? (
               <div style={{ padding: 60, textAlign: 'center', color: '#9ca3af' }}>
-                No confirmed or dispatched orders to display.
+                {orders.length === 0
+                  ? 'No confirmed or dispatched orders to display.'
+                  : 'No orders match the current filters.'}
               </div>
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -330,7 +425,7 @@ export default function FulfilmentTracking() {
                   </tr>
                 </thead>
                 <tbody>
-                  {orders.map((o, i) => (
+                  {visibleOrders.map((o, i) => (
                     <tr key={o.id} style={{
                       background: o.is_overdue ? '#fff5f5' : i % 2 === 0 ? '#fff' : '#fafafa',
                     }}>
@@ -385,10 +480,18 @@ export default function FulfilmentTracking() {
             />
           )}
 
+          <FilterBar
+            query={creditQuery} onQuery={setCreditQuery}
+            placeholder="Search customer…"
+            chips={creditChips} active={creditState} onChip={setCreditState}
+          />
+
           <div style={cardS}>
-            {credit.length === 0 ? (
+            {visibleCredit.length === 0 ? (
               <div style={{ padding: 60, textAlign: 'center', color: '#9ca3af' }}>
-                No customers found.
+                {credit.length === 0
+                  ? 'No customers found.'
+                  : 'No customers match the current filters.'}
               </div>
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -400,7 +503,7 @@ export default function FulfilmentTracking() {
                   </tr>
                 </thead>
                 <tbody>
-                  {credit.map((c, i) => {
+                  {visibleCredit.map((c, i) => {
                     const avail  = parseFloat(c.available_credit || 0);
                     const statusBadge = c.credit_status === 'exceeded'
                       ? { bg: '#fee2e2', color: '#dc2626', label: 'Exceeded' }
@@ -458,7 +561,7 @@ export default function FulfilmentTracking() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
             <KpiCard label="Avg Dispatch Time"  value={`${analytics?.avg_dispatch_time_days ?? 0} days`} color="#6B3FDB" sub="Order created → dispatched" />
             <KpiCard label="Avg Delivery Time"  value={`${analytics?.avg_delivery_time_days ?? 0} days`} color="#0891b2" sub="Dispatched → delivered" />
-            <KpiCard label="On-Time Delivery"   value={`${analytics?.on_time_delivery_rate ?? 0}%`}       color={parseFloat(analytics?.on_time_delivery_rate || 0) >= 85 ? '#059669' : '#d97706'} sub="Delivered on/before due date" />
+            <KpiCard label="On-Time Delivery"   value={`${analytics?.on_time_delivery_rate ?? 0}%`}       color={parseFloat(analytics?.on_time_delivery_rate || 0) >= 85 ? '#059669' : '#6d28d9'} sub="Delivered on/before due date" />
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
@@ -509,6 +612,6 @@ export default function FulfilmentTracking() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

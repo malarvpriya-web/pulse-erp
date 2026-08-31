@@ -1,8 +1,13 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
-import { Plane, Clock, CheckCircle, Plus, TrendingUp, Receipt, AlertCircle, Users, Building2, CreditCard } from 'lucide-react';
+import {
+  Plane, Clock, CheckCircle, Plus, TrendingUp, Receipt, AlertCircle,
+  Users, Building2, CreditCard, LayoutDashboard,
+} from 'lucide-react';
 import { STATUS_COLOR, fmt } from './travelUtils';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
 
 const fmtDate = (d) => {
@@ -30,7 +35,7 @@ function KPICard({ label, value, icon: Icon, color, isText, index = 0 }) {
 }
 
 // ── Employee Dashboard ────────────────────────────────────────────────────────
-function EmployeeDashboard({ setPage }) {
+function EmployeeDashboard({ setPage, params }) {
   const [stats,  setStats]  = useState({});
   const [claims, setClaims] = useState([]);
   const [reqs,   setReqs]   = useState([]);
@@ -38,20 +43,20 @@ function EmployeeDashboard({ setPage }) {
 
   useEffect(() => {
     Promise.allSettled([
-      api.get('/reimbursement/dashboard'),
-      api.get('/reimbursement/claims', { params: { limit: 5 } }),
+      api.get('/reimbursement/dashboard', { params }),
+      api.get('/reimbursement/claims', { params: { ...params, limit: 5 } }),
       api.get('/travel/my-entries'),
     ]).then(([st, cl, rq]) => {
       setStats(st.status === 'fulfilled' ? (st.value?.data || {}) : {});
       setClaims(cl.status === 'fulfilled' ? (cl.value?.data || []).slice(0, 5) : []);
       setReqs(rq.status === 'fulfilled' ? (rq.value?.data || []).slice(0, 5) : []);
     }).finally(() => setLoading(false));
-  }, []);
+  }, [params]);
 
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 12 }}>
-        <KPICard index={0} label="Pending Claims"    value={stats.pending_claims || 0}      icon={Clock}       color="#f59e0b" />
+        <KPICard index={0} label="Pending Claims"    value={stats.pending_claims || 0}      icon={Clock}       color="#7c5cf0" />
         <KPICard index={1} label="Reimbursed"        value={stats.reimbursed_claims || 0}    icon={CheckCircle} color="#10b981" />
         <KPICard index={2} label="Rejected"          value={stats.rejected_claims || 0}      icon={AlertCircle} color="#ef4444" />
         <KPICard index={3} label="Amount Receivable" value={fmt(stats.pending_amount || 0)}  icon={CreditCard}  color="#6B3FDB" isText />
@@ -63,7 +68,7 @@ function EmployeeDashboard({ setPage }) {
           { label: 'New Travel Request', page: 'TravelRequests',   color: '#6B3FDB' },
           { label: 'Submit Expense',     page: 'ExpenseClaims',    color: '#10b981' },
           { label: 'Visit Report',       page: 'VisitReports',     color: '#6366f1' },
-          { label: 'My Approvals',       page: 'TravelApprovals',  color: '#f59e0b' },
+          { label: 'My Approvals',       page: 'TravelApprovals',  color: '#7c5cf0' },
         ].map(a => (
           <button key={a.page} onClick={() => setPage?.(a.page)}
             style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 10, padding: '12px 14px', cursor: 'pointer', textAlign: 'left', fontWeight: 600, color: a.color, fontSize: 13 }}
@@ -146,7 +151,7 @@ function RecentTravelRequests({ setPage }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 12 }}>
         <KPICard index={0} label="Total Requests" value={data?.total_requests ?? 0}    icon={Plane}       color="#6B3FDB" />
         <KPICard index={1} label="Total Budget"   value={fmt(data?.total_budget ?? 0)} icon={CreditCard}  color="#10b981" isText />
-        <KPICard index={2} label="Pending"        value={data?.pending_count ?? 0}      icon={Clock}       color="#f59e0b" />
+        <KPICard index={2} label="Pending"        value={data?.pending_count ?? 0}      icon={Clock}       color="#7c5cf0" />
         <KPICard index={3} label="Approved"       value={data?.approved_count ?? 0}     icon={CheckCircle} color="#10b981" />
       </div>
 
@@ -194,7 +199,7 @@ function RecentTravelRequests({ setPage }) {
 }
 
 // ── Manager Dashboard ─────────────────────────────────────────────────────────
-function ManagerDashboard({ setPage }) {
+function ManagerDashboard({ setPage, params }) {
   const [stats,    setStats]    = useState({});
   const [pending,  setPending]  = useState([]);
   const [overPolicy, setOverPolicy] = useState([]);
@@ -202,7 +207,9 @@ function ManagerDashboard({ setPage }) {
 
   useEffect(() => {
     Promise.allSettled([
-      api.get('/reimbursement/dashboard'),
+      api.get('/reimbursement/dashboard', { params }),
+      // Approval queues are work-to-do lists, not period reporting — they stay
+      // unfiltered so a narrow period can't hide items awaiting action.
       api.get('/reimbursement/pending-for-approval'),
       api.get('/reimbursement/over-policy'),
       api.get('/travel/analytics/department'),
@@ -211,15 +218,15 @@ function ManagerDashboard({ setPage }) {
       setPending(pnd.status === 'fulfilled' ? (pnd.value?.data || []) : []);
       setOverPolicy(op.status === 'fulfilled' ? (op.value?.data || []).slice(0, 5) : []);
     }).finally(() => setLoading(false));
-  }, []);
+  }, [params]);
 
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 12 }}>
-        <KPICard index={0} label="Pending My Approval" value={stats.manager_pending || 0}   icon={Clock}       color="#f59e0b" />
+        <KPICard index={0} label="Pending My Approval" value={stats.manager_pending || 0}   icon={Clock}       color="#7c5cf0" />
         <KPICard index={1} label="Accounts Pending"    value={stats.accounts_pending || 0}  icon={Receipt}     color="#6366f1" />
         <KPICard index={2} label="Over Policy Claims"  value={overPolicy.length}            icon={AlertCircle} color="#ef4444" />
-        <KPICard index={3} label="Monthly Paid"        value={fmt(stats.monthly_paid || 0)} icon={CreditCard}  color="#10b981" isText />
+        <KPICard index={3} label={`Paid · ${stats.period_label || 'Period'}`} value={fmt(stats.monthly_paid || 0)} icon={CreditCard}  color="#10b981" isText />
       </div>
 
       {/* Pending approvals table */}
@@ -249,7 +256,7 @@ function ManagerDashboard({ setPage }) {
                   <td style={{ padding: '9px 14px', fontWeight: 600, color: '#374151' }}>{fmt(c.total_amount || 0)}</td>
                   <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.customer_name || '—'}</td>
                   <td style={{ padding: '9px 14px' }}>
-                    <span style={{ background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600 }}>{c.status}</span>
+                    <span style={{ background: '#ede9fe', color: '#5b21b6', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600 }}>{c.status}</span>
                   </td>
                 </tr>
               ))}
@@ -260,14 +267,14 @@ function ManagerDashboard({ setPage }) {
 
       {/* Over policy */}
       {overPolicy.length > 0 && (
-        <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 12, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#c2410c', marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ background: '#fff7ed', border: '1px solid #ddd6fe', borderRadius: 12, padding: 16, marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#5b21b6', marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
             <AlertCircle size={15} /> Over-Policy Claims ({overPolicy.length})
           </div>
           {overPolicy.map(c => (
-            <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #fed7aa', fontSize: 12 }}>
-              <span style={{ color: '#9a3412' }}>{c.claim_number} · {c.employee_name}</span>
-              <span style={{ fontWeight: 600, color: '#c2410c' }}>{fmt(c.total_amount)} (limit: {fmt(c.policy_limit || 0)})</span>
+            <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #ddd6fe', fontSize: 12 }}>
+              <span style={{ color: '#4c1d95' }}>{c.claim_number} · {c.employee_name}</span>
+              <span style={{ fontWeight: 600, color: '#5b21b6' }}>{fmt(c.total_amount)} (limit: {fmt(c.policy_limit || 0)})</span>
             </div>
           ))}
         </div>
@@ -279,28 +286,29 @@ function ManagerDashboard({ setPage }) {
 }
 
 // ── Accounts Dashboard ────────────────────────────────────────────────────────
-function AccountsDashboard({ setPage }) {
+function AccountsDashboard({ setPage, params }) {
   const [stats,   setStats]   = useState({});
   const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.allSettled([
-      api.get('/reimbursement/dashboard'),
+      api.get('/reimbursement/dashboard', { params }),
+      // Verification queue stays unfiltered — see ManagerDashboard.
       api.get('/reimbursement/pending-for-approval'),
     ]).then(([st, pnd]) => {
       setStats(st.status === 'fulfilled' ? (st.value?.data || {}) : {});
       setPending(pnd.status === 'fulfilled' ? (pnd.value?.data || []) : []);
     }).finally(() => setLoading(false));
-  }, []);
+  }, [params]);
 
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 12 }}>
         <KPICard index={0} label="Pending Verification" value={stats.accounts_pending || 0}    icon={Receipt}     color="#6366f1" />
         <KPICard index={1} label="Pending Payment"       value={0}                               icon={CreditCard}  color="#6B3FDB" />
-        <KPICard index={2} label="Monthly Reimbursed"    value={fmt(stats.monthly_paid || 0)}   icon={CheckCircle} color="#10b981" isText />
-        <KPICard index={3} label="GST Recoverable"       value={fmt(stats.gst_recoverable || 0)}icon={TrendingUp}  color="#f59e0b" isText />
+        <KPICard index={2} label={`Reimbursed · ${stats.period_label || 'Period'}`} value={fmt(stats.monthly_paid || 0)}   icon={CheckCircle} color="#10b981" isText />
+        <KPICard index={3} label="GST Recoverable"       value={fmt(stats.gst_recoverable || 0)}icon={TrendingUp}  color="#7c5cf0" isText />
       </div>
 
       <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', overflow: 'hidden' }}>
@@ -326,7 +334,7 @@ function AccountsDashboard({ setPage }) {
                   <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.expense_category}</td>
                   <td style={{ padding: '9px 14px', color: '#6b7280', whiteSpace: 'nowrap' }}>{c.expense_date?.slice(0,10)}</td>
                   <td style={{ padding: '9px 14px' }}>{fmt(c.amount)}</td>
-                  <td style={{ padding: '9px 14px', color: '#f59e0b' }}>{fmt(c.gst_amount || 0)}</td>
+                  <td style={{ padding: '9px 14px', color: '#7c5cf0' }}>{fmt(c.gst_amount || 0)}</td>
                   <td style={{ padding: '9px 14px', fontWeight: 600, color: '#10b981' }}>{fmt(c.total_amount || 0)}</td>
                   <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.bill_number || '—'}</td>
                   <td style={{ padding: '9px 14px' }}>
@@ -362,6 +370,23 @@ export default function TravelDashboard({ setPage }) {
     isAdmin ? 'ceo' : isManager ? 'manager' : isFinance ? 'accounts' : 'employee'
   );
 
+  // One filter state for all three role tabs — switching tabs keeps the window.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'fytd',
+    dimensions: { department: 'all' },
+    storageKey: 'travel-dashboard',
+  });
+  const { params } = filters;
+  const [departments, setDepartments] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/reimbursement/filter-options')
+      .then(r => { if (!cancelled) setDepartments(r.data?.departments || []); })
+      .catch(() => { /* falls back to "All Departments" only */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const TABS = [
     { key: 'employee', label: 'My Dashboard',          show: true },
     { key: 'manager',  label: 'Manager Dashboard',     show: isManager || isAdmin },
@@ -370,20 +395,30 @@ export default function TravelDashboard({ setPage }) {
   ].filter(t => t.show);
 
   return (
-    <div style={{ padding: '16px 18px 20px', background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: '#1f2937', margin: 0 }}>Travel & Reimbursement</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>Complete travel management — request, claim, approve, reimburse</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => setPage?.('TravelRequests')}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Travel"
+        title="Travel & Reimbursement"
+        subtitle="Complete travel management — request, claim, approve, reimburse"
+        actions={<button className="plh-cta" onClick={() => setPage?.('TravelRequests')}>
             <Plus size={15} /> New Request
-          </button>
-        </div>
-      </div>
+          </button>}
+      />
+    }>
+
+      {/* Filters — the Command Center tab has its own page-level controls */}
+      {activeTab !== 'ceo' && (
+        <DashboardFilterBar
+          filters={filters}
+          dimensions={[{
+            key: 'department',
+            label: 'Department',
+            allLabel: 'All Departments',
+            options: departments.map(d => ({ value: d, label: d })),
+          }]}
+        />
+      )}
 
       {/* Tab selector */}
       {TABS.length > 1 && (
@@ -400,9 +435,9 @@ export default function TravelDashboard({ setPage }) {
       )}
 
       {/* Role-based dashboard content */}
-      {activeTab === 'employee' && <EmployeeDashboard setPage={setPage} />}
-      {activeTab === 'manager'  && <ManagerDashboard  setPage={setPage} />}
-      {activeTab === 'accounts' && <AccountsDashboard setPage={setPage} />}
+      {activeTab === 'employee' && <EmployeeDashboard setPage={setPage} params={params} />}
+      {activeTab === 'manager'  && <ManagerDashboard  setPage={setPage} params={params} />}
+      {activeTab === 'accounts' && <AccountsDashboard setPage={setPage} params={params} />}
       {activeTab === 'ceo' && (
         <div>
           <RecentTravelRequests setPage={setPage} />
@@ -414,6 +449,6 @@ export default function TravelDashboard({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

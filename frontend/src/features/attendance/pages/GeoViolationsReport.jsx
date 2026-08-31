@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   MapPin, AlertTriangle, Users, Calendar, Download, RefreshCw,
-  ChevronDown, ChevronUp, Search, Filter, Shield,
+  ChevronDown, ChevronUp, Search, Filter, Shield, BarChart3,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 20 };
@@ -37,8 +38,8 @@ function ViolationRow({ row, expanded, onToggle }) {
         <td style={{ padding: '12px 16px', fontSize: 13, color: '#6b7280' }}>{row.department || '—'}</td>
         <td style={{ padding: '12px 16px', textAlign: 'center' }}>
           <span style={{
-            background: row.violation_count >= 5 ? '#fef2f2' : row.violation_count >= 2 ? '#fffbeb' : '#f0fdf4',
-            color: row.violation_count >= 5 ? '#dc2626' : row.violation_count >= 2 ? '#d97706' : '#16a34a',
+            background: row.violation_count >= 5 ? '#fef2f2' : row.violation_count >= 2 ? '#f5f3ff' : '#f0fdf4',
+            color: row.violation_count >= 5 ? '#dc2626' : row.violation_count >= 2 ? '#6d28d9' : '#16a34a',
             borderRadius: 20, padding: '3px 12px', fontSize: 13, fontWeight: 700,
           }}>
             {row.violation_count}
@@ -124,32 +125,25 @@ export default function GeoViolationsReport() {
   );
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <MapPin size={18} color="#dc2626" />
-            </div>
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#1f2937' }}>Geo Violation Report</h2>
-          </div>
-          <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
-            Clock-in attempts blocked outside mandatory geo-fence zones
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={load} disabled={loading}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Attendance"
+        title="Geo Violation Report"
+        subtitle="Clock-in attempts blocked outside mandatory geo-fence zones"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load} disabled={loading}>
             <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
             Refresh
           </button>
-          <button onClick={exportCSV} disabled={!data?.employees?.length}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: P, color: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+          <button className="plh-cta" onClick={exportCSV} disabled={!data?.employees?.length}>
             <Download size={14} /> Export CSV
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {/* Header */}
+
 
       {/* Date filters */}
       <div style={{ ...CARD, marginBottom: 20, display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -192,7 +186,7 @@ export default function GeoViolationsReport() {
           <KPICard icon={AlertTriangle} color="#dc2626" label="Total Violations"
             value={data.summary?.total_violations ?? 0}
             sub={`${fromDate} to ${toDate}`} />
-          <KPICard icon={Users} color="#f59e0b" label="Employees Affected"
+          <KPICard icon={Users} color="#7c5cf0" label="Employees Affected"
             value={data.summary?.employees_affected ?? 0}
             sub="Unique employees with violations" />
           <KPICard icon={Calendar} color="#ef4444" label="Today's Violations"
@@ -252,6 +246,6 @@ export default function GeoViolationsReport() {
       </div>
 
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </PageShell>
   );
 }

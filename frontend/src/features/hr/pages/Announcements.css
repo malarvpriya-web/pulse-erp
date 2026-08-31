@@ -175,7 +175,7 @@
 .ann-card.inactive { opacity: .65; border-left: 3px solid #fca5a5; }
 .ann-card.active   { border-left: 3px solid #6B3FDB; }
 .ann-card.expired  { opacity: .6; border-left: 3px solid #d1d5db; background: #fafafa; }
-.ann-card.pinned   { border-left-color: #f59e0b; }
+.ann-card.pinned   { border-left-color: #7c5cf0; }
 
 .ann-card-icon {
   width: 38px;
@@ -228,19 +228,19 @@
 .ann-badge-active    { background: #dcfce7; color: #15803d; }
 .ann-badge-inactive  { background: #fee2e2; color: #dc2626; }
 .ann-badge-expired   { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
-.ann-badge-warn      { background: #fef3c7; color: #92400e; display: inline-flex; align-items: center; }
+.ann-badge-warn      { background: #ede9fe; color: #5b21b6; display: inline-flex; align-items: center; }
 .ann-badge-all       { background: #E8E1FC; color: #6B3FDB; }
-.ann-badge-dept      { background: #fef3c7; color: #92400e; }
+.ann-badge-dept      { background: #ede9fe; color: #5b21b6; }
 .ann-badge-emp       { background: #f3e8ff; color: #7e22ce; }
 .ann-badge-date      { background: #f3f4f6; color: #6b7280; }
-.ann-badge-pinned    { background: #fef3c7; color: #92400e; }
+.ann-badge-pinned    { background: #ede9fe; color: #5b21b6; }
 .ann-badge-scheduled { background: #ede9fe; color: #6B3FDB; display: inline-flex; align-items: center; }
 .ann-badge-reads     { background: #f0fdf4; color: #15803d; display: inline-flex; align-items: center; }
 .ann-badge-category  { background: #e0f2fe; color: #0369a1; }
 
 /* Priority badges */
 .ann-badge-pri-high   { background: #fee2e2; color: #dc2626; }
-.ann-badge-pri-medium { background: #fef3c7; color: #92400e; }
+.ann-badge-pri-medium { background: #ede9fe; color: #5b21b6; }
 .ann-badge-pri-low    { background: #f0fdf4; color: #15803d; }
 
 /* ── Card message (sanitized HTML) ── */
@@ -274,16 +274,16 @@
   display: inline-flex;
   align-items: center;
 }
-.ann-action-btn.toggle-on  { background: #fef3c7; color: #92400e; }
-.ann-action-btn.toggle-on:hover  { background: #f59e0b !important; color: #fff !important; }
+.ann-action-btn.toggle-on  { background: #ede9fe; color: #5b21b6; }
+.ann-action-btn.toggle-on:hover  { background: #7c5cf0 !important; color: #fff !important; }
 .ann-action-btn.toggle-off { background: #dcfce7; color: #15803d; }
 .ann-action-btn.toggle-off:hover { background: #16a34a !important; color: #fff !important; }
 .ann-action-btn.edit  { background: #E8E1FC; color: #6B3FDB; }
 .ann-action-btn.edit:hover  { background: #6B3FDB !important; color: #fff !important; }
 .ann-action-btn.del   { background: #fee2e2; color: #dc2626; }
 .ann-action-btn.del:hover   { background: #dc2626 !important; color: #fff !important; }
-.ann-action-btn.pin   { background: #fef9c3; color: #92400e; }
-.ann-action-btn.pin:hover   { background: #f59e0b !important; color: #fff !important; }
+.ann-action-btn.pin   { background: #ede9fe; color: #5b21b6; }
+.ann-action-btn.pin:hover   { background: #7c5cf0 !important; color: #fff !important; }
 .ann-action-btn.unpin { background: #ede9fe; color: #6B3FDB; }
 .ann-action-btn.unpin:hover { background: #6B3FDB !important; color: #fff !important; }
 

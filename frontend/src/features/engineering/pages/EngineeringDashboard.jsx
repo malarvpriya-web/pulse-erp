@@ -1,12 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
-import { FlaskConical, Layers, TestTube2, CheckCircle, AlertCircle, Clock, TrendingUp, RefreshCw } from 'lucide-react';
+import {
+  FlaskConical, Layers, TestTube2, CheckCircle, AlertCircle, Clock,
+  TrendingUp, RefreshCw, LayoutDashboard,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell, Stat } from '@/components/pulse-ui';
 import './EngineeringDashboard.css';
 
 const STATUS_COLOR = {
   concept:    '#6366f1',
   design:     '#3b82f6',
-  prototype:  '#f59e0b',
+  prototype:  '#7c5cf0',
   testing:    '#8b5cf6',
   approved:   '#10b981',
   cancelled:  '#6b7280',
@@ -21,19 +26,12 @@ const STATUS_LABEL = {
   cancelled: 'Cancelled',
 };
 
-const PRIORITY_COLOR = { high: '#ef4444', medium: '#f59e0b', low: '#10b981' };
+const PRIORITY_COLOR = { high: '#ef4444', medium: '#7c5cf0', low: '#10b981' };
 
 function KpiCard({ icon: Icon, label, value, sub, color }) {
-  return (
-    <div className="eng-kpi" style={{ '--kc': color }}>
-      <div className="eng-kpi-icon"><Icon size={20} /></div>
-      <div className="eng-kpi-body">
-        <p className="eng-kpi-label">{label}</p>
-        <h3 className="eng-kpi-val">{value}</h3>
-        {sub && <p className="eng-kpi-sub">{sub}</p>}
-      </div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat icon={Icon} label={label} value={value} sub={sub} color={color} />;
 }
 
 function StatusPill({ status }) {
@@ -74,21 +72,44 @@ export default function EngineeringDashboard({ setPage }) {
   const [data, setData]     = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]   = useState(null);
+  const [options, setOptions] = useState({ categories: [], priorities: [] });
+
+  // 'all' by default: this is an R&D portfolio view, so a window would hide
+  // long-running projects that started before it.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'all',
+    dimensions: { category: 'all', priority: 'all' },
+    storageKey: 'engineering-dashboard',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/engineering/dashboard/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await api.get('/engineering/dashboard');
+      const r = await api.get('/engineering/dashboard', { params });
       setData(r.data.data);
     } catch (e) {
       setError(e.response?.data?.message || e.message || 'Failed to load dashboard');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const filterDimensions = [
+    { key: 'category', label: 'Category', allLabel: 'All Categories', options: options.categories.map(v => ({ value: v, label: v })) },
+    { key: 'priority', label: 'Priority', allLabel: 'All Priorities', options: options.priorities.map(v => ({ value: v, label: v })) },
+  ];
 
   if (loading && !data) return (
     <div className="eng-center">
@@ -125,20 +146,24 @@ export default function EngineeringDashboard({ setPage }) {
   const maxPipe = Math.max(...pipeline.map(s => s.count), 1);
 
   return (
-    <div className="eng-dash">
-      <div className="eng-dash-header">
-        <div>
-          <h1 className="eng-dash-title">Engineering</h1>
-          <p className="eng-dash-sub">R&amp;D Projects · Design Phases · Prototypes · Test Plans</p>
-        </div>
-        <button className="eng-btn-refresh" onClick={load}><RefreshCw size={15} /></button>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Engineering"
+        title="Engineering"
+        subtitle="R&D Projects · Design Phases · Prototypes · Test Plans"
+        actions={<button className="plh-cta" onClick={load}><RefreshCw size={15} /></button>}
+      />
+    }>
+
+
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} />
 
       {/* KPIs */}
       <div className="eng-kpi-grid">
         <KpiCard icon={FlaskConical}  label="R&D Projects"   value={p.total || 0}          sub={`${p.approved || 0} approved`}          color="#6366f1" />
         <KpiCard icon={Layers}        label="Design Phases"  value={data?.phases?.length || 0} sub="phase categories tracked"             color="#3b82f6" />
-        <KpiCard icon={TestTube2}     label="Prototypes"     value={pr.total || 0}          sub={`${pr.passed || 0} passed testing`}      color="#f59e0b" />
+        <KpiCard icon={TestTube2}     label="Prototypes"     value={pr.total || 0}          sub={`${pr.passed || 0} passed testing`}      color="#7c5cf0" />
         <KpiCard icon={CheckCircle}   label="Test Pass Rate" value={`${testPassRate}%`}     sub={`${t.passed || 0}/${t.total || 0} tests`} color="#10b981" />
         <KpiCard icon={TrendingUp}    label="Budget Used"    value={`${budgetUsed}%`}       sub={`₹${Number(p.total_spent||0).toLocaleString('en-IN')} spent`} color="#8b5cf6" />
         <KpiCard icon={Clock}         label="In Progress"    value={(p.design||0)+(p.prototype||0)+(p.testing||0)} sub="active phases" color="#ef4444" />
@@ -223,6 +248,6 @@ export default function EngineeringDashboard({ setPage }) {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

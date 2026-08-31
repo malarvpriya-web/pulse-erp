@@ -1,109 +1,321 @@
-/* ── Executive Dashboard — viewport-fit cockpit layout (prefix: exd-) ──────
- * Fit contract: on desktop (≥1100×700) the page locks to the visible area
- * (100vh − 64px topbar − 2×20px .page-content padding = calc(100vh - 104px))
- * and never scrolls; charts flex-fill their grid cell and lists scroll
- * inside their own card. Below that breakpoint it degrades to a normal
- * scrolling layout. Pairs with dashkit.css / DashCard.css. */
+/* ── Executive Dashboard (prefix: exd-) ────────────────────────────────────
+ *
+ * DESIGN — this page is on the app-wide Pulse hero language (manual §116):
+ * `PageShell` + `PageHero` + `DashboardFilterBar` in the frozen dock, then a
+ * `StatBand` of white metric cards, then the card grid. It used to carry a
+ * hand-rolled "Good morning 👋" header and its own hero-tile scorecard, which
+ * is exactly the drift the hero rollout removed from the other 411 pages.
+ * Nothing here passes a `tone` — violet is the app tone. NO ORANGE.
+ *
+ * LAYOUT CONTRACT — "the page does not scroll" (2026-08-25, owner request).
+ * This replaces the previous "one page scrollbar, nothing scrolls inside a
+ * card" contract. The way that is paid for is NOT by squeezing the old
+ * content into a locked box — that is what made the *first* version of this
+ * page unusable. It is paid for by removing duplicated figures:
+ *   - 3 hero tiles + 5 metric pills  →  ONE 6-up StatBand;
+ *   - the `dk-stats` footers under Workforce (Total/Active/New Hires),
+ *     Hiring (Hires/Exits/Attrition) and Pipeline (Total Value/Forecast) are
+ *     gone — every one of those numbers is in the StatBand or the card
+ *     subtitle now, so no figure has two sources that can disagree on screen.
+ * The margin gauge and revenue sparkline went with the hero tiles; both are
+ * still on the page full size (Revenue Trend card / the Net Profit stat).
+ *
+ * EXACTLY ONE internal scroller is allowed: `.exd-scroll` on the Smart Alerts
+ * feed, the only panel whose row count grows with the business. Everything
+ * else is sized to fit its content. Do NOT add `overflow-y:auto` to another
+ * card body to make it "fit" — that is how the CFO Dashboard ended up showing
+ * 19px of a 287px grid (manual §113). If a card no longer fits, take content
+ * out or give its row more `fr`; do not hide it behind a scrollbar.
+ *
+ * Below `max-width:1280px` OR `max-height:680px` the lock is RELEASED and the
+ * page flows with one ordinary page scrollbar — a locked root is
+ * `overflow:hidden`, so on a short viewport it would clip rather than scroll.
+ *
+ * SPECIFICITY — `styles/global-overrides.css` sets
+ *   .page-content p|td|th|li|span|div { font-size: 13px; line-height: 1.6 }
+ * at (0,1,1). A bare `.exd-thing { font-size: 11px }` is (0,1,0) and LOSES,
+ * inflating every label ~1.6x and blowing the layout out. So every rule below
+ * is prefixed with `.exd-root` → (0,2,0), which wins. Same reason the
+ * dk-/dc- restorations at the bottom of this file exist. Never use !important.
+ */
 
-/* Quick-nav chips (replaces the old Quick Navigation card) */
-.exd-quicknav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.exd-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 10px; border: 1px solid #eef0f4; border-radius: 20px;
-  background: #fff; color: #374151; font-size: 11.5px; font-weight: 600;
-  cursor: pointer; white-space: nowrap; transition: all 0.15s ease;
+/* ══ fit lock ═══════════════════════════════════════════════════════════════
+ * `.plh-page` cancels `.page-content`'s 20px padding with a -20px margin, so
+ * filling the scrollport exactly means 100% (of the content box) PLUS that
+ * 40px back. `.page-content` is `flex:1` inside a `height:100vh` column, so
+ * its height is definite and this resolves exactly. */
+.exd-root.plh-page {
+  height: calc(100% + var(--spacing-md, 20px) * 2);
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
-.exd-chip:hover { border-color: #d8d3f0; color: #6B3FDB; background: #f9f8ff; }
-.exd-chip-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-
-/* Main card grid — scroll-mode default: 2-up, natural heights */
-.exd-main { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.exd-span2 { grid-column: span 2; }
-
-/* Chart wrapper — fixed height when scrolling, flex-fill under the fit contract */
-.exd-chartfill { height: 190px; min-width: 0; }
-
-/* Card-internal list (pipeline stages, top customers/vendors, alerts) */
-.exd-list { min-width: 0; }
-
-@media (max-width: 680px) {
-  .exd-main { grid-template-columns: 1fr; }
-  .exd-span2 { grid-column: span 1; }
-}
-
-/* ── Fit contract: single viewport, no page scroll ─────────────────────── */
-@media (min-width: 1100px) and (min-height: 700px) {
-  .exd-fit {
-    height: calc(100vh - 104px);
-    min-height: 0;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    padding: 10px 14px 14px;
-  }
-
-  /* Compact header */
-  .exd-fit .dk-head { margin-bottom: 10px; flex-wrap: nowrap; align-items: center; }
-  .exd-fit .dk-title { font-size: 18px; }
-  .exd-fit .dk-subtitle { margin-top: 1px; font-size: 12px; }
-
-  /* KPI strip: all 7 on one row, tightened */
-  .exd-fit .dk-kpis {
-    grid-template-columns: repeat(7, minmax(0, 1fr));
-    gap: 9px; margin-bottom: 10px;
-  }
-  .exd-fit .dk-kpi { padding: 9px 11px; border-radius: 10px; }
-  .exd-fit .dk-kpi-top { margin-bottom: 5px; }
-  .exd-fit .dk-kpi-val { font-size: 19px; }
-  .exd-fit .dk-kpi-sk { height: 22px; }
-  .exd-fit .dk-kpi-sub span:first-child {
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-
-  /* Insights: one slim 4-across band, text clamped to two lines */
-  .exd-fit .dk-insights { padding: 9px 12px; margin-bottom: 10px; flex-shrink: 0; }
-  .exd-fit .dk-insights-hd { margin-bottom: 7px; }
-  .exd-fit .dk-insights-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .exd-fit .dk-insight { padding: 7px 10px; font-size: 11.5px; line-height: 1.35; }
-  .exd-fit .dk-insight span:last-child {
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  /* Main grid: 4 columns × 2 equal rows, fills the remaining height */
-  .exd-fit .exd-main {
-    flex: 1; min-height: 0;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 10px;
-  }
-
-  /* Cards become internal flex columns that never overflow the cell */
-  .exd-fit .dc-card { min-height: 0; padding: 11px 13px; }
-  .exd-fit .dc-hd { margin-bottom: 7px; flex-shrink: 0; }
-  .exd-fit .dc-body {
-    display: flex; flex-direction: column;
-    min-height: 0; overflow: hidden;
-  }
-
-  /* Charts absorb the free space in their card */
-  .exd-fit .exd-chartfill { height: auto; flex: 1; min-height: 70px; }
-
-  /* Lists scroll inside the card, never the page */
-  .exd-fit .exd-list { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
-  .exd-fit .exd-list::-webkit-scrollbar { width: 5px; }
-  .exd-fit .exd-list::-webkit-scrollbar-thumb { background: #e4e0f5; border-radius: 3px; }
-
-  /* Fixed footers (mini stats, legends) stay pinned below the flexing area */
-  .exd-fit .dk-stats { margin-top: 6px; flex-shrink: 0; }
-  .exd-fit .dk-stat { padding: 4px 4px; }
-  .exd-fit .dk-stat-val { font-size: 14px; }
-  .exd-fit .dk-stat-lbl { font-size: 10px; margin-top: 1px; }
-
-  .exd-fit .dk-empty { flex: 1; padding: 12px; }
+.exd-root .plh-dock { flex: 0 0 auto; }
+.exd-root .plh-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-/* Hide quick-nav chips only when the header genuinely runs out of room */
-@media (max-width: 1279px) {
-  .exd-quicknav { display: none; }
+/* ══ the grid ═══════════════════════════════════════════════════════════════
+ * row 1  stat band                         (auto)
+ * row 2  Revenue 5 · Pipeline 4 · Alerts 3 (fr — charts want the height)
+ * row 3  Workforce 3 · Hiring 3 · Customers 3 · Vendors 3
+ * row 4  AI insights strip                 (auto) */
+.exd-root .exd-fit {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-rows: auto minmax(0, 1.02fr) minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.exd-root .exd-c3 { grid-column: span 3; min-width: 0; }
+.exd-root .exd-c4 { grid-column: span 4; min-width: 0; }
+.exd-root .exd-c5 { grid-column: span 5; min-width: 0; }
+
+/* the stat band and the insight strip are full-bleed rows */
+.exd-root .exd-fit > .plh-stats { grid-column: 1 / -1; margin-bottom: 0; }
+.exd-root .exd-ai { grid-column: 1 / -1; }
+
+/* ══ cards ══════════════════════════════════════════════════════════════════
+ * `overflow:hidden` is deliberate: a card that outgrows its row must CLIP, so
+ * the fit harness's clipped-node sweep catches it. Silent bleed into the next
+ * card is the failure mode that check exists to find. */
+.exd-root .dc-card {
+  padding: 10px 13px 11px;
+  border-radius: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+.exd-root .dc-hd    { margin-bottom: 7px; }
+.exd-root .dc-title { font-size: 12.5px; line-height: 1.25; }
+.exd-root .dc-sub   { font-size: 10.5px; line-height: 1.3; }
+.exd-root .dc-icon  { width: 25px; height: 25px; border-radius: 7px; }
+.exd-root .dc-link  { font-size: 11px; line-height: 1.3; padding: 2px 5px; }
+.exd-root .dc-iconbtn { width: 23px; height: 23px; }
+.exd-root .dc-body  { min-height: 0; display: flex; flex-direction: column; }
+
+/* charts fill whatever height the row hands them — no fixed px in-card */
+.exd-root .exd-chart { flex: 1 1 0; min-height: 0; }
+
+/* empty states fill the body instead of padding it out to a fixed height */
+.exd-root .exd-empty {
+  flex: 1 1 0; min-height: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 6px; text-align: center; color: #9ca3af;
+}
+.exd-root .exd-empty p { margin: 0; font-size: 11.5px; line-height: 1.4; }
+
+/* ══ dock extras ════════════════════════════════════════════════════════════ */
+
+/* quick-nav chips — they live in the filter bar's `actions` slot, so they cost
+ * no band of their own. */
+.exd-root .exd-quicknav { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.exd-root .exd-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 9px; border: 1px solid #eef0f4; border-radius: 20px;
+  background: #fff; color: #374151; font-size: 11px; line-height: 1.35;
+  font-weight: 600; cursor: pointer; white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.exd-root .exd-chip:hover { border-color: #d8d3f0; color: #6B3FDB; background: #f9f8ff; }
+.exd-root .exd-chip-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+/* degraded-load banner — a dead endpoint must never render as an empty state.
+ * One compact line: it lives in the dock, so every px it takes is a px the
+ * locked grid below loses. */
+.exd-root .exd-banner {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 11px; border-radius: 9px; margin-bottom: 10px;
+  font-size: 11.5px; line-height: 1.4;
+  background: #f5f3ff; border: 1px solid #ddd6fe; color: #5b21b6;
+}
+.exd-root .exd-banner-ico  { flex-shrink: 0; }
+.exd-root .exd-banner span { font-size: 11.5px; line-height: 1.4; }
+.exd-root .exd-banner-list { opacity: 0.85; }
+
+/* ══ card contents ══════════════════════════════════════════════════════════ */
+
+/* delta chip */
+.exd-root .exd-delta {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; line-height: 1.35; font-weight: 700;
+  padding: 1px 7px 1px 5px; border-radius: 20px; white-space: nowrap;
+}
+.exd-root .exd-delta.is-good { color: #15803d; background: #f0fdf4; }
+.exd-root .exd-delta.is-bad  { color: #b91c1c; background: #fef2f2; }
+.exd-root .exd-delta.is-flat { color: #6b7280; background: #f4f4f8; }
+
+/* card header extras */
+.exd-root .exd-hdr-stat { display: flex; align-items: center; gap: 7px; }
+.exd-root .exd-hdr-stat > span { font-size: 11px; line-height: 1.35; color: #9ca3af; white-space: nowrap; }
+.exd-root .exd-hdr-stat b { color: #1a1a2e; font-weight: 700; }
+
+.exd-root .exd-legend { display: flex; align-items: center; gap: 9px; }
+.exd-root .exd-legend span {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; line-height: 1.35; color: #6b7280; white-space: nowrap;
+}
+.exd-root .exd-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+/* Below this the Hiring card is ~260px wide and the legend, the Details link
+ * and the expand button together ate the title ("Hiring vs …"). The subtitle
+ * already reads "N hires · N exits · N% attrition" and the bars keep their
+ * green/red, so the legend is the part that can go. */
+@media (max-width: 1500px) {
+  .exd-root .exd-legend { display: none; }
+}
+
+.exd-root .exd-stage-name { color: #374151; font-weight: 500; text-transform: capitalize; }
+.exd-root .exd-stage-name em { color: #9ca3af; font-style: normal; font-weight: 400; }
+
+.exd-root .exd-more {
+  font-size: 10.5px; line-height: 1.35; color: #9ca3af;
+  text-align: center; padding-top: 1px;
+}
+
+/* alerts — the ONE internal scroller on this page (see the header comment) */
+.exd-root .exd-alerts { display: flex; flex-direction: column; gap: 6px; }
+.exd-root .exd-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; padding-right: 3px; }
+.exd-root .exd-alert {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  padding: 7px 9px; border-radius: 8px; border: 1px solid transparent;
+}
+.exd-root .exd-alert-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.exd-root .exd-alert-txt {
+  font-size: 11px; line-height: 1.4; color: #374151; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.exd-root .exd-alert-wrap { white-space: normal; }
+
+/* ══ AI insight strip ═══════════════════════════════════════════════════════
+ * A strip, not a card: the header sits inline on the left and the insights
+ * flow beside it, so the band costs ~2 text lines instead of a whole card row.
+ * The text is NOT line-clamped on purpose — a clamp is `overflow:hidden` with
+ * content behind it, which is both a silent truncation and a false positive in
+ * the clipped-node sweep. The row is `auto`, so it takes the height it needs
+ * and the two card rows above absorb the difference. */
+.exd-root .exd-ai {
+  display: flex; align-items: flex-start; gap: 10px; min-width: 0;
+  background: linear-gradient(180deg, #fbfaff, #fff);
+  border: 1px solid #eceafb; border-radius: 12px;
+  padding: 8px 11px;
+}
+.exd-root .exd-ai-hd { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding-top: 2px; }
+.exd-root .exd-ai-ico {
+  width: 24px; height: 24px; border-radius: 7px; background: #f4f1fe;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.exd-root .exd-ai-title { font-size: 11.5px; line-height: 1.3; font-weight: 700; color: #1a1a2e; white-space: nowrap; }
+.exd-root .exd-ai-badge {
+  font-size: 10px; line-height: 1.4; font-weight: 700; color: #6B3FDB;
+  background: #f4f1fe; padding: 1px 7px; border-radius: 20px;
+}
+/* minmax(210px) rather than a comfortable 300px on purpose: on a 1366 laptop
+ * 300px yields 3 tracks for 4 insights, i.e. a SECOND row, and the strip goes
+ * 72px → 112px — 40px taken straight off the two card rows below. Narrower
+ * tracks wrap the text one line deeper but keep the strip a single row. */
+.exd-root .exd-ai-list {
+  flex: 1 1 auto; min-width: 0;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 7px;
+}
+.exd-root .exd-ai-item {
+  display: flex; align-items: flex-start; gap: 7px; min-width: 0;
+  padding: 6px 9px; border-radius: 8px;
+}
+.exd-root .exd-ai-emoji { font-size: 12px; line-height: 1.35; flex-shrink: 0; }
+.exd-root .exd-ai-txt   { font-size: 11px; line-height: 1.35; min-width: 0; overflow-wrap: anywhere; }
+
+/* ══ chart tooltip ══════════════════════════════════════════════════════════
+ * Recharts renders its tooltip INSIDE `.recharts-wrapper`, i.e. still inside
+ * `.page-content` — so these need the `.exd-root` prefix like everything else
+ * or the global 13px/1.6 rule wins. (They were bare before this pass, which is
+ * why the tooltip label rendered a size larger than it was authored at.) */
+.exd-root .exd-tip {
+  background: #fff; border: 1px solid #e9e4ff; border-radius: 9px;
+  padding: 7px 11px; box-shadow: 0 6px 18px rgba(16, 24, 40, 0.12);
+}
+.exd-root .exd-tip-lbl { font-size: 11px; line-height: 1.4; font-weight: 600; color: #6b7280; margin-bottom: 2px; }
+.exd-root .exd-tip-val { font-size: 13.5px; line-height: 1.3; font-weight: 800; color: #6B3FDB; }
+
+/* ══ dashkit typography restorations ════════════════════════════════════════
+ * These classes are declared at (0,1,0) in dashkit.css / DashCard.css, so
+ * `.page-content div|span|p` (0,1,1) overrides them and renders everything at
+ * 13px/1.6. Re-declaring them under `.exd-root` (0,2,0) restores the intended
+ * scale — and here it is also what makes a 5-row ranked list fit a 130px card
+ * body. Do not delete. */
+/* The list absorbs the card's spare height and spreads its rows through it,
+ * so a 5-row card on a 1080p screen doesn't sit in the top third of a tall
+ * box. `gap` stays the MINIMUM spacing, so when content is taller than the
+ * body the rows pack normally (and the card clips, which the fit harness
+ * catches) rather than collapsing. */
+.exd-root .dc-body > .dk-rank-list { flex: 1 1 auto; min-height: 0; justify-content: space-between; }
+.exd-root .dk-rank-list  { display: flex; flex-direction: column; gap: 5px; }
+.exd-root .dk-rank-row   { flex-shrink: 0; }
+.exd-root .dk-rank-meta  { font-size: 11px; line-height: 1.25; margin-bottom: 3px; }
+.exd-root .dk-rank-name  { font-size: 11px; line-height: 1.25; }
+.exd-root .dk-rank-num   { font-size: 11px; line-height: 1.25; margin-right: 5px; }
+.exd-root .dk-rank-val   { font-size: 11px; line-height: 1.25; }
+.exd-root .dk-bar-labels { font-size: 11px; line-height: 1.25; margin-bottom: 3px; }
+.exd-root .dk-bar-labels span { font-size: 11px; line-height: 1.25; }
+.exd-root .dk-bar-track  { height: 5px; }
+
+/* The expand modal is portalled to document.body, so `.exd-root` can't reach
+ * it — but it also sits outside `.page-content`, so the global rule can't
+ * reach it either and DashCard.css applies as authored. Nothing to do here. */
+
+/* ══ short viewports ════════════════════════════════════════════════════════
+ * The 1366x768 laptop class: 704px of scrollport, of which the dock takes 149
+ * and the stat band + insight strip another ~147. That leaves ~183px per card
+ * row, and a 5-row ranked list has to fit inside it. Measured, not guessed —
+ * `_exd-fit-check.mjs` in the fit harness. `pulse-hero.css` already compacts
+ * the hero and stat cards at this breakpoint; these are the page's own steps. */
+@media (max-height: 820px) {
+  .exd-root .dc-card { padding: 8px 11px 9px; }
+  .exd-root .dc-hd   { margin-bottom: 6px; }
+  .exd-root .dk-rank-list { gap: 4px; }
+  .exd-root .dk-bar-track { height: 4px; }
+  .exd-root .exd-alerts   { gap: 5px; }
+  .exd-root .exd-ai  { padding: 7px 10px; }
+  .exd-root .exd-fit { gap: 9px; }
+}
+
+/* ══ relax ══════════════════════════════════════════════════════════════════
+ * Narrow OR short: unlock the root and let the page scroll normally. Height
+ * matters as much as width — an `overflow:hidden` root clips instead of
+ * scrolling on a short viewport. */
+@media (max-width: 1280px), (max-height: 680px) {
+  .exd-root.plh-page { height: auto; min-height: 100%; overflow: visible; display: block; }
+  .exd-root .plh-body { display: block; }
+  .exd-root .exd-fit {
+    grid-template-rows: none;
+    grid-auto-rows: minmax(215px, auto);
+  }
+  .exd-root .exd-fit > .plh-stats { grid-auto-rows: auto; }
+  /* the alert feed keeps its scroller, but now bounded by px rather than by
+   * the row it no longer has */
+  .exd-root .exd-scroll { max-height: 280px; }
+}
+
+@media (max-width: 1280px) {
+  .exd-root .exd-c5 { grid-column: span 12; }
+  .exd-root .exd-c4 { grid-column: span 6; }
+  .exd-root .exd-c3 { grid-column: span 6; }
+}
+
+@media (max-width: 760px) {
+  .exd-root .exd-c3,
+  .exd-root .exd-c4,
+  .exd-root .exd-c5 { grid-column: span 12; }
+  .exd-root .exd-ai { flex-direction: column; }
+  .exd-root .exd-ai-list { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exd-root .dc-card { animation: none; opacity: 1; }
+  .exd-root .dk-bar-fill { animation: none; }
 }

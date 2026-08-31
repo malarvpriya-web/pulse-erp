@@ -7,8 +7,50 @@
 
 import { Router } from 'express';
 import pool from '../../config/db.js';
+import { resolveRange } from '../../shared/dashboardFilters.js';
+import { companyOf } from '../../shared/scope.js';
 
 const router = Router();
+
+/**
+ * Period + TENANT predicate for the PQ endpoints.
+ *
+ * TENANT SCOPING — this router had ZERO occurrences of company_id across all
+ * eight endpoints, on tables that all carry one. It was reproduced live: a
+ * test_runs row owned by another company raised this tenant's total_tests from
+ * 5 to 6. Its sibling in the same folder (manufacturing.routes.js) had already
+ * been fixed for exactly this; this file was missed because the tenant leak
+ * probe's endpoint list does not include /analytics/pq/*.
+ *
+ * The company predicate lives HERE, in the one fragment every query already
+ * interpolates, so no PQ query can be written unscoped by omission.
+ *
+ * DATE BOUNDARY — the upper bound used to be `created_at <= $2::date`. A date
+ * literal coerces to midnight, so a run recorded today was excluded from every
+ * PQ dashboard. It is now a half-open interval against the day AFTER `to`.
+ *
+ * Always emits $1, $2 and $3, so every query given `pqRange(req).params`
+ * references all three — Postgres rejects a bound-but-unreferenced parameter.
+ *
+ * @param {string} [alias] table alias plus dot, e.g. 'r.'
+ */
+const pqWindow = (alias = '') =>
+  `(($1::date IS NULL OR ${alias}created_at >= $1::date)
+    AND ($2::date IS NULL OR ${alias}created_at < ($2::date + INTERVAL '1 day'))
+    AND ($3::int  IS NULL OR ${alias}company_id = $3))`;
+
+/**
+ * Company predicate on its own, for the few queries that carry no date window
+ * (forward-looking due dates, open-state counts). Always references $1.
+ */
+const pqCompany = (alias = '') => `($1::int IS NULL OR ${alias}company_id = $1)`;
+
+/** Resolve the dashboard period and tenant into the triple pqWindow() expects. */
+const pqRange = (req, defaultPeriod = 'last12m') => {
+  const range = resolveRange(req.query, { defaultPeriod });
+  const cid   = companyOf(req);
+  return { range, cid, params: [range.from, range.to, cid ?? null] };
+};
 
 const sqN = async (sql, params = []) => {
   try { return (await pool.query(sql, params)).rows; }
@@ -24,6 +66,7 @@ const sq1 = async (sql, params = []) => {
    avg power factor, avg active power output — rolling 12 months.          */
 router.get('/kpis', async (req, res) => {
   try {
+    const { range, params: pqParams } = pqRange(req);
     const [runsRow, pfRow, poutRow] = await Promise.all([
       sq1(`
         SELECT
@@ -36,8 +79,8 @@ router.get('/kpis', async (req, res) => {
             / NULLIF(COUNT(*) FILTER (WHERE overall_result IN ('pass','fail')), 0), 1
           ) AS first_pass_rate
         FROM test_runs
-        WHERE created_at >= NOW() - INTERVAL '12 months'
-      `),
+        WHERE ${pqWindow()}
+      `, pqParams),
       sq1(`
         SELECT
           ROUND(AVG(m.measured_value) FILTER (WHERE m.parameter_code = 'THD_I'), 2) AS avg_thd_i,
@@ -45,18 +88,18 @@ router.get('/kpis', async (req, res) => {
           ROUND(AVG(m.measured_value) FILTER (WHERE m.parameter_code = 'PF'),    3) AS avg_pf
         FROM test_run_measurements m
         JOIN test_runs r ON r.id = m.test_run_id
-        WHERE r.created_at >= NOW() - INTERVAL '12 months'
+        WHERE ${pqWindow("r.")}
           AND m.measured_value IS NOT NULL
-      `),
+      `, pqParams),
       sq1(`
         SELECT
           ROUND(AVG(m.measured_value) FILTER (WHERE m.parameter_code = 'P_OUT'), 1) AS avg_p_out,
           ROUND(AVG(m.measured_value) FILTER (WHERE m.parameter_code = 'Q_OUT'), 1) AS avg_q_out
         FROM test_run_measurements m
         JOIN test_runs r ON r.id = m.test_run_id
-        WHERE r.created_at >= NOW() - INTERVAL '12 months'
+        WHERE ${pqWindow("r.")}
           AND m.measured_value IS NOT NULL
-      `),
+      `, pqParams),
     ]);
 
     res.json({
@@ -70,6 +113,8 @@ router.get('/kpis', async (req, res) => {
       avg_pf:          parseFloat(pfRow?.avg_pf          ?? 0),
       avg_p_out:       parseFloat(poutRow?.avg_p_out    ?? 0),
       avg_q_out:       parseFloat(poutRow?.avg_q_out    ?? 0),
+      period:          range.period,
+      period_label:    range.label,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -81,6 +126,7 @@ router.get('/kpis', async (req, res) => {
    Month boundaries computed in IST (Asia/Kolkata).                         */
 router.get('/thd-trend', async (req, res) => {
   try {
+    const { params: pqParams } = pqRange(req);
     const rows = await sqN(`
       SELECT
         TO_CHAR(DATE_TRUNC('month', r.created_at AT TIME ZONE 'Asia/Kolkata'), 'Mon YY') AS month,
@@ -89,11 +135,11 @@ router.get('/thd-trend', async (req, res) => {
         ROUND(AVG(m.measured_value) FILTER (WHERE m.parameter_code = 'THD_V'), 2) AS thd_v
       FROM test_runs r
       JOIN test_run_measurements m ON m.test_run_id = r.id
-      WHERE r.created_at >= NOW() - INTERVAL '6 months'
+      WHERE ${pqWindow("r.")}
         AND m.measured_value IS NOT NULL
       GROUP BY DATE_TRUNC('month', r.created_at AT TIME ZONE 'Asia/Kolkata')
       ORDER BY month_ts
-    `);
+    `, pqParams);
     res.json(rows.map(r => ({
       month: r.month,
       thd_i: parseFloat(r.thd_i ?? 0),
@@ -108,6 +154,7 @@ router.get('/thd-trend', async (req, res) => {
    Monthly avg / min / max power factor (last 6 months) + PF band counts.  */
 router.get('/power-factor', async (req, res) => {
   try {
+    const { params: pqParams } = pqRange(req);
     const [trend, bands] = await Promise.all([
       sqN(`
         SELECT
@@ -120,10 +167,10 @@ router.get('/power-factor', async (req, res) => {
         JOIN test_run_measurements m ON m.test_run_id = r.id
         WHERE m.parameter_code = 'PF'
           AND m.measured_value IS NOT NULL
-          AND r.created_at >= NOW() - INTERVAL '6 months'
+          AND ${pqWindow("r.")}
         GROUP BY DATE_TRUNC('month', r.created_at AT TIME ZONE 'Asia/Kolkata')
         ORDER BY month_ts
-      `),
+      `, pqParams),
       sqN(`
         SELECT
           CASE
@@ -137,10 +184,10 @@ router.get('/power-factor', async (req, res) => {
         JOIN test_runs r ON r.id = m.test_run_id
         WHERE m.parameter_code = 'PF'
           AND m.measured_value IS NOT NULL
-          AND r.created_at >= NOW() - INTERVAL '12 months'
+          AND ${pqWindow("r.")}
         GROUP BY band
         ORDER BY band
-      `),
+      `, pqParams),
     ]);
 
     res.json({
@@ -161,6 +208,7 @@ router.get('/power-factor', async (req, res) => {
    Per-product first-pass rate, avg THD-I, avg PF (last 12 months, top 10). */
 router.get('/product-kpis', async (req, res) => {
   try {
+    const { params: pqParams } = pqRange(req);
     const rows = await sqN(`
       SELECT
         COALESCE(r.product_name, 'Unknown')                                   AS product,
@@ -178,11 +226,11 @@ router.get('/product-kpis', async (req, res) => {
       FROM test_runs r
       LEFT JOIN test_run_measurements m ON m.test_run_id = r.id
         AND m.measured_value IS NOT NULL
-      WHERE r.created_at >= NOW() - INTERVAL '12 months'
+      WHERE ${pqWindow("r.")}
       GROUP BY r.product_name
       ORDER BY total DESC
       LIMIT 10
-    `);
+    `, pqParams);
     res.json(rows.map(r => ({
       product:   r.product,
       total:     r.total,
@@ -203,6 +251,7 @@ router.get('/product-kpis', async (req, res) => {
    Groups by parameter to surface worst offenders.                           */
 router.get('/harmonics', async (req, res) => {
   try {
+    const { params: pqParams } = pqRange(req);
     const rows = await sqN(`
       SELECT
         m.parameter_code,
@@ -219,10 +268,10 @@ router.get('/harmonics', async (req, res) => {
       JOIN test_runs r ON r.id = m.test_run_id
       WHERE m.parameter_code IN ('THD_I','THD_V','PF','P_OUT','Q_OUT')
         AND m.measured_value IS NOT NULL
-        AND r.created_at >= NOW() - INTERVAL '12 months'
+        AND ${pqWindow("r.")}
       GROUP BY m.parameter_code, m.parameter_name
       ORDER BY failures DESC
-    `);
+    `, pqParams);
     res.json(rows.map(r => ({
       parameter_code: r.parameter_code,
       parameter_name: r.parameter_name,
@@ -241,18 +290,24 @@ router.get('/harmonics', async (req, res) => {
    Maintenance KPIs: assets due, open breakdowns, MTTR, cost MTD.           */
 router.get('/maintenance', async (req, res) => {
   try {
+    // Only the cost query carries a window; the due/breakdown counts are
+    // forward-looking or open-state, so they keep passing no params.
+    const { params: pqParams, cid } = pqRange(req);
     const [due, openBreak, mttr, costMTD] = await Promise.allSettled([
       sq1(`SELECT COUNT(*)::INT AS n FROM maintenance_schedules
-           WHERE next_due_date <= NOW() + INTERVAL '7 days'`),
+           WHERE next_due_date <= NOW() + INTERVAL '7 days'
+             AND ${pqCompany()}`, [cid ?? null]),
       sq1(`SELECT COUNT(*)::INT AS n FROM maintenance_logs
-           WHERE log_type='breakdown' AND status != 'completed'`),
+           WHERE log_type='breakdown' AND status != 'completed'
+             AND ${pqCompany()}`, [cid ?? null]),
       sq1(`SELECT ROUND(AVG(downtime_hrs), 2) AS mttr
            FROM maintenance_logs
            WHERE status='completed' AND downtime_hrs IS NOT NULL
-             AND created_at >= NOW() - INTERVAL '6 months'`),
+             AND ${pqWindow()}`, pqParams),
       sq1(`SELECT COALESCE(SUM(cost), 0) AS total
            FROM maintenance_logs
-           WHERE created_at >= date_trunc('month', NOW())`),
+           WHERE created_at >= date_trunc('month', NOW())
+             AND ${pqCompany()}`, [cid ?? null]),
     ]);
 
     const safe = (r, field, def = 0) =>
@@ -271,12 +326,33 @@ router.get('/maintenance', async (req, res) => {
 
 /* ── GET /analytics/pq/export ────────────────────────────────────────────────
    CSV export of test runs with PQ measurements for the requested period.
-   Query params: period (days, default 90), format (csv | json)
-   All timestamps are expressed in IST (Asia/Kolkata, UTC+5:30).           */
+   Query params: period / from / to (the shared filter vocabulary), format (csv | json)
+   All timestamps are expressed in IST (Asia/Kolkata, UTC+5:30).
+
+   EXPORT MUST MATCH THE SCREEN. This used to take its own `?days=N` and apply
+   `created_at >= NOW() - N days`, while the page it exports from uses
+   period/from/to. Two consequences: exporting a historical window (say last
+   January) silently exported the last 31 days instead, and "all time" sent
+   days=3650 which the server clamped to 365, so Export All quietly returned one
+   year. It now resolves exactly the same range as every other PQ endpoint.
+   `days` is still accepted and converted, for any caller that has not moved. */
 router.get('/export', async (req, res) => {
   try {
-    const days = Math.min(parseInt(req.query.days || 90), 365);
-    const fmt  = req.query.format === 'json' ? 'json' : 'csv';
+    const fmt = req.query.format === 'json' ? 'json' : 'csv';
+
+    // Legacy ?days=N → an equivalent explicit range, so one code path resolves
+    // the window and the export can never diverge from the dashboard again.
+    const q = { ...req.query };
+    if (q.days && !q.period && !q.from && !q.to) {
+      const n  = Math.max(1, parseInt(q.days, 10) || 90);
+      const to = new Date();
+      const fr = new Date(to.getTime() - (n - 1) * 86400000);
+      q.from = fr.toISOString().slice(0, 10);
+      q.to   = to.toISOString().slice(0, 10);
+    }
+    const range    = resolveRange(q, { defaultPeriod: 'last12m' });
+    const cid      = companyOf(req);
+    const pqParams = [range.from, range.to, cid ?? null];
 
     // IST export timestamp for report metadata
     const exportedAt = new Date().toLocaleString('en-GB', {
@@ -304,21 +380,21 @@ router.get('/export', async (req, res) => {
       FROM test_runs r
       LEFT JOIN test_run_measurements m ON m.test_run_id = r.id
         AND m.parameter_code IN ('THD_I','THD_V','PF','P_OUT','Q_OUT')
-      WHERE r.created_at >= NOW() - ($1 || ' days')::INTERVAL
+      WHERE ${pqWindow('r.')}
       GROUP BY r.id, r.run_number, r.product_name, r.serial_number,
                r.test_stage, r.test_type, r.station_name, r.overall_result, r.created_at
       ORDER BY r.created_at DESC
-    `, [days]);
+    `, pqParams);
 
     if (fmt === 'json') {
-      return res.json({ exported_at: exportedAt, period_days: days, source: 'test_runs + test_run_measurements', rows });
+      return res.json({ exported_at: exportedAt, period: range.period, period_label: range.label, from: range.from, to: range.to, source: 'test_runs + test_run_measurements', rows });
     }
 
     /* CSV — includes report metadata header and IST timestamps */
     const metaHeaders = [
       `# Pulse ERP — Power Quality Report`,
       `# Exported: ${exportedAt}`,
-      `# Period: last ${days} days`,
+      `# Period: ${range.label} (${range.from || 'start'} to ${range.to || 'today'})`,
       `# Source: test_runs + test_run_measurements (live DB)`,
       `# Record count: ${rows.length}`,
       `#`,
@@ -353,6 +429,7 @@ router.get('/export', async (req, res) => {
    All values derived from persisted test_runs + test_run_measurements.      */
 router.get('/compliance-summary', async (req, res) => {
   try {
+    const { range, params: pqParams } = pqRange(req);
     const THD_LIMIT = 5.0; // Practical PQ commissioning limit (%)
 
     const [thdI, thdV, byStage, byProduct] = await Promise.all([
@@ -370,8 +447,8 @@ router.get('/compliance-summary', async (req, res) => {
         JOIN test_runs r ON r.id = m.test_run_id
         WHERE m.parameter_code = 'THD_I'
           AND m.measured_value IS NOT NULL
-          AND r.created_at >= NOW() - INTERVAL '12 months'
-      `),
+          AND ${pqWindow("r.")}
+      `, pqParams),
 
       // THD-V: count measurements above 5% threshold
       sq1(`
@@ -385,8 +462,8 @@ router.get('/compliance-summary', async (req, res) => {
         JOIN test_runs r ON r.id = m.test_run_id
         WHERE m.parameter_code = 'THD_V'
           AND m.measured_value IS NOT NULL
-          AND r.created_at >= NOW() - INTERVAL '12 months'
-      `),
+          AND ${pqWindow("r.")}
+      `, pqParams),
 
       // Pass rate by test stage (FAT / SAT / other)
       sqN(`
@@ -401,10 +478,10 @@ router.get('/compliance-summary', async (req, res) => {
             1
           ) AS pass_rate
         FROM test_runs r
-        WHERE r.created_at >= NOW() - INTERVAL '12 months'
+        WHERE ${pqWindow("r.")}
         GROUP BY r.test_stage
         ORDER BY total DESC
-      `),
+      `, pqParams),
 
       // Top-10 products by failure count
       sqN(`
@@ -420,11 +497,11 @@ router.get('/compliance-summary', async (req, res) => {
           ROUND(AVG(m.measured_value) FILTER (WHERE m.parameter_code = 'PF'),    3)    AS avg_pf
         FROM test_runs r
         LEFT JOIN test_run_measurements m ON m.test_run_id = r.id AND m.measured_value IS NOT NULL
-        WHERE r.created_at >= NOW() - INTERVAL '12 months'
+        WHERE ${pqWindow("r.")}
         GROUP BY r.product_name
         ORDER BY failed DESC, total DESC
         LIMIT 10
-      `),
+      `, pqParams),
     ]);
 
     res.json({
@@ -452,7 +529,9 @@ router.get('/compliance-summary', async (req, res) => {
       })),
       standard:        'IEC 61000-3-2:2018',
       thd_limit_pct:   THD_LIMIT,
-      period_months:   12,
+      // Was a hardcoded 12; the window now follows the dashboard period.
+      period:          range.period,
+      period_label:    range.label,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

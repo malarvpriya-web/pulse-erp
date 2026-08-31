@@ -32,7 +32,7 @@ const SEV_MAP = {
 function logSecEvent(userId, event_type, req, detail) {
   const ip = (req.headers['x-forwarded-for'] || req.ip || null)?.split(',')[0]?.trim() ?? null;
   pool.query(
-    `INSERT INTO security_events (event_type, severity, user_id, ip_address, user_agent, path, detail, created_at)
+    `INSERT INTO security_events (event_type, severity, user_id, ip_address, user_agent, path, details, created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
     [
       event_type,

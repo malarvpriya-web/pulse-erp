@@ -1,10 +1,11 @@
 import { useState, Fragment } from 'react';
 import {
-  Activity, RefreshCw, CheckCircle, AlertCircle, Wifi,
-  Database, ChevronDown, ChevronRight, AlertTriangle,
-  TrendingUp, Server, Shield, Zap,
+  Activity, RefreshCw, CheckCircle, AlertCircle, Wifi, Database,
+  ChevronDown, ChevronRight, AlertTriangle, TrendingUp, Server, Shield,
+  Zap, SlidersHorizontal,
 } from 'lucide-react';
 import { testAllConnections } from '@/utils/dbConnectionTest';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ─── group icon — two-letter abbreviation rendered as a badge ───────────── */
 function GroupIcon({ name }) {
@@ -24,7 +25,7 @@ const GROUP_ORDER = [
   'Biometric','Self Service','Exit Mgmt','Recruitment',
   'Finance','Accounting','GST','TDS','Budgets','Fixed Assets','Forex',
   'Procurement','Inventory','Warehouse','Logistics',
-  'Production','Quality','Maintenance',
+  'Production','Quality','Maintenance','IoT',
   'CRM','Pipeline','Sales','Marketing',
   'Projects','Timesheets','Service Desk',
   'Operations','Workflows','Security','Travel','Documents','Org Chart',
@@ -42,7 +43,7 @@ const getTier = (r) => {
 
 const TIER = {
   live:  { dot: '#16a34a', pill: '#dcfce7', pillTxt: '#15803d', pillBdr: '#bbf7d0', label: 'Live'  },
-  empty: { dot: '#d97706', pill: '#fef3c7', pillTxt: '#92400e', pillBdr: '#fde68a', label: 'Empty' },
+  empty: { dot: '#6d28d9', pill: '#ede9fe', pillTxt: '#5b21b6', pillBdr: '#ddd6fe', label: 'Empty' },
   auth:  { dot: '#4f46e5', pill: '#e0e7ff', pillTxt: '#3730a3', pillBdr: '#c7d2fe', label: 'Auth'  },
   error: { dot: '#dc2626', pill: '#fee2e2', pillTxt: '#b91c1c', pillBdr: '#fca5a5', label: 'Error' },
 };
@@ -69,7 +70,7 @@ function HttpBadge({ status }) {
   const MAP = {
     200: ['#dcfce7', '#15803d'],
     401: ['#e0e7ff', '#3730a3'],
-    403: ['#fef3c7', '#92400e'],
+    403: ['#ede9fe', '#5b21b6'],
     404: ['#fee2e2', '#b91c1c'],
     500: ['#fee2e2', '#b91c1c'],
   };
@@ -89,7 +90,7 @@ function TimePill({ ms }) {
   if (!ms) return <span style={{ color: '#94a3b8', fontSize: 11 }}>—</span>;
   const [bg, color] =
     ms > 2000 ? ['#fee2e2', '#b91c1c'] :
-    ms > 800  ? ['#fef3c7', '#92400e'] :
+    ms > 800  ? ['#ede9fe', '#5b21b6'] :
                 ['#dcfce7', '#15803d'];
   return (
     <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700, background: bg, color }}>
@@ -104,7 +105,7 @@ function RecordsPill({ records }) {
   if (records === -1)
     return <span style={{ background: '#f3e8ff', color: '#6B3FDB', border: '1px solid #ddd6fe', borderRadius: 20, padding: '2px 9px', fontSize: 10, fontWeight: 700 }}>KPI</span>;
   if (records === 0)
-    return <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', borderRadius: 20, padding: '2px 9px', fontSize: 10, fontWeight: 700 }}>⚠ 0</span>;
+    return <span style={{ background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe', borderRadius: 20, padding: '2px 9px', fontSize: 10, fontWeight: 700 }}>⚠ 0</span>;
   return (
     <span style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #bbf7d0', borderRadius: 20, padding: '2px 9px', fontSize: 10, fontWeight: 700 }}>
       ✓ {records.toLocaleString()}
@@ -122,7 +123,7 @@ function MiniTag({ children, bg, color }) {
 
 /* ─── issues panel ───────────────────────────────────────────────────────── */
 function IssuesPanel({ errors, empties }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);   /* collapsed by default — click header to expand */
 
   if (errors.length === 0 && empties.length === 0) {
     return (
@@ -158,7 +159,7 @@ function IssuesPanel({ errors, empties }) {
             </span>
           )}
           {empties.length > 0 && (
-            <span style={{ background: '#d97706', color: '#fff', borderRadius: 20, padding: '1px 9px', fontSize: 11, fontWeight: 700 }}>
+            <span style={{ background: '#6d28d9', color: '#fff', borderRadius: 20, padding: '1px 9px', fontSize: 11, fontWeight: 700 }}>
               {empties.length} empty
             </span>
           )}
@@ -194,15 +195,15 @@ function IssuesPanel({ errors, empties }) {
 
           {empties.length > 0 && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 800, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
                 Empty Tables ({empties.length}) — Connected, no data yet
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                 {empties.map((r, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#fffbeb', borderRadius: 8, borderLeft: '3px solid #d97706' }}>
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#f5f3ff', borderRadius: 8, borderLeft: '3px solid #6d28d9' }}>
                     <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: '#1e293b', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.module}</span>
                     <span style={{ fontSize: 10, fontFamily: 'ui-monospace,monospace', color: '#64748b', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.url}</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: '#d97706', whiteSpace: 'nowrap', marginLeft: 'auto' }}>No data</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#6d28d9', whiteSpace: 'nowrap', marginLeft: 'auto' }}>No data</span>
                   </div>
                 ))}
               </div>
@@ -279,76 +280,42 @@ export default function SystemHealth() {
     { label: 'Total Tables',     val: total,                      icon: Activity,      color: '#6B3FDB', bg: '#f5f3ff' },
     { label: 'Live & Connected', val: live200,                    icon: Server,        color: '#16a34a', bg: '#f0fdf4' },
     { label: 'Auth Protected',   val: authOk,                     icon: Shield,        color: '#4f46e5', bg: '#eef2ff' },
-    { label: 'Empty Tables',     val: emptyTables,                icon: AlertTriangle, color: emptyTables > 0 ? '#d97706' : '#16a34a', bg: emptyTables > 0 ? '#fffbeb' : '#f0fdf4' },
+    { label: 'Empty Tables',     val: emptyTables,                icon: AlertTriangle, color: emptyTables > 0 ? '#6d28d9' : '#16a34a', bg: emptyTables > 0 ? '#f5f3ff' : '#f0fdf4' },
     { label: 'Errors',           val: failing,                    icon: AlertCircle,   color: failing > 0 ? '#dc2626' : '#16a34a',   bg: failing > 0 ? '#fef2f2' : '#f0fdf4'   },
     { label: 'Total DB Records', val: totalRecs.toLocaleString(), icon: Database,      color: '#0891b2', bg: '#ecfeff' },
   ];
 
   return (
-    <div style={{ padding: '20px 24px', background: '#f1f5f9', minHeight: '100vh', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif' }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title="System Health Monitor"
+        actions={<button
+          className="plh-cta"
+          onClick={run}
+          disabled={loading}>
+          {loading
+            ? <RefreshCw size={14} style={{ animation: 'spin .8s linear infinite' }} />
+            : <Wifi size={14} />}
+          {loading ? `Testing… ${progress}%` : 'Run Connection Test'}
+        </button>}
+      />
+    }>
       <style>{`
         @keyframes spin    { to { transform: rotate(360deg); } }
         @keyframes fadeUp  { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
         .sh-row:hover td   { background: #faf8ff !important; }
         .sh-grp:hover      { background: #e8e4f8 !important; cursor: pointer; }
         .sh-run:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(107,63,219,.45) !important; }
+        /* global-overrides.css forces .page-content h1[style] to #111827 !important —
+           out-specify it so the title stays white on the purple gradient header */
+        .page-content h1.sh-title[style], h1.sh-title {
+          color: #fff !important; font-size: 20px !important; font-weight: 800 !important;
+        }
       `}</style>
 
       {/* ══ HEADER ══════════════════════════════════════════════════════════ */}
-      <div style={{
-        background: 'linear-gradient(135deg,#4c1d95 0%,#6B3FDB 55%,#6366f1 100%)',
-        borderRadius: 16, padding: '22px 28px', marginBottom: 18,
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        boxShadow: '0 8px 32px rgba(107,63,219,.28)', position: 'relative', overflow: 'hidden',
-      }}>
-        {/* decorative circles */}
-        <div style={{ position:'absolute', top:-40, right:220, width:180, height:180, borderRadius:'50%', background:'rgba(255,255,255,.05)', pointerEvents:'none' }} />
-        <div style={{ position:'absolute', bottom:-50, right:60,  width:150, height:150, borderRadius:'50%', background:'rgba(255,255,255,.04)', pointerEvents:'none' }} />
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, zIndex: 1 }}>
-          <div style={{ background: 'rgba(255,255,255,.18)', borderRadius: 12, padding: 10, backdropFilter: 'blur(4px)' }}>
-            <Activity size={22} color="#fff" />
-          </div>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: '#fff', letterSpacing: '-.3px' }}>
-              System Health Monitor
-            </h1>
-            <p style={{ margin: '3px 0 0', fontSize: 12, color: 'rgba(255,255,255,.6)' }}>
-              Live database table introspection &amp; data verification — {total || '200+'}  tables
-              {testedAt && <span style={{ marginLeft: 8, color: 'rgba(255,255,255,.38)' }}>· Last run {testedAt}</span>}
-            </p>
-            {tested && (
-              <div style={{ display: 'flex', gap: 14, marginTop: 6, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, fontWeight: 800, color: score === 100 ? '#4ade80' : score >= 80 ? '#fbbf24' : '#f87171' }}>
-                  {score}% health
-                </span>
-                <span style={{ fontSize: 12, color: 'rgba(255,255,255,.6)' }}>{healthy}/{total} passing</span>
-                <span style={{ fontSize: 12, color: 'rgba(255,255,255,.6)' }}>{totalRecs.toLocaleString()} DB records</span>
-                {avgMs > 0 && <span style={{ fontSize: 12, color: avgMs > 1000 ? '#fbbf24' : '#4ade80' }}>avg {avgMs}ms</span>}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <button
-          className="sh-run"
-          onClick={run}
-          disabled={loading}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            background: '#fff', color: '#6B3FDB',
-            border: 'none', borderRadius: 10, padding: '11px 22px',
-            fontSize: 13, fontWeight: 700, cursor: loading ? 'wait' : 'pointer',
-            transition: 'all .2s', boxShadow: '0 4px 16px rgba(0,0,0,.18)',
-            whiteSpace: 'nowrap', zIndex: 1, flexShrink: 0,
-          }}
-        >
-          {loading
-            ? <RefreshCw size={14} style={{ animation: 'spin .8s linear infinite' }} />
-            : <Wifi size={14} />}
-          {loading ? `Testing… ${progress}%` : 'Run Connection Test'}
-        </button>
-      </div>
 
       {/* ══ PROGRESS BAR (visible while loading) ══════════════════════════ */}
       {loading && (
@@ -390,10 +357,10 @@ export default function SystemHealth() {
           <div style={{ background: '#fff', borderRadius: 12, padding: '14px 18px', boxShadow: '0 1px 5px rgba(0,0,0,.06)', border: '1px solid #e9e4ff' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>Connectivity Health</span>
-              <span style={{ fontSize: 12, fontWeight: 800, color: score >= 95 ? '#16a34a' : score >= 80 ? '#d97706' : '#dc2626' }}>{score}%</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: score >= 95 ? '#16a34a' : score >= 80 ? '#6d28d9' : '#dc2626' }}>{score}%</span>
             </div>
             <div style={{ height: 7, background: '#f1f5f9', borderRadius: 99, overflow: 'hidden', marginBottom: 8 }}>
-              <div style={{ height: '100%', borderRadius: 99, width: `${score}%`, background: score >= 95 ? 'linear-gradient(90deg,#16a34a,#4ade80)' : score >= 80 ? 'linear-gradient(90deg,#d97706,#fbbf24)' : 'linear-gradient(90deg,#dc2626,#f87171)', transition: 'width 1.2s ease' }} />
+              <div style={{ height: '100%', borderRadius: 99, width: `${score}%`, background: score >= 95 ? 'linear-gradient(90deg,#16a34a,#4ade80)' : score >= 80 ? 'linear-gradient(90deg,#6d28d9,#8b5cf6)' : 'linear-gradient(90deg,#dc2626,#f87171)', transition: 'width 1.2s ease' }} />
             </div>
             <div style={{ display: 'flex', gap: 14, fontSize: 11, color: '#64748b' }}>
               <span><strong style={{ color: '#16a34a' }}>{healthy}</strong> passing</span>
@@ -412,13 +379,13 @@ export default function SystemHealth() {
               <div style={{ height: '100%', borderRadius: 99, display: 'flex', overflow: 'hidden' }}>
                 {live200 > 0 && <>
                   <div style={{ width: `${(withRecords / live200) * 100}%`, background: 'linear-gradient(90deg,#16a34a,#4ade80)', transition: 'width 1.2s ease' }} />
-                  <div style={{ width: `${(emptyTables / live200) * 100}%`, background: 'linear-gradient(90deg,#d97706,#fbbf24)', transition: 'width 1.2s ease' }} />
+                  <div style={{ width: `${(emptyTables / live200) * 100}%`, background: 'linear-gradient(90deg,#6d28d9,#8b5cf6)', transition: 'width 1.2s ease' }} />
                 </>}
               </div>
             </div>
             <div style={{ display: 'flex', gap: 14, fontSize: 11, color: '#64748b' }}>
               <span><strong style={{ color: '#16a34a' }}>{withRecords}</strong> with data</span>
-              <span><strong style={{ color: '#d97706' }}>{emptyTables}</strong> empty</span>
+              <span><strong style={{ color: '#6d28d9' }}>{emptyTables}</strong> empty</span>
               <span><strong style={{ color: '#0891b2' }}>{totalRecs.toLocaleString()}</strong> total records</span>
             </div>
           </div>
@@ -512,7 +479,7 @@ export default function SystemHealth() {
                           )}
                           <div style={{ marginLeft: 'auto', display: 'flex', gap: 5, alignItems: 'center' }}>
                             {gErr   > 0 && <MiniTag bg="#fee2e2" color="#b91c1c">{gErr} error{gErr !== 1 ? 's' : ''}</MiniTag>}
-                            {gEmpty > 0 && <MiniTag bg="#fef3c7" color="#92400e">{gEmpty} empty</MiniTag>}
+                            {gEmpty > 0 && <MiniTag bg="#ede9fe" color="#5b21b6">{gEmpty} empty</MiniTag>}
                             {gAuth  > 0 && <MiniTag bg="#e0e7ff" color="#3730a3">{gAuth} auth</MiniTag>}
                             {gLive  > 0 && <MiniTag bg="#dcfce7" color="#15803d">{gLive} live</MiniTag>}
                             {gErr === 0 && gEmpty === 0 && (
@@ -624,11 +591,11 @@ export default function SystemHealth() {
           <div style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>
             <TrendingUp size={10} style={{ display: 'inline', marginRight: 4 }} />
             Time: <span style={{ color: '#16a34a', fontWeight: 700 }}>green &lt;800ms</span>
-            {' · '}<span style={{ color: '#d97706', fontWeight: 700 }}>amber 800ms–2s</span>
+            {' · '}<span style={{ color: '#6d28d9', fontWeight: 700 }}>amber 800ms–2s</span>
             {' · '}<span style={{ color: '#dc2626', fontWeight: 700 }}>red &gt;2s</span>
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

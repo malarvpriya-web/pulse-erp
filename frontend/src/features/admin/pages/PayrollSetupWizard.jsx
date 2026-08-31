@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
+import { PageHero } from '@/components/pulse-ui';
 import {
-  IndianRupee, Layers, ShieldCheck, Users, FileText,
-  Zap, ChevronRight, ChevronLeft, Check, PlayCircle, Star, CheckCircle, X,
+  IndianRupee, Layers, ShieldCheck, Users, FileText, Zap, ChevronRight,
+  ChevronLeft, Check, PlayCircle, Star, CheckCircle, X, ArrowLeft,
+  Wallet,
 } from 'lucide-react';
 
 const P  = '#6B3FDB';
@@ -70,7 +72,7 @@ const STEPS = [
     title: 'Payroll Approvals',
     subtitle: 'Configure who authorises payroll runs',
     icon: Users,
-    color: '#d97706',
+    color: '#6d28d9',
     desc: 'Set up the payroll approval chain. Typically HR prepares payroll, Finance reviews, and MD/CFO approves disbursement. Multi-level approval ensures compliance and prevents errors.',
     tasks: [
       'Assign HR Manager as payroll preparer',
@@ -106,7 +108,7 @@ const STEPS = [
     title: 'Activate Payroll',
     subtitle: 'Run first payroll and go live',
     icon: Zap,
-    color: '#f59e0b',
+    color: '#7c5cf0',
     desc: 'Complete final validation and run the first payroll cycle. Process a test month with 2–3 employees before doing full company payroll. Verify statutory amounts match manual calculations.',
     tasks: [
       'Verify salary structures assigned to all employees',
@@ -181,40 +183,23 @@ export default function PayrollSetupWizard({ setPage }) {
     <div style={{ minHeight: '100vh', background: '#fafbff', fontFamily: 'inherit' }}>
 
       {/* Header */}
-      <div style={{ background: '#fff', borderBottom: '1px solid #f0f0f4', padding: '16px 32px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{
-              width: 36, height: 36, borderRadius: 8, background: PL,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <PlayCircle size={18} color={P} />
-            </div>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: '#1f2937' }}>Payroll Setup Wizard</div>
-              <div style={{ fontSize: 11, color: '#6b7280' }}>
-                Step {step + 1} of {STEPS.length} — {current.title}
-              </div>
-            </div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {completed.size > 0 && (
-              <div style={{
-                padding: '4px 12px', borderRadius: 20, background: '#d1fae5',
-                fontSize: 12, fontWeight: 600, color: '#065f46',
-              }}>
-                {completed.size} step{completed.size > 1 ? 's' : ''} done
-              </div>
-            )}
-            <button onClick={() => navigate('/SystemSettings')} style={{
-              padding: '7px 14px', borderRadius: 7, border: '1px solid #e5e7eb',
-              background: '#fff', fontSize: 12, color: '#6b7280', cursor: 'pointer',
-            }}>
-              Back to Settings
-            </button>
-          </div>
-        </div>
-      </div>
+      {/* Header — the shared hero. Wizard progress reads as hero meta, so the
+          step count stays visible without a second header band. */}
+      <PageHero
+        icon={Wallet}
+        eyebrow="Setup"
+        title="Payroll Setup Wizard"
+        subtitle={`Step ${step + 1} of ${STEPS.length} — ${current.title}`}
+        meta={completed.size > 0
+          ? [{ value: completed.size, label: `step${completed.size > 1 ? 's' : ''} done`, tone: 'good' }]
+          : undefined}
+        actions={
+          <button className="plh-cta plh-cta--ghost" onClick={() => navigate('/SystemSettings')}>
+            <ArrowLeft size={14} /> Back to Settings
+          </button>
+        }
+      />
+
 
       <div style={{ display: 'flex', maxWidth: 1100, margin: '0 auto', padding: '32px 24px', gap: 28 }}>
 
@@ -432,10 +417,10 @@ export default function PayrollSetupWizard({ setPage }) {
             )}
 
             {/* Pro tip */}
-            <div style={{ padding: '16px 32px', background: '#fffbeb', borderBottom: '1px solid #fef3c7' }}>
+            <div style={{ padding: '16px 32px', background: '#f5f3ff', borderBottom: '1px solid #ede9fe' }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                <Star size={14} color="#d97706" style={{ flexShrink: 0, marginTop: 1 }} />
-                <div style={{ fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
+                <Star size={14} color="#6d28d9" style={{ flexShrink: 0, marginTop: 1 }} />
+                <div style={{ fontSize: 12, color: '#5b21b6', lineHeight: 1.5 }}>
                   <strong>Pro tip:</strong> {current.tip}
                 </div>
               </div>

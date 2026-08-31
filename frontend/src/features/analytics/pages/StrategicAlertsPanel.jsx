@@ -8,7 +8,7 @@ import {
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
-  amber: '#d97706', blue: '#2563eb', border: '#e9e4ff',
+  amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff',
 };
 
 const CATEGORY_CFG = {
@@ -22,7 +22,7 @@ const CATEGORY_CFG = {
 
 const SEVERITY_CFG = {
   red:   { bg: '#fff1f2', border: '#fca5a5', color: C.red,   dot: '#dc2626', label: 'Red Alert' },
-  amber: { bg: '#fffbeb', border: '#fcd34d', color: '#92400e', dot: C.amber, label: 'Warning' },
+  amber: { bg: '#f5f3ff', border: '#c4b5fd', color: '#5b21b6', dot: C.amber, label: 'Warning' },
 };
 
 function AlertCard({ alert, onAck, isAcknowledged }) {
@@ -153,7 +153,7 @@ export default function StrategicAlertsPanel({ data, onRefresh }) {
         <div style={{ padding: '6px 14px', background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, fontSize: 12, fontWeight: 700, color: C.red }}>
           {counts.red || 0} Red Alert{counts.red !== 1 ? 's' : ''}
         </div>
-        <div style={{ padding: '6px 14px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, fontSize: 12, fontWeight: 700, color: '#92400e' }}>
+        <div style={{ padding: '6px 14px', background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 8, fontSize: 12, fontWeight: 700, color: '#5b21b6' }}>
           {counts.amber || 0} Warning{counts.amber !== 1 ? 's' : ''}
         </div>
         <div style={{ padding: '6px 14px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, fontSize: 12, fontWeight: 700, color: C.green }}>

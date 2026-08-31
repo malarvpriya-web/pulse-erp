@@ -7,6 +7,7 @@ import { seedCompanyDefaults } from '../../seeds/defaultSeed.js';
 import { getMenuOverrides, setMenuOverrides, getUserMenuOverrides, setUserMenuOverrides } from '../../services/PermissionService.js';
 import { syncPrimaryRole } from '../../services/userRoles.js';
 import { companyOf } from '../../shared/scope.js';
+import { respondError } from '../../shared/pgErrors.js';
 
 const router = express.Router();
 
@@ -38,8 +39,8 @@ router.get('/users-setup', allowRoles('admin', 'super_admin', 'hr', 'manager'), 
              e.reporting_manager AS reporting_manager, e.id, e.company_email AS login,
              'ALL' AS company, e.company_email AS communication_mail,
              0 AS tsm, COALESCE(e.location,'Head Office') AS location,
-             e.photo_url AS photo, COALESCE(e.dob, e.date_of_birth) AS dob,
-             DATE_PART('year', AGE(COALESCE(e.dob, e.date_of_birth))) AS age,
+             e.photo_url AS photo, e.dob AS dob,
+             DATE_PART('year', AGE(e.dob)) AS age,
              e.gender, e.blood_group,
              DATE_PART('year', AGE(e.joining_date)) AS no_of_years,
              0 AS pre_exp,
@@ -99,6 +100,99 @@ router.post('/users', allowRoles('admin', 'super_admin'), async (req, res) => {
     if (e.code === '23505') return res.status(409).json({ error: 'Email already exists' });
     res.status(500).json({ error: e.message });
   }
+});
+
+// Bulk create users — used by the first-run Setup Wizard's Users step, which
+// imports a CSV of new logins in one go. Per-row failures do not abort the
+// batch; the response reports created and failed separately so the wizard can
+// show exactly which rows need fixing.
+router.post('/users/bulk', allowRoles('admin', 'super_admin'), async (req, res) => {
+  const { users } = req.body;
+  if (!Array.isArray(users) || users.length === 0)
+    return res.status(400).json({ error: 'users must be a non-empty array' });
+  if (users.length > 500)
+    return res.status(400).json({ error: 'Cannot create more than 500 users in one request' });
+
+  const cid       = companyOf(req);
+  const actorId   = req.user?.userId ?? req.user?.id ?? null;
+  const created   = [];
+  const failed    = [];
+
+  for (const row of users) {
+    const { name, email, role = 'employee', department = null } = row || {};
+    // The wizard collects name + email only; a temporary password is issued so
+    // the account exists and can be handed over. ForcePasswordChange picks it up.
+    const password = row?.password || 'Welcome@123';
+    if (!name || !email) { failed.push({ email: email ?? null, error: 'name and email are required' }); continue; }
+    if (role === 'super_admin' && !hasRole(req, 'super_admin')) {
+      failed.push({ email, error: 'Only a super_admin can assign the super_admin role' });
+      continue;
+    }
+    try {
+      const hash = await bcrypt.hash(password, 10);
+      const { rows } = await pool.query(
+        `INSERT INTO users (name, email, password_hash, role, department, is_active, company_id)
+         VALUES ($1,$2,$3,$4,$5,true,$6) RETURNING id,name,email,role,department`,
+        [name, email, hash, role, department, cid]
+      );
+      await syncPrimaryRole(rows[0].id, role, cid, actorId);
+      created.push(rows[0]);
+    } catch (e) {
+      failed.push({ email, error: e.code === '23505' ? 'Email already exists' : e.message });
+    }
+  }
+
+  logAudit(req, 'bulk_create', null, 'user', null, { created: created.length, failed: failed.length });
+  res.status(created.length ? 201 : 400).json({ created, failed });
+});
+
+// Bulk create roles — used by the Setup Wizard's Roles step. `permissions` is
+// the wizard's { Module: { view, create, edit, delete } } map; anything beyond
+// view collapses to menu_permissions' `edit` level, and a module with no boxes
+// ticked is omitted entirely (an absent row grants nothing, so writing one
+// would only ever widen access).
+router.post('/roles/bulk', allowRoles('admin', 'super_admin'), async (req, res) => {
+  const { roles } = req.body;
+  if (!Array.isArray(roles) || roles.length === 0)
+    return res.status(400).json({ error: 'roles must be a non-empty array' });
+
+  const cid     = companyOf(req);
+  const actorId = req.user?.userId ?? req.user?.id ?? null;
+  const created = [];
+  const failed  = [];
+
+  for (const row of roles) {
+    const label = (row?.name || '').trim();
+    if (!label) { failed.push({ name: row?.name ?? null, error: 'name is required' }); continue; }
+    const code = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!code) { failed.push({ name: label, error: 'name must contain at least one letter or digit' }); continue; }
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO roles (code, role_name, label, description, is_active, company_id)
+         VALUES ($1,$2,$3,$4,TRUE,$5)
+         RETURNING id, code, label, description`,
+        [code, label, label, row?.description || null, cid]
+      );
+      const role = rows[0];
+
+      const perms = row?.permissions || {};
+      const entries = Object.entries(perms).flatMap(([moduleId, actions]) => {
+        if (!actions || typeof actions !== 'object') return [];
+        const canWrite = !!(actions.create || actions.edit || actions.delete);
+        if (canWrite) return [{ module_id: moduleId, access_level: 'edit' }];
+        if (actions.view) return [{ module_id: moduleId, access_level: 'view' }];
+        return [];
+      });
+      if (entries.length && cid != null) await setMenuOverrides(cid, code, entries, actorId);
+
+      created.push({ ...role, permissions_written: entries.length });
+    } catch (e) {
+      failed.push({ name: label, error: e.code === '23505' ? 'A role with this code already exists' : e.message });
+    }
+  }
+
+  logAudit(req, 'bulk_create', null, 'role', null, { created: created.length, failed: failed.length });
+  res.status(created.length ? 201 : 400).json({ created, failed });
 });
 
 // Bulk deactivate users — admin/super_admin only
@@ -194,6 +288,35 @@ router.post('/users/:id/reset-password', allowRoles('admin', 'super_admin'), asy
     );
     res.json({ success: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ROLE CATALOG (single source of truth for every role picker) ───────────────
+// Before this endpoint, five screens each carried their OWN hardcoded role list
+// (UserSetup, ApproverSetup, SetupNotifications, WorkflowBuilder,
+// SuccessionSettings) and all five had drifted: some offered `ceo`/`cfo`/`chro`,
+// codes that no migration ever seeds and no allowRoles() call anywhere accepts —
+// picking them produced a permanently inert assignment. The registry itself is
+// the only honest list, so it is served here and consumed by
+// frontend/src/config/roleCatalog.js.
+//
+// Deliberately NOT allowRoles-gated: mounted under /admin (verifyToken), so any
+// authenticated user can render a role dropdown. Role NAMES are not sensitive —
+// what a role can do is enforced server-side per route, never by this list.
+router.get('/roles-catalog', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT code,
+             COALESCE(NULLIF(label, ''), NULLIF(role_name, ''), code) AS label,
+             COALESCE(description, '') AS description
+        FROM roles
+       WHERE COALESCE(is_active, TRUE) = TRUE
+       ORDER BY LOWER(COALESCE(NULLIF(label, ''), NULLIF(role_name, ''), code))
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error('[admin] GET /roles-catalog failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── ROLES SETUP (user_roles assignments) ──────────────────────────────────────
@@ -672,6 +795,76 @@ router.delete('/document-setup/:id', allowRoles('admin', 'super_admin'), async (
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── BRAND VAULT CRUD (company_documents, category='brand_assets') ────────────
+// Source for the Home dashboard's "Brand Vault" panel (home.service.js's
+// getCompanyDocuments). Until this page existed there was no way to set these
+// links at all — see MODULE_FEATURE_CONNECTION_MANUAL.md §101/§101.3. Read
+// includes inactive rows (admin needs to be able to reactivate); the Home
+// panel itself only ever reads is_active=true.
+
+router.get('/company-documents', allowRoles('admin', 'super_admin'), async (req, res) => {
+  const cid = companyOf(req);
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, title, description, file_url, icon, is_active, visible_roles, updated_at
+         FROM company_documents
+        WHERE category = 'brand_assets'
+          AND ($1::integer IS NULL OR company_id = $1 OR company_id IS NULL)
+        ORDER BY is_active DESC, title ASC`,
+      [cid]
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/company-documents', allowRoles('admin', 'super_admin'), async (req, res) => {
+  const { title, description, file_url } = req.body;
+  if (!title?.trim() || !file_url?.trim())
+    return res.status(400).json({ error: 'title and file_url are required' });
+  const cid = companyOf(req);
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO company_documents (company_id, title, category, description, file_url, icon)
+       VALUES ($1, $2, 'brand_assets', $3, $4, 'file-text') RETURNING *`,
+      [cid, title.trim(), description?.trim() || '', file_url.trim()]
+    );
+    logAudit(req, 'create', rows[0].id, 'company_document', null, rows[0]);
+    res.status(201).json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.put('/company-documents/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+  const { title, description, file_url, is_active } = req.body;
+  if (!title?.trim() || !file_url?.trim())
+    return res.status(400).json({ error: 'title and file_url are required' });
+  try {
+    const { rows } = await pool.query(
+      `UPDATE company_documents
+          SET title = $1, description = $2, file_url = $3,
+              is_active = COALESCE($4, is_active), updated_at = NOW()
+        WHERE id = $5 AND category = 'brand_assets'
+        RETURNING *`,
+      [title.trim(), description?.trim() || '', file_url.trim(), is_active ?? null, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    logAudit(req, 'update', req.params.id, 'company_document', null, rows[0]);
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/company-documents/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE company_documents SET is_active = FALSE, updated_at = NOW()
+        WHERE id = $1 AND category = 'brand_assets'`,
+      [req.params.id]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'Not found' });
+    logAudit(req, 'delete', req.params.id, 'company_document', null, { action: 'deactivated' });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── PRODUCTS CRUD ─────────────────────────────────────────────────────────────
 
 const VALID_GST = new Set([0, 5, 12, 18, 28]);
@@ -694,16 +887,25 @@ router.get('/products', allowRoles('admin', 'super_admin'), async (req, res) => 
   try {
     const showAll = req.query.show_all === '1' || req.query.show_all === 'true';
     const where   = showAll ? '' : 'WHERE COALESCE(is_active, true) = true';
+    // `catch(e) { res.json([]) }` meant this endpoint reported "no products"
+    // whether there were none or the query had failed — and it HAD been failing,
+    // on 14 columns that did not exist until migration 20260819000006. An empty
+    // list must never stand in for a broken query.
+    const cid = companyOf(req);
+    const clause = where
+      ? `${where} AND deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)`
+      : `WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)`;
     const r = await pool.query(
       `SELECT id, product_name, product_family, model_sku, description,
               rating, voltage_class, phase, frequency, topology,
               cooling, ip_rating, bom_template, routing_template, test_plan_template,
               warranty_months, hsn_sac, gst_rate, is_active, created_at, updated_at
-       FROM products ${where}
-       ORDER BY product_family, product_name`
+       FROM products ${clause}
+       ORDER BY product_family, product_name`,
+      [cid]
     );
     res.json(r.rows);
-  } catch(e) { res.json([]); }
+  } catch(e) { respondError(res, e); }
 });
 
 router.post('/products', allowRoles('admin', 'super_admin'), async (req, res) => {

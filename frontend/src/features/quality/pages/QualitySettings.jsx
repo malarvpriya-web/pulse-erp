@@ -1,7 +1,9 @@
 // frontend/src/features/quality/pages/QualitySettings.jsx
 import { useState, useEffect } from 'react';
+import { SlidersHorizontal, Save, Undo2 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DEFAULT_SETTINGS = {
   // IQC
@@ -97,21 +99,33 @@ export default function QualitySettings() {
   if (loading) return <div style={{ padding: 32, color: '#6b7280' }}>Loading settings…</div>;
 
   return (
-    <div style={{ padding: 24, maxWidth: 800 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Quality Settings</h2>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {isDirty && (
-            <button onClick={discard} style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: 8, padding: '10px 18px', cursor: 'pointer', fontWeight: 500, fontSize: 13 }}>
-              Discard
-            </button>
-          )}
-          <button onClick={save} disabled={!isDirty || saving} style={{ background: !isDirty || saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', cursor: !isDirty || saving ? 'not-allowed' : 'pointer', fontWeight: 600 }}>
-            {saving ? 'Saving…' : 'Save Settings'}
-          </button>
-        </div>
-      </div>
+    <PageShell dock={
+        <PageHero
+          icon={SlidersHorizontal}
+          eyebrow="Quality"
+          title="Quality Settings"
+          subtitle="Inspection thresholds, auto-NCR rules and dispatch-gate policy for the quality module"
+          meta={[
+            isDirty
+              ? { value: 'Unsaved', label: 'changes pending', tone: 'warn' }
+              : { value: 'Saved', label: 'all changes stored', tone: 'good' },
+          ]}
+          actions={
+            <>
+              {isDirty && (
+                <button className="plh-cta plh-cta--ghost" onClick={discard}>
+                  <Undo2 size={14} /> Discard
+                </button>
+              )}
+              <button className="plh-cta" onClick={save} disabled={!isDirty || saving}>
+                <Save size={14} /> {saving ? 'Saving…' : 'Save Settings'}
+              </button>
+            </>
+          }
+        />
+    }>
 
+      <div style={{ maxWidth: 800 }}>
       <Section title="IQC — Incoming Quality Control">
         <Toggle label="Auto-create NCR on IQC Fail" desc="Automatically raise an NCR when an incoming inspection fails" value={settings.iqc_auto_ncr_on_fail} onChange={() => set('iqc_auto_ncr_on_fail', !settings.iqc_auto_ncr_on_fail)} />
         <Toggle label="IQC Mandatory for GRN" desc="Block GRN from moving to stores without IQC completion" value={settings.iqc_mandatory_for_grn} onChange={() => set('iqc_mandatory_for_grn', !settings.iqc_mandatory_for_grn)} />
@@ -144,10 +158,11 @@ export default function QualitySettings() {
       </Section>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-        <button onClick={save} disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '11px 32px', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 14 }}>
+        <button onClick={save} disabled={saving} className="pulse-btn-primary" style={{ borderRadius: 8, padding: '11px 32px', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 14 }}>
           {saving ? 'Saving…' : 'Save All Settings'}
         </button>
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }

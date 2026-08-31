@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import api from '@/services/api/client';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ─── Shared primitives ────────────────────────────────────────────────────────
 
 const PURPLE = '#6B3FDB';
 const GREEN  = '#059669';
-const AMBER  = '#d97706';
+const AMBER  = '#6d28d9';
 const RED    = '#dc2626';
 const BLUE   = '#2563eb';
 const TEAL   = '#0891b2';
@@ -149,9 +151,20 @@ export default function HRBenchmarkingDashboard() {
       const res = await api.get('/analytics/hr-benchmarks', { signal: ctrl.signal });
       setData(res.data?.data || res.data);
     } catch (e) {
-      if (e.name !== 'AbortError') setError('Failed to load benchmarking data');
+      /* ⚠ Axios rejects a cancelled request with its own `CanceledError`
+       * (code `ERR_CANCELED`) — it NEVER throws a DOM `AbortError`. Testing for
+       * `AbortError` therefore matched nothing, so every abort was reported as a
+       * load failure. Under StrictMode the effect runs mount → cleanup → mount,
+       * the cleanup aborts request #1, and request #2 succeeds: the page painted
+       * a full set of correct benchmarks with "Failed to load benchmarking data"
+       * sitting above them. Not dev-only either — `load()` aborts the previous
+       * in-flight request, so a double-click on Refresh did the same in prod. */
+      if (e?.name !== 'CanceledError' && e?.code !== 'ERR_CANCELED') {
+        setError('Failed to load benchmarking data');
+      }
     } finally {
-      setLoading(false);
+      // A superseded request must not clear the spinner the live one turned on.
+      if (abortRef.current === ctrl) setLoading(false);
     }
   }, []);
 
@@ -166,21 +179,20 @@ export default function HRBenchmarkingDashboard() {
   const fmt = v => v != null && v !== 0 ? v : null;
 
   return (
-    <div style={{ padding: '16px 18px 20px', background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Human Resources"
+        title="HR Benchmarking Dashboard"
+        subtitle="Recruitment · Performance · Retention · Compensation · Diversity — live metrics vs industry benchmarks"
+        actions={<button className="plh-cta" onClick={load} disabled={loading}>
+          {loading ? 'Loading…' : '↻ Refresh'}
+        </button>}
+      />
+    }>
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: '#111827' }}>HR Benchmarking Dashboard</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-            Recruitment · Performance · Retention · Compensation · Diversity — live metrics vs industry benchmarks
-          </p>
-        </div>
-        <button onClick={load} disabled={loading}
-          style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', color: '#374151', display: 'flex', alignItems: 'center', gap: 6 }}>
-          {loading ? 'Loading…' : '↻ Refresh'}
-        </button>
-      </div>
+
 
       {error && (
         <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, padding: '10px 16px', color: '#991b1b', fontSize: 13, marginBottom: 20 }}>{error}</div>
@@ -388,6 +400,6 @@ export default function HRBenchmarkingDashboard() {
       <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: '14px 18px', fontSize: 12, color: '#166534' }}>
         <strong>Benchmark reference:</strong> Days to hire &lt;30d · Offer acceptance &gt;70% · Turnover &lt;10% · Engagement &gt;75% · Compa-ratio ≥1.0 · Benefits utilization &gt;80% · Female representation &gt;40% · Women in leadership &gt;30%
       </div>
-    </div>
+    </PageShell>
   );
 }

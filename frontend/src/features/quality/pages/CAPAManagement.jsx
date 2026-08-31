@@ -1,7 +1,19 @@
 // frontend/src/features/quality/pages/CAPAManagement.jsx
 import { useState, useEffect, useCallback } from 'react';
+import {
+  Repeat, Plus, Download, FolderOpen, PlayCircle, CheckCircle2,
+  BadgeCheck, AlarmClock,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell, StatBand, Stat } from '@/components/pulse-ui';
+
+// Ratings are stored unbounded, so clamp before rendering: '☆'.repeat(5 - r)
+// throws RangeError on a negative count and blanks the page via the ErrorBoundary.
+const stars = (rating) => {
+  const r = Math.min(5, Math.max(0, Math.round(Number(rating) || 0)));
+  return '★'.repeat(r) + '☆'.repeat(5 - r);
+};
 
 const STATUSES = ['open','in-progress','completed','verified'];
 
@@ -114,15 +126,55 @@ export default function CAPAManagement() {
 
   const sel = { padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, background: '#fff' };
 
+  // Stat-band figures derived from the rows on screen, so they always agree
+  // with the table underneath rather than needing a second round-trip.
+  const openCount     = capas.filter(c => c.status === 'open').length;
+  const progressCount = capas.filter(c => c.status === 'in-progress').length;
+  const doneCount     = capas.filter(c => c.status === 'completed').length;
+  const verifiedCount = capas.filter(c => c.status === 'verified').length;
+  const overdueCount  = capas.filter(c => c.overdue).length;
+  const rated         = capas.filter(c => c.effectiveness_rating);
+  const avgEff        = rated.length
+    ? (rated.reduce((s, c) => s + Number(c.effectiveness_rating), 0) / rated.length).toFixed(1)
+    : '—';
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>CAPA Management</h2>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <a href="/api/v1/quality/capa?export=csv" target="_blank" style={{ padding: '9px 16px', background: '#f3f4f6', border: 'none', borderRadius: 8, fontSize: 13, textDecoration: 'none', color: '#374151' }}>⬇ CSV</a>
-          <button onClick={() => setShowNew(true)} style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 20px', cursor: 'pointer', fontWeight: 600 }}>+ New CAPA</button>
-        </div>
-      </div>
+    <PageShell dock={
+        <PageHero
+          icon={Repeat}
+          eyebrow="Quality"
+          title="CAPA Management"
+          subtitle="Corrective & preventive actions raised against non-conformances"
+          meta={[
+            { value: capas.length, label: 'in view' },
+            { value: overdueCount, label: 'overdue', tone: overdueCount ? 'bad' : 'good' },
+            { value: avgEff, label: 'avg effectiveness', tone: 'good' },
+          ]}
+          actions={
+            <>
+              <a
+                className="plh-cta plh-cta--ghost"
+                href="/api/v1/quality/capa?export=csv"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Download size={14} /> Export CSV
+              </a>
+              <button className="plh-cta" onClick={() => setShowNew(true)}>
+                <Plus size={14} /> New CAPA
+              </button>
+            </>
+          }
+        />
+    }>
+
+      <StatBand cols={5}>
+        <Stat index={0} icon={FolderOpen}  tone="danger"  label="Open"        value={openCount}     sub="not started" />
+        <Stat index={1} icon={PlayCircle}  tone="info"    label="In Progress" value={progressCount} sub="being actioned" />
+        <Stat index={2} icon={CheckCircle2} tone="success" label="Completed"  value={doneCount}     sub="awaiting verification" />
+        <Stat index={3} icon={BadgeCheck}  tone="primary" label="Verified"    value={verifiedCount} sub="closed out" />
+        <Stat index={4} icon={AlarmClock}  tone={overdueCount ? 'danger' : 'success'} label="Overdue" value={overdueCount} sub="past due date" />
+      </StatBand>
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
         <select style={sel} value={filter.status} onChange={e => setFilter(p => ({ ...p, status: e.target.value }))}>
@@ -161,12 +213,12 @@ export default function CAPAManagement() {
                       {c.status === 'completed' && !c.verified_at
                         ? <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                             {[1,2,3,4,5].map(n => (
-                              <span key={n} style={{ cursor: 'pointer', color: (effectiveness[c.id] || 0) >= n ? '#fbbf24' : '#d1d5db', fontSize: 16 }} onClick={() => setEff(p => ({ ...p, [c.id]: n }))}>★</span>
+                              <span key={n} style={{ cursor: 'pointer', color: (effectiveness[c.id] || 0) >= n ? '#8b5cf6' : '#d1d5db', fontSize: 16 }} onClick={() => setEff(p => ({ ...p, [c.id]: n }))}>★</span>
                             ))}
                             <button onClick={() => verify(c.id)} style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', fontSize: 11 }}>Verify</button>
                           </div>
                         : c.effectiveness_rating
-                          ? <span style={{ color: '#fbbf24' }}>{'★'.repeat(c.effectiveness_rating)}{'☆'.repeat(5 - c.effectiveness_rating)}</span>
+                          ? <span style={{ color: '#8b5cf6' }}>{stars(c.effectiveness_rating)}</span>
                           : '—'
                       }
                     </td>
@@ -183,6 +235,6 @@ export default function CAPAManagement() {
       )}
 
       {showNew && <CAPAForm onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); load(); }} />}
-    </div>
+    </PageShell>
   );
 }

@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
-import { CheckCircle, XCircle, Clock, Search } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, Search, CalendarClock } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 export default function TimesheetApprovals() {
   const toast    = useToast();
@@ -21,7 +22,7 @@ export default function TimesheetApprovals() {
   const load = () => {
     setLoading(true);
     // Use dedicated approvals endpoint — lowercase 'submitted' matches DB constraint
-    api.get('/timesheets/approvals')
+    api.get('/timesheets/timesheets/approvals')
       .then(r => {
         if (!isMounted.current) return;
         const data = Array.isArray(r.data) ? r.data
@@ -59,13 +60,13 @@ export default function TimesheetApprovals() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Timesheet Approvals</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-          {filtered.length} timesheet{filtered.length !== 1 ? 's' : ''} pending review
-        </p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Timesheets"
+        title="Timesheet Approvals"
+      />
+    }>
 
       <div style={{ position: 'relative', marginBottom: 20, maxWidth: 340 }}>
         <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af' }} />
@@ -113,7 +114,7 @@ export default function TimesheetApprovals() {
                     {parseFloat(s.hours_worked ?? s.total_hours ?? 0).toFixed(1)}h
                   </td>
                   <td style={{ padding: '10px 16px' }}>
-                    <span style={{ background: '#fef3c7', color: '#92400e', padding: '3px 10px',
+                    <span style={{ background: '#ede9fe', color: '#5b21b6', padding: '3px 10px',
                                    borderRadius: 20, fontSize: 11, fontWeight: 600 }}>
                       {s.status ?? 'submitted'}
                     </span>
@@ -142,6 +143,6 @@ export default function TimesheetApprovals() {
           </table>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

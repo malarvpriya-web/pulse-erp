@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, Package, CheckCircle } from 'lucide-react';
+import { RefreshCw, Plus, X, Package, CheckCircle, Truck } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PAGE_SIZE = 20;
 const fmtDate = (d) => d ? d.slice(0, 10) : '—';
@@ -89,13 +90,20 @@ export default function DeliveryTracker() {
   const COLS = ['Deliverable', 'Type', 'Campaign', 'Assigned To', 'Due Date', 'Status', 'Actions'];
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Truck}
+        eyebrow="Marketing"
+        title="Delivery Tracker"
+        subtitle="Track campaign deliverables and their completion"
+      />
+    }>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Delivery Tracker</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Track campaign deliverables and their completion</p>
+
+
         </div>
         <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search…"
           style={{ padding: '7px 12px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 7, fontSize: 13, background: 'var(--color-background-secondary)', color: 'var(--color-text-primary)', width: 160 }} />
@@ -269,6 +277,6 @@ export default function DeliveryTracker() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

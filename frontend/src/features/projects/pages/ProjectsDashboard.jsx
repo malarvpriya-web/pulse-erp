@@ -4,12 +4,14 @@ import {
   ResponsiveContainer, Cell
 } from 'recharts';
 import {
-  FolderKanban, CheckSquare, AlertTriangle, TrendingUp,
-  RefreshCw, Plus, Calendar, Users, ChevronRight, Clock
+  FolderKanban, CheckSquare, AlertTriangle, TrendingUp, RefreshCw,
+  Plus, Calendar, Users, ChevronRight, Clock, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { getProjects } from '../services/projectsService';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import './ProjectsDashboard.css';
 
 const fmt = n => {
@@ -23,7 +25,7 @@ const fmt = n => {
 const STATUS_META = {
   active:    { bg: '#dcfce7', color: '#15803d', label: 'Active' },
   planning:  { bg: '#dbeafe', color: '#1d4ed8', label: 'Planning' },
-  on_hold:   { bg: '#fef3c7', color: '#92400e', label: 'On Hold' },
+  on_hold:   { bg: '#ede9fe', color: '#5b21b6', label: 'On Hold' },
   completed: { bg: '#f3f4f6', color: '#6b7280', label: 'Completed' },
   cancelled: { bg: '#fee2e2', color: '#dc2626', label: 'Cancelled' },
 };
@@ -31,7 +33,7 @@ const sm = s => STATUS_META[(s || '').toLowerCase()] || STATUS_META.planning;
 
 const HEALTH_COLORS = {
   'On Track': '#10b981',
-  'At Risk':  '#f59e0b',
+  'At Risk':  '#7c5cf0',
   'Delayed':  '#ef4444',
 };
 
@@ -86,11 +88,32 @@ export default function ProjectsDashboard({ setPage }) {
     setTimeout(() => setToast(null), 3000);
   };
 
+  // 'all' by default: this dashboard's KPIs are portfolio state (open projects,
+  // budget utilisation), so defaulting to a window would hide live projects that
+  // started before it.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'all',
+    dimensions: { status: 'all', zone: 'all', project_type: 'all' },
+    storageKey: 'projects-dashboard',
+  });
+  const { params } = filters;
+  const [options, setOptions] = useState({ statuses: [], zones: [], project_types: [] });
+
+  // Dimension options come from the full project set, so they stay stable as
+  // filters are applied. Loaded once — not on every filter change.
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/projects/projects/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [projRes, tasksRes] = await Promise.allSettled([
-        getProjects(),
+        getProjects(params),
         api.get('/tasks/today'),
       ]);
       const rawProj  = projRes.status === 'fulfilled'  ? projRes.value  : null;
@@ -103,9 +126,16 @@ export default function ProjectsDashboard({ setPage }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const titleCase = (s) => String(s).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const filterDimensions = [
+    { key: 'status',       label: 'Status',  allLabel: 'All Statuses', options: options.statuses.map(v => ({ value: v, label: titleCase(v) })) },
+    { key: 'zone',         label: 'Zone',    allLabel: 'All Zones',    options: options.zones.map(v => ({ value: v, label: v })) },
+    { key: 'project_type', label: 'Type',    allLabel: 'All Types',    options: options.project_types.map(v => ({ value: v, label: v })) },
+  ];
 
   const openProject = p => {
     sessionStorage.setItem('selectedProjectId', p.id);
@@ -150,33 +180,34 @@ export default function ProjectsDashboard({ setPage }) {
   );
 
   return (
-    <div className="pd-root">
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Projects"
+        title="Projects Dashboard"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('Projects')}>
+            All Projects <ChevronRight size={13} />
+          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('Projects')}>
+            <Plus size={14} /> New Project
+          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          <button className="plh-cta"
+            onClick={() => setPage && setPage('ProjectSettings')}
+            
+            title="Project Settings">
+            ⚙ Settings
+          </button>
+        </>}
+      />
+    }>
 
       {toast && <div className={`pd-toast pd-toast-${toast.type}`}>{toast.msg}</div>}
 
       {/* header */}
-      <div className="pd-header">
-        <div>
-          <h2 className="pd-title">Projects Dashboard</h2>
-          <p className="pd-sub">{active.length} active · {projects.length} total projects</p>
-        </div>
-        <div className="pd-header-r">
-          <button className="pd-btn-outline" onClick={() => setPage && setPage('Projects')}>
-            All Projects <ChevronRight size={13} />
-          </button>
-          <button className="pd-btn-primary" onClick={() => setPage && setPage('Projects')}>
-            <Plus size={14} /> New Project
-          </button>
-          <button className="pd-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button
-            onClick={() => setPage && setPage('ProjectSettings')}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: '1px solid #e5e7eb', borderRadius: 7, padding: '6px 12px', cursor: 'pointer', color: '#6b7280', fontSize: 13, fontWeight: 500 }}
-            title="Project Settings"
-          >
-            ⚙ Settings
-          </button>
-        </div>
-      </div>
+
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} />
 
       {/* KPIs */}
       <div className="pd-kpis">
@@ -259,7 +290,7 @@ export default function ProjectsDashboard({ setPage }) {
           <div className="pd-card-box">
             <div className="pd-box-hd">
               <span className="pd-section-title">Project Health</span>
-              <ChartExpandButton title="Project Health" subtitle="Active projects by health status">
+              <ChartExpandButton title="Project Health" subtitle="Non-closed projects by health status">
                 {healthChart(420)}
               </ChartExpandButton>
             </div>
@@ -296,8 +327,8 @@ export default function ProjectsDashboard({ setPage }) {
                     <span className="pd-task-proj">{t.project_name}</span>
                   </div>
                   <span className="pd-priority-badge" style={{
-                    background: t.priority === 'High' ? '#fee2e2' : t.priority === 'Medium' ? '#fef3c7' : '#f3f4f6',
-                    color:      t.priority === 'High' ? '#dc2626' : t.priority === 'Medium' ? '#92400e' : '#6b7280',
+                    background: t.priority === 'High' ? '#fee2e2' : t.priority === 'Medium' ? '#ede9fe' : '#f3f4f6',
+                    color:      t.priority === 'High' ? '#dc2626' : t.priority === 'Medium' ? '#5b21b6' : '#6b7280',
                   }}>{t.priority}</span>
                 </div>
               ))}
@@ -306,6 +337,6 @@ export default function ProjectsDashboard({ setPage }) {
 
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

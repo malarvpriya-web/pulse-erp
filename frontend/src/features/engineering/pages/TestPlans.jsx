@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, X, RefreshCw, ArrowLeft, ClipboardList } from 'lucide-react';
+import {
+  Plus, Pencil, Trash2, X, RefreshCw, ArrowLeft, ClipboardList,
+  DraftingCompass,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import './TestPlans.css';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TEST_TYPES   = ['Functional','Performance','Safety','Regulatory','User Acceptance','Environmental','Durability','Other'];
 const PLAN_STATUSES= ['draft','scheduled','in_progress','passed','failed','blocked'];
@@ -11,7 +15,7 @@ const RESULT_OPTS  = ['pass','fail','partial'];
 const STATUS_META = {
   draft:       { label: 'Draft',       color: '#9ca3af', bg: '#f3f4f6' },
   scheduled:   { label: 'Scheduled',   color: '#3b82f6', bg: '#eff6ff' },
-  in_progress: { label: 'In Progress', color: '#f59e0b', bg: '#fffbeb' },
+  in_progress: { label: 'In Progress', color: '#7c5cf0', bg: '#f5f3ff' },
   passed:      { label: 'Passed',      color: '#10b981', bg: '#ecfdf5' },
   failed:      { label: 'Failed',      color: '#ef4444', bg: '#fef2f2' },
   blocked:     { label: 'Blocked',     color: '#8b5cf6', bg: '#f5f3ff' },
@@ -19,7 +23,7 @@ const STATUS_META = {
 const RESULT_META = {
   pass:    { label: 'Pass',    color: '#10b981' },
   fail:    { label: 'Fail',    color: '#ef4444' },
-  partial: { label: 'Partial', color: '#f59e0b' },
+  partial: { label: 'Partial', color: '#7c5cf0' },
 };
 
 function StatusBadge({ status }) {
@@ -210,24 +214,23 @@ export default function TestPlans({ pageParams, setPage }) {
   const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
 
   return (
-    <div className="tp-page">
-      <div className="tp-header">
-        <div className="tp-header-left">
+    <PageShell dock={
+      <PageHero
+        icon={DraftingCompass}
+        eyebrow="Engineering"
+        title="Test Plans"
+        actions={<>
           {setPage && projectId && (
-            <button className="tp-back" onClick={() => setPage('PrototypeTracker', { projectId, projectName })}>
+            <button className="plh-cta plh-cta--ghost" onClick={() => setPage('PrototypeTracker', { projectId, projectName })}>
               <ArrowLeft size={14} /> Prototypes
             </button>
           )}
-          <div>
-            <h1 className="tp-title">Test Plans</h1>
-            <p className="tp-sub">{projectName || 'All Projects'} — test execution tracking</p>
-          </div>
-        </div>
-        <div className="tp-header-right">
-          <button className="tp-icon-btn" onClick={load}><RefreshCw size={15} /></button>
-          <button className="tp-btn-new" onClick={() => setModal('create')}><Plus size={14} /> New Test Plan</button>
-        </div>
-      </div>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={15} /></button>
+          <button className="plh-cta" onClick={() => setModal('create')}><Plus size={14} /> New Test Plan</button>
+        </>}
+      />
+    }>
+
 
       {/* Summary strip */}
       {!loading && plans.length > 0 && (
@@ -383,6 +386,6 @@ export default function TestPlans({ pageParams, setPage }) {
           </div>
         </Modal>
       )}
-    </div>
+    </PageShell>
   );
 }

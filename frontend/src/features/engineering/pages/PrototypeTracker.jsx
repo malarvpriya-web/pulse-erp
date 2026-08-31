@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, X, RefreshCw, ArrowLeft, TestTube2 } from 'lucide-react';
+import {
+  Plus, Pencil, Trash2, X, RefreshCw, ArrowLeft, TestTube2,
+  DraftingCompass,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import './PrototypeTracker.css';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_OPTS = ['building','ready','testing','passed','failed','scrapped'];
 const RESULT_OPTS = ['pass','fail','partial'];
@@ -10,7 +14,7 @@ const RESULT_OPTS = ['pass','fail','partial'];
 const STATUS_META = {
   building: { label: 'Building',  color: '#3b82f6', bg: '#eff6ff' },
   ready:    { label: 'Ready',     color: '#6366f1', bg: '#f5f3ff' },
-  testing:  { label: 'Testing',   color: '#f59e0b', bg: '#fffbeb' },
+  testing:  { label: 'Testing',   color: '#7c5cf0', bg: '#f5f3ff' },
   passed:   { label: 'Passed',    color: '#10b981', bg: '#ecfdf5' },
   failed:   { label: 'Failed',    color: '#ef4444', bg: '#fef2f2' },
   scrapped: { label: 'Scrapped',  color: '#9ca3af', bg: '#f3f4f6' },
@@ -18,7 +22,7 @@ const STATUS_META = {
 const RESULT_META = {
   pass:    { label: 'Pass',    color: '#10b981' },
   fail:    { label: 'Fail',    color: '#ef4444' },
-  partial: { label: 'Partial', color: '#f59e0b' },
+  partial: { label: 'Partial', color: '#7c5cf0' },
 };
 
 function Badge({ value, meta }) {
@@ -118,24 +122,23 @@ export default function PrototypeTracker({ pageParams, setPage }) {
   const toDate = iso => iso ? iso.slice(0, 10) : '';
 
   return (
-    <div className="pt-page">
-      <div className="pt-header">
-        <div className="pt-header-left">
+    <PageShell dock={
+      <PageHero
+        icon={DraftingCompass}
+        eyebrow="Engineering"
+        title="Prototype Tracker"
+        actions={<>
           {setPage && projectId && (
-            <button className="pt-back" onClick={() => setPage('DesignPhases', { projectId, projectName })}>
+            <button className="plh-cta plh-cta--ghost" onClick={() => setPage('DesignPhases', { projectId, projectName })}>
               <ArrowLeft size={14} /> Phases
             </button>
           )}
-          <div>
-            <h1 className="pt-title">Prototype Tracker</h1>
-            <p className="pt-sub">{projectName || 'All Projects'} — prototype iterations</p>
-          </div>
-        </div>
-        <div className="pt-header-right">
-          <button className="pt-icon-btn" onClick={load}><RefreshCw size={15} /></button>
-          <button className="pt-btn-new" onClick={() => setModal('create')}><Plus size={14} /> New Prototype</button>
-        </div>
-      </div>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={15} /></button>
+          <button className="plh-cta" onClick={() => setModal('create')}><Plus size={14} /> New Prototype</button>
+        </>}
+      />
+    }>
+
 
       {/* Filter */}
       <div className="pt-toolbar">
@@ -251,7 +254,7 @@ export default function PrototypeTracker({ pageParams, setPage }) {
           </div>
         </Modal>
       )}
-    </div>
+    </PageShell>
   );
 }
 

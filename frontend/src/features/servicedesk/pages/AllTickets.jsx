@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Search, Plus, RefreshCw, X, Ticket, MessageSquare,
-  Paperclip, Trash2, Download, AlertTriangle
+  Search, Plus, RefreshCw, X, Ticket, MessageSquare, Paperclip, Trash2,
+  Download, AlertTriangle, LifeBuoy,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { priorityColor, statusColor } from './ticketUtils';
@@ -9,6 +9,7 @@ import './AllTickets.css';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const emptyForm = () => ({
   title: '', description: '', category: '', priority: 'Medium',
@@ -191,7 +192,23 @@ export default function AllTickets() {
   const clearFilters = () => { setFStatus(''); setFPriority(''); setFCategory(''); setSearch(''); };
 
   return (
-    <div className="at-root">
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="All Tickets"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={handleExport}>
+            <Download size={14} /> Export CSV
+          </button>
+          {!readOnly && (
+            <button className="plh-cta" onClick={() => { setForm(emptyForm()); setDrawer('create'); }}>
+              <Plus size={15} /> New Ticket
+            </button>
+          )}
+        </>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -209,22 +226,7 @@ export default function AllTickets() {
 
       {readOnly && <ReadOnlyBanner />}
 
-      <div className="at-header">
-        <div>
-          <h2 className="at-title">All Tickets</h2>
-          <p className="at-sub">{total} ticket{total !== 1 ? 's' : ''} total</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="at-btn-outline" onClick={handleExport} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Download size={14} /> Export CSV
-          </button>
-          {!readOnly && (
-            <button className="at-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer('create'); }}>
-              <Plus size={15} /> New Ticket
-            </button>
-          )}
-        </div>
-      </div>
+
 
       <div className="at-filters">
         <div className="at-search">
@@ -552,6 +554,6 @@ export default function AllTickets() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

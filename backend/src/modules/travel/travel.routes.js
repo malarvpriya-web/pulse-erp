@@ -4,6 +4,7 @@ import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../shared/scope.js';
+import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../shared/managerApprovalAuthz.js';
 import { initiateWorkflow, getWorkflowStatus, advanceWorkflow, cancelWorkflow } from '../../services/WorkflowService.js';
 
@@ -576,17 +577,43 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
+/**
+ * Dashboard filter bar values for the /analytics/* endpoints below
+ * (?period / ?from / ?to / ?department). Trips are dated by from_date — the
+ * date of travel — falling back to created_at for rows without one.
+ *
+ * Returns bound params in a fixed order ($1 company, $2 from, $3 to,
+ * $4 department) plus a predicate that references ALL FOUR, so no query is
+ * handed a parameter it never mentions.
+ */
+function travelAnalyticsScope(req, alias = '') {
+  const a = alias ? `${alias}.` : '';
+  const range = resolveRange(req.query, { defaultPeriod: 'last6m' });
+  const department = dimension(req.query, 'department');
+  const TRIP_DATE = `COALESCE(${a}from_date, ${a}created_at::date)`;
+  return {
+    range,
+    department,
+    params: [companyOf(req), range.from, range.to, department],
+    where: `($1::int IS NULL OR ${a}company_id = $1)
+      AND ($2::date IS NULL OR ${TRIP_DATE} >= $2::date)
+      AND ($3::date IS NULL OR ${TRIP_DATE} <= $3::date)
+      AND ($4::text IS NULL OR ${a}department = $4)`,
+  };
+}
+
 // ── Analytics: monthly trend ─────────────────────────────────────────────────
 router.get('/analytics/trend', async (req, res) => {
   try {
-    const companyId = companyOf(req);
-    const params = companyId ? [parseInt(companyId)] : [];
-    const companyJoinFilter = companyId ? `AND tr.company_id = $1` : '';
+    // The month series now spans the selected range rather than a fixed 6
+    // months; period=all falls back to the trailing 6 months so the chart still
+    // has a bounded x-axis.
+    const s = travelAnalyticsScope(req, 'tr');
     const { rows } = await pool.query(`
       WITH months AS (
         SELECT generate_series(
-          date_trunc('month', NOW() - INTERVAL '5 months'),
-          date_trunc('month', NOW()),
+          date_trunc('month', COALESCE($2::date, NOW() - INTERVAL '5 months')),
+          date_trunc('month', COALESCE($3::date, NOW())),
           '1 month'::interval
         ) AS month_start
       )
@@ -595,11 +622,11 @@ router.get('/analytics/trend', async (req, res) => {
         COALESCE(SUM(tr.budget), 0)   AS total_spend
       FROM months m
       LEFT JOIN travel_requests tr
-        ON date_trunc('month', tr.created_at) = m.month_start
-        ${companyJoinFilter}
+        ON date_trunc('month', COALESCE(tr.from_date, tr.created_at::date)) = m.month_start
+        AND ${s.where}
       GROUP BY m.month_start
       ORDER BY m.month_start
-    `, params);
+    `, s.params);
     res.json(rows.map(r => ({ month: r.month, total_spend: parseFloat(r.total_spend) })));
   } catch {
     res.json([]);
@@ -1092,42 +1119,41 @@ router.post('/expenses', async (req, res) => {
 // ── Analytics ────────────────────────────────────────────────────────────────
 router.get('/analytics/stats', async (req, res) => {
   try {
-    const companyId = companyOf(req);
-    const cAnd = companyId ? `AND company_id = ${parseInt(companyId)}` : '';
+    const s = travelAnalyticsScope(req);
     const { rows } = await pool.query(`
       SELECT
-        COUNT(CASE WHEN DATE_TRUNC('month', created_at) = DATE_TRUNC('month', NOW()) THEN 1 END)::int AS trips_this_month,
-        COALESCE(SUM(CASE WHEN DATE_TRUNC('month', created_at) = DATE_TRUNC('month', NOW()) THEN budget ELSE 0 END), 0) AS spend_this_month,
+        COUNT(*)::int AS trips_this_month,
+        COALESCE(SUM(budget), 0) AS spend_this_month,
         CASE WHEN COUNT(*) > 0 THEN ROUND(COALESCE(SUM(budget), 0) / COUNT(*)) ELSE 0 END AS avg_cost_per_trip,
         COUNT(DISTINCT employee_id)::int AS active_travelers
-      FROM travel_requests WHERE status != 'Rejected' ${cAnd}
-    `);
-    res.json(rows[0]);
+      FROM travel_requests WHERE status != 'Rejected' AND ${s.where}
+    `, s.params);
+    // Keys kept for existing callers; the window is now the selected period,
+    // not a hardcoded calendar month — the cards read period_label for the name.
+    res.json({ ...rows[0], period: s.range.period, period_label: s.range.label });
   } catch(e) { res.json({ trips_this_month:0, spend_this_month:0, avg_cost_per_trip:0, active_travelers:0 }); }
 });
 
 router.get('/analytics/department', async (req, res) => {
   try {
-    const companyId = companyOf(req);
-    const cAnd = companyId ? `AND tr.company_id = ${parseInt(companyId)}` : '';
+    const s = travelAnalyticsScope(req, 'tr');
     const r = await pool.query(`
       SELECT e.department,
              COUNT(*) AS trip_count,
              COALESCE(SUM(tr.budget), 0) AS total_spend
       FROM travel_requests tr
       JOIN employees e ON e.id = tr.employee_id
-      WHERE 1=1 ${cAnd}
+      WHERE ${s.where}
       GROUP BY e.department
       ORDER BY total_spend DESC
-    `);
+    `, s.params);
     res.json(r.rows.map(row => ({ ...row, total_spend: parseFloat(row.total_spend) })));
   } catch(e) { res.json([]); }
 });
 
 router.get('/analytics/travelers', async (req, res) => {
   try {
-    const companyId = companyOf(req);
-    const cAnd = companyId ? `AND tr.company_id = ${parseInt(companyId)}` : '';
+    const s = travelAnalyticsScope(req, 'tr');
     const r = await pool.query(`
       SELECT CONCAT(e.first_name,' ',e.last_name) AS employee_name,
              e.department,
@@ -1136,12 +1162,26 @@ router.get('/analytics/travelers', async (req, res) => {
              CASE WHEN COUNT(*) > 0 THEN ROUND(COALESCE(SUM(tr.budget),0) / COUNT(*)) ELSE 0 END AS avg_spend
       FROM travel_requests tr
       JOIN employees e ON e.id = tr.employee_id
-      WHERE 1=1 ${cAnd}
+      WHERE ${s.where}
       GROUP BY employee_name, e.department
       ORDER BY trip_count DESC LIMIT 10
-    `);
+    `, s.params);
     res.json(r.rows.map(row => ({ ...row, total_spend: parseFloat(row.total_spend), avg_spend: parseFloat(row.avg_spend) })));
   } catch(e) { res.json([]); }
+});
+
+// Departments present on travel requests, for the analytics filter bar.
+router.get('/analytics/filter-options', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT department AS v FROM travel_requests
+        WHERE department IS NOT NULL AND TRIM(department) <> ''
+          AND ($1::int IS NULL OR company_id = $1)
+        ORDER BY v`,
+      [companyOf(req)]
+    );
+    res.json({ departments: rows.map(r => r.v) });
+  } catch { res.json({ departments: [] }); }
 });
 
 // ── Travel cost by project ────────────────────────────────────────────────────
@@ -1486,32 +1526,37 @@ router.get('/customer-360/:customerId', async (req, res) => {
   try {
     const cId = req.params.customerId;
     const companyId = companyOf(req);
-    const cFilter = companyId ? ` AND company_id=${companyId}` : '';
+    // Every query below joins `employees`, which also carries company_id — the
+    // filter has to name the table it belongs to or Postgres rejects the whole
+    // statement as ambiguous. Bound as a parameter rather than interpolated.
+    const scoped = (alias) => (companyId ? ` AND ${alias}.company_id = $2` : '');
+    const args   = companyId ? [cId, companyId] : [cId];
 
     const [visits, expenses, travelReqs] = await Promise.all([
       pool.query(`
-        SELECT id, visit_type, visit_date, purpose, status,
-               discussion_summary, next_followup, visited_by,
+        SELECT cv.id, cv.visit_type, cv.visit_date, cv.purpose, cv.status,
+               cv.discussion_notes, cv.next_followup_date, cv.visited_by,
                CONCAT(e.first_name,' ',e.last_name) AS visited_by_name
         FROM customer_visits cv
         LEFT JOIN employees e ON e.id=cv.visited_by
-        WHERE cv.customer_id=$1 ${cFilter}
-        ORDER BY visit_date DESC LIMIT 20
-      `, [cId]),
+        WHERE cv.customer_id=$1 ${scoped('cv')}
+        ORDER BY cv.visit_date DESC LIMIT 20
+      `, args),
       pool.query(`
-        SELECT COALESCE(SUM(total_amount),0) AS total_travel_cost,
+        SELECT COALESCE(SUM(tct.amount + COALESCE(tct.gst_amount,0)),0) AS total_travel_cost,
                COUNT(*) AS expense_count
-        FROM travel_cost_transactions
-        WHERE customer_id=$1 ${cFilter}
-      `, [cId]),
+        FROM travel_cost_transactions tct
+        WHERE tct.customer_id=$1 ${scoped('tct')}
+      `, args),
       pool.query(`
-        SELECT id, travel_type, destination, from_date, to_date, budget, status,
+        SELECT tr.id, tr.travel_type, tr.destination, tr.from_date, tr.to_date,
+               tr.budget, tr.status,
                CONCAT(e.first_name,' ',e.last_name) AS employee_name
         FROM travel_requests tr
         LEFT JOIN employees e ON e.id=tr.employee_id
-        WHERE tr.customer_id=$1 ${cFilter}
-        ORDER BY from_date DESC LIMIT 20
-      `, [cId]),
+        WHERE tr.customer_id=$1 ${scoped('tr')}
+        ORDER BY tr.from_date DESC LIMIT 20
+      `, args),
     ]);
     res.json({
       visits: visits.rows,
@@ -1527,42 +1572,45 @@ router.get('/project-360/:projectId', async (req, res) => {
   try {
     const pId = req.params.projectId;
     const companyId = companyOf(req);
-    const cFilter = companyId ? ` AND company_id=${companyId}` : '';
+    // See /customer-360 above — the employees join makes an unqualified
+    // company_id ambiguous, which failed every one of these queries.
+    const scoped = (alias) => (companyId ? ` AND ${alias}.company_id = $2` : '');
+    const args   = companyId ? [pId, companyId] : [pId];
 
     const [costSummary, travelReqs, visitReports, costByType] = await Promise.all([
       pool.query(`
-        SELECT COALESCE(SUM(amount),0) AS base_amount,
-               COALESCE(SUM(gst_amount),0) AS gst_amount,
-               COALESCE(SUM(amount+gst_amount),0) AS total_cost,
+        SELECT COALESCE(SUM(tct.amount),0) AS base_amount,
+               COALESCE(SUM(tct.gst_amount),0) AS gst_amount,
+               COALESCE(SUM(tct.amount + COALESCE(tct.gst_amount,0)),0) AS total_cost,
                COUNT(*) AS transaction_count
-        FROM travel_cost_transactions
-        WHERE project_id=$1 ${cFilter}
-      `, [pId]),
+        FROM travel_cost_transactions tct
+        WHERE tct.project_id=$1 ${scoped('tct')}
+      `, args),
       pool.query(`
         SELECT tr.id, tr.travel_type, tr.destination, tr.from_date, tr.to_date,
                tr.budget, tr.status, tr.site_name,
                CONCAT(e.first_name,' ',e.last_name) AS employee_name
         FROM travel_requests tr
         LEFT JOIN employees e ON e.id=tr.employee_id
-        WHERE tr.project_id=$1 ${cFilter}
+        WHERE tr.project_id=$1 ${scoped('tr')}
         ORDER BY tr.from_date DESC LIMIT 30
-      `, [pId]),
+      `, args),
       pool.query(`
-        SELECT id, report_number, visit_type, visit_date, visited_by,
-               purpose, status, customer_name, site_name,
+        SELECT vr.id, vr.report_number, vr.visit_type, vr.visit_date, vr.visited_by,
+               vr.purpose, vr.status, vr.customer_name, vr.site_name,
                CONCAT(e.first_name,' ',e.last_name) AS visited_by_name
         FROM visit_reports vr
         LEFT JOIN employees e ON e.id=vr.visited_by
-        WHERE vr.project_id=$1 ${cFilter}
-        ORDER BY visit_date DESC LIMIT 20
-      `, [pId]),
+        WHERE vr.project_id=$1 ${scoped('vr')}
+        ORDER BY vr.visit_date DESC LIMIT 20
+      `, args),
       pool.query(`
-        SELECT cost_type, COUNT(*) AS count,
-               COALESCE(SUM(amount),0) AS amount
-        FROM travel_cost_transactions
-        WHERE project_id=$1 ${cFilter}
-        GROUP BY cost_type ORDER BY amount DESC
-      `, [pId]),
+        SELECT tct.cost_type, COUNT(*) AS count,
+               COALESCE(SUM(tct.amount),0) AS amount
+        FROM travel_cost_transactions tct
+        WHERE tct.project_id=$1 ${scoped('tct')}
+        GROUP BY tct.cost_type ORDER BY amount DESC
+      `, args),
     ]);
 
     res.json({

@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  Calendar, Clock, FileText, CheckCircle, AlertTriangle,
-  X, RefreshCw, Send, Info, Upload, User
+  Calendar, Clock, FileText, CheckCircle, AlertTriangle, X, RefreshCw,
+  Send, Info, Upload, User, CalendarDays,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './ApplyLeave.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const ADMIN_ROLES = new Set(['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'hr_admin']);
 
@@ -275,15 +276,26 @@ export default function ApplyLeave({ setPage }) {
     try {
       let attachmentUrl = form.attachment_url || null;
 
-      // Upload file if present
+      // Upload file if present. This posts to the document master — the only
+      // upload endpoint that exists — and aborts the whole application if it
+      // fails. Storing just the filename on failure used to make a medical
+      // certificate look attached while nothing had been stored.
       if (form.attachment_file) {
+        const fd = new FormData();
+        fd.append('file', form.attachment_file);
+        fd.append('module_type', 'leave');
+        fd.append('linked_entity_type', 'leave_application');
         try {
-          const fd = new FormData();
-          fd.append('file', form.attachment_file);
-          const uploadRes = await api.post('/documents/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-          attachmentUrl = uploadRes.data?.url || uploadRes.data?.file_url || form.attachment_file.name;
-        } catch {
-          attachmentUrl = form.attachment_file.name; // fallback — store filename
+          const uploadRes = await api.post('/document-master/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+          const doc = uploadRes.data?.data;
+          attachmentUrl = doc?.drive_link || (doc?.id ? `/api/document-master/${doc.id}/download` : null);
+          if (!attachmentUrl) throw new Error('Upload returned no file location');
+        } catch (err) {
+          setSubmitting(false);
+          return showToast(
+            err?.response?.data?.error || 'Could not upload the attachment. Remove it or try again — the application was not submitted.',
+            'error',
+          );
         }
       }
 
@@ -319,18 +331,20 @@ export default function ApplyLeave({ setPage }) {
   };
 
   return (
-    <div className="al-root">
+    <PageShell dock={
+      <PageHero
+        icon={CalendarDays}
+        eyebrow="Leave"
+        title="Apply for Leave"
+        subtitle="Submit a leave request for manager approval"
+        actions={<button className="plh-cta" onClick={() => loadBalance(isAdmin ? form.employee_id : uid)}>
+          <RefreshCw size={14} />
+        </button>}
+      />
+    }>
       {toast && <div className={`al-toast al-toast-${toast.type}`}>{toast.msg}</div>}
 
-      <div className="al-header">
-        <div>
-          <h2 className="al-title">Apply for Leave</h2>
-          <p className="al-sub">Submit a leave request for manager approval</p>
-        </div>
-        <button className="al-icon-btn" onClick={() => loadBalance(isAdmin ? form.employee_id : uid)}>
-          <RefreshCw size={14} />
-        </button>
-      </div>
+
 
       <div className="al-body">
 
@@ -383,7 +397,7 @@ export default function ApplyLeave({ setPage }) {
             const b  = balances[lt.key] || { used: 0, pending: 0, available: 0, allocated: lt.total };
             const pct = lt.total ? Math.min(100, Math.round(((b.used + b.pending) / lt.total) * 100)) : 0;
             const isSelected = form.leave_type === lt.key && !isLOP;
-            const colorMap = { 'Sick Leave':'#ef4444','Casual Leave':'#f59e0b','Earned Leave':'#10b981','Annual Leave':'#10b981','Maternity Leave':'#ec4899','Paternity Leave':'#6366f1','Compensatory Leave':'#8b5cf6','Bereavement Leave':'#6b7280','Marriage Leave':'#f97316' };
+            const colorMap = { 'Sick Leave':'#ef4444','Casual Leave':'#7c5cf0','Earned Leave':'#10b981','Annual Leave':'#10b981','Maternity Leave':'#ec4899','Paternity Leave':'#6366f1','Compensatory Leave':'#8b5cf6','Bereavement Leave':'#6b7280','Marriage Leave':'#7c5cf0' };
             const color = colorMap[lt.key] || '#6366f1';
             return (
               <button key={lt.key} className={`al-bal-card${isSelected ? ' al-bal-card-active' : ''}`}
@@ -493,10 +507,10 @@ export default function ApplyLeave({ setPage }) {
               <Clock size={14} color="#0369a1" />
               <strong style={{ color:'#0369a1' }}>{totalDays} day{totalDays !== 1 ? 's' : ''}</strong>
               {isLOP && workingDays > 0 && (
-                <span style={{ color:'#9a3412', fontWeight:600 }}>· all Loss of Pay (unpaid)</span>
+                <span style={{ color:'#4c1d95', fontWeight:600 }}>· all Loss of Pay (unpaid)</span>
               )}
               {!isLOP && clubbedLopDays > 0 && (
-                <span style={{ color:'#9a3412', fontWeight:600 }}>
+                <span style={{ color:'#4c1d95', fontWeight:600 }}>
                   · {paidDays} paid + {clubbedLopDays} LOP (clubbed weekend/holiday)
                 </span>
               )}
@@ -504,7 +518,7 @@ export default function ApplyLeave({ setPage }) {
                 <span style={{ color:'#6b7280' }}>(weekdays only, holidays excluded)</span>
               )}
               {!form.half_day && workingDays === 0 && form.start_date && (
-                <span style={{ color:'#b45309', fontWeight:500 }}>⚠ No working days — selected dates fall on weekends or holidays</span>
+                <span style={{ color:'#6d28d9', fontWeight:500 }}>⚠ No working days — selected dates fall on weekends or holidays</span>
               )}
               {bal.available > 0 && !selectedType?.isLOP && days > bal.available && (
                 <span style={{ color:'#ef4444', fontWeight:600 }}>⚠ Exceeds available {bal.available}d</span>
@@ -513,7 +527,7 @@ export default function ApplyLeave({ setPage }) {
 
             {/* Warnings */}
             {!isLOP && clubbedLopDays > 0 && (
-              <div className="al-clubbing-warn" style={{ background:'#fff7ed', borderColor:'#fed7aa', color:'#9a3412' }}>
+              <div className="al-clubbing-warn" style={{ background:'#fff7ed', borderColor:'#ddd6fe', color:'#4c1d95' }}>
                 <AlertTriangle size={14} />
                 <span>
                   Clubbing detected — {clubbedLopDays} weekend/holiday day{clubbedLopDays !== 1 ? 's' : ''} between your leave dates. Clubbing is not allowed without manager permission; if approved, {clubbedLopDays === 1 ? 'this day' : 'these days'} will be charged as Loss of Pay (LOP) automatically.
@@ -526,7 +540,7 @@ export default function ApplyLeave({ setPage }) {
               </div>
             )}
             {advanceWarn && (
-              <div className="al-clubbing-warn" style={{ background:'#fff7ed', borderColor:'#fed7aa', color:'#9a3412' }}>
+              <div className="al-clubbing-warn" style={{ background:'#fff7ed', borderColor:'#ddd6fe', color:'#4c1d95' }}>
                 <AlertTriangle size={14} /><span>{advanceWarn}</span>
               </div>
             )}
@@ -598,7 +612,7 @@ export default function ApplyLeave({ setPage }) {
         </div>
 
       </div>
-    </div>
+    </PageShell>
   );
 }
 

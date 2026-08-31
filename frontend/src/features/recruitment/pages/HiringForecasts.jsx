@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Briefcase,
-  CalendarClock,
-  RefreshCw,
-  TrendingUp,
-  Users,
-} from 'lucide-react';
+import { Briefcase, CalendarClock, RefreshCw, TrendingUp, Users, IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import './HiringForecasts.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const toNum = (v, fallback = 0) => {
   const n = Number(v);
@@ -165,11 +160,18 @@ export default function HiringForecasts() {
   }
 
   return (
-    <div className="hfc-root">
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Recruitment"
+        title="Hiring Forecasts"
+        subtitle="Recruitment demand and capacity forecast by department"
+      />
+    }>
       <div className="hfc-header">
         <div>
-          <h2 className="hfc-title">Hiring Forecasts</h2>
-          <p className="hfc-sub">Recruitment demand and capacity forecast by department</p>
+
+
         </div>
         <div className="hfc-actions">
           <select
@@ -193,7 +195,7 @@ export default function HiringForecasts() {
           <div><div className="hfc-sum-num">{summary.openRoles}</div><div className="hfc-sum-lbl">Open Roles</div></div>
         </div>
         <div className="hfc-sum-card">
-          <div className="hfc-sum-icon" style={{ background: '#fef9c3', color: '#a16207' }}><Users size={16} /></div>
+          <div className="hfc-sum-icon" style={{ background: '#ede9fe', color: '#6d28d9' }}><Users size={16} /></div>
           <div><div className="hfc-sum-num">{summary.openPositions}</div><div className="hfc-sum-lbl">Open Positions</div></div>
         </div>
         <div className="hfc-sum-card">
@@ -253,7 +255,7 @@ export default function HiringForecasts() {
                 <tr key={row.department} className="hfc-row">
                   <td>
                     <div className="hfc-dept-cell">
-                      <span className="hfc-dept-dot" style={{ background: ['#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ef4444'][idx % 5] }} />
+                      <span className="hfc-dept-dot" style={{ background: ['#3b82f6', '#22c55e', '#7c5cf0', '#a855f7', '#ef4444'][idx % 5] }} />
                       {row.department}
                     </div>
                   </td>
@@ -273,6 +275,6 @@ export default function HiringForecasts() {
           </tbody>
         </table>
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -8,10 +8,10 @@ export default function NotFound({ setPage }) {
     }}>
       <div style={{
         width: 80, height: 80, borderRadius: '50%',
-        background: '#fef3c7', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: '#ede9fe', display: 'flex', alignItems: 'center', justifyContent: 'center',
         marginBottom: 24,
       }}>
-        <AlertTriangle size={36} color="#f59e0b" />
+        <AlertTriangle size={36} color="#7c5cf0" />
       </div>
 
       <h1 style={{ fontSize: 64, fontWeight: 900, color: '#e5e7eb', margin: '0 0 8px', lineHeight: 1 }}>

@@ -3,6 +3,7 @@ import { Bell, Mail, MessageCircle, Plus, Edit2, Trash2, X, Check,
          RefreshCw, ToggleLeft, ToggleRight, ChevronDown, ChevronRight, Lock } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -217,7 +218,14 @@ export default function SetupNotifications() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Bell}
+        eyebrow="Administration"
+        title="Notification Rules"
+        subtitle="Configure event-driven notifications across modules and channels."
+      />
+    }>
       <ConfirmDialog
         open={!!pendingRemove}
         title="Delete Notification Rule"
@@ -240,10 +248,8 @@ export default function SetupNotifications() {
             <Bell size={20} />
           </div>
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: '#111827' }}>Notification Rules</h1>
-            <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
-              Configure event-driven notifications across modules and channels.
-            </p>
+
+
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -584,6 +590,6 @@ export default function SetupNotifications() {
           ))}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

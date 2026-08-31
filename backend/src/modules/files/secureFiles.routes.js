@@ -68,16 +68,16 @@ router.get('/:filename', async (req, res) => {
     const { rows } = await pool.query(
       `SELECT e.id AS employee_id, e.company_id, u.id AS user_id
          FROM employees e
-         LEFT JOIN users u ON u.email = e.email
+         LEFT JOIN users u ON u.email = e.company_email
         WHERE e.deleted_at IS NULL
           AND (
             e.photo_url             LIKE $1 OR
-            e.pan_url               LIKE $1 OR
-            e.aadhaar_url           LIKE $1 OR
-            e.cancelled_cheque_url  LIKE $1 OR
-            e.bank_statement_url    LIKE $1 OR
-            e.resume_url            LIKE $1 OR
-            e.offer_letter_url      LIKE $1
+            e.pan_file               LIKE $1 OR
+            e.aadhaar_file           LIKE $1 OR
+            e.cancelled_cheque_file  LIKE $1 OR
+            e.bank_statement_file    LIKE $1 OR
+            e.resume_file            LIKE $1 OR
+            e.offer_letter_file      LIKE $1
           )
         LIMIT 1`,
       [`%${filename}`]

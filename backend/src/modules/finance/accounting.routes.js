@@ -4,6 +4,7 @@ import pool from '../../config/db.js';
 import { nextAccountingJournalNumber } from '../../shared/docNumber.js';
 import { numberToWordsINR } from '../../shared/numberToWordsINR.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { respondError } from '../../shared/pgErrors.js';
 import { postPayrollJournal } from './services/payrollJournal.service.js';
 
 const router = express.Router();
@@ -279,6 +280,42 @@ router.get('/journal-entries', requirePermission('finance', 'view'), async (req,
   } catch (err) {
     console.error('[GET /journal-entries]', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /journal-entries/:id ─────────────────────────────────────────────────
+// Registered after the literal /journal-entries above so the collection route is
+// still reachable. JournalEntry.jsx's General Ledger drill-down calls this when
+// an entry number is clicked — until now that click always failed, because only
+// the list, PUT and DELETE by id existed.
+router.get('/journal-entries/:id', requirePermission('finance', 'view'), async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const params = [req.params.id];
+    let scope = '';
+    if (companyId) { params.push(companyId); scope = ' AND je.company_id = $2'; }
+
+    const { rows: [entry] } = await pool.query(
+      `SELECT je.* FROM journal_entries je WHERE je.id = $1${scope}`,
+      params
+    );
+    if (!entry) return res.status(404).json({ error: 'Journal entry not found' });
+
+    // Account code/name come along so the viewer can render lines without a
+    // second round trip per line.
+    const { rows: lines } = await pool.query(
+      `SELECT jl.*, coa.code AS account_code, coa.name AS account_name
+         FROM journal_lines jl
+         LEFT JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE jl.entry_id = $1
+        ORDER BY jl.id`,
+      [req.params.id]
+    );
+
+    res.json({ ...entry, lines });
+  } catch (err) {
+    console.error('[GET /journal-entries/:id]', err.message);
+    respondError(res, err);
   }
 });
 
@@ -669,7 +706,7 @@ router.get('/general-ledger/:accountId', requirePermission('finance', 'view'), a
     res.json({ account, opening_balance, transactions, closing_balance, date_range: { date_from, date_to } });
   } catch (err) {
     console.error('[GET /general-ledger/:accountId]', err.message);
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -693,7 +730,17 @@ router.get('/chart-of-accounts', requirePermission('finance', 'view'), async (re
 // ─── GET /periods ──────────────────────────────────────────────────────────────
 router.get('/periods', requirePermission('finance', 'view'), async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM accounting_periods ORDER BY start_date DESC');
+    // This listing is the twin of finance.controller.js getPeriods, which is
+    // scoped. This copy was not, so every accounting period of every tenant came
+    // back to any caller with finance:view. Reachable at BOTH /api/accounting
+    // and /api/finance/accounting, which is why fixing only the /finance copy
+    // left the hole open.
+    const { rows } = await pool.query(
+      `SELECT * FROM accounting_periods
+        WHERE ($1::int IS NULL OR company_id = $1)
+        ORDER BY start_date DESC`,
+      [cid(req)]
+    );
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -704,15 +751,28 @@ router.get('/periods', requirePermission('finance', 'view'), async (req, res) =>
 router.post('/periods/:id/close', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { rows: periods } = await pool.query('SELECT * FROM accounting_periods WHERE id=$1', [id]);
+    // Every query below was unscoped. In order of consequence: a caller could
+    // close another tenant's period; the draft check counted drafts belonging to
+    // every tenant, so one tenant's unposted entry blocked another's close; and
+    // the summary aggregated all tenants' journals into the `period_summary`
+    // net_income that gets WRITTEN to the row -- a cross-tenant total persisted
+    // as this period's closing figure.
+    const companyId = cid(req);
+    const { rows: periods } = await pool.query(
+      `SELECT * FROM accounting_periods
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [id, companyId]
+    );
     if (periods.length === 0) return res.status(404).json({ error: 'Period not found.' });
     const period = periods[0];
     if (period.status !== 'open') return res.status(400).json({ error: `Period is already ${period.status}.` });
 
     // Check no draft entries in this period
     const { rows: drafts } = await pool.query(
-      `SELECT COUNT(*) FROM journal_entries WHERE status='draft' AND entry_date BETWEEN $1 AND $2`,
-      [period.start_date, period.end_date]
+      `SELECT COUNT(*) FROM journal_entries
+        WHERE status='draft' AND entry_date BETWEEN $1 AND $2
+          AND ($3::int IS NULL OR company_id = $3)`,
+      [period.start_date, period.end_date, companyId]
     );
     if (parseInt(drafts[0].count) > 0) {
       return res.status(400).json({ error: `Cannot close period: ${drafts[0].count} draft journal entries exist within this period.` });
@@ -727,8 +787,9 @@ router.post('/periods/:id/close', requirePermission('finance', 'approve'), async
        FROM journal_entries je
        JOIN journal_lines jl ON jl.entry_id=je.id
        JOIN chart_of_accounts coa ON coa.id=jl.account_id
-       WHERE je.status='posted' AND je.entry_date BETWEEN $1 AND $2`,
-      [period.start_date, period.end_date]
+       WHERE je.status='posted' AND je.entry_date BETWEEN $1 AND $2
+         AND ($3::int IS NULL OR je.company_id = $3)`,
+      [period.start_date, period.end_date, companyId]
     );
 
     const periodSummary = {
@@ -739,8 +800,11 @@ router.post('/periods/:id/close', requirePermission('finance', 'approve'), async
 
     const userId = req.user?.userId ?? req.user?.id ?? null;
     const { rows: updated } = await pool.query(
-      `UPDATE accounting_periods SET status='closed', closed_by=$1, closed_at=NOW(), period_summary=$2 WHERE id=$3 RETURNING *`,
-      [userId, JSON.stringify(periodSummary), id]
+      `UPDATE accounting_periods
+          SET status='closed', closed_by=$1, closed_at=NOW(), period_summary=$2
+        WHERE id=$3 AND ($4::int IS NULL OR company_id = $4)
+        RETURNING *`,
+      [userId, JSON.stringify(periodSummary), id, companyId]
     );
     res.json(updated[0]);
   } catch (err) {
@@ -1276,9 +1340,11 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
       const entry_number = await getNextEntryNumber();
       const { rows: entryRows } = await client.query(
         `INSERT INTO journal_entries
-           (entry_number, entry_date, entry_type, description, reference_type, status, total_debit, total_credit)
-         VALUES ($1,$2,'OpeningBalance',$3,'opening_balance','posted',$4,$5) RETURNING *`,
-        [entry_number, as_of_date, description || `Opening balances as of ${as_of_date}`, totalDebit, totalCredit]
+           (entry_number, entry_date, entry_type, description, reference_type, status,
+            total_debit, total_credit, company_id)
+         VALUES ($1,$2,'OpeningBalance',$3,'opening_balance','posted',$4,$5,$6) RETURNING *`,
+        [entry_number, as_of_date, description || `Opening balances as of ${as_of_date}`,
+         totalDebit, totalCredit, companyOf(req)]
       );
       const entry = entryRows[0];
 

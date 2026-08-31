@@ -10,11 +10,12 @@ import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import { getProjects, createProject } from '../services/projectsService';
 import WorkflowBadge from '@/features/_shared/WorkflowBadge';
 import './Projects.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   active:    { bg: '#dcfce7', color: '#15803d', label: 'Active'    },
   planning:  { bg: '#dbeafe', color: '#1d4ed8', label: 'Planning'  },
-  on_hold:   { bg: '#fef3c7', color: '#92400e', label: 'On Hold'   },
+  on_hold:   { bg: '#ede9fe', color: '#5b21b6', label: 'On Hold'   },
   completed: { bg: '#f3f4f6', color: '#6b7280', label: 'Completed' },
   cancelled: { bg: '#fee2e2', color: '#dc2626', label: 'Cancelled' },
 };
@@ -25,7 +26,7 @@ const HEALTH = p => {
   const budPct = p.budget_amount  ? (p.actual_cost / p.budget_amount) * 100   : 0;
   if (p.status === 'completed') return { label: 'Completed', color: '#10b981' };
   if (budPct > 90 || (p.end_date && new Date(p.end_date) < new Date() && pct < 100)) return { label: 'Delayed',  color: '#ef4444' };
-  if (budPct > 75 || pct < 30) return { label: 'At Risk',  color: '#f59e0b' };
+  if (budPct > 75 || pct < 30) return { label: 'At Risk',  color: '#7c5cf0' };
   return { label: 'On Track', color: '#10b981' };
 };
 
@@ -255,31 +256,30 @@ export default function Projects({ setPage }) {
   const setF = (k, v) => { setForm(f => ({ ...f, [k]: v })); if (formErrors.length) setFormErrors([]); };
 
   return (
-    <div className="pj-root">
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Projects"
+        title="Projects"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          {canAdd ? (
+            <button className="plh-cta" onClick={openDrawer}>
+              <Plus size={14} /> New Project
+            </button>
+          ) : (
+            <button className="plh-cta" disabled
+              title="You don't have permission to create projects">
+              <Lock size={13} /> New Project
+            </button>
+          )}
+        </>}
+      />
+    }>
       {toast && <div className={`pj-toast pj-toast-${toast.type}`}>{toast.msg}</div>}
 
       {readOnly && <ReadOnlyBanner />}
 
-      <div className="pj-header">
-        <div>
-          <h2 className="pj-title">Projects</h2>
-          <p className="pj-sub">{displayed.length} project{displayed.length !== 1 ? 's' : ''}</p>
-        </div>
-        <div className="pj-header-r">
-          <button className="pj-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          {canAdd ? (
-            <button className="pj-btn-primary" onClick={openDrawer}>
-              <Plus size={14} /> New Project
-            </button>
-          ) : (
-            <button className="pj-btn-primary" disabled
-              title="You don't have permission to create projects"
-              style={{ opacity: 0.45, cursor: 'not-allowed' }}>
-              <Lock size={13} /> New Project
-            </button>
-          )}
-        </div>
-      </div>
 
       <div className="pj-filters">
         <div className="pj-search">
@@ -486,6 +486,6 @@ export default function Projects({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

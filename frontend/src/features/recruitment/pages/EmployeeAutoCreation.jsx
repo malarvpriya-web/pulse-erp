@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { UserPlus, CheckCircle, Clock, AlertCircle, RefreshCw, ChevronRight, X } from 'lucide-react';
+import {
+  UserPlus, CheckCircle, Clock, AlertCircle, RefreshCw, ChevronRight,
+  X, Users,
+} from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { fmtDate } from '@/utils/dateFormatter';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const CARD = { background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:'20px', marginBottom:16 };
 const BTN  = (bg='#6B3FDB') => ({ background:bg, color:'#fff', border:'none', borderRadius:8, padding:'8px 16px', fontSize:13, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6 });
@@ -60,7 +64,17 @@ export default function EmployeeAutoCreation() {
   ];
 
   return (
-    <div style={{ padding:'24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Recruitment"
+        title="Employee Auto-Creation"
+        subtitle="When a candidate reaches &quot;Hired&quot; stage — auto-create employee record with zero duplicate entry"
+        actions={<button className="plh-cta" onClick={load}>
+          <RefreshCw size={14}/>Refresh
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingCreateEmployee}
         title="Create Employee Record"
@@ -70,15 +84,7 @@ export default function EmployeeAutoCreation() {
         onConfirm={createEmployee}
         onCancel={() => setPendingCreateEmployee(null)}
       />
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#111', margin:0 }}>Employee Auto-Creation</h1>
-          <p style={{ fontSize:13, color:'#6b7280', margin:'4px 0 0' }}>When a candidate reaches "Hired" stage — auto-create employee record with zero duplicate entry</p>
-        </div>
-        <button onClick={load} style={{ background:'#f5f3ff', color:'#6B3FDB', border:'1px solid #e9e4ff', borderRadius:8, padding:'8px 16px', fontSize:13, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
-          <RefreshCw size={14}/>Refresh
-        </button>
-      </div>
+
 
       {/* How It Works */}
       <div style={{ ...CARD, background:'linear-gradient(135deg,#f5f3ff,#ede9fe)', border:'1px solid #e9e4ff', marginBottom:20 }}>
@@ -117,7 +123,7 @@ export default function EmployeeAutoCreation() {
       {/* Stats */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:20 }}>
         {[
-          { label:'Awaiting Creation', value:pending.length, color:'#d97706' },
+          { label:'Awaiting Creation', value:pending.length, color:'#6d28d9' },
           { label:'Already Created', value:log.filter(l=>l.status==='completed').length, color:'#059669' },
           { label:'Creation Errors', value:log.filter(l=>l.status==='failed').length, color:'#dc2626' },
         ].map(s => (
@@ -167,7 +173,7 @@ export default function EmployeeAutoCreation() {
                     ) : c.creation_status === 'failed' ? (
                       <span style={{ background:'#fee2e2', color:'#991b1b', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700 }}>Failed</span>
                     ) : (
-                      <span style={{ background:'#fef3c7', color:'#92400e', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700 }}>Pending</span>
+                      <span style={{ background:'#ede9fe', color:'#5b21b6', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700 }}>Pending</span>
                     )}
                   </td>
                   <td style={{ padding:'10px 12px' }}>
@@ -214,7 +220,7 @@ export default function EmployeeAutoCreation() {
                   <td style={{ padding:'10px 12px', color:'#374151' }}>{l.job_title || '—'}</td>
                   <td style={{ padding:'10px 12px', fontWeight:700, color:'#6B3FDB', fontFamily:'monospace' }}>{l.employee_code || '—'}</td>
                   <td style={{ padding:'10px 12px' }}>
-                    <span style={{ background:{completed:'#d1fae5',failed:'#fee2e2',in_progress:'#dbeafe',pending:'#fef3c7'}[l.status]||'#f3f4f6', color:{completed:'#065f46',failed:'#991b1b',in_progress:'#1e40af',pending:'#92400e'}[l.status]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>
+                    <span style={{ background:{completed:'#d1fae5',failed:'#fee2e2',in_progress:'#dbeafe',pending:'#ede9fe'}[l.status]||'#f3f4f6', color:{completed:'#065f46',failed:'#991b1b',in_progress:'#1e40af',pending:'#5b21b6'}[l.status]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>
                       {l.status}
                     </span>
                   </td>
@@ -251,7 +257,7 @@ export default function EmployeeAutoCreation() {
               <div style={{ fontSize:12, fontWeight:700, color:'#374151', marginBottom:8, textTransform:'uppercase' }}>Pending Next Steps:</div>
               {(result.next_steps || []).map((s, i) => (
                 <div key={i} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 0', fontSize:13, color:'#374151' }}>
-                  <div style={{ width:6, height:6, borderRadius:9999, background:'#d97706', flexShrink:0 }} />
+                  <div style={{ width:6, height:6, borderRadius:9999, background:'#6d28d9', flexShrink:0 }} />
                   {s}
                 </div>
               ))}
@@ -262,6 +268,6 @@ export default function EmployeeAutoCreation() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

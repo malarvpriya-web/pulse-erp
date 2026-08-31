@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Eye, FileText, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { Eye, FileText, Plus, RefreshCw, Search, X, UserPlus } from 'lucide-react';
 import api from '@/services/api/client';
 import './JobRequisitionPipeline.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY_FORM = {
   job_title: '',
@@ -22,7 +23,7 @@ const STATUS_META = {
   draft:            { label: 'Draft',            bg: '#f3f4f6', color: '#4b5563' },
   pending_approval: { label: 'Pending Approval', bg: '#dbeafe', color: '#1d4ed8' },
   approved:         { label: 'Approved',         bg: '#dcfce7', color: '#166534' },
-  open:             { label: 'Open',             bg: '#fef3c7', color: '#a16207' },
+  open:             { label: 'Open',             bg: '#ede9fe', color: '#6d28d9' },
   closed:           { label: 'Closed',           bg: '#fee2e2', color: '#991b1b' },
 };
 
@@ -213,21 +214,23 @@ export default function JobRequisitionPipeline() {
   }, [activeRow]);
 
   return (
-    <div className="jrp-root">
-      <div className="jrp-header">
-        <div>
-          <h2 className="jrp-title">Requisition Pipeline</h2>
-          <p className="jrp-sub">Track requisitions through approval and opening stages</p>
-        </div>
-        <div className="jrp-header-actions">
-          <button className="jrp-btn-outline" onClick={loadData}><RefreshCw size={14} /> Refresh</button>
-          <button className="jrp-btn-primary" onClick={() => setShowCreate(true)}><Plus size={14} /> New Requisition</button>
-        </div>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Requisition Pipeline"
+        subtitle="Track requisitions through approval and opening stages"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={loadData}><RefreshCw size={14} /> Refresh</button>
+          <button className="plh-cta" onClick={() => setShowCreate(true)}><Plus size={14} /> New Requisition</button>
+        </>}
+      />
+    }>
+
 
       <div className="jrp-summary">
         <div className="jrp-sum-card"><div className="jrp-sum-icon" style={{ background: '#eef2ff', color: '#4338ca' }}><FileText size={16} /></div><div><div className="jrp-sum-num">{summary.total}</div><div className="jrp-sum-lbl">Total Requisitions</div></div></div>
-        <div className="jrp-sum-card"><div className="jrp-sum-icon" style={{ background: '#fef3c7', color: '#a16207' }}><FileText size={16} /></div><div><div className="jrp-sum-num">{summary.pending}</div><div className="jrp-sum-lbl">Pending Review</div></div></div>
+        <div className="jrp-sum-card"><div className="jrp-sum-icon" style={{ background: '#ede9fe', color: '#6d28d9' }}><FileText size={16} /></div><div><div className="jrp-sum-num">{summary.pending}</div><div className="jrp-sum-lbl">Pending Review</div></div></div>
         <div className="jrp-sum-card"><div className="jrp-sum-icon" style={{ background: '#dcfce7', color: '#166534' }}><FileText size={16} /></div><div><div className="jrp-sum-num">{summary.open}</div><div className="jrp-sum-lbl">Converted to Open</div></div></div>
         <div className="jrp-sum-card"><div className="jrp-sum-icon" style={{ background: '#e0f2fe', color: '#0369a1' }}><FileText size={16} /></div><div><div className="jrp-sum-num">{summary.positions}</div><div className="jrp-sum-lbl">Requested Positions</div></div></div>
       </div>
@@ -359,6 +362,6 @@ export default function JobRequisitionPipeline() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

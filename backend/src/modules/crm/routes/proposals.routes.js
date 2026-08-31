@@ -48,11 +48,12 @@ async function nextNumber(prefix, table, col, companyId) {
   return `${prefix}-${yr}-${seq}`;
 }
 
-async function getCustomerName(accountId) {
+async function getCustomerName(accountId, companyId = null) {
   if (!accountId) return null;
   const { rows } = await pool.query(
-    `SELECT COALESCE(name, account_name) AS name FROM accounts WHERE id=$1`,
-    [accountId]
+    `SELECT name FROM accounts
+      WHERE id=$1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id=$2)`,
+    [accountId, companyId]
   );
   return rows[0]?.name || null;
 }
@@ -66,8 +67,8 @@ router.get('/technical-proposals', requirePermission('crm', 'view'), async (req,
     const { opportunity_id, status, search } = req.query;
     let q = `
       SELECT tp.*, e.name AS prepared_by_name,
-             a.COALESCE(a.name, a.account_name) AS customer_name,
-             o.title AS opportunity_title
+             a.name AS customer_name,
+             o.opportunity_name AS opportunity_title
       FROM technical_proposals tp
       LEFT JOIN employees e ON e.id = tp.prepared_by
       LEFT JOIN accounts  a ON a.id = tp.account_id
@@ -89,8 +90,8 @@ router.get('/technical-proposals/:id', requirePermission('crm', 'view'), async (
     const { rows } = await pool.query(
       `SELECT tp.*, e.name AS prepared_by_name,
               rv.name AS reviewed_by_name, ap.name AS approved_by_name,
-              COALESCE(a.name, a.account_name) AS customer_name,
-              o.title AS opportunity_title
+              a.name AS customer_name,
+              o.opportunity_name AS opportunity_title
        FROM technical_proposals tp
        LEFT JOIN employees    e  ON e.id  = tp.prepared_by
        LEFT JOIN employees    rv ON rv.id = tp.reviewed_by
@@ -128,10 +129,14 @@ router.post('/technical-proposals', requirePermission('crm', 'add'), async (req,
     );
     // Link to opportunity
     if (opportunity_id) {
+      // Scoped: an unscoped `WHERE id = $2` let a proposal in one tenant
+      // rewrite another tenant's opportunity (audit C-08 class). Not swallowed
+      // either — a silent failure here leaves the proposal unlinked.
       await pool.query(
-        `UPDATE opportunities SET tech_proposal_id=$1, updated_at=NOW() WHERE id=$2`,
-        [rows[0].id, opportunity_id]
-      ).catch(() => {});
+        `UPDATE opportunities SET tech_proposal_id=$1, updated_at=NOW()
+          WHERE id=$2 AND deleted_at IS NULL AND ($3::int IS NULL OR company_id=$3)`,
+        [rows[0].id, opportunity_id, companyOf(req)]
+      );
     }
     logAudit({ userId: uid(req), module: 'crm', recordId: rows[0].id, recordType: 'technical_proposal', action: 'create', newData: rows[0], req });
     res.status(201).json(rows[0]);
@@ -174,7 +179,7 @@ router.post('/technical-proposals/:id/submit', requirePermission('crm', 'edit'),
 
     // Auto-upload to Drive under customer folder
     if (drive.isDriveConfigured() && rows[0].account_id) {
-      const customerName = await getCustomerName(rows[0].account_id);
+      const customerName = await getCustomerName(rows[0].account_id, companyOf(req));
       if (customerName) {
         try {
           const driveRes = await drive.uploadJsonRecord({
@@ -233,7 +238,7 @@ router.post('/technical-proposals/:id/revise', requirePermission('crm', 'edit'),
           original_id, scope_of_work, technical_specs, deliverables, exclusions, assumptions,
           validity_days, prepared_by, notes)
        VALUES ($1,$2,$3,$4,$5,'draft',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-      [o.company_id, o.opportunity_id, o.account_id, propNo, o.title,
+      [o.company_id, o.opportunity_id, o.account_id, propNo, o.opportunity_name,
        (o.revision||1)+1, o.original_id||o.id, o.scope_of_work,
        o.technical_specs, o.deliverables, o.exclusions, o.assumptions,
        o.validity_days, uid(req), req.body.notes||o.notes]
@@ -265,8 +270,8 @@ router.get('/commercial-proposals', requirePermission('crm', 'view'), async (req
     const { opportunity_id, status, search } = req.query;
     let q = `
       SELECT cp.*, e.name AS prepared_by_name,
-             COALESCE(a.name, a.account_name) AS customer_name,
-             o.title AS opportunity_title, tp.proposal_number AS tech_proposal_number
+             a.name AS customer_name,
+             o.opportunity_name AS opportunity_title, tp.proposal_number AS tech_proposal_number
       FROM commercial_proposals cp
       LEFT JOIN employees          e  ON e.id  = cp.prepared_by
       LEFT JOIN accounts           a  ON a.id  = cp.account_id
@@ -290,8 +295,8 @@ router.get('/commercial-proposals/:id', requirePermission('crm', 'view'), async 
       pool.query(
         `SELECT cp.*, e.name AS prepared_by_name,
                 rv.name AS reviewed_by_name, ap.name AS approved_by_name,
-                COALESCE(a.name, a.account_name) AS customer_name,
-                o.title AS opportunity_title
+                a.name AS customer_name,
+                o.opportunity_name AS opportunity_title
          FROM commercial_proposals cp
          LEFT JOIN employees   e  ON e.id  = cp.prepared_by
          LEFT JOIN employees   rv ON rv.id = cp.reviewed_by
@@ -351,9 +356,10 @@ router.post('/commercial-proposals', requirePermission('crm', 'add'), async (req
     );
     if (opportunity_id) {
       await pool.query(
-        `UPDATE opportunities SET comm_proposal_id=$1, updated_at=NOW() WHERE id=$2`,
-        [rows[0].id, opportunity_id]
-      ).catch(() => {});
+        `UPDATE opportunities SET comm_proposal_id=$1, updated_at=NOW()
+          WHERE id=$2 AND deleted_at IS NULL AND ($3::int IS NULL OR company_id=$3)`,
+        [rows[0].id, opportunity_id, companyOf(req)]
+      );
     }
     logAudit({ userId: uid(req), module: 'crm', recordId: rows[0].id, recordType: 'commercial_proposal', action: 'create', newData: rows[0], req });
     res.status(201).json(rows[0]);
@@ -450,7 +456,7 @@ router.post('/commercial-proposals/:id/submit', requirePermission('crm', 'edit')
 
     // Auto-upload to Drive under customer folder
     if (drive.isDriveConfigured() && rows[0].account_id) {
-      const customerName = await getCustomerName(rows[0].account_id);
+      const customerName = await getCustomerName(rows[0].account_id, companyOf(req));
       if (customerName) {
         try {
           const driveRes = await drive.uploadJsonRecord({
@@ -508,7 +514,7 @@ router.post('/commercial-proposals/:id/revise', requirePermission('crm', 'edit')
           prepared_by, notes)
        VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) RETURNING *`,
       [o.company_id, o.opportunity_id, o.technical_proposal_id, o.account_id,
-       propNo, o.title, (o.revision||1)+1, o.original_id||o.id,
+       propNo, o.opportunity_name, (o.revision||1)+1, o.original_id||o.id,
        o.equipment_cost, o.installation_cost, o.civil_cost, o.commissioning_cost, o.amc_cost,
        o.contingency_pct, o.tax_percentage, o.subtotal, o.tax_amount, o.total_amount,
        o.payment_terms, o.delivery_weeks, o.warranty_months, o.incoterms, o.validity_date,
@@ -529,7 +535,7 @@ router.post('/commercial-proposals/:id/create-quotation', requirePermission('sal
   try {
     await client.query('BEGIN');
     const cpRes = await client.query(
-      `SELECT cp.*, COALESCE(a.name, a.account_name) AS customer_name
+      `SELECT cp.*, a.name AS customer_name
        FROM commercial_proposals cp
        LEFT JOIN accounts a ON a.id = cp.account_id
        WHERE cp.id=$1 AND cp.deleted_at IS NULL AND ($2::int IS NULL OR cp.company_id=$2)`,
@@ -574,9 +580,10 @@ router.post('/commercial-proposals/:id/create-quotation', requirePermission('sal
     // Link opportunity → quotation
     if (cp.opportunity_id) {
       await client.query(
-        `UPDATE opportunities SET quotation_id=$1, updated_at=NOW() WHERE id=$2`,
-        [qRows[0].id, cp.opportunity_id]
-      ).catch(() => {});
+        `UPDATE opportunities SET quotation_id=$1, updated_at=NOW()
+          WHERE id=$2 AND deleted_at IS NULL AND ($3::int IS NULL OR company_id=$3)`,
+        [qRows[0].id, cp.opportunity_id, companyOf(req)]
+      );
     }
 
     await client.query('COMMIT');

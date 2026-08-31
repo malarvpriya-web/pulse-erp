@@ -2,11 +2,11 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
 import { fmtL } from '@/utils/format';
+import { PageHero } from '@/components/pulse-ui';
 import {
-  TrendingUp, Lightbulb, ShoppingCart, Wrench, Factory,
-  CheckSquare, Truck, MapPin, Headphones, Shield,
-  ChevronRight, AlertTriangle, Clock, CheckCircle,
-  ArrowRight, RefreshCw, BarChart2, Activity,
+  TrendingUp, Lightbulb, ShoppingCart, Wrench, Factory, CheckSquare,
+  Truck, MapPin, Headphones, Shield, ChevronRight, AlertTriangle,
+  Clock, CheckCircle, ArrowRight, RefreshCw, BarChart2, Activity,
 } from 'lucide-react';
 
 const P = '#6B3FDB';
@@ -56,7 +56,7 @@ const STAGES = [
     id: 'production',
     label: 'Production',
     icon: Factory,
-    color: '#f59e0b',
+    color: '#7c5cf0',
     navPage: 'ProductionOrders',
     desc: 'Manufacturing in progress on shop floor',
     kpiLabel: 'In Production',
@@ -74,7 +74,7 @@ const STAGES = [
     id: 'dispatch',
     label: 'Dispatch',
     icon: Truck,
-    color: '#d97706',
+    color: '#6d28d9',
     navPage: 'LogisticsShipping',
     desc: 'Goods packed and ready for dispatch',
     kpiLabel: 'Ready to Dispatch',
@@ -234,45 +234,24 @@ export default function WorkflowVisualizer({ setPage }) {
     <div style={{ minHeight: '100vh', background: '#fafbff', fontFamily: 'inherit' }}>
 
       {/* Header */}
-      <div style={{ background: '#fff', borderBottom: '1px solid #f0f0f4', padding: '20px 32px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{
-              width: 40, height: 40, borderRadius: 10, background: PL,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <Activity size={20} color={P} />
-            </div>
-            <div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: '#1f2937' }}>
-                Business Workflow Board
-              </div>
-              <div style={{ fontSize: 12, color: '#6b7280' }}>
-                End-to-end visibility — Lead to Service · Last updated {lastRefresh.toLocaleTimeString()}
-              </div>
-            </div>
-          </div>
+      {/* Header */}
+      <PageHero
+        icon={Activity}
+        eyebrow="Operations"
+        title="Business Workflow Board"
+        subtitle={`End-to-end visibility — Lead to Service · Last updated ${lastRefresh.toLocaleTimeString()}`}
+        actions={
+          <>
+            <button className="plh-cta plh-cta--ghost" onClick={() => goto('LifecycleTracker')}>
+              Lifecycle Tracker
+            </button>
+            <button className="plh-cta" onClick={load}>
+              <RefreshCw size={14} /> Refresh
+            </button>
+          </>
+        }
+      />
 
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={load} style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '8px 14px', borderRadius: 8,
-              border: '1px solid #e5e7eb', background: '#fff',
-              fontSize: 12, color: '#6b7280', cursor: 'pointer',
-            }}>
-              <RefreshCw size={13} className={loading ? 'spin' : ''} />
-              Refresh
-            </button>
-            <button onClick={() => goto('LifecycleTracker')} style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '8px 14px', borderRadius: 8, border: 'none',
-              background: P, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-            }}>
-              <BarChart2 size={13} /> Order Tracker
-            </button>
-          </div>
-        </div>
-      </div>
 
       <div style={{ padding: '24px 32px' }}>
 
@@ -283,7 +262,7 @@ export default function WorkflowVisualizer({ setPage }) {
           {[
             { label: 'Active Work Items', value: totals.active, icon: Activity, color: P, bg: PL },
             { label: 'Pending Alerts', value: totals.alerts, icon: AlertTriangle, color: '#ef4444', bg: '#fef2f2' },
-            { label: 'Overdue Items', value: totals.overdue, icon: Clock, color: '#d97706', bg: '#fffbeb' },
+            { label: 'Overdue Items', value: totals.overdue, icon: Clock, color: '#6d28d9', bg: '#f5f3ff' },
             { label: 'Pipeline Value', value: fmtL(totals.pipeline), icon: BarChart2, color: '#10b981', bg: '#ecfdf5' },
           ].map(kpi => {
             const KIcon = kpi.icon;
@@ -390,7 +369,7 @@ export default function WorkflowVisualizer({ setPage }) {
                 type="alerts"
                 count={selectedData?.alerts ?? 0}
                 label={`action items pending`}
-                color="#d97706" bg="#fffbeb"
+                color="#6d28d9" bg="#f5f3ff"
               />
               {!selectedData?.overdue && !selectedData?.alerts && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8,
@@ -421,8 +400,8 @@ export default function WorkflowVisualizer({ setPage }) {
                     style={{
                       display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer',
                       padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
-                      background: hasIssue ? '#fef3c7' : (d?.count || 0) > 0 ? stage.color + '14' : '#f3f4f6',
-                      color: hasIssue ? '#92400e' : (d?.count || 0) > 0 ? stage.color : '#9ca3af',
+                      background: hasIssue ? '#ede9fe' : (d?.count || 0) > 0 ? stage.color + '14' : '#f3f4f6',
+                      color: hasIssue ? '#5b21b6' : (d?.count || 0) > 0 ? stage.color : '#9ca3af',
                       border: selected === stage.id ? `2px solid ${stage.color}` : '2px solid transparent',
                     }}
                   >

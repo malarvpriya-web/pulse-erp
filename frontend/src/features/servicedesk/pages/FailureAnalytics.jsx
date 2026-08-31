@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, AlertTriangle, MapPin, Package, Cpu, Zap } from 'lucide-react';
+import { Plus, X, AlertTriangle, MapPin, Package, Cpu, Zap, BarChart3 } from 'lucide-react';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 
 const CARD = { background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:'20px', marginBottom:16 };
 const BTN  = (bg='#6B3FDB') => ({ background:bg, color:'#fff', border:'none', borderRadius:8, padding:'8px 16px', fontSize:13, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6 });
@@ -28,12 +30,29 @@ export default function FailureAnalytics() {
   const [loading, setLoading] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [options, setOptions] = useState({ zones: [], products: [] });
+
+  // Every panel here is failure activity, so all of it follows the period.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'last12m',
+    dimensions: { zone: 'all', product_name: 'all' },
+    storageKey: 'failure-analytics',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/failure-analytics/dashboard/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [dash, records, zone, product, comp, fault, eng] = await Promise.allSettled([
-        api.get('/failure-analytics/dashboard'),
+        api.get('/failure-analytics/dashboard', { params }),
         api.get('/failure-analytics'),
         api.get('/failure-analytics/analysis/by-zone'),
         api.get('/failure-analytics/analysis/by-product'),
@@ -49,9 +68,14 @@ export default function FailureAnalytics() {
       if (fault.status === 'fulfilled') setByFault(fault.value.data);
       if (eng.status === 'fulfilled') setByEngineer(eng.value.data);
     } finally { setLoading(false); }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const filterDimensions = [
+    { key: 'zone',         label: 'Zone',    allLabel: 'All Zones',    options: options.zones.map(v => ({ value: v, label: v })) },
+    { key: 'product_name', label: 'Product', allLabel: 'All Products', options: options.products.map(v => ({ value: v, label: v })) },
+  ];
 
   const logFailure = async () => {
     if (!form.product_name) return showToast('Product name required', 'error');
@@ -84,21 +108,24 @@ export default function FailureAnalytics() {
   const maxFault = Math.max(...byFault.map(f => parseInt(f.frequency)), 1);
 
   return (
-    <div style={{ padding:'24px' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#111', margin:0 }}>Failure Analytics Engine</h1>
-          <p style={{ fontSize:13, color:'#6b7280', margin:'4px 0 0' }}>Track failures by zone, product, component & engineer — product improvement intelligence</p>
-        </div>
-        <button onClick={() => setShowLog(true)} style={BTN('#dc2626')}><Plus size={14}/>Log Failure</button>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Service Desk"
+        title="Failure Analytics Engine"
+        subtitle="Track failures by zone, product, component & engineer — product improvement intelligence"
+        actions={<button className="plh-cta" onClick={() => setShowLog(true)}><Plus size={14}/>Log Failure</button>}
+      />
+    }>
+
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} />
 
       {/* KPI Cards */}
       {dashboard && (
         <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:12, marginBottom:20 }}>
           {[
             { label:'Total Failures', value:parseInt(kpis.total||0), color:'#dc2626' },
-            { label:'Repeat Failures', value:parseInt(kpis.repeat_failures||0), color:'#d97706' },
+            { label:'Repeat Failures', value:parseInt(kpis.repeat_failures||0), color:'#6d28d9' },
             { label:'Avg Resolution', value:kpis.avg_resolution_hrs ? `${parseFloat(kpis.avg_resolution_hrs).toFixed(1)}h` : '—', color:'#6B3FDB' },
             { label:'Zones Affected', value:parseInt(kpis.zones_affected||0), color:'#059669' },
             { label:'Products Affected', value:parseInt(kpis.products_affected||0), color:'#374151' },
@@ -134,10 +161,10 @@ export default function FailureAnalytics() {
           </div>
           <div style={CARD}>
             <h3 style={{ fontSize:14, fontWeight:700, margin:'0 0 16px', display:'flex', alignItems:'center', gap:8 }}>
-              <Package size={15} color="#d97706"/>Failures by Product
+              <Package size={15} color="#6d28d9"/>Failures by Product
             </h3>
             {dashboard.by_product?.map(p => (
-              <HBar key={p.product_name} label={p.product_name} value={parseInt(p.cnt)} max={Math.max(...(dashboard.by_product||[]).map(x=>parseInt(x.cnt)),1)} color="#d97706" />
+              <HBar key={p.product_name} label={p.product_name} value={parseInt(p.cnt)} max={Math.max(...(dashboard.by_product||[]).map(x=>parseInt(x.cnt)),1)} color="#6d28d9" />
             ))}
             {!dashboard.by_product?.length && <div style={{ color:'#9ca3af', fontSize:13 }}>No product data yet</div>}
           </div>
@@ -188,7 +215,7 @@ export default function FailureAnalytics() {
                       <span style={{ fontWeight:700, color:'#dc2626' }}>{z.total_failures}</span>
                     </div>
                   </td>
-                  <td style={{ padding:'10px 12px', textAlign:'center', color:'#d97706', fontWeight:700 }}>{z.repeat_failures}</td>
+                  <td style={{ padding:'10px 12px', textAlign:'center', color:'#6d28d9', fontWeight:700 }}>{z.repeat_failures}</td>
                   <td style={{ padding:'10px 12px', textAlign:'center', color:'#374151' }}>{z.avg_resolution_hrs ? `${parseFloat(z.avg_resolution_hrs).toFixed(1)}h` : '—'}</td>
                   <td style={{ padding:'10px 12px', color:'#6b7280', fontSize:12 }}>{(z.products_affected||[]).join(', ') || '—'}</td>
                 </tr>
@@ -209,7 +236,7 @@ export default function FailureAnalytics() {
                 <tr key={i} style={{ borderTop:'1px solid #f3f4f6' }}>
                   <td style={{ padding:'10px 12px', fontWeight:700, color:'#111' }}>{p.product_name}</td>
                   <td style={{ padding:'10px 12px', color:'#6b7280', fontFamily:'monospace', fontSize:12 }}>{p.model_number || '—'}</td>
-                  <td style={{ padding:'10px 12px', textAlign:'center', fontWeight:700, color:'#d97706' }}>{p.total_failures}</td>
+                  <td style={{ padding:'10px 12px', textAlign:'center', fontWeight:700, color:'#6d28d9' }}>{p.total_failures}</td>
                   <td style={{ padding:'10px 12px', textAlign:'center', color:'#dc2626', fontWeight:600 }}>{p.repeat_failures}</td>
                   <td style={{ padding:'10px 12px', textAlign:'center', color:'#374151' }}>{p.avg_resolution_hrs ? `${parseFloat(p.avg_resolution_hrs).toFixed(1)}h` : '—'}</td>
                   <td style={{ padding:'10px 12px', color:'#6b7280', fontSize:12 }}>{(p.fault_codes||[]).slice(0,3).join(', ')}{(p.fault_codes||[]).length>3?' …':''}</td>
@@ -255,7 +282,7 @@ export default function FailureAnalytics() {
                   <td style={{ padding:'10px 12px', fontWeight:700, color:'#6B3FDB', fontFamily:'monospace' }}>{f.fault_code}</td>
                   <td style={{ padding:'10px 12px', color:'#374151' }}>{f.fault_description || '—'}</td>
                   <td style={{ padding:'10px 12px', textAlign:'center', fontWeight:700, color:'#dc2626' }}>{f.frequency}</td>
-                  <td style={{ padding:'10px 12px', textAlign:'center', color:'#d97706', fontWeight:600 }}>{f.repeat_count}</td>
+                  <td style={{ padding:'10px 12px', textAlign:'center', color:'#6d28d9', fontWeight:600 }}>{f.repeat_count}</td>
                   <td style={{ padding:'10px 12px', textAlign:'center', color:'#374151' }}>{f.avg_resolution_hrs ? `${parseFloat(f.avg_resolution_hrs).toFixed(1)}h` : '—'}</td>
                   <td style={{ padding:'10px 12px', color:'#6b7280', fontSize:12 }}>{(f.root_cause_categories||[]).join(', ') || '—'}</td>
                 </tr>
@@ -279,12 +306,12 @@ export default function FailureAnalytics() {
                   <td style={{ padding:'10px 12px', fontWeight:700, color:'#111' }}>{e.engineer_name}</td>
                   <td style={{ padding:'10px 12px', textAlign:'center', color:'#6B3FDB', fontWeight:700 }}>{e.total_resolved}</td>
                   <td style={{ padding:'10px 12px', textAlign:'center' }}>
-                    <span style={{ background:parseFloat(e.avg_resolution_hrs||99)<=24?'#d1fae5':parseFloat(e.avg_resolution_hrs||99)<=48?'#fef3c7':'#fee2e2', color:parseFloat(e.avg_resolution_hrs||99)<=24?'#065f46':parseFloat(e.avg_resolution_hrs||99)<=48?'#92400e':'#991b1b', padding:'2px 8px', borderRadius:9999, fontSize:12, fontWeight:700 }}>
+                    <span style={{ background:parseFloat(e.avg_resolution_hrs||99)<=24?'#d1fae5':parseFloat(e.avg_resolution_hrs||99)<=48?'#ede9fe':'#fee2e2', color:parseFloat(e.avg_resolution_hrs||99)<=24?'#065f46':parseFloat(e.avg_resolution_hrs||99)<=48?'#5b21b6':'#991b1b', padding:'2px 8px', borderRadius:9999, fontSize:12, fontWeight:700 }}>
                       {e.avg_resolution_hrs ? `${parseFloat(e.avg_resolution_hrs).toFixed(1)}h` : '—'}
                     </span>
                   </td>
                   <td style={{ padding:'10px 12px', textAlign:'center', color:'#059669', fontWeight:600 }}>{e.best_resolution_hrs ? `${parseFloat(e.best_resolution_hrs).toFixed(1)}h` : '—'}</td>
-                  <td style={{ padding:'10px 12px', textAlign:'center', color:'#d97706', fontWeight:600 }}>{e.repeat_failures_handled}</td>
+                  <td style={{ padding:'10px 12px', textAlign:'center', color:'#6d28d9', fontWeight:600 }}>{e.repeat_failures_handled}</td>
                 </tr>
               ))}
               {!byEngineer.length && <tr><td colSpan={6} style={{ textAlign:'center', padding:40, color:'#9ca3af' }}>No engineer data yet</td></tr>}
@@ -367,6 +394,6 @@ export default function FailureAnalytics() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

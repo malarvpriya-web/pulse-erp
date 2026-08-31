@@ -13,6 +13,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
 import './PerformanceReviews.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function EmptyState({ icon: Icon, title, sub, action }) {
   return (
@@ -34,7 +35,7 @@ function EmptyState({ icon: Icon, title, sub, action }) {
 const RATING_LABELS = { 1: 'Poor', 2: 'Below Average', 3: 'Meets Expectations', 4: 'Exceeds Expectations', 5: 'Outstanding' };
 const STATUS_META = {
   on_track:  { label: 'On Track',  color: '#22c55e', bg: '#f0fdf4' },
-  at_risk:   { label: 'At Risk',   color: '#f59e0b', bg: '#fffbeb' },
+  at_risk:   { label: 'At Risk',   color: '#7c5cf0', bg: '#f5f3ff' },
   completed: { label: 'Completed', color: '#6366f1', bg: '#eef2ff' },
   overdue:   { label: 'Overdue',   color: '#ef4444', bg: '#fef2f2' },
 };
@@ -304,7 +305,7 @@ export default function PerformanceReviews() {
   };
 
   const statusConfig = {
-    self_review_pending: { label: 'Self Review Pending', icon: <Clock size={14}/>, color: '#f59e0b' },
+    self_review_pending: { label: 'Self Review Pending', icon: <Clock size={14}/>, color: '#7c5cf0' },
     pending_manager_review: { label: 'Awaiting Manager Review', icon: <Clock size={14}/>, color: '#6366f1' },
     completed: { label: 'Review Completed', icon: <CheckCircle size={14}/>, color: '#22c55e' },
     in_progress: { label: 'In Progress', icon: <RefreshCw size={14}/>, color: '#3b82f6' },
@@ -340,7 +341,29 @@ export default function PerformanceReviews() {
   }
 
   return (
-    <div className="prf-page">
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Performance"
+        title="Performance Reviews"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={loadData} disabled={loading}>
+            <RefreshCw size={15} className={loading ? 'prf-spin' : ''}/>
+            Refresh
+          </button>
+          {review.status === 'self_review_pending' && (
+            <button className="plh-cta plh-cta--ghost" onClick={() => setShowDrawer(true)}>
+              <FileText size={15}/> Start Self Assessment
+            </button>
+          )}
+          {(review.status === 'self_submitted' || review.status === 'pending_manager_review') && (
+            <button className="plh-cta" onClick={() => setShowManagerForm(true)}>
+              <Star size={15}/> Submit Manager Review
+            </button>
+          )}
+        </>}
+      />
+    }>
       <Toast toast={toast} onClose={() => setToast(null)}/>
       {showDrawer && (
         <SelfAssessmentDrawer
@@ -351,28 +374,7 @@ export default function PerformanceReviews() {
       )}
 
       {/* Header */}
-      <div className="prf-header">
-        <div>
-          <h1 className="prf-title">Performance Reviews</h1>
-          <p className="prf-subtitle">{review.cycle} · {review.period}</p>
-        </div>
-        <div className="prf-header-actions">
-          <button className="prf-btn-ghost" onClick={loadData} disabled={loading}>
-            <RefreshCw size={15} className={loading ? 'prf-spin' : ''}/>
-            Refresh
-          </button>
-          {review.status === 'self_review_pending' && (
-            <button className="prf-btn-primary" onClick={() => setShowDrawer(true)}>
-              <FileText size={15}/> Start Self Assessment
-            </button>
-          )}
-          {(review.status === 'self_submitted' || review.status === 'pending_manager_review') && (
-            <button className="prf-btn-primary" onClick={() => setShowManagerForm(true)}>
-              <Star size={15}/> Submit Manager Review
-            </button>
-          )}
-        </div>
-      </div>
+
 
       {/* Status Banner */}
       <div className="prf-status-banner" style={{ borderColor: sc.color }}>
@@ -394,7 +396,7 @@ export default function PerformanceReviews() {
         {[
           { icon: <Target size={20} color="#6366f1"/>, label: 'Goals Set',       val: goals.length,      sub: `${completedGoals} completed` },
           { icon: <TrendingUp size={20} color="#22c55e"/>, label: 'Avg Progress', val: `${avgProgress}%`,  sub: `${atRiskGoals} at risk` },
-          { icon: <Star size={20} color="#f59e0b"/>,  label: 'Self Rating',      val: review.self_rating ? `${review.self_rating} / 5` : '—', sub: review.self_rating ? RATING_LABELS[review.self_rating] : 'Not submitted' },
+          { icon: <Star size={20} color="#7c5cf0"/>,  label: 'Self Rating',      val: review.self_rating ? `${review.self_rating} / 5` : '—', sub: review.self_rating ? RATING_LABELS[review.self_rating] : 'Not submitted' },
           { icon: <Award size={20} color="#ec4899"/>, label: 'Last Rating',      val: history[0]?.final_rating ? `${history[0].final_rating} / 5` : '—', sub: history[0]?.badge || '—' },
         ].map(k => (
           <div key={k.label} className="prf-kpi-card">
@@ -460,7 +462,7 @@ export default function PerformanceReviews() {
             {[
               { label: 'Self Rating',    val: review.self_rating,    color: '#6366f1' },
               { label: 'Manager Rating', val: review.manager_rating, color: '#22c55e' },
-              { label: 'Final Rating',   val: review.final_rating,   color: '#f59e0b' },
+              { label: 'Final Rating',   val: review.final_rating,   color: '#7c5cf0' },
             ].map(r => (
               <div key={r.label} className="prf-rating-row">
                 <span className="prf-rating-label">{r.label}</span>
@@ -674,6 +676,6 @@ export default function PerformanceReviews() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

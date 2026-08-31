@@ -534,7 +534,7 @@ router.get('/offboarding', verifyToken, requirePermission('hr', 'view'), async (
         WHERE employee_id = e.id AND status NOT IN ('rejected','cancelled')
         ORDER BY created_at DESC LIMIT 1
       ) er ON true
-      WHERE LOWER(e.status) IN ('resigned', 'terminated', 'notice_period', 'notice period')
+      WHERE LOWER(e.status) IN ('resigned', 'terminated', 'notice', 'notice_period', 'notice period')
         ${cidClause}
       ORDER BY COALESCE(er.last_working_date, e.exit_date) DESC NULLS LAST
       LIMIT 100
@@ -900,22 +900,30 @@ router.post('/offboarding/:employeeId/complete', verifyToken, requirePermission(
       return res.status(404).json({ error: 'Employee not found' });
     }
 
-    // Close any open exit request and capture last_working_date
+    // Close any open exit request and capture last_working_date + separation_type
     const { rows: [er] } = await client.query(
       `UPDATE exit_requests
           SET status = 'closed', updated_at = NOW()
         WHERE employee_id = $1 AND status NOT IN ('rejected','cancelled','closed','paid')
-        RETURNING last_working_date`,
+        RETURNING last_working_date, separation_type`,
       [employeeId]
     );
 
-    // Move employee to 'left' and stamp exit_date
+    // Terminal status must match how they actually left — this previously
+    // hardcoded 'left' (retirement's terminal status) for every separation
+    // type, so a completed termination or resignation showed up as a
+    // retiree. Same mapping exitStatusSync.cron.js uses for its own
+    // (independent, date-driven) finalization of the same transition.
+    const terminalStatus = er?.separation_type === 'termination' ? 'terminated'
+                          : er?.separation_type === 'retirement'  ? 'left'
+                          : 'resigned';
+
     await client.query(
       `UPDATE employees
-          SET status    = 'left',
-              exit_date = COALESCE(exit_date, $1, CURRENT_DATE)
-        WHERE id = $2`,
-      [er?.last_working_date || null, employeeId]
+          SET status    = $1,
+              exit_date = COALESCE(exit_date, $2, CURRENT_DATE)
+        WHERE id = $3`,
+      [terminalStatus, er?.last_working_date || null, employeeId]
     );
 
     await client.query('COMMIT');

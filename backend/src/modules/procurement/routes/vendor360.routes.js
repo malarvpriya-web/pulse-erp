@@ -20,5 +20,7 @@ router.get('/:vendorId/scorecard',     ctrl.getScorecard);
 router.post('/:vendorId/scorecard',    ctrl.saveScorecard);
 router.get('/:vendorId/risk',          ctrl.getRisk);
 router.get('/:vendorId/documents',     ctrl.getDocuments);
+// Line-level "what we buy from this vendor, when, at what price"
+router.get('/:vendorId/purchase-lines', ctrl.getPurchaseLines);
 
 export default router;

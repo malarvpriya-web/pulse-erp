@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, ShoppingCart } from 'lucide-react';
+import { AlertTriangle, ShoppingCart, Package } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './AdvancedInventory.css';
 import { useToast } from '@/context/ToastContext';
-import { PageLayout, PageHeader, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 const StockAlertsAndSuggestions = ({ setPage }) => {
   const toast = useToast();
@@ -99,17 +99,22 @@ const StockAlertsAndSuggestions = ({ setPage }) => {
   const getPriorityColor = (priority) => {
     const colors = {
       high: '#fee2e2',
-      medium: '#fef3c7',
+      medium: '#ede9fe',
       low: '#dbeafe'
     };
     return colors[priority] || '#f3f4f6';
   };
 
   return (
-    <PageLayout>
-      <PageHeader
-        filters={
-          <div style={{ display: 'flex', gap: 6 }}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Stock Alerts And Suggestions"
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display: 'flex', gap: 6 }}>
             <button
               type="button"
               className={`pl-icon-btn${activeTab === 'alerts' ? ' pl-active' : ''}`}
@@ -124,9 +129,11 @@ const StockAlertsAndSuggestions = ({ setPage }) => {
             >
               Purchase Suggestions ({suggestions.length})
             </button>
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
 
       {activeTab === 'alerts' && (
         <>
@@ -281,7 +288,7 @@ const StockAlertsAndSuggestions = ({ setPage }) => {
           )}
         </>
       )}
-    </PageLayout>
+    </PageShell>
   );
 };
 

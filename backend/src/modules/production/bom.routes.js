@@ -488,12 +488,16 @@ router.post('/mrp/run', requirePermission('bom', 'view'), async (req, res) => {
       if (shortage > 0) {
         try {
           const { rows: [pr] } = await pool.query(
+            // qty_requested/raised_by never existed (the columns are quantity /
+            // requested_by_employee_id) and raised_by was being handed the string
+            // 'MRP System' for an employee FK. A system-generated request records
+            // no employee and says so in notes.
             `INSERT INTO purchase_requests
-               (company_id, item_name, item_id, qty_requested, unit, estimated_cost, status, raised_by, notes)
-             VALUES ($1,$2,$3,$4,$5,$6,'draft','MRP System',$7) RETURNING id`,
+               (company_id, item_name, item_id, quantity, unit, estimated_cost, status, requested_by_employee_id, notes)
+             VALUES ($1,$2,$3,$4,$5,$6,'draft',NULL,$7) RETURNING id`,
             [cid, comp.component, comp.component_id, suggestedPOQty, comp.unit,
              suggestedPOQty * comp.unit_cost,
-             `MRP run: production qty ${quantity}`]
+             `Auto-raised by MRP System — production qty ${quantity}`]
           );
           createdPRs.push({ pr_id: pr.id, component: comp.component, qty: suggestedPOQty });
         } catch (prErr) {

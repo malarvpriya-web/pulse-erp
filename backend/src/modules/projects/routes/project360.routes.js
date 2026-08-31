@@ -27,13 +27,16 @@ function calcHealthScores(data) {
   scheduleScore = Math.max(0, Math.round(scheduleScore));
 
   // Budget Score (0-100)
+  // projects has no contract_value/completion_percentage columns — real names are
+  // budget_amount/progress_percentage (confirmed live; every reference here and below
+  // silently read undefined→0, so budget scoring/alerts always treated revenue as 0).
   let budgetScore = 100;
-  const revenue = parseFloat(proj.contract_value || 0);
+  const revenue = parseFloat(proj.budget_amount || 0);
   const cs = costSummary || {};
   const totalCost = parseFloat(cs.total_cost || 0);
   if (revenue > 0 && totalCost > 0) {
     const pctUsed = totalCost / revenue;
-    const completion = parseFloat(proj.completion_percentage || 0) / 100;
+    const completion = parseFloat(proj.progress_percentage || 0) / 100;
     if (pctUsed > 0.9) budgetScore -= 40;
     else if (pctUsed > 0.75) budgetScore -= 20;
     if (completion > 0 && pctUsed / completion > 1.2) budgetScore -= 20;
@@ -103,7 +106,7 @@ function calcRisks(data) {
   const overdueMiles = milestones.filter(m => m.status !== 'completed' && m.due_date && new Date(m.due_date) < now);
   if (overdueMiles.length > 0) risks.push({ category: 'Schedule', level: overdueMiles.length > 2 ? 'Critical' : 'High', description: `${overdueMiles.length} milestone(s) overdue` });
 
-  const revenue = parseFloat(proj.contract_value || 0);
+  const revenue = parseFloat(proj.budget_amount || 0);
   const totalCost = parseFloat(data.costSummary?.total_cost || 0);
   if (revenue > 0 && totalCost > revenue * 0.85) risks.push({ category: 'Cost', level: totalCost > revenue ? 'Critical' : 'High', description: `Cost at ${Math.round(totalCost/revenue*100)}% of budget` });
 
@@ -121,7 +124,7 @@ function calcRisks(data) {
     risks.push({ category: 'Commissioning', level: 'High', description: 'Commissioning not started, project end approaching' });
   }
 
-  const unpaidInvoices = invoices.filter(i => i.status !== 'Paid' && i.due_date && new Date(i.due_date) < now);
+  const unpaidInvoices = invoices.filter(i => (i.status||'').toLowerCase() !== 'paid' && i.due_date && new Date(i.due_date) < now);
   if (unpaidInvoices.length > 0) risks.push({ category: 'Customer', level: unpaidInvoices.length > 2 ? 'Critical' : 'Medium', description: `${unpaidInvoices.length} overdue invoice(s)` });
 
   return risks.length ? risks : [{ category: 'Overall', level: 'Low', description: 'No significant risks identified' }];
@@ -190,7 +193,7 @@ function generateAIAnswer(question, projectData) {
     return `📋 ${overdueMiles.length} overdue milestone(s) found:\n${overdueMiles.map(m => `• ${m.name}`).join('\n')}`;
   }
   if (q.includes('finish') || q.includes('complete') || q.includes('end')) {
-    const pct = parseFloat(proj.completion_percentage || 0);
+    const pct = parseFloat(proj.progress_percentage || 0);
     const endDate = proj.end_date ? new Date(proj.end_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'Not set';
     return `📅 Planned completion: ${endDate}\nCurrent progress: ${pct}%\n${pct >= 90 ? '✅ Near completion' : pct >= 50 ? '🔄 In progress' : '⚠️ Early stage'}`;
   }
@@ -205,8 +208,8 @@ function generateAIAnswer(question, projectData) {
   if (q.includes('summary') || q.includes('executive')) {
     const revenue = parseFloat(finance?.revenue || 0);
     const cost = parseFloat(finance?.total_cost || 0);
-    const pct = parseFloat(proj.completion_percentage || 0);
-    return `📊 EXECUTIVE SUMMARY — ${proj.name}\n\nProject: ${proj.project_number} | Customer: ${proj.customer_name || '—'}\nStatus: ${proj.status?.toUpperCase()} | Progress: ${pct}%\n\nFinancials:\n• Revenue: ₹${(revenue/100000).toFixed(2)}L\n• Cost: ₹${(cost/100000).toFixed(2)}L\n• Profit: ₹${((revenue-cost)/100000).toFixed(2)}L\n• Margin: ${margin.toFixed(1)}%\n\nKey Alerts:\n${overdueMiles.length > 0 ? `• ${overdueMiles.length} overdue milestone(s)\n` : ''}${pendingPOs.length > 0 ? `• ${pendingPOs.length} pending PO(s)\n` : ''}${openNcrs.length > 0 ? `• ${openNcrs.length} open NCR(s)\n` : ''}${openTickets.length > 0 ? `• ${openTickets.length} open service ticket(s)\n` : ''}${overdueMiles.length === 0 && pendingPOs.length === 0 && openNcrs.length === 0 ? '• No critical alerts\n' : ''}`;
+    const pct = parseFloat(proj.progress_percentage || 0);
+    return `📊 EXECUTIVE SUMMARY — ${proj.project_name}\n\nProject: ${proj.project_number} | Customer: ${proj.customer_name || '—'}\nStatus: ${proj.status?.toUpperCase()} | Progress: ${pct}%\n\nFinancials:\n• Revenue: ₹${(revenue/100000).toFixed(2)}L\n• Cost: ₹${(cost/100000).toFixed(2)}L\n• Profit: ₹${((revenue-cost)/100000).toFixed(2)}L\n• Margin: ${margin.toFixed(1)}%\n\nKey Alerts:\n${overdueMiles.length > 0 ? `• ${overdueMiles.length} overdue milestone(s)\n` : ''}${pendingPOs.length > 0 ? `• ${pendingPOs.length} pending PO(s)\n` : ''}${openNcrs.length > 0 ? `• ${openNcrs.length} open NCR(s)\n` : ''}${openTickets.length > 0 ? `• ${openTickets.length} open service ticket(s)\n` : ''}${overdueMiles.length === 0 && pendingPOs.length === 0 && openNcrs.length === 0 ? '• No critical alerts\n' : ''}`;
   }
   return `I can help you with: delay analysis, material blocking, supplier risk, margin/profit, overdue tasks, completion date, quality/NCR, service tickets, or generate an executive summary. Please ask a specific question.`;
 }
@@ -226,35 +229,136 @@ router.get('/:id', async (req, res) => {
       travelRequestsR, tasksR, ncrsR, capasR, rmIssuesR, inspectionsR,
     ] = await Promise.allSettled([
       pool.query(`SELECT * FROM projects WHERE id=$1`, [pid]),
-      pool.query(`SELECT * FROM opportunities WHERE project_id=$1${cc} LIMIT 1`, [pid]),
-      pool.query(`SELECT id, quotation_number, created_at, total_amount, status, salesperson FROM quotations WHERE project_id=$1${cc} ORDER BY created_at DESC LIMIT 5`, [pid]),
-      pool.query(`SELECT id, order_number, order_date, total_amount, status, customer_name FROM sales_orders WHERE project_id=$1${cc} ORDER BY order_date DESC LIMIT 5`, [pid]),
+      // opportunities/quotations/sales_orders/invoices have no project_id column — but
+      // projects.opportunity_id IS a real, correctly-populated FK on both live
+      // project-creation paths (opportunityConversion.service.js's auto-convert-on-won,
+      // sales.routes.js's sales-order bootstrap) — it's just NULL on this pilot's 3
+      // manually-created projects (thin data, not a broken mechanism). Bridged through it:
+      // opportunities directly, quotations via opportunity_id, sales_orders via
+      // quotations.opportunity_id, invoices via sales_orders further down.
       pool.query(`
-        SELECT b.id, b.bom_number, b.created_at, b.status, b.revision,
-               COUNT(bi.id) AS item_count, COALESCE(SUM(bi.total_cost),0) AS bom_value
-        FROM boms b LEFT JOIN bom_items bi ON bi.bom_id=b.id
-        WHERE b.project_id=$1${cc} GROUP BY b.id ORDER BY b.created_at DESC LIMIT 5
+        SELECT o.* FROM opportunities o
+        WHERE o.id = (SELECT opportunity_id FROM projects WHERE id=$1)${cc.replace(/company_id/g, 'o.company_id')}
+        LIMIT 1
       `, [pid]),
-      pool.query(`SELECT id, document_name, doc_type, version, status, created_at FROM project_documents WHERE project_id=$1 ORDER BY created_at DESC LIMIT 15`, [pid]),
-      pool.query(`SELECT id, pr_number, requested_date, status, total_estimated_cost FROM purchase_requests WHERE project_id=$1${cc} ORDER BY requested_date DESC LIMIT 10`, [pid]),
-      pool.query(`SELECT id, po_number, order_date, total_amount, status, vendor_name FROM purchase_orders WHERE project_id=$1${cc} ORDER BY order_date DESC LIMIT 15`, [pid]),
-      pool.query(`SELECT grn.id, grn.grn_number, grn.received_date, grn.status FROM goods_receipts grn WHERE grn.project_id=$1${cc} ORDER BY grn.received_date DESC LIMIT 10`, [pid]),
-      pool.query(`SELECT id, order_number, planned_start, planned_end, status, quantity FROM production_orders WHERE project_id=$1${cc} ORDER BY planned_start DESC LIMIT 10`, [pid]),
+      // quotations has no salesperson column and no real substitute (only created_by,
+      // a user id, not a name) — dropped rather than fabricated.
       pool.query(`
-        SELECT employee_name, SUM(hours) AS total_hours, SUM(hours*COALESCE(billing_rate,0)) AS cost
-        FROM timesheets WHERE project_id=$1 AND status='Approved'
-        GROUP BY employee_name ORDER BY total_hours DESC LIMIT 10
+        SELECT id, quotation_number, created_at, total_amount, status FROM quotations
+        WHERE opportunity_id = (SELECT opportunity_id FROM projects WHERE id=$1)${cc}
+        ORDER BY created_at DESC LIMIT 5
+      `, [pid]),
+      pool.query(`
+        SELECT so.id, so.order_number, so.order_date, so.total_amount, so.order_status AS status, so.customer_name
+        FROM sales_orders so
+        JOIN quotations q ON q.id = so.quotation_id
+        WHERE q.opportunity_id = (SELECT opportunity_id FROM projects WHERE id=$1)${cc.replace(/company_id/g, 'so.company_id')}
+        ORDER BY so.order_date DESC LIMIT 5
+      `, [pid]),
+      // boms/bom_items don't exist — BOMs are product-scoped (bom_headers.product_id),
+      // not project-scoped, so there's no direct FK either. Real bridge: a project's
+      // production_orders each reference a bom_id.
+      pool.query(`
+        SELECT DISTINCT bh.id, bh.bom_number, bh.created_at, bh.status,
+               (SELECT COUNT(*) FROM bom_lines WHERE bom_id = bh.id) AS item_count,
+               (SELECT COALESCE(SUM(unit_cost * qty), 0) FROM bom_lines WHERE bom_id = bh.id) AS bom_value
+        FROM bom_headers bh
+        JOIN production_orders po ON po.bom_id = bh.id
+        WHERE po.project_id=$1${cc.replace(/company_id/g, 'po.company_id')}
+        ORDER BY bh.created_at DESC LIMIT 5
+      `, [pid]),
+      // project_documents has no doc_type column — real is document_type.
+      pool.query(`SELECT id, document_name, document_type AS doc_type, revision AS version, status, created_at FROM project_documents WHERE project_id=$1 ORDER BY created_at DESC LIMIT 15`, [pid]),
+      // purchase_requests has no project_id column at all, and — unlike opportunities/
+      // quotations/sales_orders/invoices above — no opportunity_id/quotation_id either, so
+      // there's no bridge to build even via projects.opportunity_id. Checked
+      // purchase_request_items too, in case the link lived one level down — it doesn't.
+      // Genuinely unfixable without a new column; left throwing/caught.
+      pool.query(`SELECT id, pr_number, request_date AS requested_date, status, total_amount AS total_estimated_cost FROM purchase_requests WHERE project_id=$1${cc} ORDER BY request_date DESC LIMIT 10`, [pid]),
+      // purchase_orders has no vendor_name column — real vendor identity is supplier_id,
+      // joined to vendors. Every pendingPOs alert/risk line downstream had always shown
+      // "PO0006 — undefined" for the vendor half of that string.
+      pool.query(`
+        SELECT po.id, po.po_number, po.order_date, po.total_amount, po.status, v.vendor_name
+        FROM purchase_orders po
+        LEFT JOIN vendors v ON v.id = po.supplier_id
+        WHERE po.project_id=$1${cc.replace(/company_id/g, 'po.company_id')}
+        ORDER BY po.order_date DESC LIMIT 15
+      `, [pid]),
+      // goods_receipts doesn't exist and goods_receipt_notes has no project_id — bridge
+      // through purchase_orders.project_id (same pattern as vendorHealth.service.js's fix).
+      pool.query(`
+        SELECT grn.id, grn.grn_number, grn.received_date, grn.status
+        FROM goods_receipt_notes grn
+        JOIN purchase_orders po ON po.id = grn.po_id
+        WHERE po.project_id=$1 AND grn.deleted_at IS NULL${companyId ? ` AND po.company_id=${companyId}` : ''}
+        ORDER BY grn.received_date DESC LIMIT 10
+      `, [pid]),
+      // production_orders: real columns are production_order_no/planned_start_date/
+      // planned_end_date/quantity_planned, not order_number/planned_start/planned_end/quantity.
+      pool.query(`SELECT id, production_order_no AS order_number, planned_start_date AS planned_start, planned_end_date AS planned_end, status, quantity_planned AS quantity FROM production_orders WHERE project_id=$1${cc} ORDER BY planned_start_date DESC LIMIT 10`, [pid]),
+      // timesheets has no project_id/employee_name/hours/billing_rate at all — it's a
+      // weekly per-employee approval header, not a project-hours ledger. The real
+      // per-project detail table is timesheet_entries (has project_id, hours_worked,
+      // billable_amount already computed); joined to employees for the name.
+      pool.query(`
+        SELECT e.name AS employee_name, SUM(te.hours_worked) AS total_hours, SUM(COALESCE(te.billable_amount,0)) AS cost
+        FROM timesheet_entries te
+        LEFT JOIN employees e ON e.id = te.employee_id
+        WHERE te.project_id=$1 AND te.status='Approved'${companyId ? ` AND te.company_id=${companyId}` : ''}
+        GROUP BY e.name ORDER BY total_hours DESC LIMIT 10
       `, [pid]),
       pool.query(`SELECT * FROM fat_trackers WHERE project_id=$1 ORDER BY created_at DESC LIMIT 5`, [pid]),
       pool.query(`SELECT * FROM sat_trackers WHERE project_id=$1 ORDER BY created_at DESC LIMIT 5`, [pid]),
-      pool.query(`SELECT id, shipment_number, dispatch_date, status, destination, tracking_number FROM shipments WHERE project_id=$1${cc} ORDER BY dispatch_date DESC LIMIT 10`, [pid]),
-      pool.query(`SELECT id, stage, started_at, completed_at, status, notes FROM lifecycle_events WHERE project_id=$1 ORDER BY started_at DESC LIMIT 10`, [pid]),
-      pool.query(`SELECT id, ticket_number, created_at, status, priority, subject FROM service_tickets WHERE project_id=$1${cc} ORDER BY created_at DESC LIMIT 10`, [pid]),
-      pool.query(`SELECT * FROM project_warranties WHERE project_id=$1 ORDER BY start_date DESC LIMIT 5`, [pid]),
-      pool.query(`SELECT id, contract_number, start_date, end_date, annual_value, status FROM amc_contracts WHERE project_id=$1${cc} ORDER BY start_date DESC LIMIT 5`, [pid]),
-      pool.query(`SELECT id, invoice_number, invoice_date, amount, status, due_date FROM invoices WHERE project_id=$1${cc} ORDER BY invoice_date DESC LIMIT 15`, [pid]),
+      // shipments has no project_id/shipment_number/destination — it's polymorphic
+      // (reference_type/reference_id, only 'purchase_order'/'sales_order' in practice).
+      // Bridges to this project's purchase orders; the sales_order side is left out —
+      // see the opportunities/quotations/sales_orders note above, same missing-link gap.
       pool.query(`
-        SELECT p.contract_value AS revenue,
+        SELECT s.id, s.id AS shipment_number, s.dispatch_date, s.status,
+               s.to_address AS destination, s.tracking_number
+        FROM shipments s
+        WHERE s.reference_type='purchase_order'
+          AND s.reference_id IN (SELECT id FROM purchase_orders WHERE project_id=$1${cc})
+        ORDER BY s.dispatch_date DESC LIMIT 10
+      `, [pid]),
+      // lifecycle_events doesn't exist. lifecycle_instances looked like the obvious real-schema
+      // match (has project_id) but its current_stage check constraint only allows
+      // order/design/procurement/production/testing/dispatch/installation/service/amc — never
+      // 'commissioning', the one literal calcHealthScores/calcRisks below actually check for, so
+      // it can never satisfy that logic even joined correctly. commissioning_workflows is the
+      // real, purpose-built table: direct project_id, real status values including 'completed'
+      // (confirmed in commissioning.routes.js's own status transitions).
+      pool.query(`
+        SELECT id, 'commissioning' AS stage,
+               COALESCE(checkin_time, scheduled_date) AS started_at,
+               completed_date AS completed_at,
+               status, notes
+        FROM commissioning_workflows
+        WHERE project_id=$1${cc}
+        ORDER BY COALESCE(completed_date, scheduled_date) DESC LIMIT 10
+      `, [pid]),
+      // service_tickets doesn't exist — the real table is support_tickets, which (unlike
+      // Customer Health's contact/account bridge) already carries project_id directly; no
+      // column called `subject` either, it's `title`.
+      pool.query(`SELECT id, ticket_number, created_at, status, priority, title AS subject FROM support_tickets WHERE project_id=$1 AND deleted_at IS NULL${cc} ORDER BY created_at DESC LIMIT 10`, [pid]),
+      // project_warranties has no start_date column — real is warranty_start_date.
+      pool.query(`SELECT * FROM project_warranties WHERE project_id=$1 ORDER BY warranty_start_date DESC LIMIT 5`, [pid]),
+      // amc_contracts has no annual_value column — real is contract_value (output key kept as annual_value).
+      pool.query(`SELECT id, contract_number, start_date, end_date, contract_value AS annual_value, status FROM amc_contracts WHERE project_id=$1${cc} ORDER BY start_date DESC LIMIT 5`, [pid]),
+      // invoices has no project_id — only sales_order_id (and no `amount` column, real is
+      // total_amount). Bridged through the same opportunity_id chain as sales_orders above.
+      pool.query(`
+        SELECT i.id, i.invoice_number, i.invoice_date, i.total_amount AS amount, i.status, i.due_date
+        FROM invoices i
+        JOIN sales_orders so ON so.id = i.sales_order_id
+        JOIN quotations q ON q.id = so.quotation_id
+        WHERE q.opportunity_id = (SELECT opportunity_id FROM projects WHERE id=$1)${cc.replace(/company_id/g, 'i.company_id')}
+        ORDER BY i.invoice_date DESC LIMIT 15
+      `, [pid]),
+      // projects has no contract_value column — real is budget_amount (output key kept as revenue).
+      pool.query(`
+        SELECT p.budget_amount AS revenue,
                COALESCE(pcs.material_cost,0) AS material_cost,
                COALESCE(pcs.labour_cost,0) AS labour_cost,
                COALESCE(pcs.travel_cost,0) AS travel_cost,
@@ -267,19 +371,50 @@ router.get('/:id', async (req, res) => {
                COALESCE(pcs.commissioning_cost,0) AS commissioning_cost,
                COALESCE(pcs.service_cost,0) AS service_cost,
                COALESCE(pcs.amc_cost,0) AS amc_cost,
-               COALESCE(pcs.actual_profit,0) AS actual_profit,
-               CASE WHEN p.contract_value > 0 THEN ROUND(COALESCE(pcs.actual_profit,0)/p.contract_value*100,2) ELSE 0 END AS margin_pct
+               COALESCE(pcs.profit,0) AS actual_profit,
+               CASE WHEN p.budget_amount > 0 THEN ROUND(COALESCE(pcs.profit,0)/p.budget_amount*100,2) ELSE 0 END AS margin_pct
         FROM projects p LEFT JOIN project_cost_summary pcs ON pcs.project_id=p.id
         WHERE p.id=$1
       `, [pid]),
       pool.query(`SELECT id, title, severity, status, created_at, is_blocker FROM project_issues WHERE project_id=$1 ORDER BY created_at DESC LIMIT 15`, [pid]),
-      pool.query(`SELECT id, name, due_date, status, amount, billing_milestone, completed_at FROM project_milestones WHERE project_id=$1 ORDER BY due_date ASC`, [pid]),
+      // project_milestones has no name/completed_at — real are title/completed_date.
+      pool.query(`SELECT id, title AS name, due_date, status, amount, billing_milestone, completed_date AS completed_at FROM project_milestones WHERE project_id=$1 ORDER BY due_date ASC`, [pid]),
       pool.query(`SELECT id, request_number, travel_type, from_date, to_date, budget, status, employee_name, destination FROM travel_requests WHERE project_id=$1${cc} ORDER BY from_date DESC LIMIT 10`, [pid]),
-      pool.query(`SELECT id, task_title, status, priority, due_date, assignee_name FROM project_tasks WHERE project_id=$1 ORDER BY due_date ASC LIMIT 20`, [pid]),
+      // project_tasks was always empty (Gantt's dead-end legacy table, fixed in §95/96
+      // to write the same unified `tasks` table Task List/Kanban use) — repointed here
+      // so this widget finally shows real data instead of a permanently empty list.
+      // COALESCE(due_date, end_date) covers tasks created from either surface.
+      pool.query(`
+        SELECT t.id, t.task_title, t.status, COALESCE(t.due_date, t.end_date) AS due_date,
+               CONCAT(e.first_name, ' ', e.last_name) AS assignee_name
+        FROM tasks t LEFT JOIN employees e ON e.id = t.assigned_to
+        WHERE t.project_id=$1 AND t.deleted_at IS NULL
+        ORDER BY COALESCE(t.due_date, t.end_date) ASC NULLS LAST LIMIT 20
+      `, [pid]),
       pool.query(`SELECT id, ncr_number, description, severity, status, created_at, containment_action FROM ncr_reports WHERE project_id=$1 ORDER BY created_at DESC LIMIT 10`, [pid]),
-      pool.query(`SELECT ca.id, ca.action_description, ca.status, ca.due_date, ca.completed_at, nr.ncr_number FROM capa_actions ca JOIN ncr_reports nr ON nr.id=ca.ncr_id WHERE nr.project_id=$1 ORDER BY ca.due_date ASC LIMIT 10`, [pid]),
-      pool.query(`SELECT ri.id, ri.item_name, ri.quantity_issued, ri.issue_date, ri.batch_number FROM rm_issues ri WHERE ri.project_id=$1 ORDER BY ri.issue_date DESC LIMIT 15`, [pid]),
-      pool.query(`SELECT id, report_number, inspection_type, result, created_at FROM inspection_reports WHERE project_id=$1 ORDER BY created_at DESC LIMIT 10`, [pid]),
+      // capa_actions has no action_description — real is description (same drift already
+      // fixed in vendor360.repository.js's identical query).
+      pool.query(`SELECT ca.id, ca.description AS action_description, ca.status, ca.due_date, ca.completion_date AS completed_at, nr.ncr_number FROM capa_actions ca JOIN ncr_reports nr ON nr.id=ca.ncr_id WHERE nr.project_id=$1 ORDER BY ca.due_date ASC LIMIT 10`, [pid]),
+      // rm_issues doesn't exist — real table is material_issue_logs, bridged through
+      // production_orders.project_id (material_issue_logs itself has no project_id).
+      pool.query(`
+        SELECT mil.id, mil.item_name, mil.qty_issued AS quantity_issued, mil.issued_at AS issue_date, NULL AS batch_number
+        FROM material_issue_logs mil
+        JOIN production_orders po ON po.id = mil.production_order_id
+        WHERE po.project_id=$1${cc.replace(/company_id/g, 'po.company_id')}
+        ORDER BY mil.issued_at DESC LIMIT 15
+      `, [pid]),
+      // inspection_reports has no project_id/report_number/inspection_type/result — real
+      // are (bridge via grn_id → goods_receipt_notes → purchase_orders.project_id, same
+      // pattern as the GRN fix above)/id/stage/overall_result.
+      pool.query(`
+        SELECT ir.id, ir.id AS report_number, ir.stage AS inspection_type, ir.overall_result AS result, ir.inspected_at AS created_at
+        FROM inspection_reports ir
+        JOIN goods_receipt_notes grn ON grn.id = ir.grn_id
+        JOIN purchase_orders po ON po.id = grn.po_id
+        WHERE po.project_id=$1${cc.replace(/company_id/g, 'po.company_id')}
+        ORDER BY ir.inspected_at DESC LIMIT 10
+      `, [pid]),
     ]);
 
     const safe = r => r.status === 'fulfilled' ? (r.value?.rows || []) : [];
@@ -305,7 +440,7 @@ router.get('/:id', async (req, res) => {
     const tsRows         = safe(timesheetsR);
     const prodOrderRows  = safe(prodOrdersR);
 
-    const revenue      = parseFloat(cs.revenue || proj.contract_value || 0);
+    const revenue      = parseFloat(cs.revenue || proj.budget_amount || 0);
     const materialCost = parseFloat(cs.material_cost || 0);
     const labourCost   = parseFloat(cs.labour_cost || 0);
     const travelCost   = parseFloat(cs.travel_cost || 0);
@@ -322,8 +457,8 @@ router.get('/:id', async (req, res) => {
     const actualProfit = revenue - totalCost;
     const marginPct    = revenue > 0 ? parseFloat(((actualProfit / revenue) * 100).toFixed(2)) : 0;
 
-    const invoiceRevenue  = invoiceRows.filter(i => i.status === 'Paid').reduce((s, i) => s + parseFloat(i.amount||0), 0);
-    const invoicePending  = invoiceRows.filter(i => i.status !== 'Paid').reduce((s, i) => s + parseFloat(i.amount||0), 0);
+    const invoiceRevenue  = invoiceRows.filter(i => (i.status||'').toLowerCase() === 'paid').reduce((s, i) => s + parseFloat(i.amount||0), 0);
+    const invoicePending  = invoiceRows.filter(i => (i.status||'').toLowerCase() !== 'paid').reduce((s, i) => s + parseFloat(i.amount||0), 0);
     const milestoneRevenue = milestoneRows.filter(m => m.status === 'completed').reduce((s, m) => s + parseFloat(m.amount||0), 0);
 
     const financeData = {
@@ -365,7 +500,7 @@ router.get('/:id', async (req, res) => {
     if (pendingPOs.length > 2) alerts.push({ type: 'Procurement', level: 'high', msg: `${pendingPOs.length} POs pending confirmation`, items: pendingPOs.slice(0,5).map(p => `${p.po_number} — ${p.vendor_name||''}`) });
     if (ncrsRows.filter(n => n.status !== 'closed').length > 0) alerts.push({ type: 'Quality', level: 'high', msg: `${ncrsRows.filter(n => n.status !== 'closed').length} open NCR(s)`, items: ncrsRows.filter(n => n.status !== 'closed').map(n => n.ncr_number || n.description) });
     if (totalCost > revenue * 0.9) alerts.push({ type: 'Budget', level: 'critical', msg: `Cost at ${Math.round(totalCost/revenue*100)}% of revenue`, items: [] });
-    const overdueInv = invoiceRows.filter(i => i.status !== 'Paid' && i.due_date && new Date(i.due_date) < new Date());
+    const overdueInv = invoiceRows.filter(i => (i.status||'').toLowerCase() !== 'paid' && i.due_date && new Date(i.due_date) < new Date());
     if (overdueInv.length > 0) alerts.push({ type: 'Collections', level: 'critical', msg: `${overdueInv.length} overdue invoice(s)`, items: overdueInv.map(i => i.invoice_number) });
     if (serviceTicketRows.filter(t => t.priority === 'Critical' || t.priority === 'High').filter(t => t.status !== 'closed').length > 0) alerts.push({ type: 'Service', level: 'high', msg: 'Critical/High priority service tickets open', items: serviceTicketRows.filter(t => (t.priority === 'Critical' || t.priority === 'High') && t.status !== 'closed').map(t => t.ticket_number || t.subject) });
 
@@ -373,10 +508,13 @@ router.get('/:id', async (req, res) => {
       project: {
         id: proj.id, name: proj.name || proj.project_name, project_number: proj.project_number,
         customer_name: proj.customer_name, status: proj.status, start_date: proj.start_date,
-        end_date: proj.end_date, contract_value: parseFloat(proj.contract_value || 0),
+        end_date: proj.end_date, contract_value: parseFloat(proj.budget_amount || 0),
         description: proj.description, site_name: proj.site_name,
-        completion_pct: proj.completion_percentage || 0,
+        completion_pct: proj.progress_percentage || 0,
         project_manager: proj.project_manager || proj.manager_name,
+        // sales_engineer/application_engineer/site_name/po_number: no such columns on
+        // projects (checked live) and no unambiguous real-schema equivalent found —
+        // left as-is rather than guessing a join; flagged, not fixed.
         sales_engineer: proj.sales_engineer || proj.salesperson,
         application_engineer: proj.application_engineer,
         po_number: proj.po_number,
@@ -453,12 +591,27 @@ router.post('/:id/ask', async (req, res) => {
 
     const [projR, milesR, posR, ncrsR, ticketsR, invoicesR, finR] = await Promise.allSettled([
       pool.query(`SELECT * FROM projects WHERE id=$1`, [pid]),
-      pool.query(`SELECT name, due_date, status FROM project_milestones WHERE project_id=$1`, [pid]),
-      pool.query(`SELECT po_number, vendor_name, status FROM purchase_orders WHERE project_id=$1${cc}`, [pid]),
+      // project_milestones has no name column — real is title.
+      pool.query(`SELECT title AS name, due_date, status FROM project_milestones WHERE project_id=$1`, [pid]),
+      pool.query(`
+        SELECT po.po_number, v.vendor_name, po.status
+        FROM purchase_orders po
+        LEFT JOIN vendors v ON v.id = po.supplier_id
+        WHERE po.project_id=$1${cc.replace(/company_id/g, 'po.company_id')}
+      `, [pid]),
       pool.query(`SELECT ncr_number, description, status FROM ncr_reports WHERE project_id=$1`, [pid]),
-      pool.query(`SELECT ticket_number, subject, priority, status FROM service_tickets WHERE project_id=$1${cc}`, [pid]),
-      pool.query(`SELECT invoice_number, amount, status, due_date FROM invoices WHERE project_id=$1${cc}`, [pid]),
-      pool.query(`SELECT p.contract_value AS revenue, COALESCE(pcs.actual_profit,0) AS actual_profit, CASE WHEN p.contract_value>0 THEN ROUND(COALESCE(pcs.actual_profit,0)/p.contract_value*100,2) ELSE 0 END AS margin_pct, (p.contract_value - COALESCE(pcs.material_cost,0) - COALESCE(pcs.labour_cost,0)) AS total_cost FROM projects p LEFT JOIN project_cost_summary pcs ON pcs.project_id=p.id WHERE p.id=$1`, [pid]),
+      pool.query(`SELECT ticket_number, title AS subject, priority, status FROM support_tickets WHERE project_id=$1 AND deleted_at IS NULL${cc}`, [pid]),
+      // Same opportunity_id-chain bridge and amount->total_amount rename as the main handler.
+      pool.query(`
+        SELECT i.invoice_number, i.total_amount AS amount, i.status, i.due_date
+        FROM invoices i
+        JOIN sales_orders so ON so.id = i.sales_order_id
+        JOIN quotations q ON q.id = so.quotation_id
+        WHERE q.opportunity_id = (SELECT opportunity_id FROM projects WHERE id=$1)${cc.replace(/company_id/g, 'i.company_id')}
+      `, [pid]),
+      // projects has no contract_value column (real: budget_amount); project_cost_summary
+      // has no actual_profit column (real: profit).
+      pool.query(`SELECT p.budget_amount AS revenue, COALESCE(pcs.profit,0) AS actual_profit, CASE WHEN p.budget_amount>0 THEN ROUND(COALESCE(pcs.profit,0)/p.budget_amount*100,2) ELSE 0 END AS margin_pct, (p.budget_amount - COALESCE(pcs.material_cost,0) - COALESCE(pcs.labour_cost,0)) AS total_cost FROM projects p LEFT JOIN project_cost_summary pcs ON pcs.project_id=p.id WHERE p.id=$1`, [pid]),
     ]);
 
     const safe = r => r.status === 'fulfilled' ? (r.value?.rows || []) : [];
@@ -466,7 +619,7 @@ router.post('/:id/ask', async (req, res) => {
     if (!proj) return res.status(404).json({ error: 'Project not found' });
 
     const finRow = finR.status === 'fulfilled' ? finR.value?.rows?.[0] : {};
-    const totalCostCalc = parseFloat(proj.contract_value||0) - parseFloat(finRow?.actual_profit||0);
+    const totalCostCalc = parseFloat(proj.budget_amount||0) - parseFloat(finRow?.actual_profit||0);
 
     const answer = generateAIAnswer(question, {
       proj, milestones: safe(milesR), purchaseOrders: safe(posR),

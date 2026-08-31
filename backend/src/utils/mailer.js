@@ -278,6 +278,62 @@ export async function sendPurchaseOrderToVendor(toEmail, { poNumber, vendorName,
   return { sent: true };
 }
 
+// RFQ's "send to vendors" only ever wrote rfq_quotes rows and flipped the RFQ
+// to 'sent' — no vendor ever actually received anything, same gap PO approval
+// had before sendPurchaseOrderToVendor above. Same fire-and-forget/never-throw
+// contract: a delivery failure must not undo an RFQ that already recorded
+// which vendors it was sent to.
+export async function sendRfqToVendor(toEmail, { rfqNumber, vendorName, items, requiredBy }) {
+  const mailer = createTransport();
+  if (!mailer) {
+    console.log(`[mailer] SMTP not configured — RFQ email skipped for ${toEmail}: ${rfqNumber}`);
+    return { sent: false };
+  }
+
+  const rows = (items || []).map((it) =>
+    `  ${it.item_name || 'Item'} — Qty ${it.quantity} ${it.unit || ''}${it.remarks ? ` (${it.remarks})` : ''}`
+  ).join('\n');
+  const htmlRows = (items || []).map((it) => `
+    <tr>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee">${it.item_name || 'Item'}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right">${it.quantity} ${it.unit || ''}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #eee">${it.remarks || ''}</td>
+    </tr>`).join('');
+
+  await mailer.transport.sendMail({
+    from: mailer.from,
+    to: toEmail,
+    subject: `Request for Quotation ${rfqNumber}`,
+    text: [
+      `Dear ${vendorName || 'Vendor'},`, '',
+      `We would like to request your quotation for RFQ ${rfqNumber}.`, '',
+      rows, '',
+      requiredBy ? `Required by: ${requiredBy}` : '',
+      '', 'Please respond with your best pricing and delivery terms.',
+      '', 'This is an automated message from Pulse ERP. Please do not reply.',
+    ].filter(Boolean).join('\n'),
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#111">
+        <h2 style="color:#7c3aed;margin-bottom:4px">Request for Quotation ${rfqNumber}</h2>
+        <p>Dear <strong>${vendorName || 'Vendor'}</strong>,</p>
+        <p>We would like to request your quotation for the items below.</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+          <tr style="background:#f5f3ff">
+            <td style="padding:8px 12px;font-weight:600">Item</td>
+            <td style="padding:8px 12px;font-weight:600;text-align:right">Qty</td>
+            <td style="padding:8px 12px;font-weight:600">Remarks</td>
+          </tr>
+          ${htmlRows}
+        </table>
+        ${requiredBy ? `<p>Required by: <strong>${requiredBy}</strong></p>` : ''}
+        <p>Please respond with your best pricing and delivery terms.</p>
+        <p style="color:#9ca3af;font-size:12px;margin-top:24px">This is an automated message from Pulse ERP. Please do not reply.</p>
+      </div>
+    `,
+  });
+  return { sent: true };
+}
+
 export async function sendPasswordResetOTP(toEmail, otp) {
   const mailer = createTransport();
 

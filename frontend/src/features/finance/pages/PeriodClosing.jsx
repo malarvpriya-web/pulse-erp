@@ -1,13 +1,15 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
 import {
   Lock, Unlock, CheckCircle, AlertTriangle, Clock, RefreshCw,
   ChevronRight, ChevronDown, X, Calendar, FileText, Shield,
   TrendingUp, IndianRupee, Users, BarChart2, AlertCircle,
-  Play, RotateCcw, Download, Eye
+  Play, RotateCcw, Download
 } from 'lucide-react';
 import './PeriodClosing.css';
 import { fmt } from '../financeUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = [
   'January','February','March','April','May','June',
@@ -125,29 +127,15 @@ const YEAR_EXTRA = [
   },
 ];
 
-// ── Period status history ─────────────────────────────────────────────────────
-const PERIOD_HISTORY = [
-  { period:'February 2026', type:'month', status:'closed', closedBy:'Finance Manager', closedAt:'2026-03-05', netProfit:58000 },
-  { period:'January 2026',  type:'month', status:'closed', closedBy:'Finance Manager', closedAt:'2026-02-04', netProfit:52000 },
-  { period:'December 2025', type:'month', status:'closed', closedBy:'CFO',             closedAt:'2026-01-06', netProfit:71000 },
-  { period:'November 2025', type:'month', status:'closed', closedBy:'Finance Manager', closedAt:'2025-12-03', netProfit:48000 },
-  { period:'FY 2024-25',    type:'year',  status:'closed', closedBy:'CFO',             closedAt:'2025-04-15', netProfit:620000},
-];
-
-// ── Summary data for current period ──────────────────────────────────────────
-const CURRENT_SUMMARY = {
-  revenue:     378000,
-  expenses:    312000,
-  netProfit:   66000,
-  taxPayable:  13600,
-  bankBalance: 125000,
-  arOutstanding:112000,
-  apOutstanding:94000,
-  jvCount:     47,
-  unreconciledTxns: 3,
-};
+// The page previously carried a PERIOD_HISTORY array and a CURRENT_SUMMARY
+// object of invented figures -- revenue, net profit, AR/AP outstanding, JV count
+// and a fixed "3 unreconciled transactions" warning. A Finance Manager decides
+// whether to close an accounting period on this screen, so every one of those is
+// now read from GET /finance/periods/:id/summary, which derives them from the
+// same invoices/bills/journal/bank tables the CFO dashboard uses.
 
 export default function PeriodClosing() {
+  const navigate = useNavigate();
   const now = new Date();
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
   const [selectedYear,  setSelectedYear]  = useState(now.getFullYear());
@@ -160,6 +148,9 @@ export default function PeriodClosing() {
   const [closing,       setClosing]       = useState(false);
   const [activeTab,     setActiveTab]     = useState('checklist'); // checklist | history | locked
   const [periods,       setPeriods]       = useState([]);
+
+  const [summary,       setSummary]       = useState(null);
+  const [summaryState,  setSummaryState]  = useState('idle'); // idle | loading | ready | none | error
 
   const refreshPeriods = useCallback(() => {
     api.get('/finance/periods').then(r => setPeriods(Array.isArray(r.data) ? r.data : [])).catch(() => {});
@@ -212,6 +203,26 @@ export default function PeriodClosing() {
       return d.getFullYear() === selectedYear && d.getMonth() === selectedMonth;
     });
   }, [periods, selectedYear, selectedMonth]);
+
+  // Summary follows whichever period the month/year selectors resolve to. When
+  // no accounting period exists for that month there is nothing to summarise,
+  // and the cards say so rather than showing a confident zero.
+  const selectedPeriod = findPeriodId();
+  const selectedPeriodId = selectedPeriod?.id ?? null;
+
+  useEffect(() => {
+    if (selectedPeriodId == null) {
+      setSummary(null);
+      setSummaryState(periods.length ? 'none' : 'idle');
+      return;
+    }
+    let alive = true;
+    setSummaryState('loading');
+    api.get(`/finance/periods/${selectedPeriodId}/summary`)
+      .then(r => { if (alive) { setSummary(r.data); setSummaryState('ready'); } })
+      .catch(() => { if (alive) { setSummary(null); setSummaryState('error'); } });
+    return () => { alive = false; };
+  }, [selectedPeriodId, periods.length]);
 
   const handleClose = useCallback(async () => {
     const period = findPeriodId();
@@ -268,7 +279,15 @@ export default function PeriodClosing() {
   };
 
   return (
-    <div className="pc-root">
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="Period Closing"
+        subtitle="Month-end and year-end financial close process"
+        actions={<button className="plh-cta" onClick={exportChecklist}><Download size={14}/> Export Checklist</button>}
+      />
+    }>
 
       {/* Toast */}
       {toast && (
@@ -281,15 +300,7 @@ export default function PeriodClosing() {
       )}
 
       {/* Header */}
-      <div className="pc-header">
-        <div>
-          <h2 className="pc-title">Period Closing</h2>
-          <p className="pc-sub">Month-end and year-end financial close process</p>
-        </div>
-        <div className="pc-header-r">
-          <button className="pc-btn-outline" onClick={exportChecklist}><Download size={14}/> Export Checklist</button>
-        </div>
-      </div>
+
 
       {/* Period selector */}
       <div className="pc-period-bar">
@@ -340,7 +351,7 @@ export default function PeriodClosing() {
           <div className="pc-progress-bar">
             <div className="pc-progress-fill"
               style={{ width:`${completionPct}%`,
-                background: completionPct===100 ? '#10b981' : completionPct>50 ? '#f59e0b' : '#6366f1' }}/>
+                background: completionPct===100 ? '#10b981' : completionPct>50 ? '#7c5cf0' : '#6366f1' }}/>
           </div>
           <div className="pc-critical-info">
             <span className={criticalDone===criticalItems.length?'pc-crit-done':'pc-crit-pend'}>
@@ -350,43 +361,62 @@ export default function PeriodClosing() {
         </div>
       </div>
 
-      {/* Summary cards */}
+      {/* Summary cards — live figures for the selected period */}
+      {summaryState === 'loading' && (
+        <div className="pc-summary-note">Loading figures for {periodLabel}…</div>
+      )}
+      {summaryState === 'none' && (
+        <div className="pc-summary-note">
+          No accounting period exists for {periodLabel}, so there are no figures to summarise.
+          Create the period in Accounting Settings first.
+        </div>
+      )}
+      {summaryState === 'error' && (
+        <div className="pc-summary-note pc-summary-note-error">
+          Could not load the figures for {periodLabel}. They are intentionally left blank rather
+          than shown as zero — do not close this period until they load.
+        </div>
+      )}
+      {summaryState === 'ready' && summary && (
       <div className="pc-summary-grid">
         <div className="pc-sum-card">
           <span className="pc-sum-label">Net Profit</span>
-          <span className="pc-sum-val green">{fmt(CURRENT_SUMMARY.netProfit)}</span>
+          <span className={`pc-sum-val ${summary.netProfit >= 0 ? 'green' : 'red'}`}>{fmt(summary.netProfit)}</span>
           <span className="pc-sum-sub">For {periodLabel}</span>
         </div>
         <div className="pc-sum-card">
           <span className="pc-sum-label">AR Outstanding</span>
-          <span className="pc-sum-val amber">{fmt(CURRENT_SUMMARY.arOutstanding)}</span>
+          <span className="pc-sum-val amber">{fmt(summary.arOutstanding)}</span>
           <span className="pc-sum-sub">Receivables pending</span>
         </div>
         <div className="pc-sum-card">
           <span className="pc-sum-label">AP Outstanding</span>
-          <span className="pc-sum-val red">{fmt(CURRENT_SUMMARY.apOutstanding)}</span>
+          <span className="pc-sum-val red">{fmt(summary.apOutstanding)}</span>
           <span className="pc-sum-sub">Payables due</span>
         </div>
         <div className="pc-sum-card">
-          <span className="pc-sum-label">GST Payable</span>
-          <span className="pc-sum-val purple">{fmt(CURRENT_SUMMARY.taxPayable)}</span>
-          <span className="pc-sum-sub">Net payable</span>
+          <span className="pc-sum-label">GST {summary.taxPayable < 0 ? 'Credit' : 'Payable'}</span>
+          <span className="pc-sum-val purple">{fmt(Math.abs(summary.taxPayable))}</span>
+          <span className="pc-sum-sub">{summary.taxPayable < 0 ? 'Net input credit' : 'Net payable'}</span>
         </div>
         <div className="pc-sum-card">
           <span className="pc-sum-label">Journal Entries</span>
-          <span className="pc-sum-val">{CURRENT_SUMMARY.jvCount}</span>
-          <span className="pc-sum-sub">Posted this period</span>
+          <span className="pc-sum-val">{summary.jvCount}</span>
+          <span className="pc-sum-sub">
+            {summary.draftJvCount > 0 ? `${summary.draftJvCount} still in draft` : 'All posted'}
+          </span>
         </div>
-        <div className={`pc-sum-card ${CURRENT_SUMMARY.unreconciledTxns>0?'pc-sum-warn':''}`}>
+        <div className={`pc-sum-card ${summary.unreconciledTxns>0?'pc-sum-warn':''}`}>
           <span className="pc-sum-label">Unreconciled Txns</span>
-          <span className={`pc-sum-val ${CURRENT_SUMMARY.unreconciledTxns>0?'red':''}`}>
-            {CURRENT_SUMMARY.unreconciledTxns}
+          <span className={`pc-sum-val ${summary.unreconciledTxns>0?'red':''}`}>
+            {summary.unreconciledTxns}
           </span>
           <span className="pc-sum-sub">
-            {CURRENT_SUMMARY.unreconciledTxns > 0 ? '⚠ Needs attention' : '✓ All clear'}
+            {summary.unreconciledTxns > 0 ? '⚠ Needs attention' : '✓ All clear'}
           </span>
         </div>
       </div>
+      )}
 
       {/* Tabs */}
       <div className="pc-tabs">
@@ -409,14 +439,25 @@ export default function PeriodClosing() {
         <div className="pc-checklist-wrap">
 
           {/* Warnings */}
-          {CURRENT_SUMMARY.unreconciledTxns > 0 && (
+          {summaryState === 'ready' && summary && summary.unreconciledTxns > 0 && (
             <div className="pc-warning-banner">
               <AlertTriangle size={15}/>
               <span>
-                <strong>{CURRENT_SUMMARY.unreconciledTxns} unreconciled transactions</strong> found.
+                <strong>{summary.unreconciledTxns} unreconciled transaction{summary.unreconciledTxns === 1 ? '' : 's'}</strong> found.
                 Please reconcile before closing the period.
               </span>
-              <button className="pc-warning-action">View Transactions</button>
+              <button className="pc-warning-action" onClick={() => navigate('/BankAccounts')}>
+                View Transactions
+              </button>
+            </div>
+          )}
+          {summaryState === 'ready' && summary && summary.draftJvCount > 0 && (
+            <div className="pc-warning-banner">
+              <AlertTriangle size={15}/>
+              <span>
+                <strong>{summary.draftJvCount} draft journal entr{summary.draftJvCount === 1 ? 'y' : 'ies'}</strong> in this period.
+                The close will be rejected until they are posted or discarded.
+              </span>
             </div>
           )}
 
@@ -485,12 +526,6 @@ export default function PeriodClosing() {
                             </div>
                             <span className="pc-item-desc">{item.desc}</span>
                           </div>
-                          <div className="pc-item-actions">
-                            <button className="pc-item-view-btn"
-                              onClick={e => { e.stopPropagation(); }}>
-                              <Eye size={12}/> View
-                            </button>
-                          </div>
                         </div>
                       );
                     })}
@@ -533,46 +568,42 @@ export default function PeriodClosing() {
               </tr>
             </thead>
             <tbody>
-              {(periods.filter(p => p.status === 'closed').length
-                ? periods.filter(p => p.status === 'closed').map(p => {
-                    const sd = new Date(p.start_date);
-                    const label = `${MONTHS[sd.getMonth()]} ${sd.getFullYear()}`;
-                    return (
-                      <tr key={p.id} className="pc-tr">
-                        <td className="pc-td-period">{label}</td>
-                        <td><span className="pc-type-badge pc-type-month">Monthly</span></td>
-                        <td className="pc-td-profit">—</td>
-                        <td>{p.closed_by || '—'}</td>
-                        <td className="pc-td-date">
-                          {p.closed_at ? new Date(p.closed_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
-                        </td>
-                        <td><span className="pc-status-closed"><Lock size={11}/> Closed</span></td>
-                        <td>
-                          <div className="pc-hist-actions">
-                            <button className="pc-action-btn pc-reopen-btn" title="Reopen Period"
-                              onClick={() => setReopenModal({ id: p.id, label })}>
-                              <Unlock size={13}/>
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                : PERIOD_HISTORY.map((p,i) => (
-                  <tr key={i} className="pc-tr">
-                    <td className="pc-td-period">{p.period}</td>
-                    <td><span className={`pc-type-badge pc-type-${p.type}`}>{p.type === 'year' ? 'Year-End' : 'Monthly'}</span></td>
-                    <td className="pc-td-profit green">{fmt(p.netProfit)}</td>
-                    <td>{p.closedBy}</td>
-                    <td className="pc-td-date">{new Date(p.closedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
-                    <td><span className="pc-status-closed"><Lock size={11}/> Closed</span></td>
-                    <td>
-                      <div className="pc-hist-actions">
-                        <button className="pc-action-btn" title="View Report"><Eye size={13}/></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+              {periods.filter(p => p.status === 'closed').length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="pc-empty-row">
+                    No periods have been closed yet. Closed periods will be listed here.
+                  </td>
+                </tr>
+              ) : (
+                periods.filter(p => p.status === 'closed').map(p => {
+                  const sd = new Date(p.start_date);
+                  const label = `${MONTHS[sd.getMonth()]} ${sd.getFullYear()}`;
+                  // net_income is written into period_summary by the close
+                  // endpoint, so a closed period carries its own real figure.
+                  const ni = p.period_summary?.net_income;
+                  return (
+                    <tr key={p.id} className="pc-tr">
+                      <td className="pc-td-period">{label}</td>
+                      <td><span className="pc-type-badge pc-type-month">Monthly</span></td>
+                      <td className={`pc-td-profit ${ni == null ? '' : ni >= 0 ? 'green' : 'red'}`}>
+                        {ni == null ? '—' : fmt(ni)}
+                      </td>
+                      <td>{p.closed_by || '—'}</td>
+                      <td className="pc-td-date">
+                        {p.closed_at ? new Date(p.closed_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
+                      </td>
+                      <td><span className="pc-status-closed"><Lock size={11}/> Closed</span></td>
+                      <td>
+                        <div className="pc-hist-actions">
+                          <button className="pc-action-btn pc-reopen-btn" title="Reopen Period"
+                            onClick={() => setReopenModal({ id: p.id, label })}>
+                            <Unlock size={13}/>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -604,7 +635,7 @@ export default function PeriodClosing() {
                     {isClosed ? (
                       <><Lock size={14} color="#10b981"/> <span className="green">Locked</span></>
                     ) : isCurrent ? (
-                      <><Play size={14} color="#f59e0b"/> <span className="amber">In Progress</span></>
+                      <><Play size={14} color="#7c5cf0"/> <span className="amber">In Progress</span></>
                     ) : (
                       <><Clock size={14} color="#9ca3af"/> <span className="gray">Future</span></>
                     )}
@@ -653,15 +684,17 @@ export default function PeriodClosing() {
               </div>
               <div className="pc-confirm-row">
                 <span>Net Profit</span>
-                <strong className="green">{fmt(CURRENT_SUMMARY.netProfit)}</strong>
+                <strong className={summary && summary.netProfit >= 0 ? 'green' : 'red'}>
+                  {summary ? fmt(summary.netProfit) : '—'}
+                </strong>
               </div>
               <div className="pc-confirm-row">
                 <span>Total Revenue</span>
-                <strong>{fmt(CURRENT_SUMMARY.revenue)}</strong>
+                <strong>{summary ? fmt(summary.revenue) : '—'}</strong>
               </div>
               <div className="pc-confirm-row">
                 <span>Total Expenses</span>
-                <strong>{fmt(CURRENT_SUMMARY.expenses)}</strong>
+                <strong>{summary ? fmt(summary.expenses) : '—'}</strong>
               </div>
               <div className="pc-confirm-row">
                 <span>Checklist</span>
@@ -698,7 +731,7 @@ export default function PeriodClosing() {
         <div className="pc-overlay" onClick={() => setReopenModal(null)}>
           <div className="pc-confirm-modal" onClick={e => e.stopPropagation()}>
             <div className="pc-confirm-icon pc-confirm-icon-warn">
-              <Unlock size={28} color="#f59e0b"/>
+              <Unlock size={28} color="#7c5cf0"/>
             </div>
             <h3>Reopen {reopenModal?.label}?</h3>
             <p className="pc-confirm-desc">
@@ -718,6 +751,6 @@ export default function PeriodClosing() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

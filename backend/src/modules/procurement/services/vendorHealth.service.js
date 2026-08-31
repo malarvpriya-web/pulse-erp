@@ -39,18 +39,35 @@ async function computeAndSave(vendorId, companyId) {
        FROM vendor_ncr WHERE vendor_id = $1 AND company_id = $2`,
       [vendorId, companyId]),
 
-    q(`SELECT
-         COUNT(*)                                                     AS total_grns,
-         COUNT(*) FILTER (WHERE actual_delivery_date <= expected_delivery_date OR actual_delivery_date IS NULL) AS on_time_grns,
-         COUNT(*) FILTER (WHERE actual_delivery_date > expected_delivery_date) AS delayed_grns,
-         COALESCE(AVG(EXTRACT(EPOCH FROM (actual_delivery_date - expected_delivery_date)) / 86400)
-           FILTER (WHERE actual_delivery_date > expected_delivery_date), 0) AS avg_delay_days,
-         COUNT(*) FILTER (WHERE partial_delivery = TRUE OR received_qty < ordered_qty) AS partial_grns,
-         COALESCE(SUM(received_qty), 0)   AS total_received_qty,
-         COALESCE(SUM(rejected_qty), 0)   AS total_rejected_qty,
-         COUNT(*) FILTER (WHERE inspection_result = 'Pass') AS passed_inspections,
-         COUNT(*) FILTER (WHERE inspection_result IS NOT NULL) AS total_inspections
-       FROM goods_receipt_notes WHERE vendor_id = $1::text AND company_id = $2`,
+    // goods_receipt_notes has no vendor_id/actual_delivery_date/expected_delivery_date/
+    // partial_delivery/received_qty/rejected_qty/inspection_result columns — bridge through
+    // purchase_orders (supplier_id) for vendor identity and expected date, grn_items for
+    // received/rejected quantities, and grn.quality_status ('passed'/'failed'/...) for
+    // inspection outcome. Expected date falls back to order_date + vendor.lead_time_days
+    // when a PO never got an explicit expected_delivery_date (same fallback already used by
+    // ai.routes.js's vendor-delay prediction, not a new assumption). po.status = 'partial' is
+    // the real partial-delivery signal — there's no separate flag at GRN/line-item level.
+    q(`WITH g AS (
+         SELECT grn.id, grn.received_date, grn.quality_status, po.status AS po_status,
+                COALESCE(po.expected_delivery_date,
+                         po.order_date + (v.lead_time_days || ' days')::interval)::date AS implied_expected
+         FROM goods_receipt_notes grn
+         JOIN purchase_orders po ON po.id = grn.po_id
+         JOIN vendors v ON v.id = po.supplier_id
+         WHERE po.supplier_id = $1 AND grn.company_id = $2 AND grn.deleted_at IS NULL
+       )
+       SELECT
+         COUNT(*)                                                          AS total_grns,
+         COUNT(*) FILTER (WHERE received_date <= implied_expected)         AS on_time_grns,
+         COUNT(*) FILTER (WHERE received_date > implied_expected)          AS delayed_grns,
+         COALESCE(AVG(received_date - implied_expected)
+           FILTER (WHERE received_date > implied_expected), 0)             AS avg_delay_days,
+         COUNT(*) FILTER (WHERE po_status = 'partial')                     AS partial_grns,
+         COALESCE((SELECT SUM(gi.quantity_received) FROM grn_items gi JOIN g ON g.id = gi.grn_id), 0) AS total_received_qty,
+         COALESCE((SELECT SUM(gi.quantity_rejected) FROM grn_items gi JOIN g ON g.id = gi.grn_id), 0) AS total_rejected_qty,
+         COUNT(*) FILTER (WHERE quality_status = 'passed')                 AS passed_inspections,
+         COUNT(*) FILTER (WHERE quality_status IN ('passed', 'failed'))    AS total_inspections
+       FROM g`,
       [vendorId, companyId]).catch(() => ({ rows: [{}] })),
 
     q(`SELECT
@@ -59,28 +76,59 @@ async function computeAndSave(vendorId, companyId) {
        FROM vendor_capa WHERE vendor_id = $1 AND company_id = $2`,
       [vendorId, companyId]),
 
+    // vendor_documents has no deleted_at column (soft-delete isn't modeled here — rows are
+    // real or absent) — this filter always threw, with no .catch() guard, so computeAndSave
+    // never completed a single run regardless of the GRN/PO fixes above.
     q(`SELECT doc_type, expiry_date, verified, status
        FROM vendor_documents
-       WHERE vendor_id = $1 AND deleted_at IS NULL`,
+       WHERE vendor_id = $1`,
       [vendorId]),
 
-    q(`SELECT
-         COUNT(*)                                                          AS total_pos,
-         COUNT(*) FILTER (WHERE status IN ('delayed', 'overdue'))          AS late_pos_12m,
-         COALESCE(AVG(unit_price) FILTER (WHERE created_at > NOW() - INTERVAL '6 months'), 0)  AS avg_price_recent,
-         COALESCE(AVG(unit_price) FILTER (WHERE created_at BETWEEN NOW() - INTERVAL '18 months' AND NOW() - INTERVAL '6 months'), 0) AS avg_price_prev,
-         COUNT(*) FILTER (WHERE price_increased = TRUE)                   AS escalation_count
-       FROM purchase_orders WHERE supplier_id = $1::text AND company_id = $2`,
+    // purchase_orders has no unit_price/price_increased column, real status values are only
+    // 'partial'/'received' (never 'delayed'/'overdue'), and supplier_id is integer — the old
+    // `= $1::text` cast would throw even after fixing the column names. unit_price lives on
+    // purchase_order_items.rate (per line item); "late" is rederived the same way as the GRN
+    // query above; escalation_count is a real signal — item ids whose most recent price
+    // exceeds their own prior-period max for this vendor — not a column that exists anywhere.
+    q(`WITH items AS (
+         SELECT poi.item_id, poi.rate,
+                (po.order_date > NOW() - INTERVAL '6 months')                                    AS is_recent,
+                (po.order_date BETWEEN NOW() - INTERVAL '18 months' AND NOW() - INTERVAL '6 months') AS is_baseline
+         FROM purchase_order_items poi
+         JOIN purchase_orders po ON po.id = poi.po_id
+         WHERE po.supplier_id = $1 AND po.company_id = $2
+       )
+       SELECT
+         (SELECT COUNT(DISTINCT po.id) FROM purchase_orders po
+           WHERE po.supplier_id = $1 AND po.company_id = $2)                AS total_pos,
+         (SELECT COUNT(DISTINCT po.id) FROM purchase_orders po
+            JOIN vendors v ON v.id = po.supplier_id
+           WHERE po.supplier_id = $1 AND po.company_id = $2
+             AND po.order_date > NOW() - INTERVAL '12 months'
+             AND EXISTS (
+               SELECT 1 FROM goods_receipt_notes g
+               WHERE g.po_id = po.id AND g.deleted_at IS NULL
+                 AND g.received_date > COALESCE(po.expected_delivery_date,
+                       po.order_date + (v.lead_time_days || ' days')::interval)::date
+             ))                                                             AS late_pos_12m,
+         COALESCE((SELECT AVG(rate) FROM items WHERE is_recent), 0)         AS avg_price_recent,
+         COALESCE((SELECT AVG(rate) FROM items WHERE is_baseline), 0)       AS avg_price_prev,
+         (SELECT COUNT(DISTINCT r.item_id) FROM items r
+           WHERE r.is_recent AND r.rate > (
+             SELECT MAX(p.rate) FROM items p WHERE p.item_id = r.item_id AND p.is_baseline
+           ))                                                               AS escalation_count`,
       [vendorId, companyId]).catch(() => ({ rows: [{}] })),
 
     q(`SELECT
          COUNT(DISTINCT p.id) AS project_count,
-         COALESCE(SUM(p.contract_value), 0) AS total_project_value
+         COALESCE(SUM(p.budget_amount), 0) AS total_project_value
        FROM projects p
-       JOIN project_vendors pv ON pv.project_id = p.id
-       WHERE pv.vendor_id = $1 AND p.company_id = $2
+       JOIN purchase_orders po
+         ON po.project_id::text = p.id::text
+        AND po.deleted_at IS NULL
+       WHERE po.supplier_id::text = $1::text AND p.company_id = $2
          AND p.status NOT IN ('Completed', 'Cancelled')`,
-      [vendorId, companyId]).catch(() => ({ rows: [{ project_count: 0, total_project_value: 0 }] })),
+      [vendorId, companyId]),
 
     q(`SELECT * FROM vendor_strategic_flags WHERE vendor_id = $1`, [vendorId])
       .catch(() => ({ rows: [{}] })),
@@ -148,6 +196,9 @@ async function computeAndSave(vendorId, companyId) {
     costInputs: {
       priceVariancePct, rfqCompetitive: priceVariancePct <= 10,
       escalationCount, last12mPOCount: totalPOs || 1,
+      // Both windows have to have priced lines, otherwise priceVariancePct is 0
+      // by fallback and scoreCost would read that as "perfectly stable".
+      hasPriceHistory: avgPriceRecent > 0 && avgPricePrev > 0,
     },
     supportInputs: {
       storedSupportScore: scorecard?.support_score || null,
@@ -182,7 +233,16 @@ async function computeAndSave(vendorId, companyId) {
       failedAudits12m:     0,
       supplyInterruptions: 0,
       complianceViolations: expiredDocs,
+      // A spotless event record only means something once there has been
+      // something to have events about.
+      hasHistory: totalPOs > 0 || totalGRNs > 0,
     },
+    // Has anyone actually transacted with this supplier? A PO, a receipt, an
+    // inspection or an NCR is enough. Without any of them the quality and
+    // delivery dimensions are pure defaults and the composite means nothing --
+    // see classifyHealth().
+    hasEvidence: totalPOs > 0 || totalGRNs > 0 || totalInsp > 0
+                 || Number(ncrStats?.total_ncr || 0) > 0,
   });
 
   // ── Detect early warnings ─────────────────────────────────────────────────────
@@ -200,10 +260,11 @@ async function computeAndSave(vendorId, companyId) {
     INSERT INTO vendor_health_scores
       (company_id, vendor_id, health_score, health_status, quality_score, delivery_score,
        cost_score, support_score, compliance_score, financial_score, dependency_score,
-       risk_score, otd_pct, pass_rate_pct, open_ncr_count, capa_closure_pct,
+       risk_score, otd_pct, pass_rate_pct, open_ncr_count, capa_closure_pct, coverage_pct,
        calculated_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW())
     ON CONFLICT (company_id, vendor_id) DO UPDATE SET
+      coverage_pct     = EXCLUDED.coverage_pct,
       health_score     = EXCLUDED.health_score,
       health_status    = EXCLUDED.health_status,
       quality_score    = EXCLUDED.quality_score,
@@ -227,10 +288,16 @@ async function computeAndSave(vendorId, companyId) {
     result.cost_score, result.support_score,
     result.compliance_score, result.financial_score,
     result.dependency_score, result.risk_score,
-    result.detail.delivery.otdPct || 0,
-    result.detail.quality.passRate || 0,
+    // NULL, not the engine's neutral prior: otd_pct and pass_rate_pct are read
+    // back as this supplier's measured record by the heatmap, the CEO roll-up
+    // and vendors.on_time_pct. Storing the 75 default made "nothing has ever
+    // been received from this vendor" indistinguishable from "three deliveries
+    // in four arrived on time".
+    result.detail.delivery.otdMeasured    ? result.detail.delivery.otdPct : null,
+    result.detail.quality.passRateMeasured ? result.detail.quality.passRate : null,
     result.detail.quality.openNCR || 0,
-    result.detail.quality.capaClosurePct || 0,
+    result.detail.quality.capaMeasured    ? result.detail.quality.capaClosurePct : null,
+    result.coverage_pct,
   ]);
 
   // ── Sync monthly timeline snapshot ────────────────────────────────────────────
@@ -239,43 +306,69 @@ async function computeAndSave(vendorId, companyId) {
   await q(`
     INSERT INTO vendor_health_timeline
       (company_id, vendor_id, snapshot_month, health_score, health_status,
-       quality_score, delivery_score, cost_score, compliance_score)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       quality_score, delivery_score, cost_score, compliance_score, coverage_pct)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
     ON CONFLICT (company_id, vendor_id, snapshot_month) DO UPDATE SET
       health_score    = EXCLUDED.health_score,
       health_status   = EXCLUDED.health_status,
       quality_score   = EXCLUDED.quality_score,
       delivery_score  = EXCLUDED.delivery_score,
       cost_score      = EXCLUDED.cost_score,
-      compliance_score = EXCLUDED.compliance_score
+      compliance_score = EXCLUDED.compliance_score,
+      coverage_pct    = EXCLUDED.coverage_pct
   `, [
     companyId, vendorId,
     snapshotMonth.toISOString().slice(0, 7) + '-01',
     result.health_score, result.health_status,
     result.quality_score, result.delivery_score,
     result.cost_score, result.compliance_score,
+    result.coverage_pct,
   ]);
 
   // ── Upsert early warnings ─────────────────────────────────────────────────────
-  if (warnings.length > 0) {
-    // Clear old active warnings for this vendor first
-    await q(`UPDATE vendor_early_warnings SET is_active = FALSE, updated_at = NOW()
-             WHERE vendor_id = $1 AND company_id = $2 AND is_active = TRUE`,
-      [vendorId, companyId]);
+  // The stand-down is UNCONDITIONAL. It used to sit inside `if (warnings.length
+  // > 0)`, so a vendor whose last warning cleared never had it retired -- the
+  // recalculation that proved the problem was fixed was exactly the run that
+  // skipped the cleanup, and the warning stayed on the dashboard forever.
+  await q(`UPDATE vendor_early_warnings SET is_active = FALSE, updated_at = NOW()
+           WHERE vendor_id = $1 AND company_id = $2 AND is_active = TRUE`,
+    [vendorId, companyId]);
 
-    for (const w of warnings) {
-      await q(`
-        INSERT INTO vendor_early_warnings
-          (company_id, vendor_id, warning_type, severity, message, metric_value, threshold_value, is_active)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)
-      `, [companyId, vendorId, w.warning_type, w.severity, w.message,
-          w.metric_value, w.threshold_value]);
-    }
+  for (const w of warnings) {
+    await q(`
+      INSERT INTO vendor_early_warnings
+        (company_id, vendor_id, warning_type, severity, message, metric_value, threshold_value, is_active)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)
+    `, [companyId, vendorId, w.warning_type, w.severity, w.message,
+        w.metric_value, w.threshold_value]);
   }
 
-  // ── Sync classification back to vendors table ─────────────────────────────────
-  await q(`UPDATE vendors SET classification = $1, updated_at = NOW() WHERE id = $2`,
-    [result.health_status, vendorId]);
+  // ── Sync classification + headline KPIs back to vendors table ────────────────
+  // vendors.on_time_pct and vendors.defect_rate are read by VendorManagement's
+  // composite score (on_time 20%, defect 10%) and by the vendor list, but
+  // nothing ever wrote them -- every vendor carried 0.0 for both, so the master
+  // grid scored every supplier 30 points below its own scorecard. This is the
+  // only place in the app that derives them from GRN data, so it is the place
+  // that has to publish them.
+  //
+  // UNMEASURED IS NOT ZERO -- and it is not 75% either. scoreDelivery() falls
+  // back to an otdPct of 75 when a vendor has no GRNs at all, which is a
+  // reasonable neutral prior *inside* the composite but a fabrication the
+  // moment it is published on the vendor master as that supplier's on-time
+  // rate. Both KPIs are written only where there is evidence behind them and
+  // NULLed otherwise, so "never received from" is distinguishable from "always
+  // late".
+  const otdPct = result.detail.delivery.otdMeasured ? result.detail.delivery.otdPct : null;
+  const defectRatePct = totalReceivedQty > 0
+    ? parseFloat(((totalRejectedQty / totalReceivedQty) * 100).toFixed(2))
+    : null;
+  await q(`UPDATE vendors
+              SET classification = $1,
+                  on_time_pct    = $2,
+                  defect_rate    = $3,
+                  updated_at     = NOW()
+            WHERE id = $4`,
+    [result.health_status, otdPct, defectRatePct, vendorId]);
 
   return {
     vendor_id:   vendorId,
@@ -298,13 +391,17 @@ async function getDashboard(companyId) {
     { rows: topRisk },
     { rows: recentChanges },
   ] = await Promise.all([
+    // 'Unrated' suppliers are counted but kept out of avg_score: their composite
+    // is built from dimension defaults, so averaging them in drags the company's
+    // headline index toward a number nobody's performance produced.
     q(`SELECT
          COUNT(*) FILTER (WHERE health_status = 'Preferred')  AS preferred,
          COUNT(*) FILTER (WHERE health_status = 'Approved')   AS approved,
          COUNT(*) FILTER (WHERE health_status = 'Watchlist')  AS watchlist,
          COUNT(*) FILTER (WHERE health_status = 'Critical')   AS critical,
+         COUNT(*) FILTER (WHERE health_status = 'Unrated')    AS unrated,
          COUNT(*)                                              AS total,
-         ROUND(AVG(health_score)::numeric, 1)                 AS avg_score
+         ROUND(AVG(health_score) FILTER (WHERE health_status <> 'Unrated')::numeric, 1) AS avg_score
        FROM vendor_health_scores WHERE company_id = $1`, [companyId]),
 
     q(`SELECT health_status AS name, COUNT(*) AS value
@@ -335,8 +432,11 @@ async function getDashboard(companyId) {
       approved:   Number(s.approved  || 0),
       watchlist:  Number(s.watchlist || 0),
       critical:   Number(s.critical  || 0),
+      unrated:    Number(s.unrated   || 0),
       total:      Number(s.total     || 0),
-      avg_score:  parseFloat(s.avg_score || 0),
+      // null, not 0, when every supplier is Unrated -- an index of zero would be
+      // a claim about performance that no data supports.
+      avg_score:  s.avg_score == null ? null : parseFloat(s.avg_score),
     },
     charts: {
       distribution,
@@ -365,6 +465,7 @@ async function getHeatmap(companyId) {
       vhs.risk_score,
       vhs.open_ncr_count,
       vhs.otd_pct,
+      vhs.coverage_pct,
       vhs.calculated_at,
       COALESCE(pv.project_count, 0)        AS projects_impacted,
       COALESCE(pv.total_project_value, 0)  AS revenue_at_risk,
@@ -374,15 +475,16 @@ async function getHeatmap(companyId) {
     FROM vendor_health_scores vhs
     JOIN vendors v ON v.id = vhs.vendor_id AND v.deleted_at IS NULL
     LEFT JOIN (
-      SELECT pv2.vendor_id,
-             COUNT(DISTINCT pv2.project_id) AS project_count,
-             COALESCE(SUM(p.contract_value), 0) AS total_project_value
-      FROM project_vendors pv2
-      JOIN projects p ON p.id = pv2.project_id
+      SELECT po2.supplier_id AS vendor_id,
+             COUNT(DISTINCT p.id) AS project_count,
+             COALESCE(SUM(p.budget_amount), 0) AS total_project_value
+      FROM purchase_orders po2
+      JOIN projects p ON p.id::text = po2.project_id::text AND p.deleted_at IS NULL
       WHERE p.company_id = $1
+        AND po2.deleted_at IS NULL
         AND p.status NOT IN ('Completed', 'Cancelled')
-      GROUP BY pv2.vendor_id
-    ) pv ON pv.vendor_id = vhs.vendor_id
+      GROUP BY po2.supplier_id
+    ) pv ON pv.vendor_id::text = vhs.vendor_id::text
     WHERE vhs.company_id = $1
     ORDER BY vhs.health_score ASC, pv.total_project_value DESC NULLS LAST
     LIMIT 100
@@ -461,11 +563,13 @@ async function getCEOCommandCenter(companyId) {
     { rows: summary },
   ] = await Promise.all([
     // Highest spend suppliers (from POs)
+    // supplier_id is integer, not text — the old `v.id::text` cast made this throw
+    // (operator does not exist: integer = text), silently swallowed by .catch() below.
     q(`SELECT v.id, v.vendor_name, v.vendor_category,
               COALESCE(SUM(po.total_amount), 0) AS total_spend,
               vhs.health_score, vhs.health_status
        FROM vendors v
-       LEFT JOIN purchase_orders po ON po.supplier_id = v.id::text AND po.company_id = $1
+       LEFT JOIN purchase_orders po ON po.supplier_id = v.id AND po.company_id = $1
        LEFT JOIN vendor_health_scores vhs ON vhs.vendor_id = v.id AND vhs.company_id = $1
        WHERE v.company_id = $1 AND v.deleted_at IS NULL
        GROUP BY v.id, v.vendor_name, v.vendor_category, vhs.health_score, vhs.health_status
@@ -503,13 +607,18 @@ async function getCEOCommandCenter(companyId) {
        GROUP BY v.id, v.vendor_name, v.vendor_category, vhs.health_score, vhs.health_status
        ORDER BY ncr_count DESC LIMIT 10`, [companyId]),
 
-    // Most delayed
+    // Most delayed — goods_receipt_notes has no vendor_id/expected_delivery_date; bridge
+    // through purchase_orders same as computeAndSave's grnStats query above.
     q(`SELECT v.id AS vendor_id, v.vendor_name, v.vendor_category,
-              COUNT(grn.id) FILTER (WHERE grn.actual_delivery_date > grn.expected_delivery_date) AS delayed_count,
+              COUNT(grn.id) FILTER (
+                WHERE grn.received_date > COALESCE(po.expected_delivery_date,
+                      po.order_date + (v.lead_time_days || ' days')::interval)::date
+              ) AS delayed_count,
               COUNT(grn.id) AS total_grns,
               vhs.health_score, vhs.health_status, vhs.otd_pct
        FROM vendors v
-       JOIN goods_receipt_notes grn ON grn.vendor_id = v.id::text AND grn.company_id = $1
+       JOIN purchase_orders po ON po.supplier_id = v.id AND po.company_id = $1
+       JOIN goods_receipt_notes grn ON grn.po_id = po.id AND grn.company_id = $1 AND grn.deleted_at IS NULL
        LEFT JOIN vendor_health_scores vhs ON vhs.vendor_id = v.id AND vhs.company_id = $1
        WHERE v.company_id = $1
        GROUP BY v.id, v.vendor_name, v.vendor_category, vhs.health_score, vhs.health_status, vhs.otd_pct
@@ -522,10 +631,13 @@ async function getCEOCommandCenter(companyId) {
          COUNT(*) FILTER (WHERE health_status = 'Approved')  AS approved,
          COUNT(*) FILTER (WHERE health_status = 'Watchlist') AS watchlist,
          COUNT(*) FILTER (WHERE health_status = 'Critical')  AS critical,
-         ROUND(AVG(health_score)::numeric, 1)                AS avg_score,
-         ROUND(AVG(quality_score)::numeric, 1)               AS avg_quality,
-         ROUND(AVG(delivery_score)::numeric, 1)              AS avg_delivery,
-         ROUND(AVG(compliance_score)::numeric, 1)            AS avg_compliance
+         COUNT(*) FILTER (WHERE health_status = 'Unrated')   AS unrated,
+         -- Same reason as getDashboard: an Unrated supplier's dimension scores
+         -- are engine defaults, so they must not move the company averages.
+         ROUND(AVG(health_score)     FILTER (WHERE health_status <> 'Unrated')::numeric, 1) AS avg_score,
+         ROUND(AVG(quality_score)    FILTER (WHERE health_status <> 'Unrated')::numeric, 1) AS avg_quality,
+         ROUND(AVG(delivery_score)   FILTER (WHERE health_status <> 'Unrated')::numeric, 1) AS avg_delivery,
+         ROUND(AVG(compliance_score) FILTER (WHERE health_status <> 'Unrated')::numeric, 1) AS avg_compliance
        FROM vendor_health_scores WHERE company_id = $1`, [companyId]),
   ]);
 
@@ -557,14 +669,15 @@ async function getVendorHealth(vendorId, companyId) {
   );
 
   const { rows: [projectImpact] } = await q(
-    `SELECT COUNT(DISTINCT pv.project_id) AS project_count,
-            COALESCE(SUM(p.contract_value), 0) AS total_project_value
-     FROM project_vendors pv
-     JOIN projects p ON p.id = pv.project_id
-     WHERE pv.vendor_id = $1 AND p.company_id = $2
+    `SELECT COUNT(DISTINCT p.id) AS project_count,
+            COALESCE(SUM(p.budget_amount), 0) AS total_project_value
+     FROM projects p
+     JOIN purchase_orders po
+       ON po.project_id::text = p.id::text AND po.deleted_at IS NULL
+     WHERE po.supplier_id::text = $1::text AND p.company_id = $2
        AND p.status NOT IN ('Completed', 'Cancelled')`,
     [vendorId, companyId]
-  ).catch(() => ({ rows: [{ project_count: 0, total_project_value: 0 }] }));
+  );
 
   return {
     health:          existing || null,

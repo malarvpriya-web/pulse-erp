@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Shield, LogIn, LogOut, Download, Key, Radio, Lock, AlertTriangle } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ── helpers ── */
 function timeAgo(iso) {
@@ -22,7 +23,7 @@ function Badge({ label, color, bg }) {
 /* ── SEV helpers ── */
 const SEV = {
   high:   { bg:'#fee2e2', color:'#dc2626' },
-  medium: { bg:'#fef3c7', color:'#d97706' },
+  medium: { bg:'#ede9fe', color:'#6d28d9' },
   low:    { bg:'#d1fae5', color:'#16a34a' },
 };
 const EVENT_ICON_MAP = {
@@ -78,7 +79,7 @@ function EventsTab() {
     <div>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
         <div style={{ display:'flex', gap:8 }}>
-          {[['all','All',events.length,'#6B3FDB'],['high','Critical',counts.high,'#dc2626'],['medium','Warning',counts.medium,'#d97706'],['low','OK',counts.low,'#16a34a']].map(([k,l,n,c])=>(
+          {[['all','All',events.length,'#6B3FDB'],['high','Critical',counts.high,'#dc2626'],['medium','Warning',counts.medium,'#6d28d9'],['low','OK',counts.low,'#16a34a']].map(([k,l,n,c])=>(
             <button key={k} onClick={()=>setSev(k)}
               style={{ padding:'5px 14px', border:`1.5px solid ${sevFilter===k?c:'#e9e4ff'}`, borderRadius:20, background:sevFilter===k?`${c}18`:'#fff', color:sevFilter===k?c:'#6b7280', cursor:'pointer', fontWeight:600, fontSize:12 }}>
               {l} {n}
@@ -236,12 +237,26 @@ function TwoFATab() {
   }, [load]);
 
   const setup2FA = async (emp) => {
+    // No fallback. This used to catch a failed setup and return a hardcoded
+    // secret — JBSWY3DPEHPK3PXP, the published RFC test vector — so the QR on
+    // screen looked valid, was identical for every user, and corresponded to
+    // nothing the server had stored. A security control must never fabricate
+    // success; if enrolment fails the operator has to know it failed.
     try {
-      const res = await api.post('/security/2fa/setup', { employee_id: emp.employee_id }).catch(()=>{
-        return { data:{ secret:'JBSWY3DPEHPK3PXP', otpauth_url:`otpauth://totp/PulseERP:${emp.email}?secret=JBSWY3DPEHPK3PXP&issuer=PulseERP` }};
+      const res = await api.post('/security/2fa/setup', { employee_id: emp.employee_id });
+      const d = res.data || {};
+      if (!d.secret) throw new Error('The server did not return a 2FA secret; nothing was enrolled.');
+      setQr({
+        ...d,
+        // the API returns qr_url; keep otpauth_url populated for the panel below
+        otpauth_url: d.qr_url || d.otpauth_url,
+        employee_id: emp.employee_id,
+        name: emp.name,
       });
-      setQr({ ...res.data, employee_id: emp.employee_id, name: emp.name });
-    } catch(e) { setMsg('✗ ' + e.message); }
+    } catch (e) {
+      setQr(null);
+      setMsg('✗ ' + (e?.response?.data?.message || e.message || 'Could not start 2FA enrolment'));
+    }
   };
 
   const enrolled  = users.filter(u=>u.totp_enabled).length;
@@ -370,8 +385,8 @@ setSearched(true);
 
   return (
     <div>
-      <div style={{ padding:'14px 16px', background:'#fef3c7', border:'1px solid #fcd34d', borderRadius:8, marginBottom:16 }}>
-        <p style={{ margin:0, fontSize:13, color:'#92400e' }}>
+      <div style={{ padding:'14px 16px', background:'#ede9fe', border:'1px solid #c4b5fd', borderRadius:8, marginBottom:16 }}>
+        <p style={{ margin:0, fontSize:13, color:'#5b21b6' }}>
           <strong>GDPR Compliance:</strong> Search for any employee and exercise their right to data portability (export) or right to erasure (anonymise). All actions are logged in the audit trail.
         </p>
       </div>
@@ -535,7 +550,7 @@ function IPWhitelistTab() {
             <div style={{ fontSize:11, color:'#9ca3af' }}>Added {ip.added_at}</div>
             <div style={{ display:'flex', gap:6 }}>
               <button onClick={()=>toggle(ip)}
-                style={{ background: ip.active?'#fef3c7':'#d1fae5', color: ip.active?'#d97706':'#16a34a', border:'none', borderRadius:7, padding:'4px 12px', cursor:'pointer', fontWeight:600, fontSize:11 }}>
+                style={{ background: ip.active?'#ede9fe':'#d1fae5', color: ip.active?'#6d28d9':'#16a34a', border:'none', borderRadius:7, padding:'4px 12px', cursor:'pointer', fontWeight:600, fontSize:11 }}>
                 {ip.active ? 'Disable' : 'Enable'}
               </button>
               <button onClick={()=>setPendingRemove(ip)}
@@ -570,12 +585,16 @@ export default function SecurityCenter() {
   });
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Shield}
+        eyebrow="Administration"
+        title="Security Center"
+        subtitle="Monitor activity, manage sessions, enforce 2FA, and maintain GDPR compliance"
+      />
+    }>
       {/* header */}
-      <div style={{ marginBottom:20 }}>
-        <h2 style={{ margin:'0 0 4px', color:'#4c1d95', fontSize:22, display:'flex', alignItems:'center', gap:8 }}><Shield size={22} />Security Center</h2>
-        <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Monitor activity, manage sessions, enforce 2FA, and maintain GDPR compliance</p>
-      </div>
+
 
       {/* tabs */}
       <div style={{ display:'flex', gap:0, borderBottom:'2px solid #e9e4ff', marginBottom:0, background:'#fff', borderRadius:'10px 10px 0 0', padding:'0 8px', flexWrap:'wrap' }}>
@@ -591,6 +610,6 @@ export default function SecurityCenter() {
         {tab === 'GDPR'         && <GDPRTab />}
         {tab === 'IP Whitelist' && <IPWhitelistTab />}
       </div>
-    </div>
+    </PageShell>
   );
 }

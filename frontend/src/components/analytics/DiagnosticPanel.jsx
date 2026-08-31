@@ -8,14 +8,14 @@ import { ErrorState }   from '../core/ErrorStates';
 
 const SEVERITY_CONFIG = {
   critical: { bg: '#fee2e2', color: '#991b1b', border: '#dc2626', label: 'Critical' },
-  high:     { bg: '#fef3c7', color: '#92400e', border: '#f59e0b', label: 'High' },
+  high:     { bg: '#ede9fe', color: '#5b21b6', border: '#7c5cf0', label: 'High' },
   medium:   { bg: '#dbeafe', color: '#1e40af', border: '#3b82f6', label: 'Medium' },
   low:      { bg: '#dcfce7', color: '#14532d', border: '#10b981', label: 'Low' },
 };
 
 function ProbabilityBar({ probability, label }) {
   const pct  = Math.round(probability * 100);
-  const color = pct >= 70 ? '#dc2626' : pct >= 50 ? '#f59e0b' : '#6b7280';
+  const color = pct >= 70 ? '#dc2626' : pct >= 50 ? '#7c5cf0' : '#6b7280';
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3, fontSize: 12, color: '#374151' }}>

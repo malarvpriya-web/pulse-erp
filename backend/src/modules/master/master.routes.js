@@ -1,6 +1,8 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
+import { companyOf } from '../../shared/scope.js';
+import { respondError } from '../../shared/pgErrors.js';
 
 const router = express.Router();
 
@@ -69,6 +71,16 @@ const READ_ROLES  = ['super_admin', 'admin', 'hr_manager', 'hr_exec', 'finance_m
   }
 })();
 
+// The employee fallback in GET /:type surfaces legacy free-text values as rows
+// with id: null, so clients can hand us "null" here. Postgres answers that with
+// a 22P02 500 ("invalid input syntax for type integer"); reject it up front.
+const numericId = (raw) => {
+  const t = String(raw ?? '').trim();
+  if (!/^[0-9]+$/.test(t)) return null;
+  const n = Number(t);
+  return n > 0 ? n : null;
+};
+
 const TABLES = {
   departments:  'master_departments',
   zones:        'master_zones',
@@ -88,7 +100,7 @@ const COMPANY_TABLES = {
   const table = COMPANY_TABLES[type];
 
   router.get(`/${type}`, allowRoles(...READ_ROLES), async (req, res) => {
-    const cid = req.scope?.company_id ?? null;
+    const cid = companyOf(req);
     try {
       const { rows } = await pool.query(
         `SELECT id, name FROM ${table} WHERE is_active = true AND (company_id IS NULL OR company_id = $1) ORDER BY name`,
@@ -101,30 +113,36 @@ const COMPANY_TABLES = {
   router.post(`/${type}`, allowRoles(...ADMIN_ROLES), async (req, res) => {
     const { name } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
-    const cid = req.scope?.company_id ?? null;
+    const cid = companyOf(req);
     try {
       const { rows } = await pool.query(
         `INSERT INTO ${table} (company_id, name) VALUES ($1, $2) RETURNING id, name`,
         [cid, name.trim()]
       );
       res.json(rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { respondError(res, err); }
   });
 
   router.put(`/${type}/:id`, allowRoles(...ADMIN_ROLES), async (req, res) => {
     const { name } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+    const id = numericId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
     try {
-      await pool.query(`UPDATE ${table} SET name = $1 WHERE id = $2`, [name.trim(), req.params.id]);
+      const r = await pool.query(`UPDATE ${table} SET name = $1 WHERE id = $2`, [name.trim(), id]);
+      if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
       res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { respondError(res, err); }
   });
 
   router.delete(`/${type}/:id`, allowRoles(...ADMIN_ROLES), async (req, res) => {
+    const id = numericId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
     try {
-      await pool.query(`UPDATE ${table} SET is_active = false WHERE id = $1`, [req.params.id]);
+      const r = await pool.query(`UPDATE ${table} SET is_active = false WHERE id = $1`, [id]);
+      if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
       res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { respondError(res, err); }
   });
 });
 
@@ -279,7 +297,9 @@ router.get('/:type', async (req, res) => {
       );
       for (const e of empRows) {
         const key = (e.name || '').trim().toLowerCase();
-        if (key && !have.has(key)) { have.add(key); rows.push({ id: null, name: e.name }); }
+        // unmanaged: no row in the master table, so it has no id — callers must
+        // not offer rename/delete on it, nor use it as a foreign key value.
+        if (key && !have.has(key)) { have.add(key); rows.push({ id: null, name: e.name, unmanaged: true }); }
       }
       rows.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     }
@@ -322,7 +342,7 @@ router.post('/:type', allowRoles(...ADMIN_ROLES), async (req, res) => {
     );
     res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -332,14 +352,17 @@ router.put('/:type/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
   if (!table) return res.status(400).json({ error: 'Invalid type' });
   const { name } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+  const id = numericId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid id' });
   try {
-    await pool.query(
+    const r = await pool.query(
       `UPDATE ${table} SET name = $1 WHERE id = $2`,
-      [name.trim(), req.params.id]
+      [name.trim(), id]
     );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -347,14 +370,17 @@ router.put('/:type/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
 router.delete('/:type/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
   const table = TABLES[req.params.type];
   if (!table) return res.status(400).json({ error: 'Invalid type' });
+  const id = numericId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid id' });
   try {
-    await pool.query(
+    const r = await pool.query(
       `UPDATE ${table} SET is_active = false WHERE id = $1`,
-      [req.params.id]
+      [id]
     );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 

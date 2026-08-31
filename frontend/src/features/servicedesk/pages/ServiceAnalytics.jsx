@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
-import { TrendingUp, Users, Clock, Star, Wrench, BarChart2 } from 'lucide-react';
+import { TrendingUp, Users, Clock, Star, Wrench, BarChart2, BarChart3 } from 'lucide-react';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 
 const CARD = { background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:'20px', marginBottom:16 };
 const STAT = { textAlign:'center', padding:'16px 20px' };
@@ -13,19 +15,24 @@ export default function ServiceAnalytics() {
   const [selected, setSelected] = useState(null);
   const [engineerDetail, setEngineerDetail] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [period, setPeriod] = useState('90');
+
+  // Replaces a `period` useState that no control ever set — the value was fixed
+  // at '90' and never reached the API, so this page has always shown the
+  // endpoint's hardcoded 30-day window regardless.
+  const filters = useDashboardFilters({ defaultPeriod: 'last30', storageKey: 'service-analytics' });
+  const { params } = filters;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [eng, dash] = await Promise.allSettled([
         api.get('/service-analytics/engineers'),
-        api.get('/service-analytics/dashboard'),
+        api.get('/service-analytics/dashboard', { params }),
       ]);
       if (eng.status === 'fulfilled') setEngineers(eng.value.data);
       if (dash.status === 'fulfilled') setDashboard(dash.value.data);
     } finally { setLoading(false); }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -48,32 +55,35 @@ export default function ServiceAnalytics() {
   const RatingBar = ({ value, max = 5 }) => (
     <div style={{ display:'flex', alignItems:'center', gap:6 }}>
       <div style={{ flex:1, height:6, background:'#f0f0f4', borderRadius:9999, overflow:'hidden' }}>
-        <div style={{ height:'100%', width:`${(value / max) * 100}%`, background:value >= 4 ? '#059669' : value >= 3 ? '#d97706' : '#dc2626', borderRadius:9999 }} />
+        <div style={{ height:'100%', width:`${(value / max) * 100}%`, background:value >= 4 ? '#059669' : value >= 3 ? '#6d28d9' : '#dc2626', borderRadius:9999 }} />
       </div>
       <span style={{ fontSize:12, fontWeight:600, color:'#374151', minWidth:24 }}>{parseFloat(value || 0).toFixed(1)}</span>
     </div>
   );
 
   return (
-    <div style={{ padding:'24px' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#111', margin:0 }}>Service Performance Analytics</h1>
-          <p style={{ fontSize:13, color:'#6b7280', margin:'4px 0 0' }}>Engineer-level metrics: tickets, closure time, first-fix %, ratings</p>
-        </div>
-        <button onClick={load} style={{ background:'#f5f3ff', color:'#6B3FDB', border:'1px solid #e9e4ff', borderRadius:8, padding:'8px 16px', fontSize:13, fontWeight:600, cursor:'pointer' }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Service Desk"
+        title="Service Performance Analytics"
+        subtitle="Engineer-level metrics: tickets, closure time, first-fix %, ratings"
+        actions={<button className="plh-cta" onClick={load}>
           Refresh
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
+      <DashboardFilterBar filters={filters} />
 
       {/* Dashboard KPIs */}
       {dashboard && (
         <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:12, marginBottom:20 }}>
           {[
-            { label:'Total Tickets (30d)', value:kpis.total_tickets || 0, color:'#6B3FDB' },
+            { label:`Total Tickets · ${dashboard.period_label || 'Period'}`, value:kpis.total_tickets || 0, color:'#6B3FDB' },
             { label:'Open', value:kpis.open_tickets || 0, color:'#dc2626' },
             { label:'Closed', value:kpis.closed_tickets || 0, color:'#059669' },
-            { label:'Avg Closure (hrs)', value:kpis.avg_closure_hrs ? `${kpis.avg_closure_hrs}h` : '—', color:'#d97706' },
+            { label:'Avg Closure (hrs)', value:kpis.avg_closure_hrs ? `${kpis.avg_closure_hrs}h` : '—', color:'#6d28d9' },
             { label:'Avg CSAT', value:dashboard.csat?.avg_csat ? `${parseFloat(dashboard.csat.avg_csat).toFixed(1)}/5` : '—', color:'#6B3FDB' },
           ].map(s => (
             <div key={s.label} style={{ ...CARD, ...STAT, margin:0 }}>
@@ -128,7 +138,7 @@ export default function ServiceAnalytics() {
                 <td style={{ padding:'10px 12px', color:'#059669', fontWeight:600, textAlign:'center' }}>{eng.closed_tickets || 0}</td>
                 <td style={{ padding:'10px 12px', color:parseInt(eng.open_tickets)>5?'#dc2626':'#374151', fontWeight:600, textAlign:'center' }}>{eng.open_tickets || 0}</td>
                 <td style={{ padding:'10px 12px', textAlign:'center' }}>
-                  <span style={{ background:!eng.avg_closure_hrs?'#f3f4f6':parseFloat(eng.avg_closure_hrs)<=24?'#d1fae5':parseFloat(eng.avg_closure_hrs)<=48?'#fef3c7':'#fee2e2', color:!eng.avg_closure_hrs?'#6b7280':parseFloat(eng.avg_closure_hrs)<=24?'#065f46':parseFloat(eng.avg_closure_hrs)<=48?'#92400e':'#991b1b', padding:'2px 8px', borderRadius:9999, fontSize:12, fontWeight:700 }}>
+                  <span style={{ background:!eng.avg_closure_hrs?'#f3f4f6':parseFloat(eng.avg_closure_hrs)<=24?'#d1fae5':parseFloat(eng.avg_closure_hrs)<=48?'#ede9fe':'#fee2e2', color:!eng.avg_closure_hrs?'#6b7280':parseFloat(eng.avg_closure_hrs)<=24?'#065f46':parseFloat(eng.avg_closure_hrs)<=48?'#5b21b6':'#991b1b', padding:'2px 8px', borderRadius:9999, fontSize:12, fontWeight:700 }}>
                     {eng.avg_closure_hrs ? `${parseFloat(eng.avg_closure_hrs).toFixed(1)}h` : '—'}
                   </span>
                 </td>
@@ -137,7 +147,7 @@ export default function ServiceAnalytics() {
                 </td>
                 <td style={{ padding:'10px 12px', textAlign:'center', color:'#374151' }}>
                   {eng.commissioning_total || 0} done
-                  {eng.commissioning_rating && <div style={{ fontSize:11, color:'#d97706' }}>⭐ {parseFloat(eng.commissioning_rating).toFixed(1)}</div>}
+                  {eng.commissioning_rating && <div style={{ fontSize:11, color:'#6d28d9' }}>⭐ {parseFloat(eng.commissioning_rating).toFixed(1)}</div>}
                 </td>
                 <td style={{ padding:'10px 12px' }}>
                   <button onClick={e => { e.stopPropagation(); loadDetail(eng.engineer_name); }} style={{ background:'#f5f3ff', color:'#6B3FDB', border:'1px solid #e9e4ff', borderRadius:6, padding:'4px 10px', fontSize:12, cursor:'pointer', fontWeight:600 }}>
@@ -167,7 +177,7 @@ export default function ServiceAnalytics() {
               ['Total Tickets', engineerDetail.ticket_stats?.total || 0, '#6B3FDB'],
               ['Closed', engineerDetail.ticket_stats?.closed || 0, '#059669'],
               ['Open', engineerDetail.ticket_stats?.open || 0, '#dc2626'],
-              ['Avg Closure', engineerDetail.ticket_stats?.avg_closure_hrs ? `${parseFloat(engineerDetail.ticket_stats.avg_closure_hrs).toFixed(1)}h` : '—', '#d97706'],
+              ['Avg Closure', engineerDetail.ticket_stats?.avg_closure_hrs ? `${parseFloat(engineerDetail.ticket_stats.avg_closure_hrs).toFixed(1)}h` : '—', '#6d28d9'],
             ].map(([l,v,c]) => (
               <div key={l} style={{ background:'#f9fafb', borderRadius:8, padding:'12px 16px', textAlign:'center' }}>
                 <div style={{ fontSize:20, fontWeight:800, color:c }}>{v}</div>
@@ -184,10 +194,10 @@ export default function ServiceAnalytics() {
                   <td style={{ padding:'6px 10px', fontWeight:700, color:'#6B3FDB' }}>{t.ticket_number}</td>
                   <td style={{ padding:'6px 10px', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.subject}</td>
                   <td style={{ padding:'6px 10px' }}>
-                    <span style={{ background:{open:'#fef3c7',closed:'#d1fae5'}[t.status?.toLowerCase()]||'#f3f4f6', padding:'1px 6px', borderRadius:9999, fontSize:10, fontWeight:700, textTransform:'capitalize' }}>{t.status}</span>
+                    <span style={{ background:{open:'#ede9fe',closed:'#d1fae5'}[t.status?.toLowerCase()]||'#f3f4f6', padding:'1px 6px', borderRadius:9999, fontSize:10, fontWeight:700, textTransform:'capitalize' }}>{t.status}</span>
                   </td>
                   <td style={{ padding:'6px 10px', color:'#374151' }}>{t.priority}</td>
-                  <td style={{ padding:'6px 10px', color:'#d97706' }}>{t.csat_rating ? `⭐${t.csat_rating}` : '—'}</td>
+                  <td style={{ padding:'6px 10px', color:'#6d28d9' }}>{t.csat_rating ? `⭐${t.csat_rating}` : '—'}</td>
                   <td style={{ padding:'6px 10px', color:'#9ca3af' }}>{t.created_at ? new Date(t.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                   <td style={{ padding:'6px 10px', color:'#9ca3af' }}>{t.resolved_at ? new Date(t.resolved_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                 </tr>
@@ -199,6 +209,6 @@ export default function ServiceAnalytics() {
           </table>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

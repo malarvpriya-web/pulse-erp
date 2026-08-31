@@ -1,26 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
-  Clock,
-  CheckCircle,
-  X,
-  Calendar,
-  LogIn,
-  LogOut,
-  AlertCircle,
-  ChevronLeft,
-  ChevronRight,
-  FileEdit,
-  RefreshCw,
-  MapPin,
-  Download,
-  Trophy,
-  Coffee,
+  Clock, CheckCircle, X, Calendar, LogIn, LogOut, AlertCircle,
+  ChevronLeft, ChevronRight, FileEdit, RefreshCw, MapPin, Download,
+  Trophy, Coffee, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { getPosition } from '@/mobile/native';
 import { useAuth } from '@/context/AuthContext';
 import FaceClockModal from '@/components/attendance/FaceClockModal';
 import './AttendanceDashboard.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -69,7 +58,7 @@ const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const STATUS_COLORS = {
   present: { bg: '#dcfce7', text: '#166534', dot: '#16a34a' },
   absent:  { bg: '#fee2e2', text: '#991b1b', dot: '#dc2626' },
-  late:    { bg: '#fef3c7', text: '#92400e', dot: '#d97706' },
+  late:    { bg: '#ede9fe', text: '#5b21b6', dot: '#6d28d9' },
   leave:   { bg: '#dbeafe', text: '#1e40af', dot: '#3b82f6' },
   holiday: { bg: '#ede9fe', text: '#5b21b6', dot: '#8b5cf6' },
   weekend: { bg: '#f9fafb', text: '#9ca3af', dot: '#d1d5db' },
@@ -77,7 +66,7 @@ const STATUS_COLORS = {
 };
 
 const REG_STATUS_COLORS = {
-  pending:  { bg: '#fef3c7', text: '#92400e' },
+  pending:  { bg: '#ede9fe', text: '#5b21b6' },
   approved: { bg: '#dcfce7', text: '#166534' },
   rejected: { bg: '#fee2e2', text: '#991b1b' },
 };
@@ -549,7 +538,35 @@ const AttendanceDashboard = () => {
 
   // ── render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="atd-root">
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Attendance"
+        title="My Attendance"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={prevMonth} title="Previous month">
+            <ChevronLeft size={16} />
+          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={nextMonth} title="Next month">
+            <ChevronRight size={16} />
+          </button>
+          <button
+            className="plh-cta plh-cta--ghost"
+            onClick={downloadCSV}
+            title="Download monthly CSV">
+            <Download size={15} />
+          </button>
+          <button
+            className="plh-cta"
+            onClick={loadData}
+            title="Refresh"
+            
+            disabled={loading}>
+            <RefreshCw size={15} style={loading ? { animation: 'atd-spin 1s linear infinite' } : {}} />
+          </button>
+        </>}
+      />
+    }>
 
       {/* ── Toast ── */}
       {toast && (
@@ -571,36 +588,7 @@ const AttendanceDashboard = () => {
       )}
 
       {/* ── Header ── */}
-      <div className="atd-header">
-        <h1 className="atd-title">My Attendance</h1>
-        <div className="atd-nav">
-          <button className="atd-nav-btn" onClick={prevMonth} title="Previous month">
-            <ChevronLeft size={16} />
-          </button>
-          <span className="atd-month">
-            {MONTH_NAMES[currentDate.getMonth()]} {currentDate.getFullYear()}
-          </span>
-          <button className="atd-nav-btn" onClick={nextMonth} title="Next month">
-            <ChevronRight size={16} />
-          </button>
-          <button
-            className="atd-icon-btn"
-            onClick={downloadCSV}
-            title="Download monthly CSV"
-          >
-            <Download size={15} />
-          </button>
-          <button
-            className="atd-icon-btn"
-            onClick={loadData}
-            title="Refresh"
-            style={loading ? { opacity: 0.5 } : {}}
-            disabled={loading}
-          >
-            <RefreshCw size={15} style={loading ? { animation: 'atd-spin 1s linear infinite' } : {}} />
-          </button>
-        </div>
-      </div>
+
 
       {/* ── Top row: Clock card + Summary ── */}
       <div className="atd-top-row">
@@ -663,7 +651,7 @@ const AttendanceDashboard = () => {
 
             {/* offline queue indicator */}
             {offlineQueueCount > 0 && (
-              <div style={{ background: '#fef3c7', color: '#92400e', padding: '4px 10px', borderRadius: 6, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+              <div style={{ background: '#ede9fe', color: '#5b21b6', padding: '4px 10px', borderRadius: 6, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
                 ⚡ {offlineQueueCount} punch{offlineQueueCount > 1 ? 'es' : ''} queued offline
               </div>
             )}
@@ -767,7 +755,7 @@ const AttendanceDashboard = () => {
                   <button
                     onClick={handleEndBreak}
                     disabled={breakLoading}
-                    style={{ width: '100%', padding: '9px 0', borderRadius: 8, border: '1px solid #f59e0b', background: '#fffbeb', color: '#92400e', fontWeight: 700, fontSize: 13, cursor: breakLoading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                    style={{ width: '100%', padding: '9px 0', borderRadius: 8, border: '1px solid #7c5cf0', background: '#f5f3ff', color: '#5b21b6', fontWeight: 700, fontSize: 13, cursor: breakLoading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
                   >
                     <Coffee size={14} />
                     {breakLoading ? 'Ending break…' : 'End Break'}
@@ -805,7 +793,7 @@ const AttendanceDashboard = () => {
                     <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                       <Coffee size={11} color="#9ca3af" />
                       {(b.break_type || 'break').charAt(0).toUpperCase() + (b.break_type || 'break').slice(1)}
-                      {b.is_active && <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>Active</span>}
+                      {b.is_active && <span style={{ background: '#ede9fe', color: '#5b21b6', borderRadius: 6, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>Active</span>}
                     </span>
                     <span style={{ color: '#6b7280' }}>
                       {fmtBreakTime(b.break_start)}
@@ -832,7 +820,7 @@ const AttendanceDashboard = () => {
             {/* streak banner */}
             {streak > 0 && (
               <div className="atd-streak">
-                <Trophy size={15} color="#f59e0b" />
+                <Trophy size={15} color="#7c5cf0" />
                 <span>
                   {streak}-day attendance streak
                   {streak >= 14 && ' — outstanding!'}
@@ -862,8 +850,8 @@ const AttendanceDashboard = () => {
                   </div>
                 </div>
                 <div className="atd-stat-pill">
-                  <div className="atd-stat-icon" style={{ background: '#fef3c7' }}>
-                    <Clock size={17} color="#f59e0b" />
+                  <div className="atd-stat-icon" style={{ background: '#ede9fe' }}>
+                    <Clock size={17} color="#7c5cf0" />
                   </div>
                   <div>
                     <div className="atd-stat-val">{monthlySummary.late ?? 0}</div>
@@ -1113,9 +1101,9 @@ const AttendanceDashboard = () => {
 
                 <div
                   style={{
-                    background: '#fffbeb', border: '1px solid #fde68a',
+                    background: '#f5f3ff', border: '1px solid #ddd6fe',
                     borderRadius: 8, padding: '10px 14px',
-                    fontSize: 12, color: '#92400e', display: 'flex', gap: 8, alignItems: 'flex-start',
+                    fontSize: 12, color: '#5b21b6', display: 'flex', gap: 8, alignItems: 'flex-start',
                   }}
                 >
                   <AlertCircle size={14} style={{ marginTop: 1, flexShrink: 0 }} />
@@ -1138,7 +1126,7 @@ const AttendanceDashboard = () => {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 };
 

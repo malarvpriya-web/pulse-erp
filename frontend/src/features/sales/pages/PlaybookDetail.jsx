@@ -2,15 +2,16 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import {
-  ArrowLeft, Plus, Pencil, Trash2, ChevronUp, ChevronDown,
-  CheckSquare, MessageSquare, FileText, Mail, List, Zap
+  ArrowLeft, Plus, Pencil, Trash2, ChevronUp, ChevronDown, CheckSquare,
+  MessageSquare, FileText, Mail, List, Zap, ShoppingCart,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STEP_TYPES = ['action', 'talk_track', 'checklist', 'email_template', 'document'];
 const CAT_COLORS = {
   prospecting:  { bg: '#dbeafe', color: '#1d4ed8' },
-  qualification:{ bg: '#fef3c7', color: '#92400e' },
+  qualification:{ bg: '#ede9fe', color: '#5b21b6' },
   proposal:     { bg: '#ede9fe', color: '#6B3FDB' },
   negotiation:  { bg: '#fee2e2', color: '#b91c1c' },
   closing:      { bg: '#d1fae5', color: '#065f46' },
@@ -25,7 +26,7 @@ const TYPE_ICONS = {
 };
 const TYPE_COLORS = {
   action:         { bg: '#dbeafe', color: '#1d4ed8' },
-  talk_track:     { bg: '#fef3c7', color: '#92400e' },
+  talk_track:     { bg: '#ede9fe', color: '#5b21b6' },
   checklist:      { bg: '#d1fae5', color: '#065f46' },
   email_template: { bg: '#fce7f3', color: '#9d174d' },
   document:       { bg: '#f3f4f6', color: '#374151' },
@@ -182,7 +183,16 @@ export default function PlaybookDetail({ setPage, urlParams }) {
   const cc = catColor(playbook.category);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100%' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title={playbook.name}
+        actions={<button className="plh-cta" onClick={openHeaderEdit}>
+            <Pencil size={13} /> Edit
+          </button>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingDeleteStep}
@@ -202,48 +212,6 @@ export default function PlaybookDetail({ setPage, urlParams }) {
         <ArrowLeft size={15} /> Back to Playbooks
       </button>
 
-      <div style={{ background: '#fff', borderRadius: 12, padding: 24,
-                    border: '1px solid #f0f0f4', marginBottom: 20 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 700, color: '#1f2937', margin: 0 }}>
-                {playbook.name}
-              </h1>
-              {playbook.category && (
-                <span style={{ background: cc.bg, color: cc.color, padding: '3px 10px',
-                               borderRadius: 20, fontSize: 11, fontWeight: 700,
-                               textTransform: 'uppercase', letterSpacing: '.4px' }}>
-                  {playbook.category}
-                </span>
-              )}
-              {playbook.applicable_stage && (
-                <span style={{ background: '#f3f4f6', color: '#6b7280', padding: '3px 10px',
-                               borderRadius: 20, fontSize: 11 }}>
-                  Stage: {playbook.applicable_stage}
-                </span>
-              )}
-              <span style={{ background: playbook.is_active ? '#d1fae5' : '#f3f4f6',
-                             color:      playbook.is_active ? '#065f46' : '#9ca3af',
-                             padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>
-                {playbook.is_active ? 'Active' : 'Inactive'}
-              </span>
-            </div>
-            {playbook.description && (
-              <p style={{ color: '#6b7280', fontSize: 14, margin: 0, lineHeight: 1.6 }}>
-                {playbook.description}
-              </p>
-            )}
-          </div>
-          <button onClick={openHeaderEdit}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px',
-                     background: '#f5f3ff', color: '#6B3FDB', border: '1px solid #ede9fe',
-                     borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600,
-                     flexShrink: 0, marginLeft: 16 }}>
-            <Pencil size={13} /> Edit
-          </button>
-        </div>
-      </div>
 
       {/* Steps */}
       <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', overflow: 'hidden' }}>
@@ -344,7 +312,6 @@ export default function PlaybookDetail({ setPage, urlParams }) {
         )}
       </div>
 
-      {/* Header Edit Modal */}
       {headerModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 1000,
                       display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -485,6 +452,6 @@ export default function PlaybookDetail({ setPage, urlParams }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

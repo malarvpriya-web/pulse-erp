@@ -28,6 +28,7 @@ export const ROUTES = {
   APIDocumentation:      { component: lazy(() => import('@/features/admin/pages/APIDocumentation')) },
   ApproverSetup:         { component: lazy(() => import('@/features/admin/pages/ApproverSetup')), props: ctx => ({ setPage: ctx.setPage }) },
   AssetMaintenance:      { component: lazy(() => import('@/features/admin/pages/AssetMaintenance')) },
+  BrandVault:            { component: lazy(() => import('@/features/admin/pages/BrandVault')) },
   DatabaseTest:          { component: lazy(() => import('@/features/admin/pages/DatabaseTest')) },
   DocumentSetup:         { component: lazy(() => import('@/features/admin/pages/DocumentSetup')) },
   IntegrationsHub:       { component: lazy(() => import('@/features/admin/pages/IntegrationsHub')), props: ctx => ({ setPage: ctx.setPage }) },
@@ -51,8 +52,8 @@ export const ROUTES = {
   ERPIntelligence:       { component: lazy(() => import('@/features/ai/pages/ERPIntelligence')), props: ctx => ({ setPage: ctx.setPage }) },
 
   // ── Analytics ────────────────────────────────────────────────────────────
-  CeoDashboard:             { component: lazy(() => import('@/features/analytics/pages/CeoDashboard')) },
-  // Phase 49H — CEO Intelligence Dashboard
+  // The single executive hub. `CeoDashboard` was retired 2026-08-17 once this page
+  // reached feature parity with it — see manual §108/§108.1/§108.2.
   CEOIntelligenceDashboard: { component: lazy(() => import('@/features/analytics/pages/CEOIntelligenceDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
   PowerQualityAnalytics:    { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/PowerQualityAnalytics')) },
 
@@ -119,7 +120,6 @@ export const ROUTES = {
   SuccessionSettings:        { component: lazy(() => import('@/features/hr/pages/SuccessionSettings')), props: ctx => ({ setPage: ctx.setPage }) },
   SkillMatrix:               { component: lazy(() => import('@/features/hr/pages/SkillMatrix')), props: ctx => ({ setPage: ctx.setPage }) },
   EmployeeReports:       { component: lazy(() => import('@/features/hr/pages/EmployeeReports')) },
-  HRAnalyticsDashboard:    { component: lazy(() => import('@/features/hr/pages/HRAnalyticsDashboard')) },
   HRBenchmarkingDashboard: { component: lazy(() => import('@/features/hr/pages/HRBenchmarkingDashboard')) },
   EmployeeAssets:        { component: lazy(() => import('@/features/hr/pages/EmployeeAssets')) },
 
@@ -244,6 +244,7 @@ export const ROUTES = {
   VendorDashboard:          { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/VendorDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
   VendorApprovalQueue:      { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/VendorApprovalQueue')) },
   VendorRiskDashboard:      { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/VendorRiskDashboard')) },
+  SupplierPerformanceIndex: { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/SupplierPerformanceIndex')) },
   VendorRegistration:       { public: true,          component: lazy(() => import('@/features/procurement/pages/VendorRegistration')) },
 
   // ── Inventory ────────────────────────────────────────────────────────────
@@ -253,6 +254,10 @@ export const ROUTES = {
   InventoryIntelligence:     { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/InventoryIntelligence')) },
   InventoryReport:           { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/InventoryReport')) },
   ItemMaster:                { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/ItemMaster')),                props: ctx => ({ setPage: ctx.setPage }) },
+  // Component 360 — reached by clicking a row in Item Master (/ItemDetail?id=).
+  // Detail page, deliberately not in NAV_ITEMS: being a manual ROUTES key keeps
+  // it out of the orphan-nav group too (see autoRouter.js).
+  ItemDetail:                { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/ItemDetail')) },
   LogisticsShipping:         { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/LogisticsShipping')) },
   MaterialConsumption:       { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/MaterialConsumption')),       props: ctx => ({ setPage: ctx.setPage }) },
   QualityManagement:         { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/QualityManagement')) },
@@ -405,6 +410,11 @@ export const ROUTES = {
   // ── Recruitment (merged with former Talent module 2026-07-28) ─────────────
   RecruitmentSettings:   { component: lazy(() => import('@/features/recruitment/pages/RecruitmentSettings')), props: ctx => ({ setPage: ctx.setPage }) },
   RecruitmentDashboard:  { component: lazy(() => import('@/features/recruitment/pages/RecruitmentDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
+  // Jobs/Sourcing are tab containers (see Candidates below for the same
+  // pattern). The pages they wrap keep their own route entries so existing
+  // setPage('JobOpenings')-style calls and deep links stay valid.
+  Jobs:                  { component: lazy(() => import('@/features/recruitment/pages/Jobs')),                  props: ctx => ({ setPage: ctx.setPage }) },
+  Sourcing:              { component: lazy(() => import('@/features/recruitment/pages/Sourcing')),              props: ctx => ({ setPage: ctx.setPage }) },
   JobRequisitionPipeline:{ component: lazy(() => import('@/features/recruitment/pages/JobRequisitionPipeline')) },
   JobOpenings:           { component: lazy(() => import('@/features/recruitment/pages/JobOpenings')),           props: ctx => ({ setPage: ctx.setPage }) },
   Candidates:            { component: lazy(() => import('@/features/recruitment/pages/Candidates')),         props: ctx => ({ setPage: ctx.setPage }) },
@@ -416,7 +426,6 @@ export const ROUTES = {
   InterviewScheduler:    { component: lazy(() => import('@/features/recruitment/pages/InterviewScheduler')), props: ctx => ({ setPage: ctx.setPage }) },
   InterviewQuestionBank: { component: lazy(() => import('@/features/recruitment/pages/InterviewQuestionBank')) },
   OfferManagement:       { component: lazy(() => import('@/features/recruitment/pages/OfferManagement')) },
-  OnboardingChecklist:   { component: lazy(() => import('@/features/recruitment/pages/OnboardingChecklist')) },
   RecruitmentReports:    { component: lazy(() => import('@/features/recruitment/pages/RecruitmentReports')) },
   ResumeDatabase:        { component: lazy(() => import('@/features/recruitment/pages/ResumeDatabase')) },
   TalentPools:           { component: lazy(() => import('@/features/recruitment/pages/TalentPools')),      props: ctx => ({ setPage: ctx.setPage }) },
@@ -534,32 +543,307 @@ export const ROUTES = {
 };
 
 // ── NAV_ITEMS ──────────────────────────────────────────────────────────────
+// Icons are the ONLY thing distinguishing menus in the 70px collapsed rail —
+// the label is invisible until hover. So they have to survive at 17px with no
+// text: no two top-level icons may be near-identical silhouettes (FaCog vs
+// FaCogs was exactly that, on Settings vs Operations), and each should read as
+// its domain rather than a neighbouring one (FaFlask reads laboratory, not
+// factory; FaChartLine on Finance reads analytics, which is a different band).
 import {
-  FaHome, FaUsers, FaChartLine, FaBullhorn, FaProjectDiagram,
-  FaBox, FaFileAlt, FaCog, FaClock, FaHandshake,
-  FaShoppingCart, FaBell, FaSitemap, FaHistory, FaCalendarCheck,
-  FaUmbrellaBeach, FaBriefcase, FaHeadset, FaPlane, FaCogs,
-  FaExclamationCircle, FaWrench, FaRobot,
-  FaFlask, FaGraduationCap, FaShieldAlt, FaFileSignature,
-  FaClipboardCheck, FaUserTie, FaTrophy, FaTruck, FaQrcode,
-  FaUserShield,
+  FaHome, FaClipboardCheck, FaBell,
+  FaRobot, FaFileAlt,
+  FaHandshake, FaFileInvoiceDollar, FaBullhorn,
+  FaProjectDiagram, FaStream, FaExclamationCircle, FaHeadset,
+  FaShoppingCart, FaBox, FaIndustry, FaShieldAlt, FaWrench,
+  FaRupeeSign,
+  FaUsers, FaUserTie, FaBriefcase, FaGraduationCap, FaCalendarCheck,
+  FaUmbrellaBeach, FaClock, FaTrophy, FaPlane, FaSitemap,
+  FaFileSignature, FaQrcode,
+  FaUserShield, FaCog, FaHistory,
 } from 'react-icons/fa';
 
+// Top-level items are ordered by business domain and separated by `divider`
+// band labels (Sidebar.jsx renders them as a hairline when collapsed and a
+// small caps heading when expanded; a band whose every menu is hidden for the
+// viewer's role is dropped, so no role ever sees an empty heading).
+//
+// IMPORTANT — two ordering constraints that are load-bearing, not cosmetic:
+//  1. Group `name` values are permission keys. They are matched verbatim by
+//     ROLE_SECTION_ALLOWLIST (menuCatalog.js) and stored as `module_id` in the
+//     menu_permissions / user_menu_permissions tables that back the admin's
+//     Page Access screen. Reorder freely; renaming one silently orphans every
+//     saved override for it.
+//  2. 'Complaints' must stay immediately BEFORE 'Service Desk'.
+//     CustomerComplaintsIPCS is registered under both, and getSectionForPage()
+//     resolves a shared page to whichever group comes first in this array —
+//     so this order is what makes that page gate on 'Complaints'.
+//     ROLE_SECTION_ALLOWLIST is written against that resolution.
+//
+// Within a submenu the house order is: overview → daily transactions →
+// approvals/queues → analysis & reports → masters/settings, with `separator`
+// rows breaking up anything past ~8 items and self-service ("My …") pages
+// grouped at the top of the shared HR/Attendance/Leaves/Timesheets menus.
 export const NAV_ITEMS = [
+  // ── Workspace ─────────────────────────────────────────────────────────────
   { name: 'Home',               icon: <FaHome />,              page: 'Home' },
   { name: 'Approvals',          icon: <FaClipboardCheck />,    page: 'ApprovalCenter', module: 'approvals' },
+  { name: 'Notifications',      icon: <FaBell />,              page: 'NotificationCenter', module: 'notifications' },
+
+  { divider: true, section: 'Insights' },
 
   { name: 'Analytics & AI', icon: <FaRobot />, submenu: [
+    { name: 'Executive',           separator: true },
     { name: 'CEO Intelligence',    page: 'CEOIntelligenceDashboard' },
-    { name: 'CEO Dashboard',       page: 'CeoDashboard' },
-    { name: 'CFO Dashboard',       page: 'CFODashboard' },
-    { name: 'Ops Command Center',  page: 'AdminDashboard' },
     { name: 'Executive Dashboard', page: 'ExecutiveDashboard' },
+    { name: 'Ops Command Center',  page: 'AdminDashboard' },
+    { name: 'Functional',          separator: true },
+    { name: 'CFO Dashboard',       page: 'CFODashboard' },
     { name: 'HR Dashboard',        page: 'HRDashboard' },
     { name: 'HR Benchmarking',     page: 'HRBenchmarkingDashboard' },
+    { name: 'Platform',            separator: true },
     { name: 'ERP Intelligence',    page: 'ERPIntelligence' },
     { name: 'System Health',       page: 'SystemHealth' },
   ]},
+
+  { name: 'Reports', icon: <FaFileAlt />, module: 'reports', submenu: [
+    { name: 'Report Builder',      page: 'Reports' },
+    { name: 'Saved Reports',       page: 'SavedReports' },
+  ]},
+
+  { divider: true, section: 'Revenue' },
+
+  { name: 'CRM', icon: <FaHandshake />, submenu: [
+    { name: 'Dashboard',           page: 'SalesDashboard' },
+    { name: 'IEM — Enquiries',     page: 'Leads' },
+    { name: 'Opportunities',       page: 'OpportunitiesKanban' },
+    { name: 'Customers',           separator: true },
+    { name: 'Accounts',            page: 'Accounts' },
+    { name: 'Contacts',            page: 'Contacts' },
+    { name: 'Customer 360',        page: 'Customer360' },
+    { name: 'Health Engine',       page: 'CustomerHealthDashboard' },
+    { name: 'Engagement',          separator: true },
+    { name: 'Activities',          page: 'CRMActivities' },
+    { name: 'CRM Email',           page: 'CRMEmail' },
+    { name: 'Analysis & Setup',    separator: true },
+    { name: 'Won / Lost Leads',    page: 'WonLostLeads' },
+    { name: 'Reports',             page: 'CRMReports' },
+    { name: 'Pipeline Automation', page: 'PipelineAutomation' },
+    { name: 'Settings',            page: 'CRMSettings' },
+  ]},
+
+  { name: 'Sales', icon: <FaFileInvoiceDollar />, submenu: [
+    { name: 'Command Center',   page: 'SalesCommandCenter' },
+    { name: 'Sell',             separator: true },
+    { name: 'Quotations',       page: 'Quotations' },
+    { name: 'Sales Orders',     page: 'SalesOrders' },
+    { name: 'Pricing Engine',   page: 'PricingEngine' },
+    { name: 'Fulfilment',       page: 'FulfilmentTracking' },
+    { name: 'Subscriptions',    page: 'Subscriptions' },
+    { name: 'Plan & Perform',   separator: true },
+    { name: 'Sales Targets',    page: 'SalesTargets' },
+    { name: 'Intelligence',     page: 'SalesIntelligence' },   // Conversion·Funnel·Forecasts
+    { name: 'Commission',       page: 'CommissionManagement' },
+    { name: 'Market Presence',  page: 'SalesMarket' },         // Partners·Territories·Competitors
+    { name: 'Enablement & Setup', separator: true },
+    { name: 'Playbooks',        page: 'SalesPlaybooks' },
+    { name: 'Calendar',         page: 'SalesCalendar' },
+    { name: 'Documents',        page: 'SalesDocuments' },
+    { name: 'Settings',         page: 'SalesSettings' },
+  ]},
+
+  { name: 'Marketing', icon: <FaBullhorn />, submenu: [
+    { name: 'Dashboard',       page: 'MarketingDashboard' },
+    { name: 'Campaigns',       page: 'Campaigns' },
+    { name: 'Pursuit List',    page: 'PursuitList' },
+    { name: 'Execution',       separator: true },
+    { name: 'Assign Tasks',    page: 'AssignTasks' },
+    { name: 'Delivery Tracker',page: 'DeliveryTracker' },
+    { name: 'Timesheet Entry', page: 'TimesheetEntry' },
+    { name: 'Analysis & Setup', separator: true },
+    { name: 'Analytics',       page: 'MarketingAnalytics' },  // Campaign·Won/Lost·Performance
+    { name: 'Settings',        page: 'MarketingSettings' },
+  ]},
+
+  { divider: true, section: 'Delivery' },
+
+  { name: 'Projects', icon: <FaProjectDiagram />, module: 'projects', submenu: [
+    { name: 'Dashboard',           page: 'ProjectsDashboard' },
+    { name: 'Projects',            page: 'Projects' },
+    { name: 'Project 360°',        page: 'Project360' },
+    { name: 'Delivery',            separator: true },
+    { name: 'Project Master',      page: 'ProductionDeliveryTracker' }, // IPM→IPP production/delivery record grid (single source of truth)
+    { name: 'Project Pipeline',    page: 'ProjectPipelineBoard' }, // kanban of IPP projects by production stage (same source as Project Master)
+    { name: 'Task Board',          page: 'KanbanBoard' },
+    { name: 'Gantt Chart',         page: 'GanttChart' },
+    { name: 'Installation',        page: 'InstallationDashboard' },
+    { name: 'Control',             separator: true },
+    { name: 'Resource Management', page: 'ResourceManagement' },
+    { name: 'Issue Management',    page: 'IssueManagement' },
+    { name: 'Lifecycle',           page: 'ProjectLifecycleHub' },  // FAT·SAT·AMC·Warranty
+    { name: 'Financials',          page: 'ProjectFinancialsHub' }, // Costing·EVM·Profitability·Transactions·Cost Centres·Revenue
+    { name: 'Insights & Setup',    separator: true },
+    { name: 'CEO Command Center',  page: 'CEOCommandCenter' },
+    { name: 'Project Reports',     page: 'ProjectReports' },
+    { name: 'Settings',            page: 'ProjectSettings' },
+  ]},
+
+  { name: 'Operations', icon: <FaStream />, submenu: [
+    { name: 'Workflow Center',   page: 'WorkflowCenter' },          // Board·Configuration
+    { name: 'Project Tracker',   page: 'ProjectWorkflowTracker' },
+    { name: 'Lifecycle Tracker', page: 'LifecycleTracker' },
+    { name: 'Post-Delivery',     page: 'OperationsLifecycleHub' },  // Commissioning·AMC·Warranty
+    { name: 'Analytics',         separator: true },
+    { name: 'Dept Workload',     page: 'DepartmentWorkload' },
+    { name: 'Bottlenecks',       page: 'BottleneckAnalytics' },
+  ]},
+
+  // Complaints folded into Service Desk 2026-07-17 (IPCS is one half of the
+  // complaint -> service-ticket loop). Only the dashboard keeps a top-level home;
+  // the register itself lives at Service Desk > Customer Complaints.
+  // Must stay directly above 'Service Desk' — see the ordering note above.
+  { name: 'Complaints', icon: <FaExclamationCircle />, submenu: [
+    { name: 'Dashboard',           page: 'ComplaintsDashboard' },
+    { name: 'Complaint Register',  page: 'CustomerComplaintsIPCS' },
+  ]},
+
+  { name: 'Service Desk', icon: <FaHeadset />, module: 'servicedesk', submenu: [
+    { name: 'Dashboard',         page: 'SupportDashboard' },
+    { name: 'Tickets',           separator: true },
+    { name: 'My Tickets',        page: 'MyTickets' },
+    { name: 'All Tickets',       page: 'AllTickets' },
+    { name: 'Customer Complaints', page: 'CustomerComplaintsIPCS' }, // IPCS register
+    { name: 'SLA Management',    page: 'SLAManagement' },
+    { name: 'Agent Workload',    page: 'AgentWorkload' },
+    { name: 'Field & Site',      separator: true },
+    { name: 'Field Service',     page: 'FieldVisitScheduler' },
+    { name: 'Service Engineers', page: 'ServiceEngineers' },
+    { name: 'Installation',      page: 'InstallationRequests' },
+    { name: 'Commissioning',     page: 'CommissioningWorkflow' },
+    { name: 'Delivery Note',     page: 'DeliveryNote' },
+    { name: 'Spare Parts Stock', page: 'ServiceStockManagement' },
+    { name: 'Customers',         separator: true },
+    { name: 'Customer Portal',   page: 'CustomerPortalManagement' },
+    { name: 'Reviews',           page: 'ServiceReviews' },        // Customers·Feedback·Sites
+    { name: 'Contracts',         page: 'ServiceContracts' },
+    { name: 'Warranty',          page: 'OperationsWarranty' },
+    { name: 'Catalog & Knowledge', separator: true },
+    { name: 'Service Master',    page: 'ServiceMasterIPS' },   // IPS field-service grid
+    { name: 'Service Catalog',   page: 'ServiceMaster' },      // rate card (was 'Service Master')
+    { name: 'Knowledge Base',    page: 'KnowledgeBase' },
+    { name: 'Insights & Setup',  separator: true },
+    { name: 'Intelligence',      page: 'ServiceIntelligence' },   // Analytics·Failure·VoC
+    { name: 'Settings',          page: 'ServiceDeskSettings' },
+  ]},
+
+  { divider: true, section: 'Supply Chain' },
+
+  { name: 'Procurement', icon: <FaShoppingCart />, module: 'procurement', submenu: [
+    { name: 'Purchase Requests',  page: 'PurchaseRequestDashboard' },
+    { name: 'PO Management',      page: 'PurchaseOrderManagement' },
+    { name: 'Purchase Orders',    page: 'PurchaseOrders' },
+    { name: 'Goods Receipt',      page: 'GoodsReceipt' },
+    { name: 'Quality Inspection', page: 'QualityInspection' },
+    { name: 'Vendors & Planning', separator: true },
+    { name: 'Vendor Center',      page: 'VendorCenter' },     // Overview·Master·Approvals·Risk·360°·Portal·Scorecard·Pricing·Compare
+    { name: 'Supplier Performance', page: 'SupplierPerformanceIndex' },  // cross-vendor 0-100 index, heatmap, early warnings
+    { name: 'MRP Planning',       page: 'MRPPlanning' },
+    { name: 'Reports & Setup',    separator: true },
+    { name: 'Reports',            page: 'ProcurementReports' },
+    { name: 'Settings',           page: 'ProcurementSettings' },
+  ]},
+
+  { name: 'Inventory', icon: <FaBox />, module: 'inventory', submenu: [
+    { name: 'Dashboard',           page: 'InventoryDashboard' },
+    { name: 'Advanced Dashboard',  page: 'AdvancedInventoryDashboard' },
+    { name: 'Stock',               separator: true },
+    { name: 'Stock Summary',       page: 'StockSummary' },
+    { name: 'Stock Movements',     page: 'StockMovements' },
+    { name: 'Reservations',        page: 'StockReservations' },
+    { name: 'Material Consumption',page: 'MaterialConsumption' },
+    { name: 'Batch Tracking',      page: 'BatchTracking' },
+    { name: 'Stock Alerts',        page: 'StockAlertsAndSuggestions' },
+    { name: 'Masters',             separator: true },
+    { name: 'Item Master',         page: 'ItemMaster' },
+    { name: 'Component Pricing',   page: 'VendorPriceComparison' },
+    { name: 'Warehouse & Stores',  separator: true },
+    { name: 'Warehouse',           page: 'WarehouseManagement' },
+    { name: 'Stores Dashboard',    page: 'StoresDashboard' },
+    { name: 'Stores Cost Analysis',page: 'StoresCostAnalysis' },
+    { name: 'Logistics',           page: 'LogisticsShipping' },
+    { name: 'Quality',             page: 'QualityManagement' },
+    { name: 'Reports & Setup',     separator: true },
+    { name: 'Inventory Intel',     page: 'InventoryIntelligence' },
+    { name: 'Inventory Report',    page: 'InventoryReport' },
+    { name: 'Settings',            page: 'InventorySettings' },
+  ]},
+
+  { name: 'Production', icon: <FaIndustry />, module: 'production', submenu: [
+    { name: 'Production Dashboard',page: 'ProductionDashboard' },
+    { name: 'Execution',           separator: true },
+    { name: 'Module Batch Requests', page: 'ProductionModuleRequests' },
+    { name: 'Module Production Batches', page: 'ProductionOrders' },
+    { name: 'Shop Floor',          page: 'ShopFloor' },
+    { name: 'Subcontracting',      page: 'SubcontractOrders' },
+    { name: 'Batch Genealogy',     page: 'GenealogyTrace' },
+    { name: 'Planning',            separator: true },
+    { name: 'MRP Workbench',       page: 'MRPWorkbench' },
+    { name: 'Capacity Planning (CRP)', page: 'CRPWorkbench' },
+    { name: 'S&OP / RCCP',         page: 'SOPPlanning' },
+    { name: 'Work Centre Planning',page: 'WorkCentrePlanning' },
+    { name: 'Engineering Data',    separator: true },
+    { name: 'BOM Builder',         page: 'BOMBuilder' },
+    { name: 'BOM Modeling',        page: 'BOMModeling' },
+    { name: 'Upload BOM',          page: 'UploadBOM' },
+    { name: 'Setup',               separator: true },
+    { name: 'Settings',            page: 'ProductionSettings' },
+  ]},
+
+  { name: 'Quality', icon: <FaShieldAlt />, module: 'quality', submenu: [
+    { name: 'Dashboard',             page: 'QualityDashboard' },
+    { name: 'Control',               separator: true },
+    { name: 'Inspection Center',     page: 'InspectionCenter' },
+    { name: 'NCR Management',        page: 'NCRManagement' },
+    { name: 'CAPA Management',       page: 'CAPAManagement' },
+    { name: 'Assurance',             separator: true },
+    { name: 'FAT / SAT',             page: 'FATManagement' },
+    { name: 'Supplier Quality',      page: 'SupplierQuality' },
+    { name: 'Equipment Calibration', page: 'EquipmentCalibration' },
+    { name: 'Reports & Setup',       separator: true },
+    { name: 'Reports',               page: 'QualityReports' },
+    { name: 'Settings',              page: 'QualitySettings' },
+  ]},
+
+  { name: 'Engineering', icon: <FaWrench />, module: 'engineering', submenu: [
+    { name: 'Dashboard',           page: 'EngineeringDashboard' },
+    { name: 'R&D Projects',        page: 'RDProjects' },
+    { name: 'Prototype Tracker',   page: 'PrototypeTracker' },
+    { name: 'Test Plans',          page: 'TestPlans' },
+    { name: 'Change Notices (ECN)',page: 'ECNManagement' },
+    { name: 'Power Quality',       page: 'PowerQualityAnalytics' },
+  ]},
+
+  { divider: true, section: 'Finance' },
+
+  { name: 'Finance', icon: <FaRupeeSign />, module: 'finance', submenu: [
+    { name: 'Finance Dashboard',     page: 'FinanceDashboardNew' },
+    { name: 'Transactions',          separator: true },
+    { name: 'Receivables',           page: 'ReceivablesPage' },
+    { name: 'Payables',              page: 'PayablesPage' },
+    { name: 'Payments',              page: 'PaymentBatch' },
+    { name: 'Customers & Suppliers', page: 'Parties' },
+    { name: 'Accounting',            separator: true },
+    { name: 'Accounting Engine',     page: 'AccountingEngine' },
+    { name: 'Tax & Compliance',      page: 'TaxManagement' },
+    { name: 'Fixed Assets',          page: 'FixedAssets' },
+    { name: 'Budget Management',     page: 'BudgetManagement' },
+    { name: 'Reports & Setup',       separator: true },
+    { name: 'Financial Reports',     page: 'FinanceReports' },
+    { name: 'Settings',              page: 'FinanceSettings' },
+    { name: 'Self Service',          separator: true },
+    { name: 'My Payslip',            page: 'PayslipViewer' },
+  ]},
+
+  { divider: true, section: 'People' },
 
   { name: 'Employees', icon: <FaUsers />, module: 'employees', submenu: [
     { name: 'Dashboard',           page: 'EmployeesDashboard' },
@@ -569,78 +853,20 @@ export const NAV_ITEMS = [
   ]},
 
   { name: 'HR', icon: <FaUserTie />, module: 'hr', submenu: [
-    { name: 'Announcements',       page: 'Announcements' },
-    { name: 'Payroll Center',      page: 'PayrollCenter' },      // Settings·Run·Structure·Generate·View
     { name: 'Employee Directory',  page: 'EmployeeDirectory' },
-    { name: 'Probation',           page: 'Probation' },
+    { name: 'Payroll Center',      page: 'PayrollCenter' },      // Settings·Run·Structure·Generate·View
+    { name: 'Announcements',       page: 'Announcements' },
+    { name: 'Employee Records',    separator: true },
+    { name: 'Employee Documents',  page: 'EmployeeDocuments' },
+    { name: 'Asset Management',    page: 'EmployeeAssets' },
     { name: 'Policies',            page: 'Policies' },
     { name: 'HR Documents',        page: 'Downloads' },
+    { name: 'Self Service',        page: 'EmployeeSelfService' },
+    { name: 'Lifecycle',           separator: true },
+    { name: 'Probation',           page: 'Probation' },
     { name: 'Offboarding',         page: 'Offboarding' },
     { name: 'Exit Management',     page: 'ExitManagement' },
-    { name: 'Employee Documents',  page: 'EmployeeDocuments' },
-    { name: 'Self Service',        page: 'EmployeeSelfService' },
     { name: 'Succession Center',   page: 'SuccessionCenter' },   // Planning·Pipeline·Plans·Pools·Reports·Settings
-    { name: 'Asset Management',    page: 'EmployeeAssets' },
-  ]},
-
-  { name: 'Learning Center', icon: <FaGraduationCap />, submenu: [
-    { name: 'L&D Command Centre',   page: 'LearningDashboard' },
-    { name: 'Training Calendar',   page: 'LearningDevelopment' },
-    { name: 'Learning Paths',      page: 'LearningPaths' },
-    { name: 'Assessments',         page: 'AssessmentCenter' },
-    { name: 'Certifications',      page: 'CertificationManagement' },
-    { name: 'Skill Matrix',        page: 'SkillMatrix' },
-    { name: 'Competency Framework',page: 'CompetencyFramework' },
-    { name: 'Trainer Management',  page: 'TrainerManagement' },
-    { name: 'Training Reports',    page: 'TrainingReports' },
-    { name: 'Settings',            page: 'LNDSettings' },
-  ]},
-
-  { name: 'Attendance', icon: <FaCalendarCheck />, module: 'attendance', submenu: [
-    { name: 'Live Workforce',      page: 'LiveWorkforceDashboard' },
-    { name: 'My Attendance',       page: 'AttendanceDashboard' },
-    { name: 'QR Attendance',       page: 'QRAttendance' },
-    { name: 'Team Attendance',     page: 'TeamAttendance' },
-    { name: 'Shift Calendar',      page: 'ShiftCalendar' },
-    { name: 'Regularization',      page: 'RegularizationApprovals' },
-    { name: 'Overtime',            page: 'OvertimeApprovals' },
-    { name: 'Approval Delegation', page: 'ApprovalDelegation' },
-    { name: 'Reports',             page: 'AttendanceReportsHub' }, // Analytics·Monthly·Late·Geo·All
-    { name: 'Work Centres',        page: 'WorkCentres' },
-    { name: 'Contract Labour',     page: 'ContractLabour' },
-    { name: 'Payroll Sync',        page: 'PayrollSync' },
-    { name: 'Settings',            page: 'AttendanceSettings' },
-    { name: 'Audit Logs',          page: 'AttendanceAuditLogs' },
-  ]},
-
-  { name: 'Leaves', icon: <FaUmbrellaBeach />, module: 'leaves', submenu: [
-    { name: 'My Leaves',         page: 'MyLeaves' },
-    { name: 'Apply Leave',       page: 'ApplyLeave' },
-    { name: 'Leave Approvals',   page: 'LeaveApprovals' },
-    { name: 'Team Leaves',       page: 'TeamLeaves' },
-    { name: 'Leave Calendar',    page: 'LeaveCalendar' },
-    { name: 'Holiday Calendar',  page: 'HolidayCalendar' },
-    { name: 'Comp Off',          page: 'CompOff' },
-    { name: 'All Leaves',        page: 'AllLeaves' },
-    { name: 'Leave Reports',     page: 'LeaveReports' },
-    { name: 'Encashment',        page: 'LeaveEncashment' },
-    { name: 'Leave Settings',    page: 'LeaveSettings' },
-  ]},
-
-  { name: 'Finance', icon: <FaChartLine />, module: 'finance', submenu: [
-    { name: 'Finance Dashboard',     page: 'FinanceDashboardNew' },
-    { name: 'Accounting Engine',     page: 'AccountingEngine' },
-    { name: 'Receivables',           page: 'ReceivablesPage' },
-    { name: 'Payables',              page: 'PayablesPage' },
-    { name: 'Payments',              page: 'PaymentBatch' },
-    { name: 'Tax & Compliance',      page: 'TaxManagement' },
-    { name: 'Budget Management',     page: 'BudgetManagement' },
-    { name: 'Fixed Assets',          page: 'FixedAssets' },
-    { name: 'Financial Reports',     page: 'FinanceReports' },
-    { name: 'Customers & Suppliers', page: 'Parties' },
-    { name: 'Settings',              page: 'FinanceSettings' },
-    { name: 'Self Service',          separator: true },
-    { name: 'My Payslip',            page: 'PayslipViewer' },
   ]},
 
   // 'Talent' used to be a separate top-level menu (Resume Database/Pools/
@@ -654,172 +880,83 @@ export const NAV_ITEMS = [
   // inheriting the 'recruitment' module permission.
   { name: 'Recruitment', icon: <FaBriefcase />, module: 'recruitment', submenu: [
     { name: 'Dashboard',           page: 'RecruitmentDashboard' },
-    { name: 'Recruiter Dashboard', page: 'RecruiterDashboard' },
-    { name: 'Job Requisitions',    page: 'JobRequisitionPipeline' },
-    { name: 'Job Openings',        page: 'JobOpenings' },
+    { name: 'My Workbench',        page: 'RecruiterDashboard' },
+    // Jobs = Requisitions + Openings (two halves of one workflow); Sourcing =
+    // Talent Pools + Agencies (both "where candidates come from"). Grouped
+    // 2026-08-12, taking the submenu 11 → 9 items. Sourcing sits next to
+    // Candidates (it is where candidates come from) rather than under its own
+    // one-item divider, and the two single-item 'Sourcing & Talent'/'Admin'
+    // dividers collapse into one closing group.
+    { name: 'Pipeline',            separator: true },
+    { name: 'Jobs',                page: 'Jobs' },
+    { name: 'Sourcing',            page: 'Sourcing' },
     { name: 'Candidates',          page: 'Candidates' },
-    { name: 'Interview Scheduler', page: 'InterviewScheduler' },
-    { name: 'Question Bank',       page: 'InterviewQuestionBank' },
+    { name: 'Interviews',          page: 'InterviewScheduler' },
     { name: 'Offer Management',    page: 'OfferManagement' },
-    { name: 'Onboarding',          page: 'OnboardingChecklist' },
+    { name: 'Reports & Setup',     separator: true },
     { name: 'Reports',             page: 'RecruitmentReports' },
-    { name: 'Sourcing & Talent',   separator: true },
-    { name: 'Talent Pools',        page: 'TalentPools' },
-    { name: 'Agencies',            page: 'RecruitmentAgencies' },
-    { name: 'Admin',               separator: true },
-    { name: 'Email Templates',     page: 'EmailTemplates' },
-    { name: 'Hiring Forecasts',    page: 'HiringForecasts' },
-    { name: 'Employee Auto-Creation', page: 'EmployeeAutoCreation' },
     { name: 'Settings',            page: 'RecruitmentSettings' },
   ]},
 
-  { name: 'CRM', icon: <FaHandshake />, submenu: [
-    { name: 'Dashboard',           page: 'SalesDashboard' },
-    { name: 'IEM — Enquiries',     page: 'Leads' },
-    { name: 'Accounts',            page: 'Accounts' },
-    { name: 'Contacts',            page: 'Contacts' },
-    { name: 'Opportunities',       page: 'OpportunitiesKanban' },
-    { name: 'Won / Lost Leads',    page: 'WonLostLeads' },
-    { name: 'CRM Email',           page: 'CRMEmail' },
-    { name: 'Customer 360',        page: 'Customer360' },
-    { name: 'Health Engine',       page: 'CustomerHealthDashboard' },
-    { name: 'Activities',          page: 'CRMActivities' },
-    { name: 'Reports',             page: 'CRMReports' },
-    { name: 'Pipeline Automation', page: 'PipelineAutomation' },
-    { name: 'Settings',            page: 'CRMSettings' },
+  { name: 'Learning Center', icon: <FaGraduationCap />, submenu: [
+    { name: 'L&D Command Centre',  page: 'LearningDashboard' },
+    { name: 'Training Calendar',   page: 'LearningDevelopment' },
+    { name: 'Learning Paths',      page: 'LearningPaths' },
+    { name: 'Assessments',         page: 'AssessmentCenter' },
+    { name: 'Certifications',      page: 'CertificationManagement' },
+    { name: 'Capability',          separator: true },
+    { name: 'Skill Matrix',        page: 'SkillMatrix' },
+    { name: 'Competency Framework',page: 'CompetencyFramework' },
+    { name: 'Administration',      separator: true },
+    { name: 'Trainer Management',  page: 'TrainerManagement' },
+    { name: 'Training Reports',    page: 'TrainingReports' },
+    { name: 'Settings',            page: 'LNDSettings' },
   ]},
 
-  { name: 'Sales', icon: <FaShoppingCart />, submenu: [
-    { name: 'Command Center',   page: 'SalesCommandCenter' },
-    { name: 'Quotations',       page: 'Quotations' },
-    { name: 'Sales Orders',     page: 'SalesOrders' },
-    { name: 'Sales Targets',    page: 'SalesTargets' },
-    { name: 'Intelligence',     page: 'SalesIntelligence' },   // Conversion·Funnel·Forecasts
-    { name: 'Pricing Engine',   page: 'PricingEngine' },
-    { name: 'Commission',       page: 'CommissionManagement' },
-    { name: 'Fulfilment',       page: 'FulfilmentTracking' },
-    { name: 'Playbooks',        page: 'SalesPlaybooks' },
-    { name: 'Calendar',         page: 'SalesCalendar' },
-    { name: 'Documents',        page: 'SalesDocuments' },
-    { name: 'Subscriptions',    page: 'Subscriptions' },
-    { name: 'Market Presence',  page: 'SalesMarket' },         // Partners·Territories·Competitors
-    { name: 'Settings',         page: 'SalesSettings' },
+  { name: 'Attendance', icon: <FaCalendarCheck />, module: 'attendance', submenu: [
+    { name: 'My Attendance',       page: 'AttendanceDashboard' },
+    { name: 'QR Attendance',       page: 'QRAttendance' },
+    { name: 'Team & Monitoring',   separator: true },
+    { name: 'Live Workforce',      page: 'LiveWorkforceDashboard' },
+    { name: 'Team Attendance',     page: 'TeamAttendance' },
+    { name: 'Shift Calendar',      page: 'ShiftCalendar' },
+    { name: 'Approvals',           separator: true },
+    { name: 'Regularization',      page: 'RegularizationApprovals' },
+    { name: 'Overtime',            page: 'OvertimeApprovals' },
+    { name: 'Approval Delegation', page: 'ApprovalDelegation' },
+    { name: 'Reporting',           separator: true },
+    { name: 'Reports',             page: 'AttendanceReportsHub' }, // Analytics·Monthly·Late·Geo·All
+    { name: 'Audit Logs',          page: 'AttendanceAuditLogs' },
+    { name: 'Configuration',       separator: true },
+    { name: 'Work Centres',        page: 'WorkCentres' },
+    { name: 'Contract Labour',     page: 'ContractLabour' },
+    { name: 'Payroll Sync',        page: 'PayrollSync' },
+    { name: 'Settings',            page: 'AttendanceSettings' },
   ]},
 
-  { name: 'Marketing', icon: <FaBullhorn />, submenu: [
-    { name: 'Dashboard',       page: 'MarketingDashboard' },
-    { name: 'Campaigns',       page: 'Campaigns' },
-    { name: 'Analytics',       page: 'MarketingAnalytics' },  // Campaign·Won/Lost·Performance
-    { name: 'Assign Tasks',    page: 'AssignTasks' },
-    { name: 'Delivery Tracker',page: 'DeliveryTracker' },
-    { name: 'Pursuit List',    page: 'PursuitList' },
-    { name: 'Timesheet Entry', page: 'TimesheetEntry' },
-    { name: 'Settings',        page: 'MarketingSettings' },
-  ]},
-
-  { name: 'Procurement', icon: <FaTruck />, module: 'procurement', submenu: [
-    { name: 'Purchase Requests',  page: 'PurchaseRequestDashboard' },
-    { name: 'PO Management',      page: 'PurchaseOrderManagement' },
-    { name: 'Purchase Orders',    page: 'PurchaseOrders' },
-    { name: 'Goods Receipt',      page: 'GoodsReceipt' },
-    { name: 'Vendor Center',      page: 'VendorCenter' },     // Overview·Master·Approvals·Risk·360°·Portal·Scorecard·Pricing·Compare
-    { name: 'MRP Planning',       page: 'MRPPlanning' },
-    { name: 'Quality Inspection', page: 'QualityInspection' },
-    { name: 'Reports',            page: 'ProcurementReports' },
-    { name: 'Settings',           page: 'ProcurementSettings' },
-  ]},
-
-  { name: 'Inventory', icon: <FaBox />, module: 'inventory', submenu: [
-    { name: 'Dashboard',           page: 'InventoryDashboard' },
-    { name: 'Advanced Dashboard',  page: 'AdvancedInventoryDashboard' },
-    { name: 'Item Master',         page: 'ItemMaster' },
-    { name: 'Stock Summary',       page: 'StockSummary' },
-    { name: 'Stock Movements',     page: 'StockMovements' },
-    { name: 'Batch Tracking',      page: 'BatchTracking' },
-    { name: 'Stock Alerts',        page: 'StockAlertsAndSuggestions' },
-    { name: 'Reservations',        page: 'StockReservations' },
-    { name: 'Material Consumption',page: 'MaterialConsumption' },
-    { name: 'Inventory Intel',     page: 'InventoryIntelligence' },
-    { name: 'Inventory Report',    page: 'InventoryReport' },
-    { name: 'Warehouse',           page: 'WarehouseManagement' },
-    { name: 'Quality',             page: 'QualityManagement' },
-    { name: 'Logistics',           page: 'LogisticsShipping' },
-    { name: 'Stores Dashboard',    page: 'StoresDashboard' },
-    { name: 'Stores Cost Analysis',page: 'StoresCostAnalysis' },
-    { name: 'Component Pricing',   page: 'VendorPriceComparison' },
-    { name: 'Settings',            page: 'InventorySettings' },
-  ]},
-
-  { name: 'Production', icon: <FaFlask />, module: 'production', submenu: [
-    { name: 'Production Dashboard',page: 'ProductionDashboard' },
-    { name: 'Module Production Batches', page: 'ProductionOrders' },
-    { name: 'Module Batch Requests', page: 'ProductionModuleRequests' },
-    { name: 'BOM Builder',         page: 'BOMBuilder' },
-    { name: 'BOM Modeling',        page: 'BOMModeling' },
-    { name: 'MRP Workbench',       page: 'MRPWorkbench' },
-    { name: 'Capacity Planning (CRP)', page: 'CRPWorkbench' },
-    { name: 'S&OP / RCCP',         page: 'SOPPlanning' },
-    { name: 'Subcontracting',      page: 'SubcontractOrders' },
-    { name: 'Batch Genealogy',     page: 'GenealogyTrace' },
-    { name: 'Work Centre Planning',page: 'WorkCentrePlanning' },
-    { name: 'Shop Floor',          page: 'ShopFloor' },
-    { name: 'Upload BOM',          page: 'UploadBOM' },
-    { name: 'Settings',            page: 'ProductionSettings' },
-  ]},
-
-  { name: 'Quality', icon: <FaShieldAlt />, module: 'quality', submenu: [
-    { name: 'Dashboard',             page: 'QualityDashboard' },
-    { name: 'NCR Management',        page: 'NCRManagement' },
-    { name: 'CAPA Management',       page: 'CAPAManagement' },
-    { name: 'Inspection Center',     page: 'InspectionCenter' },
-    { name: 'FAT / SAT',             page: 'FATManagement' },
-    { name: 'Equipment Calibration', page: 'EquipmentCalibration' },
-    { name: 'Supplier Quality',      page: 'SupplierQuality' },
-    { name: 'Reports',               page: 'QualityReports' },
-    { name: 'Settings',              page: 'QualitySettings' },
-  ]},
-
-  { name: 'Engineering', icon: <FaWrench />, module: 'engineering', submenu: [
-    { name: 'Dashboard',           page: 'EngineeringDashboard' },
-    { name: 'Power Quality',       page: 'PowerQualityAnalytics' },
-    { name: 'R&D Projects',        page: 'RDProjects' },
-    { name: 'Prototype Tracker',   page: 'PrototypeTracker' },
-    { name: 'Test Plans',          page: 'TestPlans' },
-    { name: 'Change Notices (ECN)',page: 'ECNManagement' },
-  ]},
-
-  { name: 'Projects', icon: <FaProjectDiagram />, module: 'projects', submenu: [
-    { name: 'Dashboard',           page: 'ProjectsDashboard' },
-    { name: 'Projects',            page: 'Projects' },
-    { name: 'Project Master',      page: 'ProductionDeliveryTracker' }, // IPM→IPP production/delivery record grid (single source of truth)
-    { name: 'Project Pipeline',    page: 'ProjectPipelineBoard' }, // kanban of IPP projects by production stage (same source as Project Master)
-    { name: 'Task Board',          page: 'KanbanBoard' },
-    { name: 'Gantt Chart',         page: 'GanttChart' },
-    { name: 'Resource Management', page: 'ResourceManagement' },
-    { name: 'Financials',          page: 'ProjectFinancialsHub' }, // Costing·EVM·Profitability·Transactions·Cost Centres·Revenue
-    { name: 'CEO Command Center',  page: 'CEOCommandCenter' },
-    { name: 'Project 360°',        page: 'Project360' },
-    { name: 'Issue Management',    page: 'IssueManagement' },
-    { name: 'Lifecycle',           page: 'ProjectLifecycleHub' },  // FAT·SAT·AMC·Warranty
-    { name: 'Project Reports',     page: 'ProjectReports' },
-    { name: 'Installation',        page: 'InstallationDashboard' },
-    { name: 'Settings',            page: 'ProjectSettings' },
-  ]},
-
-  { name: 'Operations', icon: <FaCogs />, submenu: [
-    { name: 'Workflow Center',   page: 'WorkflowCenter' },          // Board·Configuration
-    { name: 'Project Tracker',   page: 'ProjectWorkflowTracker' },
-    { name: 'Dept Workload',     page: 'DepartmentWorkload' },
-    { name: 'Bottlenecks',       page: 'BottleneckAnalytics' },
-    { name: 'Lifecycle Tracker', page: 'LifecycleTracker' },
-    { name: 'Post-Delivery',     page: 'OperationsLifecycleHub' },  // Commissioning·AMC·Warranty
+  { name: 'Leaves', icon: <FaUmbrellaBeach />, module: 'leaves', submenu: [
+    { name: 'My Leaves',         page: 'MyLeaves' },
+    { name: 'Apply Leave',       page: 'ApplyLeave' },
+    { name: 'Leave Calendar',    page: 'LeaveCalendar' },
+    { name: 'Holiday Calendar',  page: 'HolidayCalendar' },
+    { name: 'Comp Off',          page: 'CompOff' },
+    { name: 'Approvals',         separator: true },
+    { name: 'Leave Approvals',   page: 'LeaveApprovals' },
+    { name: 'Team Leaves',       page: 'TeamLeaves' },
+    { name: 'Administration',    separator: true },
+    { name: 'All Leaves',        page: 'AllLeaves' },
+    { name: 'Leave Reports',     page: 'LeaveReports' },
+    { name: 'Encashment',        page: 'LeaveEncashment' },
+    { name: 'Leave Settings',    page: 'LeaveSettings' },
   ]},
 
   { name: 'Timesheets', icon: <FaClock />, module: 'timesheets', submenu: [
     { name: 'My Timesheet',        page: 'MyTimesheet' },
     { name: 'My Analytics',        page: 'MyAnalytics' },
+    { name: 'Team',                separator: true },
     { name: 'All Timesheets',      page: 'Timesheets' },
     { name: 'Approvals',           page: 'TimesheetApprovals' },
+    { name: 'Reports & Setup',     separator: true },
     { name: 'Utilization Report',  page: 'UtilizationReport' },
     { name: 'Weekly Report',       page: 'WeeklyProductionReport' },
     { name: 'Settings',            page: 'TimesheetSettings' },
@@ -833,57 +970,32 @@ export const NAV_ITEMS = [
     { name: 'Settings',            page: 'PerformanceSettings' },
   ]},
 
-  // Complaints folded into Service Desk 2026-07-17 (IPCS is one half of the
-  // complaint -> service-ticket loop). Only the dashboard keeps a top-level home;
-  // the register itself lives at Service Desk > Customer Complaints.
-  { name: 'Complaints', icon: <FaExclamationCircle />, submenu: [
-    { name: 'Dashboard',           page: 'ComplaintsDashboard' },
-    { name: 'Complaint Register',  page: 'CustomerComplaintsIPCS' },
-  ]},
-
-  { name: 'Service Desk', icon: <FaHeadset />, module: 'servicedesk', submenu: [
-    { name: 'Dashboard',         page: 'SupportDashboard' },
-    { name: 'All Tickets',       page: 'AllTickets' },
-    { name: 'My Tickets',        page: 'MyTickets' },
-    { name: 'SLA Management',    page: 'SLAManagement' },
-    { name: 'Field Service',     page: 'FieldVisitScheduler' },
-    { name: 'Service Engineers', page: 'ServiceEngineers' },
-    { name: 'Knowledge Base',    page: 'KnowledgeBase' },
-    { name: 'Contracts',         page: 'ServiceContracts' },
-    { name: 'Warranty',          page: 'OperationsWarranty' },
-    { name: 'Spare Parts Stock', page: 'ServiceStockManagement' },
-    { name: 'Agent Workload',    page: 'AgentWorkload' },
-    { name: 'Delivery Note',     page: 'DeliveryNote' },
-    { name: 'Reviews',           page: 'ServiceReviews' },        // Customers·Feedback·Sites
-    { name: 'Service Master',    page: 'ServiceMasterIPS' },   // IPS field-service grid
-    { name: 'Customer Complaints', page: 'CustomerComplaintsIPCS' }, // IPCS register
-    { name: 'Service Catalog',   page: 'ServiceMaster' },      // rate card (was 'Service Master')
-    { name: 'Customer Portal',   page: 'CustomerPortalManagement' },
-    { name: 'Installation',      page: 'InstallationRequests' },
-    { name: 'Commissioning',     page: 'CommissioningWorkflow' },
-    { name: 'Intelligence',      page: 'ServiceIntelligence' },   // Analytics·Failure·VoC
-    { name: 'Settings',          page: 'ServiceDeskSettings' },
-  ]},
-
   { name: 'Travel Desk', icon: <FaPlane />, submenu: [
     { name: 'Dashboard',           page: 'TravelDashboard' },
+    { name: 'My Travel',           separator: true },
     { name: 'Travel Entry',        page: 'TravelEntry' },
     { name: 'Travel Requests',     page: 'TravelRequests' },
     { name: 'Expense Claims',      page: 'ExpenseClaims' },
+    { name: 'Advances',            page: 'TravelAdvances' },
+    { name: 'Bookings',            page: 'TravelBookings' },
     { name: 'Visit Reports',       page: 'VisitReports' },
     { name: 'Customer Visits',     page: 'CustomerVisits' },
+    { name: 'Travel Calendar',     page: 'TravelCalendar' },
+    { name: 'Approvals & Finance', separator: true },
     { name: 'Travel Approvals',    page: 'TravelApprovals' },
     { name: 'Expense Review',      page: 'ExpenseReview' },
-    { name: 'Travel Calendar',     page: 'TravelCalendar' },
-    { name: 'Advances',            page: 'TravelAdvances' },
     { name: 'Payment',             page: 'TravelPayment' },
     { name: 'Travel Audit',        page: 'TravelAudit' },
-    { name: 'Bookings',            page: 'TravelBookings' },
-    { name: 'Policy Engine',       page: 'TravelPolicyEngine' },
-    { name: 'Travel Reports',      page: 'TravelReports' },
+    { name: 'Insights & Setup',    separator: true },
     { name: 'Command Center',      page: 'TravelCommandCenter' },
     { name: 'Analytics',           page: 'TravelAnalytics' },
+    { name: 'Travel Reports',      page: 'TravelReports' },
+    { name: 'Policy Engine',       page: 'TravelPolicyEngine' },
   ]},
+
+  { name: 'Org Chart', icon: <FaSitemap />, page: 'OrgChart' },
+
+  { divider: true, section: 'Tools' },
 
   { name: 'e-Signatures', icon: <FaFileSignature />, submenu: [
     { name: 'Sign & Send',         page: 'DocumentSigning' },
@@ -894,10 +1006,7 @@ export const NAV_ITEMS = [
   // admin-only tabs are gated inside the page itself.
   { name: 'QR Codes', icon: <FaQrcode />, page: 'QRCodeStudio' },
 
-  { name: 'Reports', icon: <FaFileAlt />, module: 'reports', submenu: [
-    { name: 'Report Builder',      page: 'Reports' },
-    { name: 'Saved Reports',       page: 'SavedReports' },
-  ]},
+  { divider: true, section: 'Administration' },
 
   // Direct access to the account/role/approval screens, which otherwise exist
   // only as tabs inside Settings → Access Control. Users and Roles are in
@@ -913,28 +1022,29 @@ export const NAV_ITEMS = [
   { name: 'Settings', icon: <FaCog />, page: 'SettingsCenter', submenu: [
     { name: '⚙ Settings Center',   page: 'SettingsCenter' },
     { name: 'User Preferences',    page: 'UserPreferences' },
-    { name: 'Setup Wizards',       separator: true },
-    { name: 'Setup Center',        page: 'SetupCenter' },          // Overview·First-Time·Attendance·Inventory·Engineering·Payroll
-    { name: 'Company & Admin',     separator: true },
+    { name: 'Company',             separator: true },
     { name: 'Company Profile',     page: 'CompanyProfile' },
     { name: 'Branch Management',   page: 'BranchManagement' },
-    { name: 'Administration',      separator: true },
+    { name: 'Org Setup',           page: 'OrganizationSetup' },
+    { name: 'Brand Vault',         page: 'BrandVault' },
+    { name: 'Access & Workflow',   separator: true },
     { name: 'Access Control',      page: 'AccessControl' },        // Users·Roles·Approvers·Security
     { name: 'Workflow Builder',    page: 'WorkflowBuilder' },
+    { name: 'Setup Notifications', page: 'SetupNotifications' },
+    { name: 'Master Data',         separator: true },
+    { name: 'Master Setup',        page: 'MasterSetup' },
+    { name: 'Product Setup',       page: 'ProductSetup' },
+    { name: 'Document Setup',      page: 'DocumentSetup' },
+    { name: 'Order Policy',        page: 'OrderPolicy' },
+    { name: 'Asset Maintenance',   page: 'AssetMaintenance' },
+    { name: 'Platform',            separator: true },
+    { name: 'System Settings',     page: 'SystemSettings' },
     { name: 'Integrations',        page: 'IntegrationsHub' },
     { name: 'Zoho Sign',           page: 'ZohoSignIntegration' },
     { name: 'API Documentation',   page: 'APIDocumentation' },
-    { name: 'System Settings',     page: 'SystemSettings' },
-    { name: 'Document Setup',      page: 'DocumentSetup' },
-    { name: 'Product Setup',       page: 'ProductSetup' },
-    { name: 'Master Setup',        page: 'MasterSetup' },
-    { name: 'Order Policy',        page: 'OrderPolicy' },
-    { name: 'Asset Maintenance',   page: 'AssetMaintenance' },
-    { name: 'Setup Notifications', page: 'SetupNotifications' },
-    { name: 'Org Setup',           page: 'OrganizationSetup' },
+    { name: 'Guided Setup',        separator: true },
+    { name: 'Setup Center',        page: 'SetupCenter' },          // Overview·First-Time·Attendance·Inventory·Engineering·Payroll
   ]},
 
-  { name: 'Notifications', icon: <FaBell />, page: 'NotificationCenter', module: 'notifications' },
-  { name: 'Org Chart',     icon: <FaSitemap />, page: 'OrgChart' },
   { name: 'Audit Logs',    icon: <FaHistory />, page: 'AuditLogs' },
 ];

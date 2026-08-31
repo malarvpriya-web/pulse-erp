@@ -1,12 +1,14 @@
 // frontend/src/features/hr/pages/ExitManagement.jsx
 import React, { useState, useEffect, useCallback } from 'react';
+import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import { PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Legend } from 'recharts';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 
 const REASON_LABELS = { better_opportunity: 'Better Opportunity', compensation: 'Compensation', work_environment: 'Work Environment', personal: 'Personal', relocation: 'Relocation', other: 'Other' };
 const SEP_COLORS = { resignation: '#6B3FDB', termination: '#dc2626', retirement: '#059669', death: '#374151' };
-const REASON_COLORS = ['#6B3FDB', '#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626'];
+const REASON_COLORS = ['#6B3FDB', '#4f46e5', '#0891b2', '#059669', '#6d28d9', '#dc2626'];
 
 const fmt = (n) => `₹${parseFloat(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 const tabStyle = (active) => ({ padding: '8px 20px', border: 'none', background: active ? '#6B3FDB' : 'transparent', color: active ? '#fff' : '#6b7280', cursor: 'pointer', borderRadius: 8, fontWeight: active ? 600 : 400, fontSize: 14 });
@@ -163,11 +165,15 @@ export default function ExitManagement() {
   const cd = fnfData?.computation_details;
 
   return (
-    <div style={{ padding: '24px', background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: '#111827', margin: 0 }}>Exit Management</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 14 }}>Full & Final settlement, Exit interviews, Clearance tracking</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Exit Management"
+        subtitle="Full & Final settlement, Exit interviews, Clearance tracking"
+      />
+    }>
+
 
       {notice && (
         <div style={{ padding: '10px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, fontWeight: 600, background: notice.type === 'error' ? '#fee2e2' : '#dcfce7', color: notice.type === 'error' ? '#dc2626' : '#15803d' }}>
@@ -239,15 +245,15 @@ export default function ExitManagement() {
                     </td>
                     <td style={tdStyle}>{e.last_working_date}</td>
                     <td style={tdStyle}>
-                      <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: e.days_remaining <= 0 ? '#fee2e2' : e.days_remaining <= 7 ? '#fef3c7' : '#f0ebff', color: e.days_remaining <= 0 ? '#dc2626' : e.days_remaining <= 7 ? '#92400e' : '#6B3FDB' }}>
+                      <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: e.days_remaining <= 0 ? '#fee2e2' : e.days_remaining <= 7 ? '#ede9fe' : '#f0ebff', color: e.days_remaining <= 0 ? '#dc2626' : e.days_remaining <= 7 ? '#5b21b6' : '#6B3FDB' }}>
                         {e.days_remaining <= 0 ? 'Overdue' : `${e.days_remaining}d`}
                       </span>
                     </td>
                     <td style={tdStyle}>
-                      <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: e.status === 'completed' ? '#d1fae5' : '#fef3c7', color: e.status === 'completed' ? '#065f46' : '#92400e' }}>{e.status}</span>
+                      <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: e.status === 'completed' ? '#d1fae5' : '#ede9fe', color: e.status === 'completed' ? '#065f46' : '#5b21b6' }}>{e.status}</span>
                     </td>
                     <td style={tdStyle}>
-                      <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: e.fnf_status === 'paid' ? '#d1fae5' : e.fnf_status === 'approved' ? '#dbeafe' : '#fef3c7', color: e.fnf_status === 'paid' ? '#065f46' : e.fnf_status === 'approved' ? '#1e40af' : '#92400e' }}>{e.fnf_status || 'draft'}</span>
+                      <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: e.fnf_status === 'paid' ? '#d1fae5' : e.fnf_status === 'approved' ? '#dbeafe' : '#ede9fe', color: e.fnf_status === 'paid' ? '#065f46' : e.fnf_status === 'approved' ? '#1e40af' : '#5b21b6' }}>{e.fnf_status || 'draft'}</span>
                     </td>
                     <td style={{ ...tdStyle, fontWeight: 600, color: '#6B3FDB' }}>{e.net_payable ? fmt(e.net_payable) : '-'}</td>
                     <td style={tdStyle}>
@@ -280,7 +286,7 @@ export default function ExitManagement() {
           {fnfData && cd && (
             <div>
               {fnfEstimated && (
-                <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a' }}>
+                <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe' }}>
                   ⚠ Unable to fetch live data — showing estimated figures. Do not approve without verifying.
                 </div>
               )}
@@ -293,7 +299,7 @@ export default function ExitManagement() {
                     <div style={{ color: '#6b7280' }}>Shortfall</div><div style={{ fontWeight: 600, color: '#dc2626' }}>{cd.notice.shortfall_days} days</div>
                     <div style={{ color: '#6b7280' }}>Recovery Amount</div><div style={{ fontWeight: 700, color: '#dc2626' }}>{fmt(cd.notice.recovery)}</div>
                   </div>
-                  {cd.notice.shortfall_days > 0 && <div style={{ marginTop: 8, padding: '8px 12px', background: '#fef3c7', borderRadius: 8, fontSize: 12, color: '#92400e' }}>Notice shortfall: {cd.notice.shortfall_days} days × ₹{cd.daily_basic}/day will be recovered</div>}
+                  {cd.notice.shortfall_days > 0 && <div style={{ marginTop: 8, padding: '8px 12px', background: '#ede9fe', borderRadius: 8, fontSize: 12, color: '#5b21b6' }}>Notice shortfall: {cd.notice.shortfall_days} days × ₹{cd.daily_basic}/day will be recovered</div>}
                 </div>
 
                 <div style={{ ...cardStyle, padding: 20, marginBottom: 0 }}>
@@ -321,7 +327,7 @@ export default function ExitManagement() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
                     <div style={{ color: '#6b7280' }}>PF Balance</div><div style={{ fontWeight: 600 }}>{fmt(cd.pf.balance)}</div>
                     <div style={{ color: '#6b7280' }}>TDS on PF</div>
-                    <div><span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: cd.pf.tds_applicable ? '#fef3c7' : '#d1fae5', color: cd.pf.tds_applicable ? '#92400e' : '#065f46' }}>{cd.pf.tds_applicable ? `10% TDS applicable` : 'No TDS'}</span></div>
+                    <div><span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: cd.pf.tds_applicable ? '#ede9fe' : '#d1fae5', color: cd.pf.tds_applicable ? '#5b21b6' : '#065f46' }}>{cd.pf.tds_applicable ? `10% TDS applicable` : 'No TDS'}</span></div>
                     <div style={{ color: '#6b7280' }}>TDS Amount</div><div style={{ fontWeight: 700, color: '#dc2626' }}>{fmt(cd.pf.tds_amount)}</div>
                     <div style={{ color: '#6b7280' }}>TDS on F&F</div><div style={{ fontWeight: 700, color: '#dc2626' }}>{fmt(cd.tds.tds_on_fnf)}</div>
                   </div>
@@ -434,7 +440,7 @@ export default function ExitManagement() {
                     <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
                       <td style={{ ...tdStyle, fontWeight: 600 }}>{r.employee_name}</td>
                       <td style={tdStyle}>{r.department}</td>
-                      <td style={tdStyle}><span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: r.status === 'completed' ? '#d1fae5' : '#fef3c7', color: r.status === 'completed' ? '#065f46' : '#92400e' }}>{r.status}</span></td>
+                      <td style={tdStyle}><span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: r.status === 'completed' ? '#d1fae5' : '#ede9fe', color: r.status === 'completed' ? '#065f46' : '#5b21b6' }}>{r.status}</span></td>
                       <td style={tdStyle}>{r.reason_category ? REASON_LABELS[r.reason_category] : '-'}</td>
                       <td style={tdStyle}>{r.overall_rating ? '⭐'.repeat(r.overall_rating) : '-'}</td>
                       <td style={tdStyle}>{r.would_rejoin || '-'}</td>
@@ -571,6 +577,6 @@ export default function ExitManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

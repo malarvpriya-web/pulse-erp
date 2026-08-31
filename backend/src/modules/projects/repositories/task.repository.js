@@ -3,10 +3,20 @@ import { pickUpdatable } from '../../../shared/safeUpdate.js';
 
 const taskRepository = {
   async create(data) {
-    const { project_id, task_title, task_description, assigned_to, assignment_type, priority, status, start_date, due_date, estimated_hours, created_by } = data;
+    const {
+      project_id, task_title, task_description, assigned_to, assignment_type,
+      priority, status, start_date, due_date, estimated_hours, created_by,
+      // Gantt-only fields (all optional — Task List's "Add Task" form never sends
+      // these, so it keeps getting the same column defaults it always has).
+      end_date, progress, dependencies, is_milestone, color, wbs_number,
+      task_type, parent_task_id, schedule_status,
+    } = data;
     const result = await pool.query(
-      `INSERT INTO tasks (project_id, task_title, task_description, assigned_to, assignment_type, priority, status, start_date, due_date, estimated_hours, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      `INSERT INTO tasks (project_id, task_title, task_description, assigned_to, assignment_type,
+         priority, status, start_date, due_date, estimated_hours, created_by,
+         end_date, progress, dependencies, is_milestone, color, wbs_number,
+         task_type, parent_task_id, schedule_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
       [
         project_id    || null,
         task_title,
@@ -19,6 +29,15 @@ const taskRepository = {
         due_date      || null,
         estimated_hours ? parseFloat(estimated_hours) : null,
         created_by    || null,
+        end_date      || null,
+        progress ?? 0,
+        dependencies || [],
+        is_milestone ?? false,
+        color || null,
+        wbs_number || null,
+        task_type || 'task',
+        parent_task_id || null,
+        schedule_status || 'on_track',
       ]
     );
     return result.rows[0];

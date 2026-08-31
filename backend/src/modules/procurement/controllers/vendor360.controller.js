@@ -114,6 +114,20 @@ export const Vendor360Controller = {
     }
   },
 
+  // GET /vendor-360/:vendorId/purchase-lines?search=&from=&to=
+  async getPurchaseLines(req, res) {
+    try {
+      const companyId = requireCompany(req, res);
+      if (companyId === false) return;
+      const { search, from, to } = req.query;
+      const data = await svc.getPurchaseLines(vendorId(req), companyId, { search, from, to });
+      if (!data) return res.status(404).json({ error: 'Vendor not found' });
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  },
+
   // GET /vendor-360/command-center
   async commandCenter(req, res) {
     try {

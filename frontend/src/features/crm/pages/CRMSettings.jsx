@@ -15,7 +15,7 @@ const SECTIONS = [
   { id: 'general',    label: 'General',          icon: Settings,  color: '#6B3FDB' },
   { id: 'leads',      label: 'Lead Config',       icon: Target,    color: '#0369a1' },
   { id: 'pipeline',   label: 'Pipeline & Deals',  icon: GitBranch, color: '#10b981' },
-  { id: 'email',      label: 'Email & Comms',     icon: Mail,      color: '#f59e0b' },
+  { id: 'email',      label: 'Email & Comms',     icon: Mail,      color: '#7c5cf0' },
   { id: 'automation', label: 'Automation',        icon: Zap,       color: '#ef4444' },
   { id: 'reports',    label: 'Reports',           icon: BarChart2, color: '#a78bfa' },
 ];
@@ -290,15 +290,15 @@ export default function CRMSettings() {
       );
 
       case 'email': return (
-        <SectionCard icon={Mail} color="#f59e0b" label="Email & Communications">
+        <SectionCard icon={Mail} color="#7c5cf0" label="Email & Communications">
           <Row label="Email Tracking" desc="Enable tracking for CRM outbound emails">
-            <Toggle checked={!!S.email_tracking_enabled} onChange={v => update('email_tracking_enabled', v)} color="#f59e0b" />
+            <Toggle checked={!!S.email_tracking_enabled} onChange={v => update('email_tracking_enabled', v)} color="#7c5cf0" />
           </Row>
           <Row label="Email Open Tracking" desc="Track when CRM emails are opened by the recipient">
-            <Toggle checked={!!S.email_open_tracking} onChange={v => update('email_open_tracking', v)} color="#f59e0b" />
+            <Toggle checked={!!S.email_open_tracking} onChange={v => update('email_open_tracking', v)} color="#7c5cf0" />
           </Row>
           <Row label="Link Click Tracking" desc="Track link clicks in outbound CRM emails">
-            <Toggle checked={!!S.email_click_tracking} onChange={v => update('email_click_tracking', v)} color="#f59e0b" />
+            <Toggle checked={!!S.email_click_tracking} onChange={v => update('email_click_tracking', v)} color="#7c5cf0" />
           </Row>
           <Row label="BCC Email" desc="Automatically BCC this address on all CRM emails sent">
             <input
@@ -309,7 +309,7 @@ export default function CRMSettings() {
               style={{ ...inputStyle, width: 210 }}
             />
           </Row>
-          <SaveButton color="#f59e0b" />
+          <SaveButton color="#7c5cf0" />
         </SectionCard>
       );
 

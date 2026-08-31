@@ -4,15 +4,17 @@ import {
   ResponsiveContainer, Cell
 } from 'recharts';
 import {
-  MessageSquare, AlertTriangle, CheckCircle, Clock,
-  RefreshCw, Plus, ChevronRight, TrendingUp, XCircle
+  MessageSquare, AlertTriangle, CheckCircle, Clock, RefreshCw, Plus,
+  ChevronRight, TrendingUp, XCircle, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
 import { sm, pm } from './complaintsConstants';
 
-const CAT_COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6'];
+const CAT_COLORS = ['#6366f1','#3b82f6','#10b981','#7c5cf0','#ef4444','#8b5cf6'];
 
 const KPI = ({ icon: Icon, label, value, sub, color, alert, index = 0 }) => (
   <div className="dk-anim" style={{
@@ -43,20 +45,43 @@ export default function ComplaintsDashboard({ setPage }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState(null);
+  const [options, setOptions] = useState({ categories: [], priorities: [] });
+
+  // 'all' by default: open/unresolved complaints are a backlog, and a window
+  // would hide long-running ones raised before it.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'all',
+    dimensions: { category: 'all', priority: 'all' },
+    storageKey: 'complaints-dashboard',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/complaints/dashboard/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/complaints/dashboard');
+      const res = await api.get('/complaints/dashboard', { params });
       setData(res.data || null);
     } catch (err) {
       setData(null);
       setError(err.message || 'Failed to load dashboard');
     } finally { setLoading(false); }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const filterDimensions = [
+    { key: 'category', label: 'Category', allLabel: 'All Categories', options: options.categories.map(v => ({ value: v, label: v })) },
+    { key: 'priority', label: 'Priority', allLabel: 'All Priorities', options: options.priorities.map(v => ({ value: v, label: v })) },
+  ];
 
 
   const d = data || {};
@@ -77,42 +102,39 @@ export default function ComplaintsDashboard({ setPage }) {
   );
 
   return (
-    <div style={{ padding: '16px 18px 20px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Complaints"
+        title="Complaints Dashboard"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={() => setPage && setPage('CustomerComplaintsIPCS')}>
+            All Complaints <ChevronRight size={13} />
+          </button>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={() => setPage && setPage('CustomerComplaintsIPCS')}>
+            <Plus size={14} /> New Complaint
+          </button>
+          <button className="plh-cta" onClick={load}>
+            <RefreshCw size={14} />
+          </button>
+        </>}
+      />
+    }>
 
       {error && (
         <div style={{ background: '#fee2e2', color: '#dc2626', borderRadius: '8px', padding: '10px 14px', marginBottom: '12px', fontSize: '13px' }}>{error}</div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ fontSize: 20, fontWeight: 800, color: '#111827', margin: 0 }}>Complaints Dashboard</h2>
-          <p style={{ fontSize: 12.5, color: '#6b7280', margin: '3px 0 0' }}>{d.this_month} new this month · {d.resolution_rate}% resolution rate</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={() => setPage && setPage('CustomerComplaintsIPCS')}
-            style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, color: '#374151' }}>
-            All Complaints <ChevronRight size={13} />
-          </button>
-          {/* NewComplaint was retired 2026-07-17; creating is a drawer on the
-              IPCS register, so this now lands on the grid rather than a form. */}
-          <button
-            onClick={() => setPage && setPage('CustomerComplaintsIPCS')}
-            style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Plus size={14} /> New Complaint
-          </button>
-          <button onClick={load} style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer' }}>
-            <RefreshCw size={14} />
-          </button>
-        </div>
-      </div>
+
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} />
 
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(185px, 1fr))', gap: 10, marginBottom: 12 }}>
-        <KPI index={0} icon={MessageSquare} label="Total Complaints"  value={d.total}          color="#6366f1" sub="All time" />
+        <KPI index={0} icon={MessageSquare} label="Total Complaints"  value={d.total}          color="#6366f1" sub={d.period_label || 'All time'} />
         <KPI index={1} icon={AlertTriangle}  label="Open"             value={d.open}           color="#ef4444" alert={d.open > 0} sub="Needs attention" />
-        <KPI index={2} icon={Clock}          label="In Progress"      value={d.in_progress}    color="#f59e0b" sub="Being handled" />
+        <KPI index={2} icon={Clock}          label="In Progress"      value={d.in_progress}    color="#7c5cf0" sub="Being handled" />
         <KPI index={3} icon={CheckCircle}    label="Resolved"         value={d.resolved}       color="#10b981" sub="Completed" />
         <KPI index={4} icon={XCircle}        label="Closed"           value={d.closed}         color="#6b7280" sub="Finalized" />
         <KPI index={5} icon={TrendingUp}     label="Resolution Rate"  value={`${d.resolution_rate}%`} color="#3b82f6" sub="Resolved + Closed" />
@@ -177,6 +199,6 @@ export default function ComplaintsDashboard({ setPage }) {
           </div>
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

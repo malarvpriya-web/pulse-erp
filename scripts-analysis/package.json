@@ -1,0 +1,10 @@
+{
+  "name": "manifest-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only health & architecture toolkit for Pulse ERP. Marks scripts/ as ESM without affecting the root package or the Playwright test suite.",
+  "engines": {
+    "node": ">=18"
+  }
+}

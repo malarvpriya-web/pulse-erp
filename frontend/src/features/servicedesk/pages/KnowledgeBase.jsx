@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Search, BookOpen, Plus, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Search, BookOpen, Plus, X, ChevronDown, ChevronUp, LifeBuoy } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY = { title:'', category:'Getting Started', content:'', tags:'' };
 const CATS = ['All','Getting Started','HR Policy','IT Support','Finance','Operations','General'];
@@ -46,17 +47,16 @@ export default function KnowledgeBase() {
   };
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Knowledge Base</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>{articles.length} articles</p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="Knowledge Base"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15}/> New Article
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       <div style={{ display:'flex', gap:12, marginBottom:20, flexWrap:'wrap' }}>
         <div style={{ position:'relative', flex:1, minWidth:220 }}>
@@ -150,6 +150,6 @@ export default function KnowledgeBase() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

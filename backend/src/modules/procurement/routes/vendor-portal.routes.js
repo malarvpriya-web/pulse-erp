@@ -4,6 +4,7 @@ import { allowRoles } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { scorecardRisk } from '../../../shared/vendorScore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -171,7 +172,7 @@ router.post('/scorecards', allowRoles('admin','super_admin','procurement','quali
     const companyId = cid(req);
     const overall = ((Number(quality_score||0) + Number(delivery_score||0) + Number(cost_score||0) +
                       Number(support_score||0) + Number(compliance_score||0) + Number(documentation_score||0)) / 6).toFixed(2);
-    const risk = overall >= 80 ? 'Low' : overall >= 60 ? 'Medium' : 'High';
+    const risk = scorecardRisk(overall);
 
     const { rows: [sc] } = await pool.query(`
       INSERT INTO vendor_scorecards

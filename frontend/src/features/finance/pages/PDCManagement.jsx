@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { useFY } from '@/context/FYContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const fmt = (n) =>
@@ -17,8 +19,8 @@ function daysBadge(days) {
   let bg, color, label;
   if (n < 0) { bg = '#fee2e2'; color = '#dc2626'; label = `${Math.abs(n)}d overdue`; }
   else if (n === 0) { bg = '#fee2e2'; color = '#dc2626'; label = 'Due Today'; }
-  else if (n <= 7)  { bg = '#fef3c7'; color = '#d97706'; label = `${n}d`; }
-  else if (n <= 30) { bg = '#fef9c3'; color = '#ca8a04'; label = `${n}d`; }
+  else if (n <= 7)  { bg = '#ede9fe'; color = '#6d28d9'; label = `${n}d`; }
+  else if (n <= 30) { bg = '#ede9fe'; color = '#7c5cf0'; label = `${n}d`; }
   else              { bg = '#dcfce7'; color = '#16a34a'; label = `${n}d`; }
   return (
     <span style={{ background: bg, color, padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
@@ -30,7 +32,7 @@ function daysBadge(days) {
 function statusBadge(status) {
   const map = {
     pending:   { bg: '#e0f2fe', color: '#0369a1', label: 'Outstanding' },
-    deposited: { bg: '#fef3c7', color: '#d97706', label: 'Deposited' },
+    deposited: { bg: '#ede9fe', color: '#6d28d9', label: 'Deposited' },
     cleared:   { bg: '#dcfce7', color: '#16a34a', label: 'Cleared' },
     bounced:   { bg: '#fee2e2', color: '#dc2626', label: 'Bounced' },
     cancelled: { bg: '#f3f4f6', color: '#6b7280', label: 'Cancelled' },
@@ -54,7 +56,7 @@ function KPICard({ label, value, subtext, color, alert }) {
   const colors = {
     green: { bg: '#f0fdf4', border: '#86efac', accent: '#16a34a' },
     blue:  { bg: '#eff6ff', border: '#93c5fd', accent: '#2563eb' },
-    amber: { bg: '#fffbeb', border: '#fcd34d', accent: '#d97706' },
+    amber: { bg: '#f5f3ff', border: '#c4b5fd', accent: '#6d28d9' },
     red:   { bg: '#fff1f2', border: '#fca5a5', accent: '#dc2626' },
   };
   const c = colors[color] || colors.blue;
@@ -455,9 +457,15 @@ function OutstandingTab() {
   const [representPdc, setRepresentPdc] = useState(null);
   const abortRef = useRef(null);
 
+  // The controller's signal never reached the requests, so abort() did nothing
+  // and a superseded filter change both raced for the table and cleared
+  // `loading` early (empty table while the current request was still running).
   const load = useCallback(() => {
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
+    abortRef.current?.abort();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    const { signal } = myCtrl;
+    const isStale = () => signal.aborted || abortRef.current !== myCtrl;
     setLoading(true);
 
     const statusMap = { outstanding: 'pending', deposited: 'deposited', bounced: 'bounced', all: '' };
@@ -470,15 +478,16 @@ function OutstandingTab() {
     if (toDate) params.set('to_date', toDate);
 
     Promise.all([
-      api.get('/finance/pdc/summary'),
-      api.get(`/finance/pdc?${params}`),
+      api.get('/finance/pdc/summary', { signal }),
+      api.get(`/finance/pdc?${params}`, { signal }),
     ])
       .then(([s, r]) => {
+        if (isStale()) return;
         setSummary(s.data);
         setRows(Array.isArray(r.data) ? r.data : []);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { if (!isStale()) setLoading(false); });
   }, [type, statusFilter, fromDate, toDate]);
 
   useEffect(() => { load(); }, [load]);
@@ -645,9 +654,14 @@ function HistoryTab() {
   const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0]);
   const abortRef = useRef(null);
 
+  // Same as the list above: signal threaded through so abort() actually
+  // cancels, and no state write from a call that has already been superseded.
   const load = useCallback(() => {
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
+    abortRef.current?.abort();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    const { signal } = myCtrl;
+    const isStale = () => signal.aborted || abortRef.current !== myCtrl;
     setLoading(true);
     const params = new URLSearchParams();
     if (type) params.set('cheque_type', type);
@@ -655,10 +669,10 @@ function HistoryTab() {
     if (fromDate) params.set('from_date', fromDate);
     if (toDate) params.set('to_date', toDate);
 
-    api.get(`/finance/pdc/history?${params}`)
-      .then(r => setRows(Array.isArray(r.data?.cheques) ? r.data.cheques : []))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
+    api.get(`/finance/pdc/history?${params}`, { signal })
+      .then(r => { if (!isStale()) setRows(Array.isArray(r.data?.cheques) ? r.data.cheques : []); })
+      .catch(() => { if (!isStale()) setRows([]); })
+      .finally(() => { if (!isStale()) setLoading(false); });
   }, [type, status, fromDate, toDate]);
 
   useEffect(() => { load(); }, [load]);
@@ -780,11 +794,14 @@ export default function PDCManagement() {
   });
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ marginBottom: 6 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>PDC Management</h1>
-        <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>Post-Dated Cheques — Outstanding &amp; History</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="PDC Management"
+        subtitle="Post-Dated Cheques — Outstanding & History"
+      />
+    }>
 
       {/* Tabs */}
       <div style={{ borderBottom: '1px solid #e5e7eb', marginBottom: 24, display: 'flex', gap: 4 }}>
@@ -794,6 +811,6 @@ export default function PDCManagement() {
 
       {tab === 'outstanding' && <OutstandingTab />}
       {tab === 'history' && <HistoryTab />}
-    </div>
+    </PageShell>
   );
 }

@@ -2,7 +2,7 @@ import { AlertCircle, CheckCircle, Info, AlertTriangle } from 'lucide-react';
 
 const TYPE_CONFIG = {
   danger:  { icon: AlertCircle,   bg:'#fee2e2', border:'#fca5a5', text:'#991b1b', iconColor:'#ef4444' },
-  warning: { icon: AlertTriangle, bg:'#fef3c7', border:'#fcd34d', text:'#92400e', iconColor:'#f59e0b' },
+  warning: { icon: AlertTriangle, bg:'#ede9fe', border:'#c4b5fd', text:'#5b21b6', iconColor:'#7c5cf0' },
   success: { icon: CheckCircle,   bg:'#dcfce7', border:'#86efac', text:'#15803d', iconColor:'#10b981' },
   info:    { icon: Info,          bg:'#dbeafe', border:'#93c5fd', text:'#1d4ed8', iconColor:'#3b82f6' },
 };

@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
+import { Users } from 'lucide-react';
 import api from "@/services/api/client";
 import ResultDialog from "@/components/ResultDialog";
 import "./AddEmployee.css";
 import "./EmployeesData.css";
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 export default function EditEmployee({ employee, setPage, setSelectedEmployee }) {
 
@@ -329,12 +331,19 @@ export default function EditEmployee({ employee, setPage, setSelectedEmployee })
   };
 
   return (
-    <div className="add-employee-page">
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Employees"
+        title="Edit Employee"
+        subtitle="Manage returns and full history on the Employee Assets page. Add new allocations below."
+      />
+    }>
       <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
 
       <div className="page-container">
         <div className="page-header">
-          <h1>Edit Employee</h1>
+
           <button className="add-page-back-btn" onClick={() => {
             if (setSelectedEmployee) setSelectedEmployee(null);
             setPage("EmployeesData");
@@ -694,9 +703,7 @@ export default function EditEmployee({ employee, setPage, setSelectedEmployee })
               </span>
             ))}
           </div>
-          <p style={{ fontSize: 11, color: '#9ca3af', margin: '6px 0 0' }}>
-            Manage returns and full history on the Employee Assets page. Add new allocations below.
-          </p>
+
         </div>
       )}
 
@@ -804,6 +811,6 @@ export default function EditEmployee({ employee, setPage, setSelectedEmployee })
           <button type="submit" className="save-btn" disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</button>
         </form>
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -3,22 +3,24 @@
  * Multi-stage approval: SCM → Quality → Finance → Management
  */
 import { useState, useEffect, useCallback } from 'react';
+import { Building2 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STAGES = [
   { key: 'scm',        label: 'SCM Review',        color: '#3b82f6', statusMatch: 'Pending SCM Review' },
   { key: 'quality',    label: 'Quality Review',     color: '#8b5cf6', statusMatch: 'Pending Quality Review' },
-  { key: 'finance',    label: 'Finance Review',     color: '#f59e0b', statusMatch: 'Pending Finance Review' },
+  { key: 'finance',    label: 'Finance Review',     color: '#7c5cf0', statusMatch: 'Pending Finance Review' },
   { key: 'management', label: 'Management Approval',color: '#10b981', statusMatch: 'Pending Management Review' },
 ];
 
 const STATUS_COLORS = {
   'Draft':                      { bg: '#f3f4f6', color: '#6b7280' },
   'Submitted':                  { bg: '#dbeafe', color: '#1d4ed8' },
-  'Under Review':               { bg: '#fef3c7', color: '#92400e' },
+  'Under Review':               { bg: '#ede9fe', color: '#5b21b6' },
   'Pending SCM Review':         { bg: '#ede9fe', color: '#6d28d9' },
   'Pending Quality Review':     { bg: '#f3e8ff', color: '#6B3FDB' },
-  'Pending Finance Review':     { bg: '#fef3c7', color: '#b45309' },
+  'Pending Finance Review':     { bg: '#ede9fe', color: '#6d28d9' },
   'Pending Management Review':  { bg: '#d1fae5', color: '#065f46' },
   'Approved':                   { bg: '#dcfce7', color: '#16a34a' },
   'Rejected':                   { bg: '#fee2e2', color: '#dc2626' },
@@ -171,14 +173,15 @@ export default function VendorApprovalQueue() {
   };
 
   return (
-    <div style={styles.root}>
+    <PageShell dock={
+      <PageHero
+        icon={Building2}
+        eyebrow="Procurement"
+        title="Vendor Approval Queue"
+      />
+    }>
       {toast && <div style={styles.toast}>{toast}</div>}
 
-      {/* Header */}
-      <div style={styles.header}>
-        <h1 style={styles.title}>Vendor Approval Queue</h1>
-        <p style={styles.subtitle}>{total} registrations · SCM → Quality → Finance → Management</p>
-      </div>
 
       {/* Stage tabs */}
       <div style={styles.tabs}>
@@ -226,7 +229,7 @@ export default function VendorApprovalQueue() {
                     <span key={s} style={{ ...styles.stagePill, background: '#dcfce7', color: '#166534' }}>✓ {s}</span>
                   ))}
                   {stagesForVendor(reg).next.map(s => (
-                    <span key={s} style={{ ...styles.stagePill, background: '#fef3c7', color: '#92400e' }}>⏳ {s}</span>
+                    <span key={s} style={{ ...styles.stagePill, background: '#ede9fe', color: '#5b21b6' }}>⏳ {s}</span>
                   ))}
                 </div>
               </div>
@@ -402,7 +405,7 @@ export default function VendorApprovalQueue() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 
@@ -425,7 +428,7 @@ function RemarkRow({ stage, text }) {
 }
 
 function ScorePill({ label, score }) {
-  const color = score >= 70 ? '#16a34a' : score >= 50 ? '#d97706' : '#dc2626';
+  const color = score >= 70 ? '#16a34a' : score >= 50 ? '#6d28d9' : '#dc2626';
   return (
     <div style={{ textAlign: 'center', padding: '8px 16px', background: '#f9fafb', borderRadius: 8, border: '1px solid #e5e7eb' }}>
       <div style={{ fontSize: 22, fontWeight: 700, color }}>{score}</div>

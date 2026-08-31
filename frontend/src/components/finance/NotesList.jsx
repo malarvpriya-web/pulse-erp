@@ -31,7 +31,7 @@ const LIGHT  = '#f5f3ff';
 const BORDER = '#e9e4ff';
 
 const STATUS_COLORS = {
-  draft:     ['#fef3c7', '#b45309'],
+  draft:     ['#ede9fe', '#6d28d9'],
   issued:    ['#dcfce7', '#15803d'],
   cancelled: ['#fee2e2', '#dc2626'],
 };
@@ -113,7 +113,7 @@ export default function NotesList({
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         <KpiCard label="Total Notes"  value={kpis ? parseInt(kpis.total_count)  : '—'} sub="excl. cancelled" />
         <KpiCard label="Issued"       value={kpis ? parseInt(kpis.issued_count) : '—'} sub={kpis ? fmt(kpis.issued_amount) : ''} color="#15803d" />
-        <KpiCard label="Draft"        value={kpis ? parseInt(kpis.draft_count)  : '—'} sub="pending issue"   color="#b45309" />
+        <KpiCard label="Draft"        value={kpis ? parseInt(kpis.draft_count)  : '—'} sub="pending issue"   color="#6d28d9" />
         <KpiCard label="Total Value"  value={kpis ? fmt(kpis.total_value)        : '—'} sub="issued + draft"  color="#0369a1" />
       </div>
 

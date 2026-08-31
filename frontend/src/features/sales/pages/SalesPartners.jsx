@@ -18,14 +18,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Plus, Pencil, Trash2, Download, FileText, Search, X, Columns3,
-  ArrowUp, ArrowDown, AlertCircle, ChevronRight, ChevronDown,
-  Users, ArrowRightLeft, ExternalLink, Check,
+  ArrowUp, ArrowDown, AlertCircle, ChevronRight, ChevronDown, Users,
+  ArrowRightLeft, ExternalLink, Check, Handshake,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmtDate } from '@/utils/dateFormatter';
 import { useAuth } from '@/context/AuthContext';
 import { validateGSTIN, gstinToState } from '@/utils/gstinValidation';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero } from '@/components/pulse-ui';
 
 /**
  * Association type colour. Assigned explicitly rather than by indexing a series —
@@ -398,14 +399,19 @@ export default function SalesPartners({ embedded = false }) {
         </div>
       )}
 
-      {/* ── header ── */}
+      {/* ── header ──
+          Plain <PageHero>, not <PageShell>: this page also renders *embedded*
+          inside another page, where taking over the page root and freezing a
+          dock would be wrong. The hero is simply suppressed in that mode, as
+          the old header was. */}
       {!embedded && (
-        <div style={{ marginBottom: 16 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Partners</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            Partner master (IPU) &middot; {total} partner{total === 1 ? '' : 's'}
-          </p>
-        </div>
+        <PageHero
+          icon={Handshake}
+          eyebrow="Sales"
+          title="Partners"
+          subtitle="Partner master (IPU) — system integrators and channel partners"
+          meta={[{ value: total, label: `partner${total === 1 ? '' : 's'}` }]}
+        />
       )}
 
       {/* ── toolbar ── */}

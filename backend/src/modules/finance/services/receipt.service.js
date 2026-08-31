@@ -41,7 +41,8 @@ class ReceiptService {
         reference_type: 'receipt',
         reference_id: receipt.id,
         description: `Receipt ${receiptNumber}`,
-        created_by: userId
+        created_by: userId,
+        company_id: data.company_id ?? receipt.company_id ?? null,
       });
 
       // Debit: Bank/Cash

@@ -1006,7 +1006,7 @@ router.delete('/pools/:id', requireHRWrite, async (req, res) => {
 router.get('/pools/:id/members', requireHRRead, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT epm.*, e.name, e.department, e.designation, e.employee_code,
+      `SELECT epm.*, e.name, e.department, e.designation, e.office_id,
               ta.performance_score, ta.potential_score, ta.flight_risk, ta.readiness,
               ta.talent_classification, ta.leadership_score
        FROM employee_pool_members epm

@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  FileEdit, CheckCircle, X, Clock, AlertCircle,
-  RefreshCw, User, ChevronDown, Calendar, Filter,
+  FileEdit, CheckCircle, X, Clock, AlertCircle, RefreshCw, User,
+  ChevronDown, Calendar, Filter, CheckSquare,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 20 };
 
 const STATUS_META = {
-  pending:  { bg: '#fef3c7', color: '#92400e', label: 'Pending',  Icon: Clock },
+  pending:  { bg: '#ede9fe', color: '#5b21b6', label: 'Pending',  Icon: Clock },
   approved: { bg: '#dcfce7', color: '#166534', label: 'Approved', Icon: CheckCircle },
   rejected: { bg: '#fee2e2', color: '#991b1b', label: 'Rejected', Icon: X },
 };
@@ -295,7 +296,18 @@ export default function RegularizationApprovals() {
   ];
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CheckSquare}
+        eyebrow="Attendance"
+        title="Regularization Approvals"
+        subtitle="· Showing your direct reports only"
+        actions={<button className="plh-cta"
+          onClick={() => { load(); loadStats(); }}>
+          <RefreshCw size={13} /> Refresh
+        </button>}
+      />
+    }>
       {/* ── Toast ── */}
       {toast && (
         <div style={{
@@ -313,25 +325,7 @@ export default function RegularizationApprovals() {
       )}
 
       {/* ── Page header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>
-            Regularization Approvals
-          </h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-            Review and action employee attendance correction requests
-            {role === 'manager' && (
-              <span style={{ marginLeft: 8, color: P, fontWeight: 500 }}>· Showing your direct reports only</span>
-            )}
-          </p>
-        </div>
-        <button
-          onClick={() => { load(); loadStats(); }}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151' }}
-        >
-          <RefreshCw size={13} /> Refresh
-        </button>
-      </div>
+
 
       {/* ── KPI cards (clickable — act as tab shortcut) ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
@@ -455,6 +449,6 @@ export default function RegularizationApprovals() {
           />
         ))
       )}
-    </div>
+    </PageShell>
   );
 }

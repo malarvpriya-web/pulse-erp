@@ -1,9 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { RefreshCw, TrendingUp, Users, Target, BarChart2, Plus } from 'lucide-react';
+import {
+  RefreshCw, TrendingUp, Users, Target, BarChart2, Plus,
+  LayoutDashboard,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell, Stat } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
 
 const fmtL = (n) => {
@@ -16,40 +21,55 @@ const fmtL = (n) => {
 const STATUS_COLORS = {
   active:    { bg: '#d1fae5', color: '#16a34a' },
   draft:     { bg: '#f3f4f6', color: '#6b7280' },
-  paused:    { bg: '#fef3c7', color: '#d97706' },
+  paused:    { bg: '#ede9fe', color: '#6d28d9' },
   completed: { bg: '#dbeafe', color: '#2563eb' },
   cancelled: { bg: '#fee2e2', color: '#dc2626' },
 };
 
 function KpiCard({ icon: Icon, label, value, color, loading, index = 0 }) {
-  return (
-    <div className="dk-anim" style={{ background: 'var(--color-background-secondary)', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 10, padding: '12px 14px', '--dk-i': index }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 5 }}>
-        <Icon size={17} style={{ color }} />
-        <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 500 }}>{label}</span>
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--color-text-primary)' }}>
-        {loading ? <div style={{ height: 24, width: 80, background: 'var(--color-border-tertiary)', borderRadius: 4, animation: 'pulse 1.5s ease-in-out infinite' }} /> : value}
-      </div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat icon={Icon} label={label} value={value} color={color} loading={loading} index={index} />;
 }
 
 export default function MarketingDashboard() {
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
+  const [options, setOptions] = useState({ types: [], statuses: [] });
   const navigate              = useNavigate();
+
+  // Campaigns are period activity, so a 12-month default matches the
+  // monthly-leads series this page has always drawn.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'last12m',
+    dimensions: { type: 'all', status: 'all' },
+    storageKey: 'marketing-dashboard',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/marketing/dashboard/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get('/marketing/dashboard');
+      const res = await api.get('/marketing/dashboard', { params });
       setData(res.data || null);
     } catch { setData(null); }
     finally { setLoading(false); }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const filterDimensions = [
+    { key: 'type',   label: 'Type',   allLabel: 'All Types',    options: options.types.map(v => ({ value: v, label: v })) },
+    { key: 'status', label: 'Status', allLabel: 'All Statuses', options: options.statuses.map(v => ({ value: v, label: v })) },
+  ];
 
   const stats    = data?.stats || {};
   const recent   = Array.isArray(data?.recent_campaigns) ? data.recent_campaigns : [];
@@ -68,27 +88,32 @@ export default function MarketingDashboard() {
   );
 
   return (
-    <div style={{ padding: '16px 18px 20px', background: 'var(--color-background-primary)' }}>
-      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Marketing Dashboard</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>Campaign performance and marketing metrics</p>
-        </div>
-        <button onClick={load} style={{ padding: '7px 12px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 7, background: 'var(--color-background-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-text-secondary)', fontSize: 13 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Marketing"
+        title="Marketing Dashboard"
+        subtitle="Campaign performance and marketing metrics"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
           <RefreshCw size={14} /> Refresh
         </button>
-        <button onClick={() => navigate('/Campaigns')} style={{ padding: '7px 16px', border: 'none', borderRadius: 7, background: '#6B3FDB', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button className="plh-cta" onClick={() => navigate('/Campaigns')}>
           <Plus size={14} /> New Campaign
         </button>
-      </div>
+        </>}
+      />
+    }>
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+
+
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 10, marginBottom: 12 }}>
         <KpiCard index={0} icon={Target}    label="Active Campaigns"    color="#6B3FDB" loading={loading} value={stats.active_campaigns  ?? '—'} />
         <KpiCard index={1} icon={BarChart2} label="Total Budget"        color="#2563eb" loading={loading} value={fmtL(stats.total_budget)} />
         <KpiCard index={2} icon={Users}     label="Leads Generated"     color="#16a34a" loading={loading} value={stats.total_leads_generated ?? '—'} />
-        <KpiCard index={3} icon={TrendingUp} label="Avg ROI %"          color="#d97706" loading={loading} value={stats.avg_roi != null ? `${stats.avg_roi}%` : '—'} />
+        <KpiCard index={3} icon={TrendingUp} label="Avg ROI %"          color="#6d28d9" loading={loading} value={stats.avg_roi != null ? `${stats.avg_roi}%` : '—'} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
@@ -142,6 +167,6 @@ export default function MarketingDashboard() {
           )}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

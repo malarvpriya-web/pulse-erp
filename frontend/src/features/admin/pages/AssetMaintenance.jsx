@@ -4,6 +4,7 @@ import { BarChart2, Wrench, Calendar, Clipboard, Package } from 'lucide-react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function EmptyState({ icon: Icon, title, sub, action }) {
   return (
@@ -126,7 +127,7 @@ function ScheduleTab() {
     ? { bg: '#dbeafe', color: '#2563eb' }
     : t === 'breakdown'
       ? { bg: '#fee2e2', color: '#dc2626' }
-      : { bg: '#fef3c7', color: '#d97706' };
+      : { bg: '#ede9fe', color: '#6d28d9' };
 
   if (loading) return <LoadingRows />;
   if (error) return <FetchError msg={error} onRetry={load} />;
@@ -307,8 +308,8 @@ function WorkLogsTab() {
     }
   };
 
-  const statusStyle = (s) => s === 'completed' ? { bg: '#d1fae5', color: '#16a34a' } : s === 'in-progress' ? { bg: '#dbeafe', color: '#2563eb' } : { bg: '#fef3c7', color: '#d97706' };
-  const typeStyle = (t) => t === 'breakdown' ? '#dc2626' : t === 'preventive' ? '#2563eb' : '#d97706';
+  const statusStyle = (s) => s === 'completed' ? { bg: '#d1fae5', color: '#16a34a' } : s === 'in-progress' ? { bg: '#dbeafe', color: '#2563eb' } : { bg: '#ede9fe', color: '#6d28d9' };
+  const typeStyle = (t) => t === 'breakdown' ? '#dc2626' : t === 'preventive' ? '#2563eb' : '#6d28d9';
 
   return (
     <div>
@@ -377,7 +378,7 @@ function WorkLogsTab() {
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 700, color: '#1f2937', fontSize: 13 }}>{log.asset_name}</span>
                       <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 8, fontWeight: 700, color: typeStyle(log.log_type),
-                        background: log.log_type === 'breakdown' ? '#fee2e2' : log.log_type === 'preventive' ? '#dbeafe' : '#fef3c7' }}>
+                        background: log.log_type === 'breakdown' ? '#fee2e2' : log.log_type === 'preventive' ? '#dbeafe' : '#ede9fe' }}>
                         {log.log_type}
                       </span>
                       <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 8, fontWeight: 700, background: ss.bg, color: ss.color }}>
@@ -555,18 +556,18 @@ function SparePartsTab() {
         </thead>
         <tbody>
           {parts.map(p => (
-            <tr key={p.id} style={{ borderBottom: '1px solid #f0ebff', background: p.low_stock ? '#fffbeb' : '#fff' }}>
+            <tr key={p.id} style={{ borderBottom: '1px solid #f0ebff', background: p.low_stock ? '#f5f3ff' : '#fff' }}>
               <td style={{ padding: '9px 12px', fontFamily: 'monospace', fontSize: 12, color: '#6b7280' }}>{p.part_code || p.part_number || '—'}</td>
               <td style={{ padding: '9px 12px', fontWeight: 600, color: '#1f2937' }}>
                 {p.name}
-                {p.low_stock && <span style={{ marginLeft: 8, fontSize: 10, background: '#fef3c7', color: '#d97706', padding: '1px 6px', borderRadius: 6, fontWeight: 700 }}>Low Stock</span>}
+                {p.low_stock && <span style={{ marginLeft: 8, fontSize: 10, background: '#ede9fe', color: '#6d28d9', padding: '1px 6px', borderRadius: 6, fontWeight: 700 }}>Low Stock</span>}
               </td>
               <td style={{ padding: '9px 12px', fontSize: 11 }}>
                 {(typeof p.compatible_assets === 'string' ? JSON.parse(p.compatible_assets || '[]') : p.compatible_assets || []).map(a => (
                   <span key={a} style={{ background: '#f5f3ff', color: '#6B3FDB', fontSize: 10, padding: '1px 6px', borderRadius: 6, marginRight: 3 }}>{a}</span>
                 ))}
               </td>
-              <td style={{ padding: '9px 12px', fontWeight: 700, color: p.low_stock ? '#d97706' : '#16a34a' }}>
+              <td style={{ padding: '9px 12px', fontWeight: 700, color: p.low_stock ? '#6d28d9' : '#16a34a' }}>
                 {p.stock_qty} {p.unit}
               </td>
               <td style={{ padding: '9px 12px', color: '#6b7280' }}>{p.reorder_level} {p.unit}</td>
@@ -638,7 +639,7 @@ function AnalyticsTab() {
       {/* KPI Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 14, marginBottom: 22 }}>
         {[
-          { label: 'Assets Due (7 days)', value: kpis.assets_due_maintenance, color: '#d97706', bg: '#fef3c7' },
+          { label: 'Assets Due (7 days)', value: kpis.assets_due_maintenance, color: '#6d28d9', bg: '#ede9fe' },
           { label: 'Open Breakdowns', value: kpis.open_breakdowns, color: '#dc2626', bg: '#fee2e2' },
           { label: 'MTTR (hrs)', value: `${kpis.mttr_hrs}h`, color: '#6B3FDB', bg: '#ede9fe' },
           { label: 'Maintenance Cost MTD', value: formatINR(kpis.maintenance_cost_mtd), color: '#2563eb', bg: '#dbeafe' },
@@ -702,7 +703,7 @@ function AnalyticsTab() {
                 <div style={{ color: '#9ca3af', fontSize: 13, padding: '12px 0', textAlign: 'center' }}>No breakdown records yet</div>
               ) : analytics.top_breakdowns.map((a, i) => (
                 <div key={a.asset_code || i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 10px', background: '#faf9ff', borderRadius: 8 }}>
-                  <div style={{ width: 24, height: 24, borderRadius: '50%', background: i === 0 ? '#fee2e2' : i === 1 ? '#fef3c7' : '#f3f4f6', color: i === 0 ? '#dc2626' : i === 1 ? '#d97706' : '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 12 }}>{i + 1}</div>
+                  <div style={{ width: 24, height: 24, borderRadius: '50%', background: i === 0 ? '#fee2e2' : i === 1 ? '#ede9fe' : '#f3f4f6', color: i === 0 ? '#dc2626' : i === 1 ? '#6d28d9' : '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 12 }}>{i + 1}</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, color: '#1f2937', fontSize: 12 }}>{a.name}</div>
                     <div style={{ fontSize: 11, color: '#9ca3af' }}>{a.asset_code} · {a.department}</div>
@@ -735,14 +736,15 @@ export default function AssetMaintenance() {
   });
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: '0 0 4px', color: '#4c1d95', fontSize: 22, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Wrench size={20} className="page-header-icon" />
-          Asset Maintenance
-        </h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Preventive schedules, work logs, spare parts, and reliability analytics</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Wrench}
+        eyebrow="Administration"
+        title="Asset Maintenance"
+        subtitle="Preventive schedules, work logs, spare parts, and reliability analytics"
+      />
+    }>
+
       <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e9e4ff', background: '#fff', borderRadius: '10px 10px 0 0', padding: '0 8px', flexWrap: 'wrap' }}>
         {TABS.map(t => <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>{t}</button>)}
       </div>
@@ -752,6 +754,6 @@ export default function AssetMaintenance() {
         {tab === 'Spare Parts' && <SparePartsTab />}
         {tab === 'Analytics' && <AnalyticsTab />}
       </div>
-    </div>
+    </PageShell>
   );
 }

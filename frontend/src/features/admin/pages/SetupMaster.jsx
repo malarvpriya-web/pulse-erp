@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, RefreshCw, Search, X, ToggleLeft, ToggleRight } from 'lucide-react';
+import {
+  Plus, Pencil, Trash2, RefreshCw, Search, X, ToggleLeft, ToggleRight,
+  SlidersHorizontal,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import './MasterSetup.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // SetupMaster — generic CRUD table for admin setup pages
@@ -190,22 +194,21 @@ export default function SetupMaster({ config }) {
     : rows;
 
   return (
-    <div style={S.root}>
-      <Toast toast={toast} />
-
-      {/* Header */}
-      <div style={S.header}>
-        <div>
-          <h1 style={S.pageTitle}>{title}</h1>
-          {subtitle && <p style={S.pageSub}>{subtitle}</p>}
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button style={S.iconBtn} onClick={load} title="Refresh"><RefreshCw size={15} /></button>
-          <button style={S.btnPrimary} onClick={openAdd}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title={title}
+        actions={<>
+          <button className="plh-cta plh-cta--ghost"  onClick={load} title="Refresh"><RefreshCw size={15} /></button>
+          <button className="plh-cta"  onClick={openAdd}>
             <Plus size={14} /> Add
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      <Toast toast={toast} />
+
 
       {/* Search */}
       <div style={S.toolbar}>
@@ -300,7 +303,7 @@ export default function SetupMaster({ config }) {
           busy={delBusy}
         />
       )}
-    </div>
+    </PageShell>
   );
 }
 

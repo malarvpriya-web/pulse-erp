@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Save, RefreshCw, Settings } from 'lucide-react';
+import { Save, RefreshCw, Settings, SlidersHorizontal } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const FY_OPTIONS = MONTHS.map((m, i) => ({ value: i + 1, label: m }));
@@ -104,25 +105,17 @@ export default function SalesSettings() {
   }
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <div style={{ width:40, height:40, borderRadius:10, background:'#ede9fe', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            <Settings size={20} color="#6B3FDB"/>
-          </div>
-          <div>
-            <h1 style={{ fontSize:20, fontWeight:700, color:'#1f2937', margin:0 }}>Sales Settings</h1>
-            <p style={{ color:'#9ca3af', fontSize:12, margin:'2px 0 0' }}>Configure defaults for Sales module</p>
-          </div>
-        </div>
-        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          {isDirty && <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>Unsaved changes</span>}
-          <button onClick={handleSave} disabled={saving || !isDirty}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 20px', background: isDirty ? '#6B3FDB' : '#e5e7eb', color: isDirty ? '#fff' : '#9ca3af', border:'none', borderRadius:8, cursor: isDirty ? 'pointer' : 'not-allowed', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Sales"
+        title="Sales Settings"
+        subtitle="Configure defaults for Sales module"
+        actions={<button className="plh-cta" onClick={handleSave} disabled={saving || !isDirty}>
             <Save size={14}/>{saving ? 'Saving...' : 'Save Settings'}
-          </button>
-        </div>
-      </div>
+          </button>}
+      />
+    }>
 
       <form onSubmit={handleSave}>
 
@@ -175,6 +168,6 @@ export default function SalesSettings() {
         </Section>
 
       </form>
-    </div>
+    </PageShell>
   );
 }

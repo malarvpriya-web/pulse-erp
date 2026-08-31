@@ -1,4 +1,6 @@
 import { lazy, Suspense, useState } from 'react';
+import { ReceiptIndianRupee } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const InvoicesPanel           = lazy(() => import('./Invoices'));
 const CustomerOutstandingPanel = lazy(() => import('./CustomerOutstanding'));
@@ -35,17 +37,15 @@ export default function ReceivablesPage({ setPage }) {
   const [activeTab, setActiveTab] = useState(initialTab);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ReceiptIndianRupee}
+        eyebrow="Finance"
+        title="Receivables"
+        subtitle="Manage invoices, customer balances, and credit notes"
+      />
+    }>
 
-      {/* Header */}
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>
-          Receivables
-        </h2>
-        <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-          Manage invoices, customer balances, and credit notes
-        </p>
-      </div>
 
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, borderBottom: `2px solid ${BORDER}`, paddingBottom: 0 }}>
@@ -76,6 +76,6 @@ export default function ReceivablesPage({ setPage }) {
       {activeTab === 'invoices'     && <TabSuspense><InvoicesPanel setPage={setPage} /></TabSuspense>}
       {activeTab === 'outstanding'  && <TabSuspense><CustomerOutstandingPanel /></TabSuspense>}
       {activeTab === 'credit-notes' && <TabSuspense><CreditNotesPanel setPage={setPage} /></TabSuspense>}
-    </div>
+    </PageShell>
   );
 }

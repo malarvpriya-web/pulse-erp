@@ -246,11 +246,31 @@ router.post('/portal/tickets/:id/rate', verifyPortalToken, async (req, res) => {
       `UPDATE customer_portal_tickets
           SET customer_rating = $1, customer_feedback = $2, updated_at = NOW()
         WHERE id = $3 AND customer_portal_user_id = $4
-        RETURNING id, ticket_number, status`,
+        RETURNING id, ticket_number, status, subject, internal_ticket_id, assigned_engineer_name, company_id`,
       [rating, feedback, req.params.id, req.portal.portalUserId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
-    res.json(rows[0]);
+
+    // customer_portal_tickets.customer_rating never reached the CSAT dashboard,
+    // NPS score, or agent leaderboards — those all read csat_responses only,
+    // which was staff-entered exclusively. Mirroring the portal rating into
+    // csat_responses (linked via internal_ticket_id, the FK this table already
+    // maintains back to support_tickets) gets it into every one of those
+    // existing reads for free, instead of duplicating the aggregation logic.
+    // Best-effort: a customer's rating confirmation must not fail on this.
+    try {
+      await pool.query(
+        `INSERT INTO csat_responses
+           (ticket_id, ticket_subject, rating, feedback, agent_name, customer_name, company_id, responded_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
+        [rows[0].internal_ticket_id || null, rows[0].subject || null, rating, feedback || null,
+         rows[0].assigned_engineer_name || null, req.portal.customer_name || null, rows[0].company_id || null]
+      );
+    } catch (e) {
+      console.error('[portal/tickets/:id/rate] csat_responses mirror failed:', e.message);
+    }
+
+    res.json({ id: rows[0].id, ticket_number: rows[0].ticket_number, status: rows[0].status });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

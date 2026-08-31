@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { UserPlus } from 'lucide-react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
 import { fmtDate } from '@/utils/dateFormatter';
@@ -7,6 +8,7 @@ import DataTable from '@/components/core/DataTable';
 import FilterBar from '@/components/core/FilterBar';
 import { exportCSV } from '@/features/_shared/exportUtils';
 import './Recruitment.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STAGE_OPTIONS = [
   { value: 'all', label: 'All Stages' },
@@ -73,7 +75,7 @@ const AllCandidates = ({ setPage }) => {
   const getStageColor = (stage) => {
     const colors = {
       applied:      '#dbeafe',
-      screening:    '#fef3c7',
+      screening:    '#ede9fe',
       '1st_level':  '#e0e7ff',
       '2nd_level':  '#fce7f3',
       offer:        '#dcfce7',
@@ -87,20 +89,18 @@ const AllCandidates = ({ setPage }) => {
   };
 
   return (
-    <div className="recruitment-page">
-      <div className="page-header">
-        <div>
-          <h1>All Candidates</h1>
-        </div>
-        <div className="header-actions">
-          <button
-            onClick={() => setPage('CandidatePipeline')}
-            style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', cursor: 'pointer', fontWeight: 500, whiteSpace: 'nowrap' }}
-          >
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="All Candidates"
+        actions={<button className="plh-cta"
+            onClick={() => setPage('CandidatePipeline')}>
             + Add via Pipeline
-          </button>
-        </div>
-      </div>
+          </button>}
+      />
+    }>
+
 
       <FilterBar
         filters={[
@@ -183,7 +183,7 @@ const AllCandidates = ({ setPage }) => {
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 };
 

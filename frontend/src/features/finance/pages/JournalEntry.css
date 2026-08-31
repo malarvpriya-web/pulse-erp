@@ -29,7 +29,7 @@
 .je-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;}
 .je-stat{background:#fff;border-radius:10px;padding:14px 16px;border:1px solid #f0f0f4;border-left:3px solid #e5e7eb;}
 .je-stat.green{border-left-color:#10b981;}
-.je-stat.amber{border-left-color:#f59e0b;}
+.je-stat.amber{border-left-color:#7c5cf0;}
 .je-stat.blue{border-left-color:#3b82f6;}
 .je-stat-label{display:block;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;}
 .je-stat-val{font-size:20px;font-weight:700;color:#111827;}

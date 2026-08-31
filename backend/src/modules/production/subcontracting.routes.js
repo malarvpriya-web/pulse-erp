@@ -15,20 +15,45 @@ const actor = (req) => ({ id: req.user?.userId || req.user?.id || null, name: re
 const cidOf = (req) => (req.scope?.company_id != null ? req.scope.company_id : null);
 const num = (v) => (v === null || v === undefined || v === '' ? 0 : parseFloat(v)) || 0;
 
+// Several postStock callers have no warehouse concept anywhere in their own
+// schema — there's no warehouse_id column on production_orders or
+// material_reservations, so production consumption/backflush, service-desk
+// field issues, and maintenance consumption all call this with warehouseId
+// unset. Left null, that both (a) silently no-op'd checkAndCreateAlerts,
+// which requires a warehouseId to scope its balance/alert lookup, and (b)
+// permanently hid those stock_ledger rows from any per-warehouse report —
+// an equality filter on warehouse_id never matches NULL, so e.g. the
+// monthwise ₹ report's store tab dropped all production activity even
+// though the company-wide "All Warehouses" view summed it correctly. Falls
+// back to the company's main warehouse (or its first active one) so those
+// movements get a real, queryable warehouse attribution instead of none.
+async function resolveDefaultWarehouseId(companyId) {
+  const { rows } = await pool.query(
+    `SELECT id FROM warehouses
+      WHERE deleted_at IS NULL AND status = 'active'
+        AND ($1::int IS NULL OR company_id = $1)
+      ORDER BY (type = 'main') DESC, id ASC
+      LIMIT 1`,
+    [companyId ?? null]
+  );
+  return rows[0]?.id ?? null;
+}
+
 /** Post a stock movement to the ledger and keep inventory_items.current_stock in sync. */
 export async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId, transactionDate = null }) {
   if (!itemId) return;
+  const resolvedWarehouseId = warehouseId ?? await resolveDefaultWarehouseId(companyId).catch(() => null);
   const { rows: [bal] } = await client.query(
     `SELECT COALESCE(SUM(quantity_in - quantity_out),0) AS balance
        FROM stock_ledger WHERE item_id = $1 AND ($2::int IS NULL OR warehouse_id = $2)`,
-    [itemId, warehouseId]);
+    [itemId, resolvedWarehouseId]);
   const newBalance = num(bal.balance) + inQty - outQty;
   await client.query(
     `INSERT INTO stock_ledger
        (item_id, warehouse_id, transaction_type, quantity_in, quantity_out, balance_qty,
         rate, value, reference_type, reference_id, transaction_date, remarks, created_by, company_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($14::date, CURRENT_DATE),$11,$12,$13)`,
-    [itemId, warehouseId, txnType, inQty, outQty, newBalance, rate,
+    [itemId, resolvedWarehouseId, txnType, inQty, outQty, newBalance, rate,
      Math.round((inQty + outQty) * rate * 100) / 100, refType, refId, remarks, createdBy, companyId, transactionDate]);
   await client.query(
     `UPDATE inventory_items SET current_stock = COALESCE(current_stock,0) + $2, updated_at = NOW() WHERE id = $1`,
@@ -42,7 +67,7 @@ export async function postStock(client, { itemId, warehouseId = null, inQty = 0,
   // on the pool, not this transaction's client, so it never blocks or risks
   // this write; self-corrects on the next movement if this one rolls back).
   if (outQty > inQty) {
-    checkAndCreateAlerts(itemId, warehouseId).catch(() => {});
+    checkAndCreateAlerts(itemId, resolvedWarehouseId).catch(() => {});
   }
 }
 

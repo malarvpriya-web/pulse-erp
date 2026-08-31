@@ -1,6 +1,8 @@
 import express from 'express';
+import { sqlSalesOrderBooked } from '../../../shared/statusSets.js';
 import pool from '../../shared/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
 
 const router = express.Router();
 const cid = req => req.scope?.company_id ?? companyOf(req);
@@ -10,6 +12,24 @@ const uid = req => req.user?.id ?? null;
 router.get('/dashboard', async (req, res) => {
   try {
     const company_id = cid(req);
+    // Dashboard filter bar: ?period / ?from / ?to / ?type / ?status.
+    // The period applies to start_date — a campaign belongs to the window it ran
+    // in, which is also what the monthly-leads series is keyed on.
+    const range = resolveRange(req.query, { defaultPeriod: 'last12m' });
+    const type = dimension(req.query, 'type');
+    const status = dimension(req.query, 'status');
+    // $1 company, $2 from, $3 to, $4 type, $5 status — referenced by every query
+    // below via `scope`, so no parameter is left untyped.
+    const p = [company_id, range.from, range.to, type, status];
+    // company_id is NULL-tolerant here, matching the app-wide
+    // `($n::int IS NULL OR company_id = $n)` convention. The previous bare
+    // `company_id = $1` returned nothing at all for a global-scope super_admin.
+    const scope = `($1::int IS NULL OR company_id = $1)
+      AND ($2::date IS NULL OR start_date >= $2::date)
+      AND ($3::date IS NULL OR start_date <= $3::date)
+      AND ($4::text IS NULL OR type = $4)
+      AND ($5::text IS NULL OR status = $5)`;
+
     const [statsR, recentR, topR, monthlyR] = await Promise.all([
       pool.query(`
         SELECT
@@ -23,38 +43,53 @@ router.get('/dashboard', async (req, res) => {
                        / COALESCE(SUM(spent), 0) * 100, 2)
             ELSE 0 END                                 AS avg_roi
         FROM marketing_campaigns
-        WHERE company_id = $1`, [company_id]),
+        WHERE ${scope}`, p),
 
       pool.query(`
         SELECT id, name, type, status, actual_leads, target_leads, budget, spent, start_date, end_date
         FROM marketing_campaigns
-        WHERE company_id = $1
-        ORDER BY created_at DESC LIMIT 5`, [company_id]),
+        WHERE ${scope}
+        ORDER BY created_at DESC LIMIT 5`, p),
 
       pool.query(`
         SELECT id, name, type, status, actual_leads, budget, spent
         FROM marketing_campaigns
-        WHERE company_id = $1
-        ORDER BY actual_leads DESC LIMIT 5`, [company_id]),
+        WHERE ${scope}
+        ORDER BY actual_leads DESC LIMIT 5`, p),
 
       pool.query(`
         SELECT
           TO_CHAR(DATE_TRUNC('month', start_date), 'Mon YY') AS month,
           COALESCE(SUM(actual_leads), 0)                     AS leads
         FROM marketing_campaigns
-        WHERE company_id = $1
-          AND start_date >= NOW() - INTERVAL '12 months'
+        WHERE ${scope}
         GROUP BY DATE_TRUNC('month', start_date)
-        ORDER BY DATE_TRUNC('month', start_date)`, [company_id]),
+        ORDER BY DATE_TRUNC('month', start_date)`, p),
     ]);
 
     res.json({
-      stats:           statsR.rows[0],
+      period:           range.period,
+      period_label:     range.label,
+      stats:            statsR.rows[0],
       recent_campaigns: recentR.rows,
       top_performing:   topR.rows,
       monthly_leads:    monthlyR.rows,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Dashboard filter options ──────────────────────────────────────────────────
+// Distinct values across ALL campaigns in scope, so selecting one doesn't
+// collapse the dropdown.
+router.get('/dashboard/filter-options', async (req, res) => {
+  const distinct = (col) => pool
+    .query(`SELECT DISTINCT ${col} AS v FROM marketing_campaigns
+             WHERE ($1::int IS NULL OR company_id = $1)
+               AND ${col} IS NOT NULL AND TRIM(${col}) <> ''
+             ORDER BY v`, [cid(req)])
+    .catch(() => ({ rows: [] }));
+  const [types, statuses] = await Promise.all([distinct('type'), distinct('status')]);
+  res.json({ types: types.rows.map(r => r.v), statuses: statuses.rows.map(r => r.v) });
 });
 
 // ── Campaign Stats ────────────────────────────────────────────────────────────
@@ -332,15 +367,19 @@ router.patch('/deliverables/:id/deliver', async (req, res) => {
 router.get('/orders-won-lost/stats', async (req, res) => {
   try {
     const { rows } = await pool.query(`
+      -- sales_orders has order_status, not status, and orders are never
+      -- 'won'/'lost' — that is opportunity vocabulary. For an order the win is
+      -- being booked; the loss is being cancelled or rejected. Status sets come
+      -- from shared/statusSets.js so this cannot drift again.
       SELECT
-        COUNT(*) FILTER (WHERE LOWER(status) = 'won')   AS won_count,
-        COALESCE(SUM(total_amount) FILTER (WHERE LOWER(status) = 'won'), 0) AS won_value,
-        COUNT(*) FILTER (WHERE LOWER(status) = 'lost')  AS lost_count,
+        COUNT(*) FILTER (WHERE ${sqlSalesOrderBooked('order_status')})   AS won_count,
+        COALESCE(SUM(total_amount) FILTER (WHERE ${sqlSalesOrderBooked('order_status')}), 0) AS won_value,
+        COUNT(*) FILTER (WHERE NOT (${sqlSalesOrderBooked('order_status')})) AS lost_count,
         CASE WHEN COUNT(*) > 0
-          THEN ROUND(COUNT(*) FILTER (WHERE LOWER(status) = 'won')::numeric / COUNT(*) * 100, 1)
+          THEN ROUND(COUNT(*) FILTER (WHERE ${sqlSalesOrderBooked('order_status')})::numeric / COUNT(*) * 100, 1)
           ELSE 0 END AS conversion_rate
       FROM sales_orders
-      WHERE company_id = $1 AND campaign_id IS NOT NULL`, [cid(req)]);
+      WHERE company_id = $1 AND campaign_id IS NOT NULL AND deleted_at IS NULL`, [cid(req)]);
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -355,14 +394,14 @@ router.get('/orders-won-lost', async (req, res) => {
     if (period === 'quarter') where += ` AND so.created_at >= NOW() - INTERVAL '3 months'`;
 
     const { rows } = await pool.query(`
-      SELECT so.id, so.order_no,
-        COALESCE(so.customer_name, a.name) AS customer_name,
-        so.total_amount, so.status, so.created_at,
+      SELECT so.id, so.order_number AS order_no,
+        COALESCE(so.customer_name, p.name) AS customer_name,
+        so.total_amount, so.order_status AS status, so.created_at,
         mc.name AS campaign_name
       FROM sales_orders so
       LEFT JOIN marketing_campaigns mc ON mc.id = so.campaign_id
-      LEFT JOIN accounts a ON a.id = so.account_id
-      ${where}
+      LEFT JOIN parties p ON p.id = so.customer_id
+      ${where} AND so.deleted_at IS NULL
       ORDER BY so.created_at DESC`, params);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -520,7 +559,7 @@ router.get('/analytics/campaign-roi', async (req, res) => {
     const { rows } = await pool.query(`
       SELECT mc.name AS campaign_name,
              COALESCE(mc.spent, 0) AS spend,
-             COALESCE(SUM(so.total_amount) FILTER (WHERE LOWER(so.status) = 'won'), 0) AS revenue
+             COALESCE(SUM(so.total_amount) FILTER (WHERE ${sqlSalesOrderBooked('so.order_status')}), 0) AS revenue
       FROM marketing_campaigns mc
       LEFT JOIN sales_orders so ON so.campaign_id = mc.id
       ${where}

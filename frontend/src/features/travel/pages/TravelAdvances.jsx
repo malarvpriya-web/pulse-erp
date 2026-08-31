@@ -7,8 +7,10 @@ import { fmtDate } from '@/utils/dateFormatter';
 import {
   Plus, X, Search, Wallet, FileText, RefreshCcw, Banknote,
   CheckCircle2, XCircle, Download, MessageSquare, SlidersHorizontal,
+  Plane,
 } from 'lucide-react';
 import { STATUS_COLOR, fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY = { amount:'', purpose:'', required_by:'', travel_request_id:'', document_link:'' };
 const FINANCE_ROLES = ['admin', 'super_admin', 'finance'];
@@ -220,7 +222,7 @@ export default function TravelAdvances() {
     if (isFinance && a.status === 'Approved')
       acts.push(<button key="db" onClick={() => setReview({ advance:a, step:'disburse' })} style={btnStyle('#065f46')}><Banknote size={12}/> Release Advance</button>);
     if (a.status === 'Finance Rejected' && (a.employee_id === myId || a.created_by === myId))
-      acts.push(<button key="rs" onClick={() => openResubmit(a)} style={btnStyle('#92400e')}><RefreshCcw size={12}/> Resubmit</button>);
+      acts.push(<button key="rs" onClick={() => openResubmit(a)} style={btnStyle('#5b21b6')}><RefreshCcw size={12}/> Resubmit</button>);
     if (commentsOf(a))
       acts.push(<button key="rm" onClick={() => setRemarksFor(a)} style={btnStyle('#f3f4f6', '#374151')}><MessageSquare size={12}/> Remarks</button>);
     return acts.length ? acts : <span style={{ color:'#9ca3af' }}>—</span>;
@@ -231,21 +233,16 @@ export default function TravelAdvances() {
     'Adv Requested','Adv Paid','Adv Paid on','Adv Ref','Settled','Outstanding','Actions'];
 
   return (
-    <div style={{ padding:24, background:'var(--color-bg-page)', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>
-            Travel entries of {whose}
-          </h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
-            {advances.filter(a => pendingStatuses.includes(a.status)).length} in approval · {fmt(totalPending)} pending · {fmt(totalOutstanding)} released &amp; unsettled
-          </p>
-        </div>
-        <button onClick={openNewForm}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Plane}
+        eyebrow="Travel"
+        title={`Travel entries of ${whose}`}
+        actions={<button className="plh-cta" onClick={openNewForm}>
           <Plus size={15}/> Request Advance
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Filter panel */}
       <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:16, marginBottom:16, display:'flex', gap:14, alignItems:'flex-end', flexWrap:'wrap' }}>
@@ -324,7 +321,7 @@ export default function TravelAdvances() {
                           {hasPayable(a) ? fmt(a.payable) : '—'}
                         </td>
                         <td style={td}>{hasClaims(a) ? fmt(a.company_expense) : '—'}</td>
-                        <td style={{ ...td, color: Number(a.personal_expense) > 0 ? '#92400e' : td.color }}>
+                        <td style={{ ...td, color: Number(a.personal_expense) > 0 ? '#5b21b6' : td.color }}>
                           {hasClaims(a) ? fmt(a.personal_expense) : '—'}
                         </td>
                         <td style={{ ...td, fontWeight:600, color:'#1f2937' }}>{fmt(a.amount)}</td>
@@ -339,7 +336,7 @@ export default function TravelAdvances() {
                           )}
                         </td>
                         <td style={td}>{a.settled_amount ? fmt(a.settled_amount) : '—'}</td>
-                        <td style={{ ...td, fontWeight:600, color: outstanding > 0 ? '#92400e' : '#374151' }}>
+                        <td style={{ ...td, fontWeight:600, color: outstanding > 0 ? '#5b21b6' : '#374151' }}>
                           {['Disbursed','Partially Settled'].includes(a.status) && outstanding > 0 ? fmt(outstanding) : '—'}
                         </td>
                         <td style={{ ...td, display:'flex', gap:6 }}>{actionsFor(a)}</td>
@@ -514,6 +511,6 @@ export default function TravelAdvances() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

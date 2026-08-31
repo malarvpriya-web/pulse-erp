@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, ClipboardList, Check } from 'lucide-react';
+import { RefreshCw, Plus, X, ClipboardList, Check, FolderKanban } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PAGE_SIZE = 20;
 
@@ -12,7 +13,7 @@ const isOverdue = (due, status) => {
 
 const PRIORITY_COLORS = {
   low:    { bg: '#d1fae5', color: '#16a34a' },
-  medium: { bg: '#fef3c7', color: '#d97706' },
+  medium: { bg: '#ede9fe', color: '#6d28d9' },
   high:   { bg: '#fee2e2', color: '#dc2626' },
 };
 const STATUS_COLORS = {
@@ -86,13 +87,20 @@ export default function AssignTasks() {
   const COLS = ['Task', 'Campaign', 'Assigned To', 'Due Date', 'Priority', 'Status', 'Actions'];
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Marketing"
+        title="Assign Tasks"
+        subtitle="Manage marketing campaign task assignments"
+      />
+    }>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Assign Tasks</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Manage marketing campaign task assignments</p>
+
+
         </div>
         <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search tasks…"
           style={{ padding: '7px 12px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 7, fontSize: 13, background: 'var(--color-background-secondary)', color: 'var(--color-text-primary)', width: 180 }} />
@@ -257,6 +265,6 @@ export default function AssignTasks() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

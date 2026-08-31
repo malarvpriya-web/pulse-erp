@@ -1,73 +1,58 @@
 import api from '@/services/api/client';
 
+/**
+ * CRM data access.
+ *
+ * These functions deliberately do NOT catch. The CRM audit (2026-08-19) found
+ * 29 exported functions here with 13 catch blocks and ZERO rethrows — every
+ * failure resolved to an empty array or object, so a 500 from the API rendered
+ * as a calm "no records found" state and was indistinguishable from real
+ * emptiness. The worst case returned `{ conversion_rate: 0, rows: [] }`, which
+ * painted a confident 0% conversion rate on the dashboard whenever the endpoint
+ * was down (audit C-18).
+ *
+ * Errors now propagate to the calling component, which is responsible for
+ * showing an error state. Unmeasured must never render as zero.
+ */
+
 // ── Leads ──────────────────────────────────────────────────────────────────
 
 export const getLeads = async (params = {}) => {
-  try {
     const res = await api.get('/crm/leads', { params });
     return res.data?.leads || res.data || [];
-  } catch (err) {
-    console.error('getLeads failed:', err.message);
-    return [];
-  }
 };
 
 export const getLeadsStats = async () => {
-  try {
     const res = await api.get('/crm/leads/stats');
     return res.data?.data ?? res.data ?? {};
-  } catch (err) {
-    console.error('getLeadsStats failed:', err.message);
-    return {};
-  }
 };
 
 // ── IEM (enquiry master) ───────────────────────────────────────────────────
 
 // Count / Value / Estimate per bucket + conversion rate.
 export const getLeadsSummary = async (params = {}) => {
-  try {
     const res = await api.get('/crm/leads/summary', { params });
     return res.data || { conversion_rate: 0, rows: [] };
-  } catch (err) {
-    console.error('getLeadsSummary failed:', err.message);
-    return { conversion_rate: 0, rows: [] };
-  }
 };
 
 // Toolbar dropdown options: owners, partners, zones, fiscal years.
 export const getLeadsFilters = async () => {
-  try {
     const res = await api.get('/crm/leads/filters');
     return res.data || { users: [], partners: [], zones: [], fiscal_years: [] };
-  } catch (err) {
-    console.error('getLeadsFilters failed:', err.message);
-    return { users: [], partners: [], zones: [], fiscal_years: [] };
-  }
 };
 
 // Monthwise / by-zone / by-status aggregates for the IEM widget row.
 export const getLeadAnalytics = async (params = {}) => {
-  try {
     const res = await api.get('/crm/analytics/lead-dashboard', { params });
     return res.data?.data ?? res.data ?? null;
-  } catch (err) {
-    console.error('getLeadAnalytics failed:', err.message);
-    return null;
-  }
 };
 
 // ── Enquiry activity trail (lead_activities) ───────────────────────────────
 // Backed by migration 20260717000005. Before it, both of these 500'd with
 // 42P01 — the table the routes query had never been created.
 export const getLeadActivities = async (leadId) => {
-  try {
     const res = await api.get(`/crm/leads/${leadId}/activities`);
     return Array.isArray(res.data) ? res.data : [];
-  } catch (err) {
-    console.error('getLeadActivities failed:', err.message);
-    return [];
-  }
 };
 
 export const addLeadActivity = async (leadId, data) => {
@@ -123,23 +108,13 @@ export const importLeads = async (file) => {
 
 // ── IEM Won / Lost Leads report ─────────────────────────────────────────────
 export const getWonLostLeads = async (params = {}) => {
-  try {
     const res = await api.get('/crm/won-lost-leads', { params });
     return res.data || { data: [], total_value: 0 };
-  } catch (err) {
-    console.error('getWonLostLeads failed:', err.message);
-    return { data: [], total_value: 0 };
-  }
 };
 
 export const getWonLostLeadsFilters = async () => {
-  try {
     const res = await api.get('/crm/won-lost-leads/filters');
     return res.data || { users: [], fiscal_years: [] };
-  } catch (err) {
-    console.error('getWonLostLeadsFilters failed:', err.message);
-    return { users: [], fiscal_years: [] };
-  }
 };
 
 export const exportWonLostLeads = async (params = {}) => {
@@ -163,23 +138,13 @@ export const convertLead = async (id, data) => {
 // ── Opportunities ──────────────────────────────────────────────────────────
 
 export const getOpportunitiesKanban = async () => {
-  try {
     const res = await api.get('/crm/opportunities/kanban');
     return res.data || {};
-  } catch (err) {
-    console.error('getOpportunitiesKanban failed:', err.message);
-    return {};
-  }
 };
 
 export const getOpportunities = async (params = {}) => {
-  try {
     const res = await api.get('/crm/opportunities', { params });
     return res.data?.opportunities || res.data || [];
-  } catch (err) {
-    console.error('getOpportunities failed:', err.message);
-    return [];
-  }
 };
 
 export const createOpportunity = async (data) => {
@@ -195,13 +160,8 @@ export const updateOpportunity = async (id, data) => {
 // ── Accounts ───────────────────────────────────────────────────────────────
 
 export const getAccounts = async (params = {}) => {
-  try {
     const res = await api.get('/crm/accounts', { params });
     return res.data?.accounts || res.data || [];
-  } catch (err) {
-    console.error('getAccounts failed:', err.message);
-    return [];
-  }
 };
 
 export const createAccount = async (data) => {
@@ -217,13 +177,8 @@ export const updateAccount = async (id, data) => {
 // ── Contacts ───────────────────────────────────────────────────────────────
 
 export const getContacts = async (params = {}) => {
-  try {
     const res = await api.get('/crm/contacts', { params });
     return res.data?.contacts || res.data || [];
-  } catch (err) {
-    console.error('getContacts failed:', err.message);
-    return [];
-  }
 };
 
 export const createContact = async (data) => {
@@ -239,11 +194,6 @@ export const updateContact = async (id, data) => {
 // ── Stats & Dashboard ─────────────────────────────────────────────────────
 
 export const getCrmStats = async () => {
-  try {
     const res = await api.get('/crm/stats');
     return res.data || {};
-  } catch (err) {
-    console.error('getCrmStats failed:', err.message);
-    return {};
-  }
 };

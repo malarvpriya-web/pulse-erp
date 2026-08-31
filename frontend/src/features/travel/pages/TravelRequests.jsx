@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import { Plus, X, Search, ChevronDown, CheckCircle, Clock, AlertCircle } from 'lucide-react';
+import { Plus, X, Search, ChevronDown, CheckCircle, Clock, AlertCircle, Plane } from 'lucide-react';
 import { STATUS_COLOR, fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmtDate = (d) => { if (!d) return '—'; const s = String(d); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.split('-').reverse().join('/'); const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }); };
 
@@ -70,9 +71,9 @@ export default function TravelRequests() {
   };
 
   const approvalLabel = (level) => {
-    if (!level || level === 0) return { label: 'Awaiting RM', color: '#f59e0b' };
-    if (level === 1) return { label: 'Awaiting Dept Head', color: '#f59e0b' };
-    if (level === 2) return { label: 'Awaiting Management', color: '#f59e0b' };
+    if (!level || level === 0) return { label: 'Awaiting RM', color: '#7c5cf0' };
+    if (level === 1) return { label: 'Awaiting Dept Head', color: '#7c5cf0' };
+    if (level === 2) return { label: 'Awaiting Management', color: '#7c5cf0' };
     return { label: 'Fully Approved', color: '#10b981' };
   };
 
@@ -80,17 +81,16 @@ export default function TravelRequests() {
   const labelStyle = { display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:5 };
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Travel Requests</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>{requests.length} total requests</p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Plane}
+        eyebrow="Travel"
+        title="Travel Requests"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15}/> New Request
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Filters */}
       <div style={{ display:'flex', gap:12, marginBottom:20, flexWrap:'wrap' }}>
@@ -214,11 +214,11 @@ export default function TravelRequests() {
                   <div key={lvl} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
                     <div style={{
                       width:24, height:24, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
-                      background: done ? '#10b981' : active ? '#f59e0b' : '#e5e7eb',
+                      background: done ? '#10b981' : active ? '#7c5cf0' : '#e5e7eb',
                     }}>
                       {done ? <CheckCircle size={14} color="#fff"/> : active ? <Clock size={14} color="#fff"/> : <span style={{ fontSize:11, color:'#9ca3af' }}>{i+1}</span>}
                     </div>
-                    <span style={{ fontSize:13, color: done ? '#10b981' : active ? '#f59e0b' : '#9ca3af', fontWeight: active ? 600 : 400 }}>{lvl}</span>
+                    <span style={{ fontSize:13, color: done ? '#10b981' : active ? '#7c5cf0' : '#9ca3af', fontWeight: active ? 600 : 400 }}>{lvl}</span>
                   </div>
                 );
               })}
@@ -336,6 +336,6 @@ export default function TravelRequests() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

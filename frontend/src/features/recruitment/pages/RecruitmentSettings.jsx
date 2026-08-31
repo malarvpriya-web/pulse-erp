@@ -105,12 +105,12 @@ export default function RecruitmentSettings({ setPage }) {
   const [templateOptions, setTemplateOptions] = useState([]);
 
   useEffect(() => {
-    api.get('/hr/document-templates')
+    api.get('/documents/templates')
       .then(res => {
         const list = Array.isArray(res.data) ? res.data : (res.data?.templates || []);
         setTemplateOptions(list.map(t => ({ value: String(t.id), label: t.name || t.template_name })));
       })
-      .catch(() => {});
+      .catch(() => setTemplateOptions([]));
   }, []);
 
   return (

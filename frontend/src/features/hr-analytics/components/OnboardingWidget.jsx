@@ -49,7 +49,7 @@ export default function OnboardingWidget({ data = {}, loading }) {
             {[
               { label:'This week',  value: joined7d,        color:'#10b981', bg:'#f0fdf4' },
               { label:'This month', value: joined30d,       color:'#6366f1', bg:'#eef2ff' },
-              { label:'Confirming soon', value: confirmingSoon, color:'#d97706', bg:'#fffbeb' },
+              { label:'Confirming soon', value: confirmingSoon, color:'#6d28d9', bg:'#f5f3ff' },
             ].map(c => (
               <div key={c.label} style={{ display:'flex', flexDirection:'column', alignItems:'center', padding:'6px 12px', background:c.bg, borderRadius:8, minWidth:70 }}>
                 <span style={{ fontSize:18, fontWeight:800, color:c.color, lineHeight:1 }}>{c.value}</span>
@@ -68,8 +68,8 @@ export default function OnboardingWidget({ data = {}, loading }) {
                   <div key={h.id} style={{
                     display:'flex', alignItems:'center', gap:10,
                     padding:'7px 10px', borderRadius:8,
-                    background: urgent ? '#fffbeb' : LIGHT,
-                    border: `1px solid ${urgent ? '#fde68a' : BORDER}`,
+                    background: urgent ? '#f5f3ff' : LIGHT,
+                    border: `1px solid ${urgent ? '#ddd6fe' : BORDER}`,
                   }}>
                     <div style={{
                       width:30, height:30, borderRadius:'50%', background:P,
@@ -87,7 +87,7 @@ export default function OnboardingWidget({ data = {}, loading }) {
                       </div>
                     </div>
                     {urgent && (
-                      <AlertCircle size={13} color="#d97706" title={`Probation ends in ${dLeft} days`} />
+                      <AlertCircle size={13} color="#6d28d9" title={`Probation ends in ${dLeft} days`} />
                     )}
                     {dLeft !== null && !urgent && dLeft >= 0 && (
                       <span style={{ fontSize:10, color:'#9ca3af', whiteSpace:'nowrap' }}>

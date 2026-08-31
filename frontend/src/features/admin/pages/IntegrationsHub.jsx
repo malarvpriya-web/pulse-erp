@@ -1,19 +1,20 @@
 // frontend/src/features/admin/pages/IntegrationsHub.jsx
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  MessageCircle, Mail, Cloud, CreditCard, BookOpen,
-  PenLine, Truck, Landmark, Check, AlertTriangle, Clock, X,
-  Server, Calculator, Wallet, FileCheck, Shield, Zap,
+  MessageCircle, Mail, Cloud, CreditCard, BookOpen, PenLine, Truck,
+  Landmark, Check, AlertTriangle, Clock, X, Server, Calculator, Wallet,
+  FileCheck, Shield, Zap, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Category colour tokens ────────────────────────────────────────────────────
 const CATEGORY_STYLE = {
   Communication: { bg: '#dbeafe', iconColor: '#2563eb' },
   Payments:      { bg: '#d1fae5', iconColor: '#059669' },
   Accounting:    { bg: '#ede9fe', iconColor: '#6B3FDB' },
-  Documents:     { bg: '#fef3c7', iconColor: '#d97706' },
+  Documents:     { bg: '#ede9fe', iconColor: '#6d28d9' },
   Logistics:     { bg: '#e0e7ff', iconColor: '#4338ca' },
   Compliance:    { bg: '#fee2e2', iconColor: '#dc2626' },
 };
@@ -190,7 +191,7 @@ const INTEGRATIONS = [
 function StatusBadge({ status }) {
   const map = {
     Connected:        { bg: '#d1fae5', color: '#16a34a', Icon: Check,          label: 'Connected'      },
-    'Not Configured': { bg: '#fef3c7', color: '#d97706', Icon: AlertTriangle,   label: 'Not Configured' },
+    'Not Configured': { bg: '#ede9fe', color: '#6d28d9', Icon: AlertTriangle,   label: 'Not Configured' },
     'Coming Soon':    { bg: '#f3f4f6', color: '#9ca3af', Icon: Clock,           label: 'Coming Soon'    },
     Error:            { bg: '#fee2e2', color: '#dc2626', Icon: X,               label: 'Error'          },
   };
@@ -361,7 +362,7 @@ function IntegrationCard({ integration, statusMap, onTest, onSave, onLoadConfig,
             ) : (
               <button
                 onClick={() => onNavigate(integration.managePage)}
-                style={{ background: '#fef3c7', color: '#d97706', border: '1px solid #fde68a', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+                style={{ background: '#ede9fe', color: '#6d28d9', border: '1px solid #ddd6fe', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
               >
                 Setup Required →
               </button>
@@ -536,17 +537,20 @@ export default function IntegrationsHub({ setPage }) {
   const comingSoonCount    = INTEGRATIONS.filter(i => i.comingSoon).length;
 
   return (
-    <div style={{ padding: 24, background: '#fff', minHeight: '100vh' }}>
-      <div className="page-header" style={{ marginBottom: 20 }}>
-        <h1 className="page-title" style={{ margin: '0 0 4px', fontSize: 22 }}>Integrations Hub</h1>
-        <p className="page-subtitle" style={{ margin: 0, fontSize: 13 }}>Connect Pulse ERP with external services and platforms</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Administration"
+        title="Integrations Hub"
+        subtitle="Connect Pulse ERP with external services and platforms"
+      />
+    }>
 
       {/* Summary strip — derived from live statusMap, never hardcoded */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         {[
           { label: 'Connected',      count: connectedCount,     color: '#16a34a', bg: '#d1fae5' },
-          { label: 'Not Configured', count: notConfiguredCount, color: '#d97706', bg: '#fef3c7' },
+          { label: 'Not Configured', count: notConfiguredCount, color: '#6d28d9', bg: '#ede9fe' },
           { label: 'Coming Soon',    count: comingSoonCount,    color: '#6b7280', bg: '#f3f4f6' },
         ].map(({ label, count, color, bg }) => (
           <div key={label} style={{ padding: '10px 20px', borderRadius: 10, background: bg, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -576,6 +580,6 @@ export default function IntegrationsHub({ setPage }) {
           </div>
         </div>
       ))}
-    </div>
+    </PageShell>
   );
 }

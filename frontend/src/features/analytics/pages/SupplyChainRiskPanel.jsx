@@ -1,7 +1,7 @@
 // frontend/src/features/analytics/pages/SupplyChainRiskPanel.jsx
 // Phase 49H — Supply Chain Exposure (Section 8)
-// Single-source suppliers, critical components, long-lead vendors, revenue at risk
-import { AlertTriangle, Package, Zap, Clock, ShieldOff } from 'lucide-react';
+// Single-source, quality and delivery exposure across the live vendor base
+import { AlertTriangle, Zap, Clock, ShieldOff } from 'lucide-react';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -13,25 +13,21 @@ const fmtL = (n) => {
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
-  amber: '#d97706', blue: '#2563eb', border: '#e9e4ff',
+  amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff',
 };
 
-// Static critical component exposures for power electronics (Manifest specifics)
-const CRITICAL_COMPONENTS = [
-  { component: 'IGBT Modules',        risk: 'Critical', lead_days: 120, vendors: 1, impact: 'HVDC, STATCOM projects halted without IGBT supply' },
-  { component: 'Power Transformers',  risk: 'High',     lead_days: 90,  vendors: 2, impact: 'SST and HVDC converter projects at risk' },
-  { component: 'DC Capacitors',       risk: 'High',     lead_days: 60,  vendors: 2, impact: 'Converter assembly and energy storage systems' },
-  { component: 'DSP Controllers',     risk: 'Critical', lead_days: 90,  vendors: 1, impact: 'All automation and control system builds' },
-  { component: 'Semiconductors',      risk: 'High',     lead_days: 75,  vendors: 3, impact: 'PCB assemblies across all product lines' },
-  { component: 'Gate Drive Boards',   risk: 'Medium',   lead_days: 45,  vendors: 2, impact: 'STATCOM and inverter assemblies' },
-  { component: 'Current Sensors',     risk: 'Medium',   lead_days: 30,  vendors: 3, impact: 'Protection systems and metering assemblies' },
-  { component: 'HV Cables & Bus Bars',risk: 'Medium',   lead_days: 45,  vendors: 4, impact: 'HVDC transmission line terminations' },
-];
+// The mock `CRITICAL_COMPONENTS` array that used to sit here has been removed.
+// It hardcoded eight parts — IGBT Modules, DSP Controllers, Power Transformers
+// and so on — with invented lead times, invented vendor counts and invented
+// business-impact prose, and drove two of the four KPI cards above plus a full
+// table. None of it was ever read from the database, and none of it described
+// this company's actual supply base. Everything on this panel now comes from
+// `vendors`, `purchase_orders` and `ncr_reports` via /ceo-intelligence/vendors.
 
 const RISK_BADGE = {
   Critical: { bg: '#fee2e2', color: '#dc2626', border: '#fca5a5' },
-  High:     { bg: '#fef3c7', color: '#92400e', border: '#fcd34d' },
-  Medium:   { bg: '#fef9c3', color: '#78350f', border: '#fde68a' },
+  High:     { bg: '#ede9fe', color: '#5b21b6', border: '#c4b5fd' },
+  Medium:   { bg: '#ede9fe', color: '#4c1d95', border: '#ddd6fe' },
   Low:      { bg: '#dcfce7', color: '#15803d', border: '#86efac' },
 };
 
@@ -55,9 +51,13 @@ export default function SupplyChainRiskPanel({ singleSource = [], data }) {
   const allVendors = data?.all_vendors || [];
   const summary = data?.summary || {};
 
-  const longLeadVendors = allVendors.filter(v => v.critical_items > 0);
-  const singleSourceRevAtRisk = singleSource.reduce((s, v) => s + v.po_value, 0) * 1.5;
-  const criticalComponents = CRITICAL_COMPONENTS.filter(c => c.risk === 'Critical' || c.risk === 'High');
+  // Spend actually committed to single-source suppliers. This used to be
+  // multiplied by 1.5 and labelled "Revenue at risk" — the multiplier had no
+  // basis, and PO value is spend, not revenue. Reported as what it is.
+  const singleSourceSpend = singleSource.reduce((sum, v) => sum + (v.po_value || 0), 0);
+  const criticalVendors   = allVendors.filter(v => v.critical_vendor);
+  const vendorsWithNcrs   = allVendors.filter(v => (v.open_ncrs || 0) > 0);
+  const lateVendors       = allVendors.filter(v => v.on_time_delivery_pct != null && v.on_time_delivery_pct < 80);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -70,25 +70,25 @@ export default function SupplyChainRiskPanel({ singleSource = [], data }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
         <ExposureCard
           title="Single Source Suppliers"
-          count={singleSource.length || summary.single_source_count || '—'}
-          value={fmtL(singleSourceRevAtRisk)}
-          color={C.red}
+          count={singleSource.length}
+          value={fmtL(singleSourceSpend)}
+          color={singleSource.length > 0 ? C.red : C.green}
           icon={ShieldOff}
-          sub="Revenue at risk"
+          sub="Committed PO value"
         />
         <ExposureCard
-          title="Critical Components"
-          count={CRITICAL_COMPONENTS.filter(c => c.risk === 'Critical').length}
-          color={C.red}
+          title="Critical Vendors"
+          count={criticalVendors.length}
+          color={criticalVendors.length > 0 ? C.amber : C.green}
           icon={Zap}
-          sub="Requiring immediate attention"
+          sub="Flagged critical in vendor master"
         />
         <ExposureCard
-          title="Long Lead Vendors"
-          count={longLeadVendors.length || CRITICAL_COMPONENTS.filter(c => c.lead_days >= 60).length}
-          color={C.amber}
+          title="Late Deliverers"
+          count={lateVendors.length}
+          color={lateVendors.length > 0 ? C.amber : C.green}
           icon={Clock}
-          sub="Lead time ≥ 60 days"
+          sub="On-time delivery below 80%"
         />
         <ExposureCard
           title="Blocked Vendors"
@@ -140,68 +140,108 @@ export default function SupplyChainRiskPanel({ singleSource = [], data }) {
         </div>
       )}
 
-      {/* Critical Components Matrix */}
+      {/* Vendor exposure — every row is a real vendor from the vendor master. */}
       <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
         <div style={{ padding: '14px 18px', borderBottom: '1px solid #f3f4f6', display: 'flex', alignItems: 'center', gap: 8 }}>
           <Zap size={14} color={C.amber} />
-          <span style={{ fontSize: 13, fontWeight: 700, color: '#374151' }}>Critical Component Risk Matrix</span>
-          <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 'auto' }}>Power electronics industry — strategic components</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: '#374151' }}>Vendor Exposure</span>
+          <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 'auto' }}>
+            Quality and delivery risk across the active vendor base
+          </span>
         </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: '#f9fafb' }}>
-              {['Component', 'Risk', 'Lead Time', 'Source Count', 'Business Impact'].map(h => (
-                <th key={h} style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 600, color: '#6b7280', fontSize: 11, textTransform: 'uppercase' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {CRITICAL_COMPONENTS.map((comp, i) => {
-              const cfg = RISK_BADGE[comp.risk] || RISK_BADGE.Low;
-              return (
-                <tr key={i} style={{ borderBottom: '1px solid #f3f4f6', background: comp.risk === 'Critical' ? '#fff8f8' : '#fff' }}>
-                  <td style={{ padding: '9px 14px', fontWeight: 700, color: '#111827' }}>{comp.component}</td>
-                  <td style={{ padding: '9px 14px' }}>
-                    <span style={{ padding: '2px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}` }}>
-                      {comp.risk}
-                    </span>
-                  </td>
-                  <td style={{ padding: '9px 14px', color: comp.lead_days >= 90 ? C.red : comp.lead_days >= 60 ? C.amber : '#374151', fontWeight: comp.lead_days >= 60 ? 700 : 400 }}>
-                    {comp.lead_days} days
-                  </td>
-                  <td style={{ padding: '9px 14px', textAlign: 'center', color: comp.vendors === 1 ? C.red : comp.vendors === 2 ? C.amber : C.green, fontWeight: 700 }}>
-                    {comp.vendors}
-                  </td>
-                  <td style={{ padding: '9px 14px', color: '#6b7280', fontSize: 11 }}>{comp.impact}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        {vendorsWithNcrs.length === 0 && lateVendors.length === 0 ? (
+          <div style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
+            No vendor is carrying an open non-conformance or delivering below 80% on time.
+          </div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: '#f9fafb' }}>
+                {['Vendor', 'Exposure', 'Open NCRs', 'On-Time %', 'Committed Spend'].map(h => (
+                  <th key={h} style={{ padding: '8px 14px', textAlign: 'left', fontWeight: 600, color: '#6b7280', fontSize: 11, textTransform: 'uppercase' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[...new Set([...vendorsWithNcrs, ...lateVendors])]
+                .sort((a, b) => (b.open_ncrs || 0) - (a.open_ncrs || 0))
+                .map((v, i) => {
+                  const reasons = [];
+                  if (v.single_source)  reasons.push('Single source');
+                  if (v.critical_vendor) reasons.push('Critical');
+                  if ((v.open_ncrs || 0) > 0) reasons.push('Open NCRs');
+                  if (v.on_time_delivery_pct != null && v.on_time_delivery_pct < 80) reasons.push('Late delivery');
+                  const level = v.single_source && (v.open_ncrs || 0) > 0 ? 'Critical'
+                    : (v.open_ncrs || 0) > 2 || v.single_source ? 'High' : 'Medium';
+                  const cfg = RISK_BADGE[level] || RISK_BADGE.Low;
+                  return (
+                    <tr key={v.id ?? i} style={{ borderBottom: '1px solid #f3f4f6', background: level === 'Critical' ? '#fff8f8' : '#fff' }}>
+                      <td style={{ padding: '9px 14px', fontWeight: 700, color: '#111827' }}>{v.name}</td>
+                      <td style={{ padding: '9px 14px' }}>
+                        <span style={{ padding: '2px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}` }}>
+                          {level}
+                        </span>
+                        <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>{reasons.join(' · ')}</span>
+                      </td>
+                      <td style={{ padding: '9px 14px', textAlign: 'center', color: (v.open_ncrs || 0) > 0 ? C.red : '#6b7280', fontWeight: (v.open_ncrs || 0) > 0 ? 700 : 400 }}>
+                        {v.open_ncrs || 0}
+                      </td>
+                      <td style={{ padding: '9px 14px', color: v.on_time_delivery_pct != null && v.on_time_delivery_pct < 80 ? C.red : '#374151' }}>
+                        {v.on_time_delivery_pct != null ? `${v.on_time_delivery_pct}%` : '—'}
+                      </td>
+                      <td style={{ padding: '9px 14px', fontWeight: 700, color: C.primary }}>{fmtL(v.po_value)}</td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        )}
       </div>
 
-      {/* Action Recommendations */}
-      <div style={{ background: '#fffbeb', border: `1px solid #fcd34d`, borderRadius: 14, padding: '16px 20px' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <AlertTriangle size={14} />
-          Supply Chain Risk Mitigation Actions
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-          {[
-            'Qualify alternate IGBT suppliers immediately — current single-source is highest supply chain risk',
-            'Maintain 90-day safety stock for IGBTs, DSP controllers, and power transformers',
-            'Issue advance purchase orders 90+ days before project start for long lead components',
-            'Negotiate SLAs with critical vendors — include penalty clauses for late delivery',
-            'Perform quarterly vendor audits for all Critical/Single-Source vendors',
-            'Develop dual-source qualification plans for all Critical-rated components by next quarter',
-          ].map((a, i) => (
-            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12, color: '#78350f' }}>
-              <span style={{ color: C.amber, flexShrink: 0, fontWeight: 800, marginTop: 1 }}>•</span>
-              {a}
+      {/* Mitigation actions.
+
+          These were six fixed sentences naming IGBTs, DSP controllers and power
+          transformers — components that appear nowhere in this database. Each
+          line below is now emitted only when the condition behind it is true, and
+          names the vendors it is talking about. */}
+      {(() => {
+        const actions = [];
+        const names = (arr, n = 3) => arr.slice(0, n).map(v => v.name).join(', ')
+          + (arr.length > n ? ` and ${arr.length - n} more` : '');
+        const blocked = allVendors.filter(v => String(v.health_label || '').toLowerCase() === 'blocked');
+        const ssNcr   = singleSource.filter(v => (v.open_ncrs || 0) > 0);
+
+        if (blocked.length) actions.push(`Source alternates for ${names(blocked)} — blocked in the vendor master, so no PO can be raised.`);
+        if (ssNcr.length)   actions.push(`Qualify a second source for ${names(ssNcr)} — single-source with open non-conformances and no fallback.`);
+        else if (singleSource.length) actions.push(`Begin dual-source qualification for ${names(singleSource)} — currently single-source.`);
+        if (lateVendors.length) actions.push(`Review delivery SLAs with ${names(lateVendors)} — on-time delivery below 80%.`);
+        if (vendorsWithNcrs.length) actions.push(`Close out ${vendorsWithNcrs.reduce((n, v) => n + (v.open_ncrs || 0), 0)} open NCR(s) across ${vendorsWithNcrs.length} vendor(s) before the next scheduled receipt.`);
+        if (criticalVendors.length && !ssNcr.length) actions.push(`Schedule quarterly audits for ${names(criticalVendors)} — flagged critical in the vendor master.`);
+
+        if (!actions.length) {
+          return (
+            <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 14, padding: '16px 20px', fontSize: 13, color: '#166534' }}>
+              No supply-chain mitigation is outstanding: no blocked vendors, no single-source supplier carrying an open NCR, and every vendor with delivery history is above 80% on time.
             </div>
-          ))}
-        </div>
-      </div>
+          );
+        }
+        return (
+          <div style={{ background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: 14, padding: '16px 20px' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#5b21b6', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <AlertTriangle size={14} />
+              Supply Chain Risk Mitigation Actions
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {actions.map((a, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12, color: '#4c1d95' }}>
+                  <span style={{ color: C.amber, flexShrink: 0, fontWeight: 800, marginTop: 1 }}>•</span>
+                  {a}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

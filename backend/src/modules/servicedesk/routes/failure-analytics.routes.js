@@ -8,6 +8,7 @@ import pool from '../../../config/db.js';
 import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -184,6 +185,21 @@ router.get('/analysis/by-engineer', verifyToken, async (req, res) => {
 // GET /failure-analytics/dashboard — management summary
 router.get('/dashboard', verifyToken, async (req, res) => {
   try {
+    // Dashboard filter bar: ?period / ?from / ?to / ?zone / ?product_name.
+    // Every panel here is failure activity, so all of them follow the period —
+    // the trend series' fixed 12-month window becomes the default, not a cap.
+    const range = resolveRange(req.query, { defaultPeriod: 'last12m' });
+    const zone = dimension(req.query, 'zone');
+    const product = dimension(req.query, 'product_name');
+    // $1 company, $2 from, $3 to, $4 zone, $5 product — referenced by every
+    // query below via `scope`, so no parameter is left untyped.
+    const p = [cid(req), range.from, range.to, zone, product];
+    const scope = `($1::int IS NULL OR company_id = $1)
+      AND ($2::date IS NULL OR failure_date >= $2::date)
+      AND ($3::date IS NULL OR failure_date <= $3::date)
+      AND ($4::text IS NULL OR zone = $4)
+      AND ($5::text IS NULL OR product_name = $5)`;
+
     const [kpis, byZone, byProduct, byComponent, trend, repeatTrend] = await Promise.all([
       pool.query(`
         SELECT COUNT(*) AS total,
@@ -191,15 +207,17 @@ router.get('/dashboard', verifyToken, async (req, res) => {
                ROUND(AVG(resolution_time_hrs)::NUMERIC,2) AS avg_resolution_hrs,
                COUNT(DISTINCT zone) AS zones_affected,
                COUNT(DISTINCT product_name) AS products_affected
-          FROM service_failure_records WHERE company_id = $1
-      `, [cid(req)]),
-      pool.query(`SELECT zone, COUNT(*) AS cnt FROM service_failure_records WHERE company_id = $1 AND zone IS NOT NULL GROUP BY zone ORDER BY cnt DESC LIMIT 8`, [cid(req)]),
-      pool.query(`SELECT product_name, COUNT(*) AS cnt FROM service_failure_records WHERE company_id = $1 AND product_name IS NOT NULL GROUP BY product_name ORDER BY cnt DESC LIMIT 8`, [cid(req)]),
-      pool.query(`SELECT component_failed, COUNT(*) AS cnt FROM service_failure_records WHERE company_id = $1 AND component_failed IS NOT NULL GROUP BY component_failed ORDER BY cnt DESC LIMIT 8`, [cid(req)]),
-      pool.query(`SELECT TO_CHAR(failure_date,'YYYY-MM') AS month, COUNT(*) AS failures FROM service_failure_records WHERE company_id = $1 AND failure_date >= NOW()-INTERVAL '12 months' GROUP BY month ORDER BY month`, [cid(req)]),
-      pool.query(`SELECT TO_CHAR(failure_date,'YYYY-MM') AS month, COUNT(CASE WHEN is_repeat_failure THEN 1 END) AS repeats FROM service_failure_records WHERE company_id = $1 AND failure_date >= NOW()-INTERVAL '12 months' GROUP BY month ORDER BY month`, [cid(req)]),
+          FROM service_failure_records WHERE ${scope}
+      `, p),
+      pool.query(`SELECT zone, COUNT(*) AS cnt FROM service_failure_records WHERE ${scope} AND zone IS NOT NULL GROUP BY zone ORDER BY cnt DESC LIMIT 8`, p),
+      pool.query(`SELECT product_name, COUNT(*) AS cnt FROM service_failure_records WHERE ${scope} AND product_name IS NOT NULL GROUP BY product_name ORDER BY cnt DESC LIMIT 8`, p),
+      pool.query(`SELECT component_failed, COUNT(*) AS cnt FROM service_failure_records WHERE ${scope} AND component_failed IS NOT NULL GROUP BY component_failed ORDER BY cnt DESC LIMIT 8`, p),
+      pool.query(`SELECT TO_CHAR(failure_date,'YYYY-MM') AS month, COUNT(*) AS failures FROM service_failure_records WHERE ${scope} GROUP BY month ORDER BY month`, p),
+      pool.query(`SELECT TO_CHAR(failure_date,'YYYY-MM') AS month, COUNT(CASE WHEN is_repeat_failure THEN 1 END) AS repeats FROM service_failure_records WHERE ${scope} GROUP BY month ORDER BY month`, p),
     ]);
     res.json({
+      period: range.period,
+      period_label: range.label,
       kpis: kpis.rows[0],
       by_zone: byZone.rows,
       by_product: byProduct.rows,
@@ -208,6 +226,19 @@ router.get('/dashboard', verifyToken, async (req, res) => {
       repeat_trend: repeatTrend.rows,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /failure-analytics/dashboard/filter-options — zone / product values for
+// the filter bar. Not narrowed by the active filter, so the lists stay full.
+router.get('/dashboard/filter-options', verifyToken, async (req, res) => {
+  const distinct = (col) => pool
+    .query(`SELECT DISTINCT ${col} AS v FROM service_failure_records
+             WHERE ($1::int IS NULL OR company_id = $1)
+               AND ${col} IS NOT NULL AND TRIM(${col}) <> ''
+             ORDER BY v`, [cid(req)])
+    .catch(() => ({ rows: [] }));
+  const [zones, products] = await Promise.all([distinct('zone'), distinct('product_name')]);
+  res.json({ zones: zones.rows.map(r => r.v), products: products.rows.map(r => r.v) });
 });
 
 export default router;

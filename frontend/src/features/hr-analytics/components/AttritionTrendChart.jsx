@@ -11,7 +11,7 @@ export default function AttritionTrendChart({ data = [], loading }) {
           <XAxis dataKey="month" tick={{ fontSize:11, fill:'#9ca3af' }}/>
           <YAxis tick={{ fontSize:11, fill:'#9ca3af' }} domain={[0, 'auto']}/>
           <Tooltip formatter={v => [`${v}%`, 'Rate']} contentStyle={{ fontSize:12, borderRadius:8, border:'1px solid #f0f0f4' }}/>
-          <ReferenceLine y={10} stroke="#f59e0b" strokeDasharray="4 4" label={{ value:'10%', fill:'#f59e0b', fontSize:10 }}/>
+          <ReferenceLine y={10} stroke="#7c5cf0" strokeDasharray="4 4" label={{ value:'10%', fill:'#7c5cf0', fontSize:10 }}/>
           <Line type="monotone" dataKey="rate" stroke="#6366f1" strokeWidth={2} dot={{ r:3 }} activeDot={{ r:5 }}/>
         </LineChart>
       </ResponsiveContainer>

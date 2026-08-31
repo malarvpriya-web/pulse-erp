@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { ReceiptIndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useFY } from '@/context/FYContext';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -16,7 +18,7 @@ const REASON_LABELS = {
 };
 
 const STATUS_COLORS = {
-  draft:     ['#fef3c7', '#b45309'],
+  draft:     ['#ede9fe', '#6d28d9'],
   issued:    ['#dcfce7', '#15803d'],
   cancelled: ['#fee2e2', '#dc2626'],
 };
@@ -38,17 +40,9 @@ const emptyForm = () => ({
 
 /* ── KPI card ─────────────────────────────────────────────────────────────── */
 function KpiCard({ label, value, sub, color = '#6B3FDB' }) {
-  return (
-    <div style={{
-      flex: '1 1 160px', minWidth: 140,
-      background: '#fff', border: `1px solid ${BORDER}`,
-      borderRadius: 10, padding: '14px 16px',
-    }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 800, color, marginTop: 4 }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} sub={sub} color={color} />;
 }
 
 /* ── Main component ───────────────────────────────────────────────────────── */
@@ -167,28 +161,23 @@ export default function DebitNotes({ setPage }) {
 
   /* ── render ───────────────────────────────────────────────────────────── */
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ fontWeight: 800, fontSize: 22, color: '#1f2937', margin: 0 }}>Debit Notes</h2>
-          <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-            Purchase returns and supplier corrections ({total} total)
-          </p>
-        </div>
-        <button
-          onClick={() => setShowForm(v => !v)}
-          style={{ padding: '10px 20px', borderRadius: 8, background: PURPLE, color: '#fff', fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer' }}
-        >
+    <PageShell dock={
+      <PageHero
+        icon={ReceiptIndianRupee}
+        eyebrow="Finance"
+        title="Debit Notes"
+        actions={<button className="plh-cta"
+          onClick={() => setShowForm(v => !v)}>
           {showForm ? '✕ Close' : '+ New Debit Note'}
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* KPI cards */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
         <KpiCard label="Total Notes"   value={kpis ? parseInt(kpis.total_count)  : '—'} sub="excl. cancelled" />
         <KpiCard label="Issued"        value={kpis ? parseInt(kpis.issued_count) : '—'} sub={kpis ? fmt(kpis.issued_amount) : ''} color="#15803d" />
-        <KpiCard label="Draft"         value={kpis ? parseInt(kpis.draft_count)  : '—'} sub="pending issue" color="#b45309" />
+        <KpiCard label="Draft"         value={kpis ? parseInt(kpis.draft_count)  : '—'} sub="pending issue" color="#6d28d9" />
         <KpiCard label="Total Value"   value={kpis ? fmt(kpis.total_value)        : '—'} sub="issued + draft" color="#0369a1" />
       </div>
 
@@ -422,6 +411,6 @@ export default function DebitNotes({ setPage }) {
           </tbody>
         </table>
       </div>
-    </div>
+    </PageShell>
   );
 }

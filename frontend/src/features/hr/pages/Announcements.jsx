@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
 import {
-  Megaphone, Plus, X, Pencil, Trash2, Eye, EyeOff,
-  Clock, Pin, PinOff, CalendarClock, Users, Search,
-  CheckCircle, AlertTriangle, Info,
-} from "lucide-react";
+  Megaphone, Plus, X, Pencil, Trash2, Eye, EyeOff, Clock, Pin, PinOff,
+  CalendarClock, Users, Search, CheckCircle, AlertTriangle, Info, Bell,
+} from 'lucide-react';
 import api from "@/services/api/client";
 import "./Announcements.css";
 import ConfirmDialog from "@/components/core/ConfirmDialog";
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ── constants ───────────────────────────────────────────────────────────────── */
 const TABS = ["All", "Active", "Scheduled", "Inactive", "Expired"];
@@ -238,21 +238,29 @@ export default function Announcements() {
   };
 
   /* ── fetch ── */
+  // The controller is held in a local, not read back off the ref, so a
+  // superseded call can tell it no longer owns the page state: its rejection
+  // lands AFTER the replacement request has started, and clearing `loading`
+  // there renders the "no announcements" empty state mid-load (StrictMode's
+  // double mount triggers this on every dev page load). Stale calls return
+  // without touching state.
   const fetchAnnouncements = useCallback(async () => {
     abortRef.current?.abort();
-    abortRef.current = new AbortController();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    const isStale = () => myCtrl.signal.aborted || abortRef.current !== myCtrl;
     setError(null);
     try {
-      const res = await api.get("/announcements", { signal: abortRef.current.signal });
+      const res = await api.get("/announcements", { signal: myCtrl.signal });
+      if (isStale()) return;
       const list = Array.isArray(res.data)
         ? res.data
         : (res.data?.announcements ?? res.data?.data ?? []);
       setItems(list);
     } catch (err) {
-      if (err.name !== "CanceledError" && err.code !== "ERR_CANCELED") {
-        setError(err.response?.data?.message || err.message || "Failed to load");
-      }
-    } finally { setLoading(false); }
+      if (isStale() || err.name === "CanceledError" || err.code === "ERR_CANCELED") return;
+      setError(err.response?.data?.message || err.message || "Failed to load");
+    } finally { if (!isStale()) setLoading(false); }
   }, []);
 
   const fetchEmployees = useCallback(async () => {
@@ -422,7 +430,16 @@ export default function Announcements() {
   const priMeta = (p) => PRIORITIES.find(x => x.value === p) ?? PRIORITIES[1];
 
   return (
-    <div className="ann-root">
+    <PageShell dock={
+      <PageHero
+        icon={Bell}
+        eyebrow="Human Resources"
+        title="Announcements"
+        actions={<button className="plh-cta" onClick={openCreate}>
+          <Plus size={14} /> New Announcement
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={pendingDiscardChanges}
         title="Discard Changes"
@@ -434,20 +451,7 @@ export default function Announcements() {
       />
 
       {/* ── Header ── */}
-      <div className="ann-header">
-        <div className="ann-header-l">
-          <h1>Announcements</h1>
-          <p>
-            {items.length} total · {activeCount} active
-            {scheduledCount > 0 && ` · ${scheduledCount} scheduled`}
-            {` · ${inactiveCount} inactive`}
-            {expiredCount > 0 && ` · ${expiredCount} expired`}
-          </p>
-        </div>
-        <button className="ann-btn-primary" onClick={openCreate}>
-          <Plus size={14} /> New Announcement
-        </button>
-      </div>
+
 
       {/* ── Error banner ── */}
       {error && <div className="ann-error">{error}</div>}
@@ -516,7 +520,7 @@ export default function Announcements() {
                 <div className="ann-card-top">
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="ann-card-title">
-                      {ann.is_pinned && <Pin size={11} style={{ marginRight: 4, verticalAlign: "middle", color: "#92400e" }} />}
+                      {ann.is_pinned && <Pin size={11} style={{ marginRight: 4, verticalAlign: "middle", color: "#5b21b6" }} />}
                       {ann.title}
                     </div>
                     <div className="ann-meta-row">
@@ -803,6 +807,6 @@ export default function Announcements() {
 
       {/* ── Toast stack ── */}
       <Toast toasts={toasts} remove={removeToast} />
-    </div>
+    </PageShell>
   );
 }

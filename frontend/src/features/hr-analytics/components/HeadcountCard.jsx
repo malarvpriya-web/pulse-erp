@@ -15,7 +15,7 @@ export default function HeadcountCard({ data = {}, loading }) {
         {growth >= 0 ? '+' : ''}{growth.toFixed(1)}% vs last month
       </div>
       <div style={{ display:'flex', gap:14 }}>
-        {[['Active', active, '#10b981'], ['On Leave', onLeave, '#f59e0b'], ['Probation', probation, '#6366f1']].map(([label, val, clr]) => (
+        {[['Active', active, '#10b981'], ['On Leave', onLeave, '#7c5cf0'], ['Probation', probation, '#6366f1']].map(([label, val, clr]) => (
           <div key={label}>
             <div style={{ fontSize:11, color:'#9ca3af' }}>{label}</div>
             <div style={{ fontSize:15, fontWeight:700, color: clr }}>{val}</div>

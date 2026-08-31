@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Plus, Search, X, CheckCircle, AlertTriangle, Eye,
-  Download, RefreshCw, Lock, Unlock,
-  FileText, ArrowRight, Printer, Trash2, RotateCcw, Pencil,
+  Plus, Search, X, CheckCircle, AlertTriangle, Eye, Download,
+  RefreshCw, Lock, Unlock, FileText, ArrowRight, Printer, Trash2,
+  RotateCcw, Pencil, IndianRupee,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { useFY } from '@/context/FYContext';
 import { fmt, fmtFull, today } from '../financeUtils';
 import './JournalEntry.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 
 const ENTRY_TYPES = [
@@ -358,7 +359,20 @@ export default function JournalEntry() {
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="je-root">
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="Journal Entries"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={exportJECsv}><Download size={14}/> Export</button>
+          <button className="plh-cta plh-cta--ghost" onClick={() => window.print()}><Printer size={14}/> Print</button>
+          <button className="plh-cta" onClick={openCreate}>
+            <Plus size={15}/> New Journal Entry
+          </button>
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDelete}
         title="Delete Draft Entry"
@@ -386,20 +400,6 @@ export default function JournalEntry() {
         </div>
       )}
 
-      {/* Header */}
-      <div className="je-header">
-        <div>
-          <h2 className="je-title">Journal Entries</h2>
-          <p className="je-sub">Double-entry bookkeeping · {stats.total} entries</p>
-        </div>
-        <div className="je-header-r">
-          <button className="je-btn-outline" onClick={exportJECsv}><Download size={14}/> Export</button>
-          <button className="je-btn-outline" onClick={() => window.print()}><Printer size={14}/> Print</button>
-          <button className="je-btn-primary" onClick={openCreate}>
-            <Plus size={15}/> New Journal Entry
-          </button>
-        </div>
-      </div>
 
       {/* Stats */}
       <div className="je-stats">
@@ -638,7 +638,7 @@ export default function JournalEntry() {
                         <td>
                           <button className="je-link" onClick={async () => {
                             try {
-                              const res = await api.get(`/finance/accounting/journal-entries/${row.entry_id}`);
+                              const res = await api.get(`/accounting/journal-entries/${row.entry_id}`);
                               setViewEntry(res.data);
                             } catch { showToast('Could not load entry', 'error'); }
                           }}>{row.entry_number}</button>
@@ -915,6 +915,6 @@ export default function JournalEntry() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -11,14 +11,24 @@ export const getActiveAnnouncements = async () => {
   return result.rows;
 };
 
-export const getUpcomingEvents = async () => {
+// There has never been an `events` table — the company-events feed is carried by
+// `announcements` (title / from_date / category / message line up 1:1 with the
+// columns this used to select). Kept the original output shape so any consumer
+// of /api/home/events/upcoming is unaffected.
+export const getUpcomingEvents = async (companyId = null) => {
   const result = await pool.query(`
-    SELECT id, title, department, event_date, description
-    FROM events
-    WHERE event_date >= CURRENT_DATE
-    ORDER BY event_date ASC
+    SELECT id,
+           title,
+           category    AS department,
+           from_date   AS event_date,
+           message     AS description
+    FROM announcements
+    WHERE is_active
+      AND COALESCE(to_date, from_date) >= CURRENT_DATE
+      AND ($1::int IS NULL OR company_id = $1)
+    ORDER BY from_date ASC
     LIMIT 10
-  `);
+  `, [companyId]);
   return result.rows;
 };
 
@@ -74,23 +84,28 @@ export const getTodaysCelebrations = async () => {
   return celebrations;
 };
 
-export const getActivePolicies = async () => {
+// `policies` and `downloads` never existed. The real tables are `hr_policies`
+// and `hr_downloads`, with `title` rather than `name` and `updated_at` rather
+// than `updated_date`; neither carries the status/is_active flags these queries
+// filtered on. Both endpoints therefore 500'd on every call — /home/resources is
+// mounted and reachable, so the Resources panel has never loaded.
+export const getActivePolicies = async (companyId = null) => {
   const result = await pool.query(`
-    SELECT id, name, version, file_url, updated_date, category
-    FROM policies
-    WHERE status = 'active'
-    ORDER BY updated_date DESC
-  `);
+    SELECT id, title AS name, version, file_url, updated_at AS updated_date, category
+    FROM hr_policies
+    WHERE ($1::int IS NULL OR company_id = $1)
+    ORDER BY updated_at DESC
+  `, [companyId]);
   return result.rows;
 };
 
-export const getResources = async () => {
+export const getResources = async (companyId = null) => {
   const result = await pool.query(`
-    SELECT id, name, category, file_url, updated_date
-    FROM downloads
-    WHERE is_active = true
-    ORDER BY category, name
-  `);
+    SELECT id, title AS name, category, file_url, updated_at AS updated_date
+    FROM hr_downloads
+    WHERE ($1::int IS NULL OR company_id = $1)
+    ORDER BY category, title
+  `, [companyId]);
   return result.rows;
 };
 
@@ -123,10 +138,23 @@ export const getAllHolidays = async (companyId = null) => {
 ════════════════════════════════════════════════════════════════════════════ */
 
 // Best-effort helpers: never let one missing table/column break the whole page.
+// The catch is deliberately NOT silent — an empty panel with no log line is
+// undebuggable, which is how a transient DB error (pool timeout, cold start)
+// used to reach the UI as a perfectly ordinary "no documents yet".
 const safeRows = async (sql, params = []) => {
   try { return (await pool.query(sql, params)).rows; }
-  catch { return []; }
+  catch (err) {
+    console.error('[home.service] query failed:', err?.code || '', err?.message,
+      '|', String(sql).trim().slice(0, 90));
+    return [];
+  }
 };
+
+// Same as safeRows but propagates the error, for queries where "empty" and
+// "failed" must not look alike to the caller. getHomeSummary turns a rejection
+// into a `degraded` marker so the panel offers a retry instead of claiming
+// there is nothing to show.
+const strictRows = async (sql, params = []) => (await pool.query(sql, params)).rows;
 const safeVal = async (sql, params = [], fallback = 0) => {
   const rows = await safeRows(sql, params);
   const v = rows[0]?.v;
@@ -142,17 +170,49 @@ export const getUserIdentity = async (userId) => {
   return rows[0] || null;
 };
 
-// Company reference documents for a category ('policy' | 'brand_assets').
-// A NULL company_id row is a global default visible to every company.
-export const getCompanyDocuments = async (category, companyId = null) => {
-  return safeRows(
+// Policy documents for the Home "Policies" panel — reads `hr_policies`, the
+// same table features/hr/pages/Policies.jsx writes to via its "Link Policy"
+// form (POST /hr/policies). Previously this panel read a static seeded
+// category on `company_documents`, so anything actually linked/uploaded on
+// the Policies page never appeared on Home — this is the fix for that.
+// `NULLIF(..., '#')` guards hr_policies.file_url's schema default ('#' for
+// rows inserted before the URL-required form validation existed) so DocTile
+// shows its "Soon" placeholder instead of a dead link.
+export const getPolicyDocuments = async (companyId = null) => {
+  return strictRows(
+    `SELECT id, title, category, description,
+            NULLIF(COALESCE(drive_url, file_url), '#') AS file_url, updated_at
+       FROM hr_policies
+      WHERE ($1::integer IS NULL OR company_id = $1 OR company_id IS NULL)
+      ORDER BY updated_at DESC, title ASC`,
+    [companyId]
+  );
+};
+
+// Brand Vault reference documents ('brand_assets' category on company_documents
+// — company_documents has no per-role admin UI, see MODULE_FEATURE_CONNECTION_
+// MANUAL.md §101). A NULL company_id row is a global default visible to every
+// company. `roles` gates rows that have a non-NULL `visible_roles` (e.g.
+// Letterhead Template is HR/Accounts-only) — a row with NULL visible_roles is
+// visible to every role, unchanged from before this column existed.
+// admin/super_admin always see everything regardless of visible_roles.
+export const getCompanyDocuments = async (category, companyId = null, roles = null) => {
+  const roleList = Array.isArray(roles) && roles.length
+    ? roles.map(r => String(r).toLowerCase())
+    : null;
+  return strictRows(
     `SELECT id, title, category, description, file_url, icon, updated_at
        FROM company_documents
       WHERE category = $1
         AND is_active = true
         AND ($2::integer IS NULL OR company_id = $2 OR company_id IS NULL)
+        AND (
+          visible_roles IS NULL
+          OR $3::text[] && visible_roles
+          OR $3::text[] && ARRAY['admin','super_admin','superadmin']::text[]
+        )
       ORDER BY updated_at DESC, title ASC`,
-    [category, companyId]
+    [category, companyId, roleList]
   );
 };
 
@@ -334,15 +394,30 @@ export const getHomeSummary = async (user, scope) => {
   // Shared across every role. Attendance is included for any login linked to an
   // employee record — managers/HR/finance punch in from Home too, not just the
   // `employee` role. Returns null for unlinked logins (admin trio).
-  const [identity, announcements, policies, brandAssets, myAttendance, myTasks, myApprovals] = await Promise.all([
-    getUserIdentity(userId),
-    getActiveAnnouncements(),
-    getCompanyDocuments('policy', companyId),
-    getCompanyDocuments('brand_assets', companyId),
-    getMyAttendanceToday(employeeId, companyId),
-    getMyOpenTasks(employeeId),
-    getEmployeeApprovals(userId, employeeId, companyId),
-  ]);
+  // allSettled, not all: one failing slice must not 500 the whole page, but it
+  // must not silently arrive as an empty list either — the failed keys ship in
+  // `degraded` so the panel says "couldn't load" and offers a retry.
+  const SLICES = [
+    ['identity',      getUserIdentity(userId),                                  null],
+    ['announcements', getActiveAnnouncements(),                                 []],
+    ['policies',      getPolicyDocuments(companyId),                            []],
+    ['brandAssets',   getCompanyDocuments('brand_assets', companyId, roles),    []],
+    ['myAttendance',  getMyAttendanceToday(employeeId, companyId),              null],
+    ['myTasks',       getMyOpenTasks(employeeId),                               []],
+    ['myApprovals',   getEmployeeApprovals(userId, employeeId, companyId),
+                      { awaitingMyAction: [], awaitingOthers: [] }],
+  ];
+  const settled  = await Promise.allSettled(SLICES.map(([, p]) => p));
+  const degraded = [];
+  const slice    = {};
+  settled.forEach((r, i) => {
+    const [key, , fallback] = SLICES[i];
+    if (r.status === 'fulfilled') { slice[key] = r.value; return; }
+    console.error(`[home.summary] ${key} failed:`, r.reason?.code || '', r.reason?.message || r.reason);
+    degraded.push(key);
+    slice[key] = fallback;
+  });
+  const { identity, announcements, policies, brandAssets, myAttendance, myTasks, myApprovals } = slice;
 
   return {
     identity: {
@@ -357,5 +432,6 @@ export const getHomeSummary = async (user, scope) => {
     myAttendance,
     myTasks,
     myApprovals,
+    degraded,
   };
 };

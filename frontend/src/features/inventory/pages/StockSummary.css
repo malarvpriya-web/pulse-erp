@@ -12,6 +12,7 @@
 .ss-type-chip {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 7px 14px; border-radius: 22px;
+  border: 1.5px solid #fff;
   border: 1.5px solid color-mix(in srgb, var(--tc) 20%, #fff);
   background: var(--tb); color: var(--tc);
   font-size: 12px; font-weight: 600; cursor: pointer;
@@ -79,7 +80,7 @@
 .ss-row-out { background: #fff5f5; }
 .ss-row-low { background: #fffdf0; }
 .ss-row-out:hover { background: #fee2e2 !important; }
-.ss-row-low:hover { background: #fef9c3 !important; }
+.ss-row-low:hover { background: #ede9fe !important; }
 
 /* Cell types */
 .ss-code { font-family: 'Fira Code', monospace; font-size: 12px; color: #6b7280; }

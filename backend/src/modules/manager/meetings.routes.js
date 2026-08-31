@@ -88,7 +88,7 @@ async function loadMeeting(id, companyId, viewerEmployeeId = undefined) {
 
   const { rows } = await pool.query(
     `SELECT m.*,
-            CONCAT(e.first_name, ' ', e.last_name) AS organiser_name
+            NULLIF(TRIM(CONCAT(e.first_name, ' ', e.last_name)), '') AS organiser_name
        FROM meetings m
        LEFT JOIN employees e ON e.id = m.organiser_employee_id
       WHERE ${where.join(' AND ')}`,
@@ -98,7 +98,7 @@ async function loadMeeting(id, companyId, viewerEmployeeId = undefined) {
 
   const { rows: attendees } = await pool.query(
     `SELECT ma.employee_id, ma.response,
-            CONCAT(e.first_name, ' ', e.last_name) AS name,
+            NULLIF(TRIM(CONCAT(e.first_name, ' ', e.last_name)), '') AS name,
             e.designation, e.company_email
        FROM meeting_attendees ma
        LEFT JOIN employees e ON e.id = ma.employee_id
@@ -238,7 +238,7 @@ router.get('/', async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT m.*,
-              CONCAT(e.first_name, ' ', e.last_name) AS organiser_name,
+              NULLIF(TRIM(CONCAT(e.first_name, ' ', e.last_name)), '') AS organiser_name,
               (SELECT COUNT(*)::int FROM meeting_attendees ma WHERE ma.meeting_id = m.id) AS attendee_count
          FROM meetings m
          LEFT JOIN employees e ON e.id = m.organiser_employee_id

@@ -28,7 +28,7 @@
 
   /* Progress dot states */
   --sc-dot-done:       #10b981;
-  --sc-dot-partial:    #f59e0b;
+  --sc-dot-partial:    #7c5cf0;
   --sc-dot-empty:      #e2e8f0;
 
   /* Domain: Company & Organization */
@@ -57,9 +57,9 @@
   --sc-sec-border:     #fecdd3;
 
   /* Domain: User Preferences */
-  --sc-pref-color:     #d97706;
-  --sc-pref-bg:        #fffbeb;
-  --sc-pref-border:    #fde68a;
+  --sc-pref-color:     #6d28d9;
+  --sc-pref-bg:        #f5f3ff;
+  --sc-pref-border:    #ddd6fe;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -87,7 +87,7 @@
     --sc-pending-text:   #94a3b8;
 
     --sc-dot-done:       #10b981;
-    --sc-dot-partial:    #f59e0b;
+    --sc-dot-partial:    #7c5cf0;
     --sc-dot-empty:      #475569;
 
     --sc-company-color:  #818cf8;
@@ -110,8 +110,8 @@
     --sc-sec-bg:         #4c0519;
     --sc-sec-border:     #881337;
 
-    --sc-pref-color:     #fbbf24;
+    --sc-pref-color:     #8b5cf6;
     --sc-pref-bg:        #422006;
-    --sc-pref-border:    #78350f;
+    --sc-pref-border:    #4c1d95;
   }
 }

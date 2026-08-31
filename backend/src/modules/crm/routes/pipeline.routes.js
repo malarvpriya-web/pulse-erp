@@ -2,6 +2,25 @@ import express from 'express';
 import pool from '../../shared/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { companyOf } from '../../../shared/scope.js';
+import { logAudit } from '../../../services/AuditService.js';
+
+/**
+ * Every mutation in this file changes CRM *configuration*, not a record — the
+ * pipeline stage master, lead-scoring rules, assignment rules and the win/loss
+ * reason list. None of it was audited.
+ *
+ * That became consequential when the opportunity board stopped hardcoding its
+ * six columns and started rendering `crm_pipeline_stages`: renaming or
+ * deactivating a stage now reshapes what every user sees on the pipeline, and
+ * can push live opportunities into the `Unmapped` bucket. A change with that
+ * reach needs a name and a timestamp against it.
+ */
+const audit = (req, recordType, action, recordId, oldData, newData) =>
+  logAudit({
+    userId: req.user?.userId ?? req.user?.id ?? null,
+    module: 'CRM', recordType, action, recordId,
+    oldData, newData, req,
+  });
 
 const router = express.Router();
 
@@ -45,6 +64,7 @@ router.post('/pipeline-stages', requirePermission('crm', 'add'), async (req, res
        RETURNING *`,
       [companyId, name.trim(), stage_key, nextOrder, color, Math.min(100, Math.max(0, parseInt(probability) || 0))]
     );
+    audit(req, 'crm_pipeline_stage', 'create', result.rows[0].id, null, result.rows[0]);
     res.status(201).json({ data: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -72,6 +92,7 @@ router.put('/pipeline-stages/reorder', requirePermission('crm', 'edit'), async (
       `SELECT * FROM crm_pipeline_stages WHERE company_id = $1 ORDER BY sort_order ASC`,
       [companyId]
     );
+    audit(req, 'crm_pipeline_stage', 'reorder', null, null, { ordered_ids });
     res.json({ data: result.rows });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -102,6 +123,7 @@ router.delete('/pipeline-stages/:id', requirePermission('crm', 'delete'), async 
       `DELETE FROM crm_pipeline_stages WHERE id = $1 AND company_id = $2`,
       [req.params.id, companyId]
     );
+    audit(req, 'crm_pipeline_stage', 'delete', req.params.id, null, null);
     res.json({ message: 'Stage deleted', id: req.params.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -118,6 +140,7 @@ router.get('/scoring-rules', requirePermission('crm', 'view'), async (req, res) 
       `SELECT * FROM crm_lead_scoring_rules WHERE company_id = $1 ORDER BY created_at ASC`,
       [companyId]
     );
+    audit(req, 'crm_pipeline_stage', 'update', req.params.id, null, result.rows[0]);
     res.json({ data: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -131,6 +154,7 @@ router.get('/lead-scoring-rules', requirePermission('crm', 'view'), async (req, 
       `SELECT * FROM crm_lead_scoring_rules WHERE company_id = $1 ORDER BY created_at ASC`,
       [companyId]
     );
+    audit(req, 'crm_pipeline_stage', 'update', req.params.id, null, result.rows[0]);
     res.json({ data: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -149,6 +173,7 @@ router.post('/lead-scoring-rules', requirePermission('crm', 'add'), async (req, 
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
       [companyId, field, operator, value || null, parseInt(score_delta) || 0]
     );
+    audit(req, 'crm_lead_scoring_rule', 'create', result.rows[0].id, null, result.rows[0]);
     res.status(201).json({ data: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -173,6 +198,7 @@ router.put('/lead-scoring-rules/:id', requirePermission('crm', 'edit'), async (r
        req.params.id, companyId]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Rule not found' });
+    audit(req, 'crm_lead_scoring_rule', 'update', req.params.id, null, result.rows[0]);
     res.json({ data: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -187,6 +213,7 @@ router.delete('/lead-scoring-rules/:id', requirePermission('crm', 'delete'), asy
       [req.params.id, companyId]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Rule not found' });
+    audit(req, 'crm_lead_scoring_rule', 'delete', req.params.id, null, null);
     res.json({ message: 'Rule deleted', id: req.params.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -202,6 +229,7 @@ router.get('/assignment-rules', requirePermission('crm', 'view'), async (req, re
       `SELECT * FROM crm_assignment_rules WHERE company_id = $1 ORDER BY priority ASC, created_at ASC`,
       [companyId]
     );
+    audit(req, 'crm_lead_scoring_rule', 'update', req.params.id, null, result.rows[0]);
     res.json({ data: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -221,6 +249,7 @@ router.post('/assignment-rules', requirePermission('crm', 'add'), async (req, re
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [companyId, name.trim(), condition_field, condition_value, assign_to_name, parseInt(priority) || 10, Boolean(is_active)]
     );
+    audit(req, 'crm_assignment_rule', 'create', result.rows[0].id, null, result.rows[0]);
     res.status(201).json({ data: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -246,6 +275,7 @@ router.put('/assignment-rules/:id', requirePermission('crm', 'edit'), async (req
        req.params.id, companyId]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Rule not found' });
+    audit(req, 'crm_assignment_rule', 'update', req.params.id, null, result.rows[0]);
     res.json({ data: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -260,6 +290,7 @@ router.delete('/assignment-rules/:id', requirePermission('crm', 'delete'), async
       [req.params.id, companyId]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Rule not found' });
+    audit(req, 'crm_assignment_rule', 'delete', req.params.id, null, null);
     res.json({ message: 'Rule deleted', id: req.params.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -275,6 +306,7 @@ router.get('/win-loss-reasons', requirePermission('crm', 'view'), async (req, re
       `SELECT * FROM crm_win_loss_reasons WHERE company_id = $1 ORDER BY type, created_at ASC`,
       [companyId]
     );
+    audit(req, 'crm_assignment_rule', 'update', req.params.id, null, result.rows[0]);
     res.json({ data: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -298,6 +330,7 @@ router.post('/win-loss-reasons', requirePermission('crm', 'add'), async (req, re
        RETURNING *`,
       [companyId, type, reason.trim()]
     );
+    audit(req, 'crm_win_loss_reason', 'create', result.rows[0].id, null, result.rows[0]);
     res.status(201).json({ data: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -317,6 +350,7 @@ router.put('/win-loss-reasons/:id', requirePermission('crm', 'edit'), async (req
        req.params.id, companyId]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Reason not found' });
+    audit(req, 'crm_win_loss_reason', 'update', req.params.id, null, result.rows[0]);
     res.json({ data: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -331,6 +365,7 @@ router.delete('/win-loss-reasons/:id', requirePermission('crm', 'delete'), async
       [req.params.id, companyId]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Reason not found' });
+    audit(req, 'crm_win_loss_reason', 'delete', req.params.id, null, null);
     res.json({ message: 'Reason deleted', id: req.params.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -359,14 +394,27 @@ router.get('/win-loss-analysis', requirePermission('crm', 'view'), async (req, r
       FROM opportunities
       WHERE deleted_at IS NULL ${cw}
     `, params);
-    const s = summaryResult.rows[0];
+    // Defensive: an aggregate SELECT always returns a row, but a stubbed or
+    // failed driver can hand back none, and destructuring undefined here turned
+    // that into an opaque 500 rather than an empty-but-valid summary.
+    const s = summaryResult.rows[0] || {};
 
-    // Loss reasons from win_loss_reasons captures on stage change
+    // Loss reasons. The stage-change route now persists the reason to BOTH
+    // opportunities.close_reason and opportunity_stage_history.notes, so this
+    // reads the durable column first and falls back to the history note. It
+    // previously read only `notes`, which the Kanban never populated (it sent
+    // `close_reason`), leaving loss_reasons permanently empty (audit C-17).
     const lossResult = await pool.query(`
-      SELECT COALESCE(notes, 'Other') AS reason, COUNT(*) AS count
-      FROM opportunity_stage_history
-      WHERE LOWER(to_stage) = 'lost' ${cw ? 'AND company_id = $1' : ''}
-      GROUP BY COALESCE(notes, 'Other') ORDER BY count DESC LIMIT 20
+      SELECT COALESCE(o.close_reason, o.lost_reason, h.notes, 'Not recorded') AS reason,
+             COUNT(*) AS count
+        FROM opportunities o
+        LEFT JOIN LATERAL (
+          SELECT notes FROM opportunity_stage_history sh
+           WHERE sh.opportunity_id = o.id AND LOWER(sh.to_stage) = 'lost'
+           ORDER BY sh.created_at DESC LIMIT 1
+        ) h ON true
+       WHERE o.deleted_at IS NULL AND LOWER(o.stage) = 'lost' ${cw ? 'AND o.company_id = $1' : ''}
+       GROUP BY 1 ORDER BY count DESC LIMIT 20
     `, params).catch(() => ({ rows: [] }));
     const totalLost = parseInt(s.lost) || 1;
     const loss_reasons = lossResult.rows.map(r => ({
@@ -396,30 +444,52 @@ router.get('/win-loss-analysis', requirePermission('crm', 'view'), async (req, r
       return { month: r.month, won, lost, rate: total > 0 ? parseFloat(((won / total) * 100).toFixed(1)) : 0 };
     });
 
-    // Stage conversion from pipeline stages
-    const stageConvResult = await pool.query(`
-      SELECT stage, COUNT(*) AS count
-      FROM opportunities WHERE deleted_at IS NULL ${cw}
-      GROUP BY stage ORDER BY MIN(id) ASC
+    // ── Stage conversion — a real cohort rate, from stage history ───────────
+    // This used to divide current stage *occupancy* counts: "how many sit in
+    // Proposal now" ÷ "how many sit in Qualification now". That is not a
+    // conversion rate, it has no cohort, and it can exceed 100% — it returned
+    // 200% on live data (audit C-15).
+    //
+    // The honest question is: of the opportunities that ever reached stage A,
+    // how many went on to ever reach stage B? `opportunity_stage_history`
+    // records every transition (and is seeded with an opening row per
+    // opportunity by migration 20260819000002), so both sides are measurable.
+    const stageOrderRes = await pool.query(`
+      SELECT name, stage_key, sort_order, is_won, is_lost
+        FROM crm_pipeline_stages
+       WHERE is_active = true ${companyId != null ? 'AND company_id = $1' : ''}
+       ORDER BY sort_order ASC
     `, params).catch(() => ({ rows: [] }));
-    const countMap = {};
-    stageConvResult.rows.forEach(r => {
-      countMap[(r.stage || '').toLowerCase()] = parseInt(r.count) || 0;
-    });
-    const stageConversionPairs = [
-      { from: 'prospecting',  to: 'qualification' },
-      { from: 'qualification', to: 'proposal' },
-      { from: 'proposal',     to: 'negotiation' },
-      { from: 'negotiation',  to: 'won' },
-    ];
-    const stage_conversion = stageConversionPairs.map(pair => {
-      const fromCount = countMap[pair.from] || 0;
-      const toCount   = countMap[pair.to]   || 0;
-      return {
-        stage: `${pair.from.charAt(0).toUpperCase() + pair.from.slice(1)}→${pair.to.charAt(0).toUpperCase() + pair.to.slice(1)}`,
-        rate: fromCount > 0 ? parseFloat(((toCount / fromCount) * 100).toFixed(1)) : 0,
-      };
-    });
+
+    const ordered = stageOrderRes.rows.length
+      ? stageOrderRes.rows.map(r => ({ label: r.name, key: (r.stage_key || r.name).toLowerCase() }))
+      : ['prospecting', 'qualification', 'proposal', 'negotiation', 'won']
+          .map(k => ({ label: k.charAt(0).toUpperCase() + k.slice(1), key: k }));
+
+    // reached[stage] = set of opportunities that ever touched that stage.
+    const reachedRes = await pool.query(`
+      SELECT LOWER(to_stage) AS stage, COUNT(DISTINCT opportunity_id)::int AS n
+        FROM opportunity_stage_history h
+       WHERE 1=1 ${companyId != null ? 'AND h.company_id = $1' : ''}
+       GROUP BY LOWER(to_stage)
+    `, params).catch(() => ({ rows: [] }));
+    const reached = {};
+    reachedRes.rows.forEach(r => { reached[r.stage] = r.n; });
+
+    const stage_conversion = [];
+    for (let i = 0; i < ordered.length - 1; i++) {
+      const from = ordered[i], to = ordered[i + 1];
+      const fromN = reached[from.key] || 0;
+      const toN   = reached[to.key]   || 0;
+      stage_conversion.push({
+        stage: `${from.label}→${to.label}`,
+        // Cohort semantics make >100% impossible: you cannot reach B without
+        // having reached A, so toN ≤ fromN by construction.
+        rate: fromN > 0 ? parseFloat(((Math.min(toN, fromN) / fromN) * 100).toFixed(1)) : 0,
+        reached_from: fromN,
+        reached_to: Math.min(toN, fromN),
+      });
+    }
 
     res.json({
       data: {

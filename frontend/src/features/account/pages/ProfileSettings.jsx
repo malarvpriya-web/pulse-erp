@@ -9,7 +9,7 @@ import api from '@/services/api/client';
 const SECTIONS = [
   { id: 'account',       label: 'Account',       icon: User,   color: '#6B3FDB' },
   { id: 'security',      label: 'Security',      icon: Shield, color: '#dc2626' },
-  { id: 'notifications', label: 'Notifications', icon: Bell,   color: '#d97706' },
+  { id: 'notifications', label: 'Notifications', icon: Bell,   color: '#6d28d9' },
   { id: 'preferences',   label: 'Preferences',   icon: Globe,  color: '#0369a1' },
 ];
 
@@ -233,18 +233,18 @@ function NotificationsSection({ profile, onRefresh }) {
   };
 
   return (
-    <SectionCard icon={Bell} color="#d97706" label="Notifications">
+    <SectionCard icon={Bell} color="#6d28d9" label="Notifications">
       <Alert type={msg.type} msg={msg.text} />
       {NOTIF_TYPES.map(t => (
         <Row key={t.key} label={t.label} desc={t.desc}>
           <Toggle
             checked={prefs[t.key] ?? true}
             onChange={v => setPrefs(p => ({ ...p, [t.key]: v }))}
-            color="#d97706"
+            color="#6d28d9"
           />
         </Row>
       ))}
-      <SaveBar onSave={save} saved={saved} color="#d97706" />
+      <SaveBar onSave={save} saved={saved} color="#6d28d9" />
     </SectionCard>
   );
 }

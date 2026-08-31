@@ -2,6 +2,9 @@ import { useReducer, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { Zap, FolderOpen } from 'lucide-react';
+import {
+  FaTags, FaBalanceScale, FaBroadcastTower, FaFlask, FaGavel,
+} from 'react-icons/fa';
 import './Sidebar.css';
 import { useAuth } from '@/context/AuthContext';
 import { NAV_ITEMS } from '@/config/routes';
@@ -27,6 +30,30 @@ const ORPHAN_PARENT_ALIAS = {
   'HR Analytics':'HR',
 };
 
+// The orphan groups with no curated parent to fold into — real business modules
+// (Asset Register, Compliance, IoT Fleet, R&D, Tenders) that simply never got a
+// hand-written NAV_ITEMS entry. They were appended to the very bottom of the
+// rail carrying no `icon`, so they rendered with the generic folder fallback,
+// and after the domain-banding they read as part of 'Administration'. They now
+// get a real icon and their own 'More' band, placed above Administration.
+//
+// `name` is deliberately NOT touched — eight role allowlists in menuCatalog.js
+// match these groups by exact name ('R&D · More', 'IoT Fleet · More', …), and
+// renaming one silently revokes the section for those roles. `label` is
+// display-only, and drops the "· More" suffix, which exists solely to
+// disambiguate an orphan group from its curated parent — these five have none.
+const ORPHAN_META = {
+  'Asset Register': { icon: <FaTags />,           label: 'Asset Register' },
+  'Compliance':     { icon: <FaBalanceScale />,   label: 'Compliance' },
+  'IoT Fleet':      { icon: <FaBroadcastTower />, label: 'IoT Fleet' },
+  'R&D':            { icon: <FaFlask />,          label: 'R&D' },
+  'Tenders':        { icon: <FaGavel />,          label: 'Tenders' },
+};
+
+// Band the leftovers are inserted above. Falls back to appending at the end if
+// this band is ever renamed or removed.
+const ORPHAN_BAND_ANCHOR = 'Administration';
+
 // Fold the auto-discovered "<Module> · More" orphan groups INTO their curated
 // parent menu (deduped, under a "More" divider) instead of rendering them as
 // separate folder-icon top-level items. This removes the duplicate module rows
@@ -34,6 +61,7 @@ const ORPHAN_PARENT_ALIAS = {
 function buildNavItems(curated, orphans) {
   const byName = new Map();
   const merged = curated.map(item => {
+    if (item.divider) return item;   // band label — carries no pages to merge into
     const copy = { ...item, submenu: item.submenu ? [...item.submenu] : undefined };
     byName.set(copy.name, copy);
     return copy;
@@ -43,7 +71,7 @@ function buildNavItems(curated, orphans) {
   for (const orphan of orphans) {
     const base = orphan.name.replace(/\s*·\s*More$/, '').trim();
     const target = byName.get(ORPHAN_PARENT_ALIAS[base] || base);
-    if (!target) { leftover.push(orphan); continue; }
+    if (!target) { leftover.push({ ...orphan, ...(ORPHAN_META[base] || { label: base }) }); continue; }
 
     // A plain page-link parent (no submenu) becomes expandable, seeded with itself.
     if (!target.submenu) {
@@ -66,10 +94,40 @@ function buildNavItems(curated, orphans) {
     }
   }
 
-  return [...merged, ...leftover];
+  if (!leftover.length) return merged;
+
+  // Give the leftovers their own band rather than letting them trail off the
+  // bottom of whatever band happens to be last.
+  const band = [{ divider: true, section: 'More' }, ...leftover];
+  const at = merged.findIndex(i => i.divider && i.section === ORPHAN_BAND_ANCHOR);
+  if (at === -1) return [...merged, ...band];
+  return [...merged.slice(0, at), ...band, ...merged.slice(at)];
 }
 
 const ALL_NAV_ITEMS = buildNavItems(NAV_ITEMS, ORPHAN_NAV_ITEMS);
+
+/**
+ * Drop `separator` rows that no longer head anything.
+ *
+ * Every role filter below removes pages but deliberately keeps separators
+ * (`sub.separator || …`), because a filter can't know whether a later item in
+ * the same group survives. Once filtering is done, a separator whose whole
+ * group was stripped is left labelling empty space — e.g. finance keeps only
+ * 'My Attendance'/'QR Attendance' out of Attendance, so 'Team & Monitoring',
+ * 'Approvals', 'Reporting' and 'Configuration' would all render as headings
+ * with nothing under them. Collapsing runs of separators keeps the last one
+ * (the heading that actually precedes the surviving items) and trailing ones
+ * are dropped outright.
+ */
+function stripDanglingSeparators(submenu) {
+  const out = [];
+  for (const entry of submenu) {
+    if (entry.separator && out.length && out[out.length - 1].separator) out.pop();
+    out.push(entry);
+  }
+  while (out.length && out[out.length - 1].separator) out.pop();
+  return out;
+}
 
 function sidebarReducer(state, action) {
   switch (action.type) {
@@ -128,6 +186,9 @@ export default function Sidebar() {
   const isAdminRole = hasAnyRole('super_admin', 'admin');
 
   const visibleItems = ALL_NAV_ITEMS.reduce((acc, rawItem) => {
+    // Band labels carry no pages and no permissions — keep them here and drop
+    // the ones left empty for this role in the pass after the reduce.
+    if (rawItem.divider) { acc.push(rawItem); return acc; }
     if (!isMenuVisible(rawItem)) return acc;
 
     let item = rawItem;
@@ -228,9 +289,23 @@ export default function Sidebar() {
       return acc;
     }
 
+    if (Array.isArray(item.submenu)) {
+      const cleaned = stripDanglingSeparators(item.submenu);
+      if (cleaned.length !== item.submenu.length) item = { ...item, submenu: cleaned };
+    }
+
     acc.push(item);
     return acc;
   }, []);
+
+  // A band label is only meaningful when a menu follows it — hide the ones
+  // whose whole domain is gated away for this role (e.g. 'Supply Chain' for
+  // an employee), and any label left at the very bottom of the rail.
+  const navRows = visibleItems.filter((row, i) => {
+    if (!row.divider) return true;
+    const next = visibleItems[i + 1];
+    return !!next && !next.divider;
+  });
 
   useEffect(() => {
     if (state.openMenu) {
@@ -297,7 +372,7 @@ export default function Sidebar() {
 
   const sideWidth = state.expanded ? 260 : 70;
 
-  const activeSubmenu = visibleItems.find(m => m.name === state.openMenu);
+  const activeSubmenu = navRows.find(m => !m.divider && m.name === state.openMenu);
 
   const submenuPanel = panelVisible && (
     <div
@@ -310,7 +385,7 @@ export default function Sidebar() {
       {activeSubmenu && (
         <div className="submenu-header">
           <span className="submenu-header-icon">{activeSubmenu.icon || <FolderOpen size={16} />}</span>
-          <span className="submenu-header-name">{activeSubmenu.name}</span>
+          <span className="submenu-header-name">{activeSubmenu.label || activeSubmenu.name}</span>
         </div>
       )}
       {activeSubmenu?.submenu?.map(sub =>
@@ -343,7 +418,12 @@ export default function Sidebar() {
           </div>
         </div>
         <ul>
-          {visibleItems.map(item => (
+          {navRows.map(item => item.divider ? (
+            <li key={`band-${item.section}`} className="sidebar-band">
+              <span className="sidebar-band-rule" />
+              <span className="sidebar-band-label">{item.section}</span>
+            </li>
+          ) : (
             <li
               key={item.name}
               ref={el => { if (el) menuRefs.current[item.name] = el; }}
@@ -356,7 +436,7 @@ export default function Sidebar() {
                 }}
               >
                 <span className="icon">{item.icon || <FolderOpen size={16} />}</span>
-                <span className="label">{item.name}</span>
+                <span className="label">{item.label || item.name}</span>
               </button>
             </li>
           ))}

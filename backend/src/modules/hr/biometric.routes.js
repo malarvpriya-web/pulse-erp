@@ -453,7 +453,7 @@ router.get('/biometric/devices/:id/punches', async (req, res) => {
     if (!devRes.rows.length) return res.status(404).json({ message: 'Device not found' });
 
     const params = [req.params.id];
-    let q = `SELECT bl.*, e.name AS employee_name, e.employee_id AS emp_code, e.department
+    let q = `SELECT bl.*, e.name AS employee_name, e.office_id AS emp_code, e.department
              FROM biometric_logs bl
              LEFT JOIN employees e ON e.id=bl.employee_id
              WHERE bl.device_id=$1`;

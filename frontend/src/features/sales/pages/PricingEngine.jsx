@@ -1,8 +1,10 @@
 // frontend/src/features/sales/pages/PricingEngine.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Tag } from 'lucide-react';
 import api from '@/services/api/client';
 import { formatINR, Badge } from './salesUtils';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT = '#f5f3ff';
@@ -789,7 +791,7 @@ function ApprovalsTab() {
 
   const kpiCards = analytics ? [
     { label: 'Avg Discount Given', value: `${analytics.avg_discount_pct}%`, color: PURPLE },
-    { label: 'Pending Approvals', value: analytics.pending_approvals, color: '#d97706' },
+    { label: 'Pending Approvals', value: analytics.pending_approvals, color: '#6d28d9' },
     { label: 'Monthly Impact', value: formatINR(analytics.monthly_discount_impact), color: '#dc2626' },
     { label: 'Approval Rate', value: `${analytics.approval_rate}%`, color: '#16a34a' }
   ] : [];
@@ -1046,10 +1048,13 @@ export default function PricingEngine() {
 
   return (
     <div style={{ padding: 32, fontFamily: 'Inter, system-ui, sans-serif' }}>
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ fontSize: 24, fontWeight: 800, color: '#1a1a2e' }}>Pricing Engine</div>
-        <div style={{ fontSize: 14, color: '#9ca3af', marginTop: 4 }}>Manage price lists, discount rules, promotions and approvals</div>
-      </div>
+      <PageHero
+        icon={Tag}
+        eyebrow="Sales"
+        title="Pricing Engine"
+        subtitle="Price lists, discount rules, promotions and approvals"
+      />
+
 
       <div style={{ display: 'flex', gap: 0, borderBottom: `2px solid ${BORDER}`, marginBottom: 28, marginTop: 20 }}>
         {tabs.map((t, i) => (

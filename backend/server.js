@@ -148,6 +148,8 @@ import vendorRegistrationRoutes   from "./src/modules/procurement/routes/vendor-
 import vendorApprovalRoutes       from "./src/modules/procurement/routes/vendor-approval.routes.js";
 // ── Phase 49G — Vendor Health Score Engine ────────────────────────────────────
 import vendorHealthRoutes         from "./src/modules/procurement/routes/vendorHealth.routes.js";
+// §135 — Sourcing Strategy (Porter's Five Forces + Purchasing Chessboard)
+import sourcingStrategyRoutes    from "./src/modules/procurement/routes/sourcing.routes.js";
 import projectProfitabilityRoutes from "./src/modules/projects/routes/project-profitability.routes.js";
 import project360Routes           from "./src/modules/projects/routes/project360.routes.js";
 import deliveryTrackerRoutes       from "./src/modules/projects/routes/deliveryTracker.routes.js";
@@ -633,6 +635,10 @@ v1Router.use("/vendor-360",           verifyToken, vendor360Routes);
 v1Router.use("/vendor-registration",  vendorRegistrationRoutes);
 v1Router.use("/vendor-approval",      verifyToken, vendorApprovalRoutes);
 v1Router.use("/vendor-health",        verifyToken, vendorHealthRoutes);
+// Mounted on its own path, not under /procurement: procurement.routes.js already
+// owns a /:id parameter route, and a literal segment added after one is
+// unreachable (a defect class this repo has hit before).
+v1Router.use("/sourcing-strategy",    verifyToken, sourcingStrategyRoutes);
 v1Router.use("/project-profitability",verifyToken, projectProfitabilityRoutes);
 v1Router.use("/project-360",          verifyToken, project360Routes);
 v1Router.use("/delivery-tracker",     verifyToken, deliveryTrackerRoutes); // IPM<->IPP production/fulfilment grid

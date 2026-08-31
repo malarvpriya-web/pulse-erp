@@ -282,8 +282,8 @@ export default function PublicSigning() {
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {doc.payment_required && (
             <span style={{ padding: '5px 10px', borderRadius: 8, fontSize: 12, fontWeight: 700,
-              background: doc.payment_status === 'paid' ? '#dcfce7' : '#fef3c7',
-              color: doc.payment_status === 'paid' ? '#15803d' : '#b45309' }}>
+              background: doc.payment_status === 'paid' ? '#dcfce7' : '#ede9fe',
+              color: doc.payment_status === 'paid' ? '#15803d' : '#6d28d9' }}>
               {doc.payment_status === 'paid' ? '✓ Paid' : `Pay ${doc.payment_currency || 'INR'} ${doc.payment_amount}`}
             </span>
           )}

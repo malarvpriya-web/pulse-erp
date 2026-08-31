@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { FileText, Plus, Edit2, Trash2, X, Check, RefreshCw } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY = { doc_type: '', doc_name: '', max_size_mb: 10 };
 
@@ -80,7 +81,22 @@ export default function DocumentSetup() {
   const editInp = { ...inp, border: '1px solid #6ee7b7', minWidth: 100 };
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={FileText}
+        eyebrow="Administration"
+        title="Document Setup"
+        subtitle="Define allowed document types and file size limits."
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button className="plh-cta" onClick={() => { setShowCreate(true); setForm(EMPTY); }}>
+            <Plus size={14} /> Add Document Type
+          </button>
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingRemove}
         title="Deactivate Document Type"
@@ -91,26 +107,6 @@ export default function DocumentSetup() {
         onCancel={() => setPendingRemove(null)}
       />
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 10, background: '#ecfdf5', color: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <FileText size={20} />
-          </div>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: '#111827' }}>Document Setup</h1>
-            <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>Define allowed document types and file size limits.</p>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{ padding: '8px 14px', background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-            <RefreshCw size={14} /> Refresh
-          </button>
-          <button onClick={() => { setShowCreate(true); setForm(EMPTY); }} style={{ padding: '8px 16px', background: '#059669', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
-            <Plus size={14} /> Add Document Type
-          </button>
-        </div>
-      </div>
 
       {/* Toast */}
       {msg && (
@@ -218,6 +214,6 @@ export default function DocumentSetup() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

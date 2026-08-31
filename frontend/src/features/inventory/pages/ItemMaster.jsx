@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, RefreshCw, X, Package, Edit2, Store, Boxes, ArrowDownToLine, ArrowUpFromLine, SlidersHorizontal, History, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Search, Plus, RefreshCw, X, Package, Edit2, Store, Boxes, ArrowDownToLine, ArrowUpFromLine, SlidersHorizontal, History, Trash2, ChevronUp, ChevronDown, Users } from 'lucide-react';
 import api from '@/services/api/client';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
-import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 import {
   getCategories, createCategory,
   getItemVendorPrices, createItemVendorPrice, updateItemVendorPrice, deleteItemVendorPrice,
@@ -14,7 +15,7 @@ import './ItemMaster.css';
 const ITEM_TYPES = ['Raw Materials', 'Finished Goods', 'Packaging', 'Consumables', 'Spares', 'WIP'];
 const UNITS = ['pcs', 'kg', 'ltr', 'mtr', 'box', 'rolls', 'cans', 'set', 'nos', 'pair', 'sheet', 'coil'];
 const ABC_CLASSES = ['A', 'B', 'C'];
-const ABC_BADGE = { A: ['#d1fae5', '#16a34a'], B: ['#fef3c7', '#d97706'], C: ['#f3f4f6', '#6b7280'] };
+const ABC_BADGE = { A: ['#d1fae5', '#16a34a'], B: ['#ede9fe', '#6d28d9'], C: ['#f3f4f6', '#6b7280'] };
 const thP = { padding: '8px 10px', textAlign: 'left', fontWeight: 600, whiteSpace: 'nowrap' };
 const tdP = { padding: '7px 10px', whiteSpace: 'nowrap' };
 
@@ -58,11 +59,12 @@ const stockStatus = (current, reorder) => {
   const pct = c / r;
   if (pct <= 0)   return { label: 'Out',      color: '#7f1d1d', bg: '#fef2f2' };
   if (pct <= 0.3) return { label: 'Critical', color: '#dc2626', bg: '#fee2e2' };
-  if (pct <= 0.8) return { label: 'Low',      color: '#92400e', bg: '#fef3c7' };
+  if (pct <= 0.8) return { label: 'Low',      color: '#5b21b6', bg: '#ede9fe' };
   return           { label: 'OK',       color: '#15803d', bg: '#f0fdf4' };
 };
 
 export default function ItemMaster({ setPage: _setPage }) {
+  const navigate = useNavigate();
   const { readOnly } = usePageAccess();
   const [items,      setItems]      = useState([]);
   const [loading,    setLoading]    = useState(false);
@@ -331,7 +333,17 @@ export default function ItemMaster({ setPage: _setPage }) {
   // ── Column model — drives header, cells, sorting, visibility and export ──
   const COLUMNS = [
     { key: 'item_code', label: 'Item Code', cls: 'im-mono', render: it => it.item_code },
-    { key: 'item_name', label: 'Name', cls: 'im-name', render: it => it.item_name },
+    // The name is the way into Component 360 — vendor comparison, purchase
+    // history and where-used. Rendered as a button, not the row handler, so it
+    // still works for read-only users (the row handler opens the edit drawer).
+    { key: 'item_name', label: 'Name', cls: 'im-name',
+      render: it => (
+        <button type="button" className="im-link" title="Open Component 360 — vendors, prices & purchase history"
+                onClick={e => { e.stopPropagation(); navigate(`/ItemDetail?id=${it.id}`); }}>
+          {it.item_name}
+        </button>
+      ),
+      csv: it => it.item_name },
     { key: 'product_model', label: 'Model',
       render: it => it.product_model || <span style={{ color: '#9ca3af' }}>NA</span>,
       csv:    it => it.product_model || 'NA' },
@@ -341,9 +353,15 @@ export default function ItemMaster({ setPage: _setPage }) {
         : <span style={{ color: '#9ca3af' }}>—</span> },
     { key: 'item_type', label: 'Type', render: it => it.item_type },
     { key: 'vendor_price_count', label: 'Vendors', num: true, align: 'center',
+      title: 'Priced vendors — click to compare them',
       render: it => Number(it.vendor_price_count) > 0
-        ? <span className="im-badge" style={{ background: '#ede9fe', color: '#6B3FDB' }}>{it.vendor_price_count}</span>
-        : <span style={{ color: '#9ca3af' }}>—</span> },
+        ? <button type="button" className="im-badge im-badge-btn" style={{ background: '#ede9fe', color: '#6B3FDB' }}
+                  title="Compare vendor prices for this component"
+                  onClick={e => { e.stopPropagation(); navigate(`/ItemDetail?id=${it.id}`); }}>
+            {it.vendor_price_count}
+          </button>
+        : <span style={{ color: '#9ca3af' }}>—</span>,
+      csv: it => Number(it.vendor_price_count || 0) },
     { key: 'unit_of_measure', label: 'UOM', render: it => it.unit_of_measure },
     { key: 'current_stock', label: store ? 'On Hand' : 'On Hand · all', num: true,
       title: store ? storeName : 'Summed across all stores',
@@ -397,36 +415,40 @@ export default function ItemMaster({ setPage: _setPage }) {
   };
 
   return (
-    <PageLayout>
-
-      {toast && <div className={`im-toast im-toast-${toast.type}`}>{toast.msg}</div>}
-
-      <PageHeader
-        description={`${displayed.length} item${displayed.length !== 1 ? 's' : ''}`}
-        actions={
-          <>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Item Master"
+          subtitle={`${displayed.length} item${displayed.length !== 1 ? 's' : ''}`}
+          actions={<>
             <div style={{
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '5px 10px', borderRadius: 8,
-              border: `1px solid ${store ? '#ddd6fe' : '#fde68a'}`,
-              background: store ? '#faf9ff' : '#fffbeb',
+              border: `1px solid ${store ? '#ddd6fe' : '#ddd6fe'}`,
+              background: store ? '#faf9ff' : '#f5f3ff',
             }} title="Stock balances and stock actions are scoped to this store">
-              <Store size={14} color={store ? '#6B3FDB' : '#d97706'} />
+              <Store size={14} color={store ? '#6B3FDB' : '#6d28d9'} />
               <span style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>Store:</span>
               <select value={store} onChange={e => changeStore(e.target.value)}
                 style={{ border: 'none', background: 'transparent', fontSize: 13, fontWeight: 600,
-                         color: store ? '#1f2937' : '#b45309', cursor: 'pointer', outline: 'none', maxWidth: 180 }}>
+                         color: store ? '#1f2937' : '#6d28d9', cursor: 'pointer', outline: 'none', maxWidth: 180 }}>
                 <option value="">Not selected</option>
                 {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouse_name || w.name}</option>)}
               </select>
             </div>
-            <button className="pl-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-            {!readOnly && <button className="pulse-btn-primary" onClick={openAdd}><Plus size={14} /> Add Item</button>}
-          </>
-        }
-        search={{ value: search, onChange: setSearch, placeholder: 'Search by name or item code…' }}
-        filters={
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+            {!readOnly && <button className="plh-cta" onClick={openAdd}><Plus size={14} /> Add Item</button>}
+          </>}
+        />
+        <div className="plh-toolbar">
+          <label className="plh-search">
+            <Search size={13} aria-hidden="true" />
+            <input value={search} onChange={e => (setSearch)(e.target.value)}
+              placeholder={'Search by name or item code…'} aria-label={'Search by name or item code…'} />
+          </label>
+          {<div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <select className="pl-icon-btn" value={fType} onChange={e => setFType(e.target.value)}>
               <option value="">All Types</option>
               {ITEM_TYPES.map(c => <option key={c}>{c}</option>)}
@@ -440,9 +462,14 @@ export default function ItemMaster({ setPage: _setPage }) {
                 <X size={12} /> Clear
               </button>
             )}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
+      {toast && <div className={`im-toast im-toast-${toast.type}`}>{toast.msg}</div>}
+
+
 
       {readOnly && <ReadOnlyBanner />}
 
@@ -495,6 +522,7 @@ export default function ItemMaster({ setPage: _setPage }) {
                 ))}
                 <td onClick={e => e.stopPropagation()}>
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    <button className="im-edit-btn" title="Component 360 — vendors, prices & purchase history" onClick={() => navigate(`/ItemDetail?id=${it.id}`)}><Users size={13} /></button>
                     <button className="im-edit-btn" title="Stock actions & transactions" onClick={() => openStock(it)}><Boxes size={13} /></button>
                     {!readOnly && <button className="im-edit-btn" title="Edit item" onClick={() => openEdit(it)}><Edit2 size={13} /></button>}
                     {!readOnly && <button className="im-edit-btn" title="Delete item" onClick={() => setConfirmDel(it)}><Trash2 size={13} /></button>}
@@ -797,7 +825,7 @@ export default function ItemMaster({ setPage: _setPage }) {
                   <Store size={22} color="#6B3FDB" />
                 </div>
               ) : (
-                <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: '#b45309' }}>
+                <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: '#6d28d9' }}>
                   No store selected — showing transactions across all stores. Pick a store in the header to receive, issue, or adjust stock.
                 </div>
               )}
@@ -922,6 +950,6 @@ export default function ItemMaster({ setPage: _setPage }) {
           </div>
         </div>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

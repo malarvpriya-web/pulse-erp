@@ -4,14 +4,15 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts';
 import {
-  RefreshCw, Plus, X, TrendingUp, SlidersHorizontal, Download,
-  Star, Pencil, ChevronRight, ChevronDown, ChevronUp, Inbox, Search,
+  RefreshCw, Plus, X, TrendingUp, SlidersHorizontal, Download, Star,
+  Pencil, ChevronRight, ChevronDown, ChevronUp, Inbox, Search, Contact,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmtL } from '@/utils/format';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './Pursuits.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Value in whole rupees -> "12.50" lakh (bare number; the column header carries the unit).
 const toLac = v => (Number(v || 0) / 100000).toFixed(2);
@@ -24,7 +25,7 @@ const STAGES = ['Prospecting', 'Qualification', 'Proposal', 'Negotiation', 'Won'
 const STAGE_META = {
   Prospecting:   { color: '#6366f1', bg: '#eef2ff' },
   Qualification: { color: '#3b82f6', bg: '#dbeafe' },
-  Proposal:      { color: '#d97706', bg: '#fef3c7' },
+  Proposal:      { color: '#6d28d9', bg: '#ede9fe' },
   Negotiation:   { color: '#ef4444', bg: '#fee2e2' },
   Won:           { color: '#16a34a', bg: '#d1fae5' },
   Lost:          { color: '#dc2626', bg: '#fee2e2' },
@@ -42,7 +43,7 @@ const stageProgress = (stage) => {
 // Stable categorical hues for whatever zone labels the data carries. Region
 // names are configured elsewhere (Settings) — this only needs to keep a colour
 // attached to a label consistently, and give a neutral to "Unassigned".
-const ZONE_PALETTE = ['#6B3FDB', '#d97706', '#0d9488', '#db2777', '#0284c7', '#7c3aed', '#ca8a04', '#0891b2'];
+const ZONE_PALETTE = ['#6B3FDB', '#6d28d9', '#0d9488', '#db2777', '#0284c7', '#7c3aed', '#7c5cf0', '#0891b2'];
 const zoneColor = (zone, i) => (zone === 'Unassigned' ? '#9ca3af' : ZONE_PALETTE[i % ZONE_PALETTE.length]);
 
 const GRID = { strokeDasharray: '3 3', stroke: '#f0f0f4' };
@@ -284,22 +285,23 @@ export default function Pursuits() {
   );
 
   return (
-    <div className="pu-root">
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="CRM"
+        title="Pursuits"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={openForecast}><TrendingUp size={14} /> Forecast</button>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setShowFilter(true)}><SlidersHorizontal size={14} /> Set Filter</button>
+          <button className="plh-cta" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
+        </>}
+      />
+    }>
       {toast && <div className={`pu-toast pu-toast-${toast.type}`}>{toast.msg}</div>}
       {readOnly && <ReadOnlyBanner />}
 
       {/* ── Toolbar ── */}
-      <div className="pu-header">
-        <div>
-          <h2 className="pu-title">Pursuits</h2>
-          <p className="pu-sub">Opportunity pipeline · {filtered.length} pursuits</p>
-        </div>
-        <div className="pu-header-r">
-          <button className="pu-btn-outline" onClick={openForecast}><TrendingUp size={14} /> Forecast</button>
-          <button className="pu-btn-outline" onClick={() => setShowFilter(true)}><SlidersHorizontal size={14} /> Set Filter</button>
-          <button className="pu-icon-btn" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
-        </div>
-      </div>
+
 
       {/* applied-filter chip */}
       <div className="pu-chip-row">
@@ -440,7 +442,7 @@ export default function Pursuits() {
             ) : paged.map(r => {
               const st = sm(r.stage);
               const prob = parseInt(r.probability_percentage) || 0;
-              const stars = Math.round(prob / 20);
+              const stars = Math.min(5, Math.max(0, Math.round(prob / 20)));  // repeat() throws on a negative count
               const isOpen = expanded === r.id;
               return (
                 <Fragment key={r.id}>
@@ -624,7 +626,7 @@ export default function Pursuits() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

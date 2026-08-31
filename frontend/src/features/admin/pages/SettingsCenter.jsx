@@ -1,15 +1,16 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
-  Building2, Users, Landmark, GitBranch, ShieldCheck, UserCog,
-  Search, ChevronRight, ChevronLeft, Settings2, PlayCircle,
-  KeyRound, Calendar, IndianRupee, Repeat, MapPin, Fingerprint,
-  Monitor, Cpu, ClipboardList, Package, Database, BarChart3,
-  FileText, PenTool, Link2, Bell, History, Server, BookOpen,
-  Plug2, RefreshCw, Star, Workflow, Truck, AlertTriangle,
+  Building2, Users, Landmark, GitBranch, ShieldCheck, UserCog, Search,
+  ChevronRight, ChevronLeft, Settings2, PlayCircle, KeyRound, Calendar,
+  IndianRupee, Repeat, MapPin, Fingerprint, Monitor, Cpu,
+  ClipboardList, Package, Database, BarChart3, FileText, PenTool,
+  Link2, Bell, History, Server, BookOpen, Plug2, RefreshCw, Star,
+  Workflow, Truck, AlertTriangle, SlidersHorizontal,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './SettingsCenter.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P  = 'var(--sc-primary)';
 const PL = 'var(--sc-primary-light)';
@@ -356,7 +357,13 @@ export default function SettingsCenter({ setPage }) {
   const navigateTo = (page) => setPage(page);
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--sc-page-bg)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title={activeDomain ? DOMAIN_META[activeDomain].label : 'Settings Center'}
+      />
+    }>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* ── Sticky header ── */}
@@ -390,9 +397,7 @@ export default function SettingsCenter({ setPage }) {
                 <Settings2 size={18} color={P} />
               </div>
               <div>
-                <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: 'var(--sc-text-strong)' }}>
-                  {activeDomain ? DOMAIN_META[activeDomain].label : 'Settings Center'}
-                </h1>
+
                 <p style={{ margin: 0, fontSize: 11.5, color: 'var(--sc-text-muted)' }}>
                   {activeDomain
                     ? activeData?.desc ?? ''
@@ -668,6 +673,6 @@ export default function SettingsCenter({ setPage }) {
           );
         })()}
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -3,16 +3,19 @@
  * Main command centre: KPI cards, charts, quick nav, CEO traceability search.
  */
 import { useState, useEffect, useCallback } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, LineChart, Line, Legend,
 } from 'recharts';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
 
-const RISK_COLORS = { Low: '#22c55e', Medium: '#f59e0b', High: '#ef4444', Critical: '#ec4899' };
-const CLASS_COLORS = { Preferred: '#6B3FDB', Approved: '#3b82f6', Watchlist: '#f59e0b', Blocked: '#ef4444' };
+const RISK_COLORS = { Low: '#22c55e', Medium: '#7c5cf0', High: '#ef4444', Critical: '#ec4899' };
+const CLASS_COLORS = { Preferred: '#6B3FDB', Approved: '#3b82f6', Watchlist: '#7c5cf0', Blocked: '#ef4444' };
 
 function KPICard({ label, value, sub, color = '#6B3FDB', icon, index = 0 }) {
   return (
@@ -34,22 +37,44 @@ export default function VendorDashboard({ setPage }) {
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceError, setTraceError] = useState('');
   const [topVendors, setTopVendors] = useState([]);
+  const [options, setOptions] = useState({ vendor_types: [], risk_ratings: [] });
+
+  // The vendor master is a population, not activity — no period, just the two
+  // dimensions that classify a vendor.
+  const filters = useDashboardFilters({
+    dimensions: { vendor_type: 'all', risk_rating: 'all' },
+    storageKey: 'vendor-dashboard',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/vendor-approval/dashboard/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [statsRes, chartsRes, topRes] = await Promise.allSettled([
-        api.get('/vendor-approval/dashboard/stats'),
-        api.get('/vendor-approval/dashboard/charts'),
+        api.get('/vendor-approval/dashboard/stats', { params }),
+        api.get('/vendor-approval/dashboard/charts', { params }),
         api.get('/vendor-portal/scorecards/top'),
       ]);
       if (statsRes.status === 'fulfilled') setStats(statsRes.value.data);
       if (chartsRes.status === 'fulfilled') setCharts(chartsRes.value.data);
       if (topRes.status === 'fulfilled') setTopVendors(topRes.value.data || []);
     } finally { setLoading(false); }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const filterDimensions = [
+    { key: 'vendor_type', label: 'Vendor Type', allLabel: 'All Types',    options: options.vendor_types.map(v => ({ value: v, label: v })) },
+    { key: 'risk_rating', label: 'Risk Rating', allLabel: 'All Ratings',  options: options.risk_ratings.map(v => ({ value: v, label: v })) },
+  ];
 
   const runTraceability = async () => {
     if (!traceQuery.trim()) return;
@@ -98,23 +123,28 @@ export default function VendorDashboard({ setPage }) {
   );
 
   return (
-    <div style={styles.root}>
-      {/* Header */}
-      <div style={styles.header}>
-        <div>
-          <h1 style={styles.title}>Vendor Management</h1>
-          <p style={styles.subtitle}>Registration · Approval · Scorecard · Risk · Traceability</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => nav('VendorApprovalQueue')} style={styles.btnPrimary}>Approval Queue</button>
-          <button onClick={() => nav('VendorManagement')} style={styles.btnSecondary}>All Vendors</button>
-        </div>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Procurement"
+        title="Vendor Management"
+        subtitle="Registration · Approval · Scorecard · Risk · Traceability"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => nav('VendorApprovalQueue')}>Approval Queue</button>
+          <button className="plh-cta" onClick={() => nav('VendorManagement')}>All Vendors</button>
+        </>}
+      />
+    }>
+
+      {/* Vendor master is a population, not activity — dimensions, no period. */}
+      <div style={{ padding: '14px 18px 0' }}>
+        <DashboardFilterBar filters={filters} dimensions={filterDimensions} showPeriod={false} />
       </div>
 
       {/* KPI cards */}
       <div style={styles.kpiRow}>
         <KPICard index={0} label="Total Vendors"       value={stats?.total_vendors}       icon="🏭" color="#6B3FDB" />
-        <KPICard index={1} label="Pending Approvals"   value={stats?.pending_approvals}   icon="⏳" color="#d97706" sub="awaiting review" />
+        <KPICard index={1} label="Pending Approvals"   value={stats?.pending_approvals}   icon="⏳" color="#6d28d9" sub="awaiting review" />
         <KPICard index={2} label="Preferred Vendors"   value={stats?.preferred_vendors}   icon="⭐" color="#16a34a" />
         <KPICard index={3} label="Blocked Vendors"     value={stats?.blocked_vendors}     icon="🚫" color="#dc2626" />
         <KPICard index={4} label="High Risk Vendors"   value={stats?.high_risk_vendors}   icon="⚠" color="#ef4444" />
@@ -129,7 +159,7 @@ export default function VendorDashboard({ setPage }) {
           { page: 'VendorScorecard',     label: 'Vendor Scorecard',   icon: '📊', color: '#8b5cf6', desc: 'Quality · Delivery · Cost' },
           { page: 'VendorManagement',    label: 'Vendor Master',      icon: '🏭', color: '#6B3FDB', desc: 'Contacts · Documents · Banks' },
           { page: 'Vendor360',           label: 'Vendor 360°',         icon: '🔭', color: '#10b981', desc: 'Full vendor intelligence' },
-          { page: 'ProcurementReports',  label: 'Reports',            icon: '📄', color: '#f59e0b', desc: 'NCR · CAPA · Master · Risk' },
+          { page: 'ProcurementReports',  label: 'Reports',            icon: '📄', color: '#7c5cf0', desc: 'NCR · CAPA · Master · Risk' },
         ].map(item => (
           <div key={item.page} onClick={() => nav(item.page)} style={styles.navTile}>
             <div style={{ fontSize: 24, marginBottom: 5 }}>{item.icon}</div>
@@ -202,22 +232,57 @@ export default function VendorDashboard({ setPage }) {
         {traceError && <div style={styles.errorBox}>{traceError}</div>}
         {traceResult && <TraceabilityResult data={traceResult} />}
       </div>
-    </div>
+    </PageShell>
   );
 }
 
 function TraceabilityResult({ data }) {
-  const { vendor, spend, ncr, capa, scorecard, risk, projects, payments, traceability_score } = data;
+  const { vendor, spend, ncr, capa, scorecard, risk, projects, payments, traceability_score, traceability } = data;
 
-  const isPass = traceability_score === 'PASS';
+  // Three states, not two. "Incomplete record" and "open non-conformances" are
+  // different problems and used to share one red badge that could never fire
+  // anyway — the old score was a constant PASS.
+  const verdict = traceability?.verdict || traceability_score;
+  const tone = verdict === 'PASS'
+    ? { bg: '#dcfce7', fg: '#16a34a' }
+    : verdict === 'OPEN QUALITY ISSUES'
+      ? { bg: '#fee2e2', fg: '#dc2626' }
+      : { bg: '#f7f0dd', fg: '#97711a' };
+
   return (
     <div style={{ marginTop: 20 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#111827' }}>{vendor?.vendor_name}</h3>
-        <span style={{ padding: '3px 12px', borderRadius: 12, fontSize: 12, fontWeight: 700, background: isPass ? '#dcfce7' : '#fee2e2', color: isPass ? '#16a34a' : '#dc2626' }}>
-          {traceability_score}
+        <span style={{ padding: '3px 12px', borderRadius: 12, fontSize: 12, fontWeight: 700, background: tone.bg, color: tone.fg }}>
+          {verdict}
         </span>
+        {traceability && (
+          <span style={{ fontSize: 12, color: '#6b7280' }}>
+            {traceability.passed} of {traceability.total} checks pass
+          </span>
+        )}
       </div>
+
+      {/* Say which link in the chain is missing, rather than only that it is. */}
+      {traceability?.checks?.some(c => !c.pass) && (
+        <div style={{
+          marginBottom: 16, padding: '12px 14px', borderRadius: 8,
+          background: '#faf9fc', border: '1px solid #f0f0f4',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 8 }}>
+            Not yet traceable because:
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {traceability.checks.filter(c => !c.pass).map(c => (
+              <div key={c.key} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                <span style={{ color: '#dc2626', fontSize: 12, flexShrink: 0 }}>&#10007;</span>
+                <span style={{ fontSize: 12.5, color: '#111827', fontWeight: 600 }}>{c.label}</span>
+                <span style={{ fontSize: 12, color: '#6b7280' }}>&mdash; {c.detail}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div style={styles.traceGrid}>
         <TraceBox label="Approved By" value={vendor?.approved_by ? `User #${vendor.approved_by}` : '—'} icon="✅" />

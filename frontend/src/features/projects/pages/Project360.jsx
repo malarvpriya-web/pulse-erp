@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
 } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const C = {
   primary: '#6B3FDB', light: '#f5f3ff', border: '#e9e4ff',
-  green: '#16a34a', red: '#dc2626', amber: '#d97706', blue: '#2563eb',
+  green: '#16a34a', red: '#dc2626', amber: '#6d28d9', blue: '#2563eb',
   cyan: '#0891b2', gray: '#6b7280',
   card: { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12 },
 };
-const PIE_COLORS = ['#6B3FDB','#2563eb','#d97706','#16a34a','#0891b2','#dc2626','#f59e0b','#8b5cf6'];
+const PIE_COLORS = ['#6B3FDB','#2563eb','#6d28d9','#16a34a','#0891b2','#dc2626','#7c5cf0','#8b5cf6'];
 
 const TABS = [
   { id: 'overview',        label: 'Overview',         icon: '📊' },
@@ -62,7 +64,7 @@ const STATUS_MAP = {
   active:        { color: '#15803d', bg: '#dcfce7' },
   completed:     { color: '#6b7280', bg: '#f3f4f6' },
   planning:      { color: '#1d4ed8', bg: '#dbeafe' },
-  on_hold:       { color: '#92400e', bg: '#fef3c7' },
+  on_hold:       { color: '#5b21b6', bg: '#ede9fe' },
   cancelled:     { color: C.red,    bg: '#fee2e2' },
   Won:           { color: '#15803d', bg: '#dcfce7' },
   Lost:          { color: C.red,    bg: '#fee2e2' },
@@ -73,7 +75,7 @@ const STATUS_MAP = {
   Closed:        { color: '#6b7280', bg: '#f3f4f6' },
   passed:        { color: '#15803d', bg: '#dcfce7' },
   failed:        { color: C.red,    bg: '#fee2e2' },
-  pending:       { color: C.amber,  bg: '#fef3c7' },
+  pending:       { color: C.amber,  bg: '#ede9fe' },
   'in_progress': { color: '#1d4ed8', bg: '#dbeafe' },
 };
 const statusBadge = s => {
@@ -82,12 +84,11 @@ const statusBadge = s => {
 };
 
 function KpiCard({ label, value, sub, color = C.primary, wide }) {
+  // Delegates to the design-system card. `wide` was a minWidth bump; it is now
+  // a class the grid understands.
   return (
-    <div style={{ ...C.card, padding: '12px 16px', minWidth: wide ? 180 : 130 }}>
-      <div style={{ fontSize: 10, color: C.gray, fontWeight: 500, marginBottom: 3 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 800, color }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: C.gray, marginTop: 2 }}>{sub}</div>}
-    </div>
+    <Stat label={label} value={value} sub={sub} color={color}
+      className={wide ? 'plh-stat--wide' : undefined} />
   );
 }
 
@@ -278,7 +279,7 @@ function TabOverview({ data }) {
               <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>{doneMiles.length}</div>
               <div style={{ fontSize: 10, color: C.gray }}>Completed</div>
             </div>
-            <div style={{ flex: 1, padding: '8px 12px', background: '#fef3c7', borderRadius: 8, textAlign: 'center' }}>
+            <div style={{ flex: 1, padding: '8px 12px', background: '#ede9fe', borderRadius: 8, textAlign: 'center' }}>
               <div style={{ fontSize: 20, fontWeight: 800, color: C.amber }}>{openMiles.length}</div>
               <div style={{ fontSize: 10, color: C.gray }}>Pending</div>
             </div>
@@ -312,7 +313,7 @@ function TabOverview({ data }) {
           <MiniTable
             cols={[
               { key: 'title', label: 'Issue' },
-              { key: 'severity', label: 'Sev', render: v => <Badge label={v} color={v==='Critical'||v==='High'?C.red:C.amber} bg={v==='Critical'||v==='High'?'#fee2e2':'#fef3c7'} /> },
+              { key: 'severity', label: 'Sev', render: v => <Badge label={v} color={v==='Critical'||v==='High'?C.red:C.amber} bg={v==='Critical'||v==='High'?'#fee2e2':'#ede9fe'} /> },
               { key: 'status', label: '', render: v => statusBadge(v) },
             ]}
             rows={openIssues.slice(0, 5)}
@@ -552,7 +553,7 @@ function TabQuality({ data }) {
           cols={[
             { key: 'ncr_number', label: 'NCR #' },
             { key: 'description', label: 'Description' },
-            { key: 'severity', label: 'Severity', render: v => <Badge label={v} color={v==='Critical'||v==='Major'?C.red:C.amber} bg={v==='Critical'||v==='Major'?'#fee2e2':'#fef3c7'} /> },
+            { key: 'severity', label: 'Severity', render: v => <Badge label={v} color={v==='Critical'||v==='Major'?C.red:C.amber} bg={v==='Critical'||v==='Major'?'#fee2e2':'#ede9fe'} /> },
             { key: 'status', label: 'Status', render: v => statusBadge(v) },
             { key: 'created_at', label: 'Raised', render: v => fmtDate(v) },
           ]}
@@ -659,7 +660,7 @@ function TabInstallation({ data }) {
         <MiniTable
           cols={[
             { key: 'title', label: 'Issue' },
-            { key: 'severity', label: 'Severity', render: v => <Badge label={v} color={v==='Critical'||v==='High'?C.red:C.amber} bg={v==='Critical'||v==='High'?'#fee2e2':'#fef3c7'} /> },
+            { key: 'severity', label: 'Severity', render: v => <Badge label={v} color={v==='Critical'||v==='High'?C.red:C.amber} bg={v==='Critical'||v==='High'?'#fee2e2':'#ede9fe'} /> },
             { key: 'is_blocker', label: 'Blocker', render: v => v ? <Badge label="Yes" color={C.red} bg="#fee2e2" /> : '—' },
             { key: 'status', label: 'Status', render: v => statusBadge(v) },
             { key: 'created_at', label: 'Raised', render: v => fmtDate(v) },
@@ -731,7 +732,7 @@ function TabService({ data }) {
           cols={[
             { key: 'ticket_number', label: 'Ticket #' },
             { key: 'subject', label: 'Subject' },
-            { key: 'priority', label: 'Priority', render: v => <Badge label={v} color={v==='High'||v==='Critical'?C.red:C.amber} bg={v==='High'||v==='Critical'?'#fee2e2':'#fef3c7'} /> },
+            { key: 'priority', label: 'Priority', render: v => <Badge label={v} color={v==='High'||v==='Critical'?C.red:C.amber} bg={v==='High'||v==='Critical'?'#fee2e2':'#ede9fe'} /> },
             { key: 'status', label: 'Status', render: v => statusBadge(v) },
             { key: 'created_at', label: 'Date', render: v => fmtDate(v) },
           ]}
@@ -1033,8 +1034,8 @@ function TabTimeline({ data }) {
 // ── Tab: Risk Engine ──────────────────────────────────────────────────────────
 function TabRisks({ data }) {
   const risks = data.risks || [];
-  const levelColor = l => l === 'Critical' ? C.red : l === 'High' ? '#ea580c' : l === 'Medium' ? C.amber : C.green;
-  const levelBg    = l => l === 'Critical' ? '#fee2e2' : l === 'High' ? '#ffedd5' : l === 'Medium' ? '#fef3c7' : '#dcfce7';
+  const levelColor = l => l === 'Critical' ? C.red : l === 'High' ? '#6d28d9' : l === 'Medium' ? C.amber : C.green;
+  const levelBg    = l => l === 'Critical' ? '#fee2e2' : l === 'High' ? '#ede9fe' : l === 'Medium' ? '#ede9fe' : '#dcfce7';
   const byLevel = { Critical: 0, High: 0, Medium: 0, Low: 0 };
   risks.forEach(r => { if (byLevel[r.level] !== undefined) byLevel[r.level]++; });
   return (
@@ -1067,8 +1068,8 @@ function TabRisks({ data }) {
 // ── Tab: War Room ─────────────────────────────────────────────────────────────
 function TabWarRoom({ data }) {
   const alerts = data.alerts || [];
-  const levelColor = l => l === 'critical' ? C.red : l === 'high' ? '#ea580c' : C.amber;
-  const levelBg = l => l === 'critical' ? '#fee2e2' : l === 'high' ? '#ffedd5' : '#fef3c7';
+  const levelColor = l => l === 'critical' ? C.red : l === 'high' ? '#6d28d9' : C.amber;
+  const levelBg = l => l === 'critical' ? '#fee2e2' : l === 'high' ? '#ede9fe' : '#ede9fe';
   if (!alerts.length) {
     return (
       <div style={{ textAlign: 'center', padding: 48 }}>
@@ -1288,7 +1289,14 @@ export default function Project360() {
   const [search, setSearch]         = useState('');
   const [tab, setTab]               = useState('overview');
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Re-arm on mount, do not just disarm on unmount. StrictMode mounts, unmounts
+  // and remounts every component in dev: the cleanup set this to false and
+  // nothing ever set it back, so every `if (mountedRef.current)` guard below
+  // failed on the surviving mount and the page hung on "Loading…" forever.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const loadProjects = useCallback(async () => {
     setListLoading(true);
@@ -1328,7 +1336,119 @@ export default function Project360() {
   }[s] || C.gray);
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 60px)', fontFamily: 'inherit', overflow: 'hidden' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Projects"
+        title={proj.name}
+        subtitle="Contract Value"
+        actions={!selectedId ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.gray }}>
+            <div style={{ textAlign: 'center' }}><div style={{ fontSize: 48, marginBottom: 12 }}>📋</div><div style={{ fontWeight: 600 }}>Select a project</div></div>
+          </div>
+        ) : loading ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.gray }}>Loading project intelligence…</div>
+        ) : !data ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.red }}>Failed to load project data</div>
+        ) : (
+          <>
+            {/* ── Sticky Header ─────────────────────────────────────────────── */}
+            <div style={{ background: '#fff', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+              {/* Top row: project identity */}
+              <div style={{ padding: '12px 20px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 300 }}>
+                      {proj.name}
+                    </h2>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.primary }}>{proj.project_number}</span>
+                    {statusBadge(proj.status)}
+                    {alerts.length> 0 && (
+                      <span style={{ fontSize: 11, fontWeight: 700, color: C.red, background: '#fee2e2', padding: '2px 8px', borderRadius: 10 }}>
+                        🚨 {alerts.length} Alert{alerts.length> 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 16, marginTop: 5, flexWrap: 'wrap', fontSize: 11, color: C.gray }}>
+                    {proj.customer_name && <span>👤 {proj.customer_name}</span>}
+                    {proj.site_name && <span>📍 {proj.site_name}</span>}
+                    {proj.project_manager && <span>🧑‍💼 PM: {proj.project_manager}</span>}
+                    {proj.po_number && <span>📦 PO: {proj.po_number}</span>}
+                    {proj.start_date && <span>🗓 {fmtDate(proj.start_date)} → {fmtDate(proj.end_date)}</span>}
+                  </div>
+                </div>
+
+                {/* Right: KPIs + Health */}
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexShrink: 0 }}>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: C.primary }}>{fmtINR(proj.contract_value)}</div>
+                    <div style={{ fontSize: 10, color: C.gray }}>Contract Value</div>
+                    {proj.completion_pct> 0 && (
+                      <div style={{ marginTop: 4 }}>
+                        <div style={{ width: 120, background: '#f3f4f6', borderRadius: 4, height: 5 }}>
+                          <div style={{ width: `${Math.min(proj.completion_pct, 100)}%`, background: C.green, height: 5, borderRadius: 4 }} />
+                        </div>
+                        <div style={{ fontSize: 10, color: C.gray, marginTop: 1 }}>{proj.completion_pct}% complete</div>
+                      </div>
+                    )}
+                  </div>
+                  <HealthWidget health={health} />
+                </div>
+              </div>
+
+              {/* Quick Actions row */}
+              <div style={{ padding: '8px 20px 0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {[
+                  { label: '🚨 War Room', action: () => setTab('warroom'), alert: alerts.length> 0 },
+                  { label: '🤖 AI Copilot', action: () => setTab('ai') },
+                  { label: '📅 Timeline', action: () => setTab('timeline') },
+                  { label: '📈 Profitability', action: () => setTab('profitability') },
+                  { label: '⚠️ Risks', action: () => setTab('risks') },
+                ].map((a, i) => (
+                  <button className="plh-cta" key={i} onClick={a.action}>{a.label}</button>
+                ))}
+              </div>
+
+              {/* Tab Navigation */}
+              <div style={{ display: 'flex', overflowX: 'auto', padding: '6px 20px 0', gap: 0, scrollbarWidth: 'none' }}>
+                {TABS.map(t => (
+                  <button className="plh-cta" key={t.id} onClick={() => setTab(t.id)}>
+                    <span>{t.icon}</span> {t.label}
+                    {t.id === 'warroom' && alerts.length> 0 && (
+                      <span style={{ background: C.red, color: '#fff', borderRadius: 10, fontSize: 9, padding: '1px 5px', fontWeight: 700 }}>{alerts.length}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* ── Tab Content ────────────────────────────────────────────────── */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 20, background: '#f9f9fb' }}>
+              {tab === 'overview'      && <TabOverview        data={data} />}
+              {tab === 'sales'         && <TabSales           data={data} />}
+              {tab === 'engineering'   && <TabEngineering     data={data} />}
+              {tab === 'procurement'   && <TabProcurement     data={data} />}
+              {tab === 'inventory'     && <TabInventory       data={data} />}
+              {tab === 'manufacturing' && <TabManufacturing   data={data} />}
+              {tab === 'quality'       && <TabQuality         data={data} />}
+              {tab === 'logistics'     && <TabLogistics       data={data} />}
+              {tab === 'installation'  && <TabInstallation    data={data} />}
+              {tab === 'commissioning' && <TabCommissioning   data={data} />}
+              {tab === 'service'       && <TabService         data={data} />}
+              {tab === 'amc'           && <TabAMC             data={data} />}
+              {tab === 'cost'          && <TabCost            data={data} />}
+              {tab === 'profitability' && <TabProfitability   data={data} />}
+              {tab === 'travel'        && <TabTravel          data={data} />}
+              {tab === 'documents'     && <TabDocuments       data={data} />}
+              {tab === 'timeline'      && <TabTimeline        data={data} />}
+              {tab === 'risks'         && <TabRisks           data={data} />}
+              {tab === 'warroom'       && <TabWarRoom         data={data} />}
+              {tab === 'ai'            && <TabAI              projectId={selectedId} projectNumber={proj.project_number} />}
+            </div>
+          </>
+        )}
+      />
+    }>
 
       {/* ── Left: Project List ──────────────────────────────────────────────── */}
       <div style={{ width: 270, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fafafa', flexShrink: 0 }}>
@@ -1364,125 +1484,7 @@ export default function Project360() {
       </div>
 
       {/* ── Right: Detail Panel ─────────────────────────────────────────────── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {!selectedId ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.gray }}>
-            <div style={{ textAlign: 'center' }}><div style={{ fontSize: 48, marginBottom: 12 }}>📋</div><div style={{ fontWeight: 600 }}>Select a project</div></div>
-          </div>
-        ) : loading ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.gray }}>Loading project intelligence…</div>
-        ) : !data ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.red }}>Failed to load project data</div>
-        ) : (
-          <>
-            {/* ── Sticky Header ─────────────────────────────────────────────── */}
-            <div style={{ background: '#fff', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-              {/* Top row: project identity */}
-              <div style={{ padding: '12px 20px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 300 }}>
-                      {proj.name}
-                    </h2>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: C.primary }}>{proj.project_number}</span>
-                    {statusBadge(proj.status)}
-                    {alerts.length > 0 && (
-                      <span style={{ fontSize: 11, fontWeight: 700, color: C.red, background: '#fee2e2', padding: '2px 8px', borderRadius: 10 }}>
-                        🚨 {alerts.length} Alert{alerts.length > 1 ? 's' : ''}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', gap: 16, marginTop: 5, flexWrap: 'wrap', fontSize: 11, color: C.gray }}>
-                    {proj.customer_name && <span>👤 {proj.customer_name}</span>}
-                    {proj.site_name && <span>📍 {proj.site_name}</span>}
-                    {proj.project_manager && <span>🧑‍💼 PM: {proj.project_manager}</span>}
-                    {proj.po_number && <span>📦 PO: {proj.po_number}</span>}
-                    {proj.start_date && <span>🗓 {fmtDate(proj.start_date)} → {fmtDate(proj.end_date)}</span>}
-                  </div>
-                </div>
 
-                {/* Right: KPIs + Health */}
-                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexShrink: 0 }}>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 20, fontWeight: 800, color: C.primary }}>{fmtINR(proj.contract_value)}</div>
-                    <div style={{ fontSize: 10, color: C.gray }}>Contract Value</div>
-                    {proj.completion_pct > 0 && (
-                      <div style={{ marginTop: 4 }}>
-                        <div style={{ width: 120, background: '#f3f4f6', borderRadius: 4, height: 5 }}>
-                          <div style={{ width: `${Math.min(proj.completion_pct, 100)}%`, background: C.green, height: 5, borderRadius: 4 }} />
-                        </div>
-                        <div style={{ fontSize: 10, color: C.gray, marginTop: 1 }}>{proj.completion_pct}% complete</div>
-                      </div>
-                    )}
-                  </div>
-                  <HealthWidget health={health} />
-                </div>
-              </div>
-
-              {/* Quick Actions row */}
-              <div style={{ padding: '8px 20px 0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {[
-                  { label: '🚨 War Room', action: () => setTab('warroom'), alert: alerts.length > 0 },
-                  { label: '🤖 AI Copilot', action: () => setTab('ai') },
-                  { label: '📅 Timeline', action: () => setTab('timeline') },
-                  { label: '📈 Profitability', action: () => setTab('profitability') },
-                  { label: '⚠️ Risks', action: () => setTab('risks') },
-                ].map((a, i) => (
-                  <button key={i} onClick={a.action} style={{
-                    padding: '4px 10px', fontSize: 11, fontWeight: 600,
-                    border: `1px solid ${a.alert ? C.red : C.border}`,
-                    borderRadius: 6, background: a.alert ? '#fee2e2' : '#fff',
-                    color: a.alert ? C.red : '#374151', cursor: 'pointer',
-                  }}>{a.label}</button>
-                ))}
-              </div>
-
-              {/* Tab Navigation */}
-              <div style={{ display: 'flex', overflowX: 'auto', padding: '6px 20px 0', gap: 0, scrollbarWidth: 'none' }}>
-                {TABS.map(t => (
-                  <button key={t.id} onClick={() => setTab(t.id)} style={{
-                    padding: '6px 12px', border: 'none', background: 'none', cursor: 'pointer',
-                    whiteSpace: 'nowrap', fontSize: 11, fontWeight: 600,
-                    color: tab === t.id ? C.primary : C.gray,
-                    borderBottom: tab === t.id ? `2px solid ${C.primary}` : '2px solid transparent',
-                    marginBottom: -1, display: 'flex', alignItems: 'center', gap: 4,
-                    ...(t.id === 'warroom' && alerts.length > 0 ? { color: C.red } : {}),
-                  }}>
-                    <span>{t.icon}</span> {t.label}
-                    {t.id === 'warroom' && alerts.length > 0 && (
-                      <span style={{ background: C.red, color: '#fff', borderRadius: 10, fontSize: 9, padding: '1px 5px', fontWeight: 700 }}>{alerts.length}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* ── Tab Content ────────────────────────────────────────────────── */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 20, background: '#f9f9fb' }}>
-              {tab === 'overview'      && <TabOverview        data={data} />}
-              {tab === 'sales'         && <TabSales           data={data} />}
-              {tab === 'engineering'   && <TabEngineering     data={data} />}
-              {tab === 'procurement'   && <TabProcurement     data={data} />}
-              {tab === 'inventory'     && <TabInventory       data={data} />}
-              {tab === 'manufacturing' && <TabManufacturing   data={data} />}
-              {tab === 'quality'       && <TabQuality         data={data} />}
-              {tab === 'logistics'     && <TabLogistics       data={data} />}
-              {tab === 'installation'  && <TabInstallation    data={data} />}
-              {tab === 'commissioning' && <TabCommissioning   data={data} />}
-              {tab === 'service'       && <TabService         data={data} />}
-              {tab === 'amc'           && <TabAMC             data={data} />}
-              {tab === 'cost'          && <TabCost            data={data} />}
-              {tab === 'profitability' && <TabProfitability   data={data} />}
-              {tab === 'travel'        && <TabTravel          data={data} />}
-              {tab === 'documents'     && <TabDocuments       data={data} />}
-              {tab === 'timeline'      && <TabTimeline        data={data} />}
-              {tab === 'risks'         && <TabRisks           data={data} />}
-              {tab === 'warroom'       && <TabWarRoom         data={data} />}
-              {tab === 'ai'            && <TabAI              projectId={selectedId} projectNumber={proj.project_number} />}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+    </PageShell>
   );
 }

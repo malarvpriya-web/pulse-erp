@@ -11,8 +11,8 @@ import {
 import './PulseViz.css';
 
 export const PULSE_SERIES = [
-  '#6B3FDB', '#2563eb', '#10b981', '#f59e0b',
-  '#ef4444', '#14b8a6', '#8b5cf6', '#f97316',
+  '#6B3FDB', '#2563eb', '#10b981', '#7c5cf0',
+  '#ef4444', '#14b8a6', '#8b5cf6', '#7c5cf0',
 ];
 
 export const fmtINRShort = (n) => {

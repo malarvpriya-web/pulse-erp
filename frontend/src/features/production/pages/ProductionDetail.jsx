@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { Factory } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import QualityTestsPanel from '@/features/quality/components/QualityTestsPanel';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 import {
   getProductionOrder, releaseOrder,
   cancelOrder, holdOrder, resumeOrder,
@@ -19,16 +21,16 @@ const TAB_TESTS       = 'tests';
 const STATUS_COLORS = {
   completed:   ['#dcfce7', '#166534'],
   in_progress: ['#dbeafe', '#1e40af'],
-  planned:     ['#fef9c3', '#854d0e'],
+  planned:     ['#ede9fe', '#5b21b6'],
   released:    ['#e0f2fe', '#0369a1'],
   on_hold:     ['#f3f4f6', '#374151'],
   cancelled:   ['#fee2e2', '#991b1b'],
-  pending:     ['#fef9c3', '#854d0e'],
+  pending:     ['#ede9fe', '#5b21b6'],
   ready:       ['#e0f2fe', '#0369a1'],
   skipped:     ['#f3f4f6', '#6b7280'],
   pass:        ['#dcfce7', '#166534'],
   fail:        ['#fee2e2', '#991b1b'],
-  hold:        ['#fef9c3', '#854d0e'],
+  hold:        ['#ede9fe', '#5b21b6'],
   na:          ['#f3f4f6', '#374151'],
 };
 
@@ -312,7 +314,38 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
                       : 'Start Operation';
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title={order.production_order_no || order.id}
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage('ProductionOrders')}>
+          ← Back
+        </button>
+          {order.status === 'planned' && (
+            <button className="plh-cta plh-cta--ghost" onClick={handleRelease} disabled={submitting}>
+              Release Order
+            </button>
+          )}
+          {order.status === 'in_progress' && (
+            <button className="plh-cta plh-cta--ghost" onClick={handleHold} disabled={submitting}>
+              Hold Order
+            </button>
+          )}
+          {order.status === 'on_hold' && (
+            <button className="plh-cta plh-cta--ghost" onClick={handleResume} disabled={submitting}>
+              Resume Order
+            </button>
+          )}
+          {!['completed', 'cancelled'].includes(order.status) && (
+            <button className="plh-cta" onClick={() => setPendingCancel(true)} disabled={submitting}>
+              Cancel Order
+            </button>
+          )}
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={pendingCancel}
         title="Cancel Production Order"
@@ -419,45 +452,7 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
       )}
 
       {/* ── Header ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
-        <button onClick={() => setPage('ProductionOrders')}
-          style={{ padding: '7px 14px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 13 }}>
-          ← Back
-        </button>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>
-            {order.production_order_no || order.id}
-          </h2>
-          <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>{order.product_name}</div>
-        </div>
-        <StatusBadge s={order.status} />
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          {order.status === 'planned' && (
-            <button onClick={handleRelease} disabled={submitting}
-              style={{ padding: '7px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-              Release Order
-            </button>
-          )}
-          {order.status === 'in_progress' && (
-            <button onClick={handleHold} disabled={submitting}
-              style={{ padding: '7px 16px', background: '#d97706', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-              Hold Order
-            </button>
-          )}
-          {order.status === 'on_hold' && (
-            <button onClick={handleResume} disabled={submitting}
-              style={{ padding: '7px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-              Resume Order
-            </button>
-          )}
-          {!['completed', 'cancelled'].includes(order.status) && (
-            <button onClick={() => setPendingCancel(true)} disabled={submitting}
-              style={{ padding: '7px 16px', background: '#fff', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-              Cancel Order
-            </button>
-          )}
-        </div>
-      </div>
+
 
       {/* ── Tabs ── */}
       <div style={{ display: 'flex', borderBottom: '2px solid #e5e7eb', marginBottom: 20 }}>
@@ -591,7 +586,7 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
                                     Complete
                                   </button>
                                   <button onClick={() => { setActionModal({ type: 'hold', op }); setActionForm({}); }}
-                                    style={{ padding: '3px 10px', background: '#fef9c3', color: '#854d0e', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                                    style={{ padding: '3px 10px', background: '#ede9fe', color: '#5b21b6', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                                     Hold
                                   </button>
                                 </>
@@ -672,11 +667,11 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
                       {reservations.map(res => {
                         const statusColor = {
                           reserved:          ['#dbeafe', '#1e40af'],
-                          partially_issued:  ['#fef3c7', '#92400e'],
+                          partially_issued:  ['#ede9fe', '#5b21b6'],
                           fully_issued:      ['#dcfce7', '#166534'],
                           consumed:          ['#f3f4f6', '#374151'],
                           cancelled:         ['#fee2e2', '#991b1b'],
-                          pending:           ['#fef9c3', '#854d0e'],
+                          pending:           ['#ede9fe', '#5b21b6'],
                         }[res.status] || ['#f3f4f6', '#374151'];
                         const canIssue = ['released', 'in_progress'].includes(order.status) &&
                           ['reserved', 'partially_issued'].includes(res.status);
@@ -1035,7 +1030,7 @@ export default function ProductionDetail({ order: initialOrder, setPage, initial
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

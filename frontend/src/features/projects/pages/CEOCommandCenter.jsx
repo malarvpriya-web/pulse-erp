@@ -4,10 +4,12 @@
 // remaining space. Cards scroll internally (sticky table headers) and every
 // section is expandable to a full-size modal, so the page itself never scrolls.
 import { useEffect, useState, useCallback } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const LIGHT = '#f5f3ff';
@@ -173,26 +175,19 @@ export default function CEOCommandCenter({ setPage }) {
 
   return (
     /* fixed viewport shell: 64px topbar + 2×20px .page-content padding */
-    <div style={{ height: 'calc(100vh - 104px)', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Projects"
+        title="CEO Command Center"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('ProjectProfitabilityDashboard')}>Profitability</button>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('ProjectRevenueSummary')}>Revenue Summary</button>
+          <button className="plh-cta" onClick={load}>↻ Refresh</button>
+        </>}
+      />
+    }>
 
-      {/* Header — title + alerts + actions in one row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap', flexShrink: 0 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#111', letterSpacing: '-0.4px', lineHeight: 1.2 }}>CEO Command Center</h2>
-          <p style={{ margin: '2px 0 0', color: '#6b7280', fontSize: 11.5 }}>
-            Revenue · Cost · Profitability · Collections
-            {lastUpdated && ` · Updated ${lastUpdated.toLocaleTimeString()}`}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <AlertBadge count={data.loss_projects} label="loss-making" />
-          <AlertBadge count={data.over_budget_projects} label="over budget" color="#d97706" />
-          <AlertBadge count={data.overdue_invoices} label="overdue invoices" />
-          <button className="dk-btn" onClick={() => setPage?.('ProjectProfitabilityDashboard')}>Profitability</button>
-          <button className="dk-btn" onClick={() => setPage?.('ProjectRevenueSummary')}>Revenue Summary</button>
-          <button className="dk-btn primary" onClick={load}>↻ Refresh</button>
-        </div>
-      </div>
 
       {/* Primary KPI strip — single compact row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(118px, 1fr))', gap: 8, marginBottom: 10, flexShrink: 0 }}>
@@ -201,7 +196,7 @@ export default function CEOCommandCenter({ setPage }) {
         <Kpi i={2} label="Invoiced"         value={cr(data.total_invoiced)} color="#2563eb" />
         <Kpi i={3} label="Actual Cost"      value={cr(data.total_actual_cost)} />
         <Kpi i={4} label="Profit"           value={cr(data.total_profit)} warn={parseFloat(data.total_profit || 0) < 0} color="#059669" />
-        <Kpi i={5} label="Margin"           value={pct(margin)} warn={margin < 10} color={margin >= 20 ? '#059669' : margin >= 10 ? '#d97706' : '#dc2626'} />
+        <Kpi i={5} label="Margin"           value={pct(margin)} warn={margin < 10} color={margin >= 20 ? '#059669' : margin >= 10 ? '#6d28d9' : '#dc2626'} />
         <Kpi i={6} label="Outstanding"      value={cr(data.outstanding_collection)} warn={(data.outstanding_collection || 0) > 0} color="#dc2626" />
         <Kpi i={7} label="Active Projects"  value={data.active_projects || 0} sub={`of ${data.total_projects || 0} total`} />
       </div>
@@ -227,7 +222,7 @@ export default function CEOCommandCenter({ setPage }) {
             {/* Project Status Breakdown */}
             <Panel title="Project Status Breakdown" i={0}>
               {(data.status_breakdown || []).map(s => {
-                const colors = { active: '#059669', completed: P, planning: '#d97706', 'on-hold': '#6b7280', cancelled: '#dc2626' };
+                const colors = { active: '#059669', completed: P, planning: '#6d28d9', 'on-hold': '#6b7280', cancelled: '#dc2626' };
                 return (
                   <div key={s.status} style={{ marginBottom: 8 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
@@ -477,7 +472,7 @@ export default function CEOCommandCenter({ setPage }) {
                     ? ((ct.total / parseFloat(data.total_actual_cost)) * 100)
                     : 0;
                   const pctW = maxCostType > 0 ? Math.min(100, (ct.total / maxCostType) * 100) : 0;
-                  const colors = ['#6B3FDB','#2563eb','#0891b2','#d97706','#dc2626','#059669','#6d28d9','#0d9488','#9f1239','#065f46'];
+                  const colors = ['#6B3FDB','#2563eb','#0891b2','#6d28d9','#dc2626','#059669','#6d28d9','#0d9488','#9f1239','#065f46'];
                   const barColor = colors[i % colors.length];
                   return (
                     <div key={ct.cost_type} style={{ marginBottom: 9 }}>
@@ -559,7 +554,7 @@ export default function CEOCommandCenter({ setPage }) {
                       total={customerData.summary.total_customers || 1}
                       rows={(customerData.health_distribution || []).map(d => ({
                         label: d.label, count: d.count,
-                        color: d.label === 'Excellent' ? '#16a34a' : d.label === 'Good' ? '#2563eb' : d.label === 'Watchlist' ? '#d97706' : '#dc2626',
+                        color: d.label === 'Excellent' ? '#16a34a' : d.label === 'Good' ? '#2563eb' : d.label === 'Watchlist' ? '#6d28d9' : '#dc2626',
                       }))}
                     />
                   </Panel>
@@ -589,7 +584,7 @@ export default function CEOCommandCenter({ setPage }) {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(118px, 1fr))', gap: 8, flexShrink: 0 }}>
                 {[
                   { label: 'Active Vendors',    value: vendorData.summary.total_vendors,    color: P },
-                  { label: 'Total Spend',        value: fmtINR(vendorData.summary.total_spend), color: '#d97706' },
+                  { label: 'Total Spend',        value: fmtINR(vendorData.summary.total_spend), color: '#6d28d9' },
                   { label: 'Preferred Vendors',  value: vendorData.summary.preferred_count,  color: '#16a34a' },
                   { label: 'Blocked Vendors',    value: vendorData.summary.blocked_count,    color: vendorData.summary.blocked_count > 0 ? '#dc2626' : '#16a34a' },
                   { label: 'Open NCRs',          value: vendorData.summary.total_open_ncrs,  color: vendorData.summary.total_open_ncrs > 0 ? '#dc2626' : '#16a34a' },
@@ -614,8 +609,8 @@ export default function CEOCommandCenter({ setPage }) {
                           </td>
                           <td style={{ ...td, fontWeight: 700, color: P }}>{fmtINR(v.po_value)}</td>
                           <td style={td}>{v.po_count}</td>
-                          <td style={{ ...td, color: v.open_pos > 0 ? '#d97706' : '#374151', fontWeight: v.open_pos > 0 ? 700 : 400 }}>{v.open_pos}</td>
-                          <td style={{ ...td, fontWeight: 700, color: v.overall_score >= 4 ? '#16a34a' : v.overall_score >= 3 ? '#d97706' : '#dc2626' }}>
+                          <td style={{ ...td, color: v.open_pos > 0 ? '#6d28d9' : '#374151', fontWeight: v.open_pos > 0 ? 700 : 400 }}>{v.open_pos}</td>
+                          <td style={{ ...td, fontWeight: 700, color: v.overall_score >= 4 ? '#16a34a' : v.overall_score >= 3 ? '#6d28d9' : '#dc2626' }}>
                             {v.overall_score > 0 ? `${v.overall_score.toFixed(1)}/5` : '—'}
                           </td>
                           <td style={{ ...td, color: v.open_ncrs > 0 ? '#dc2626' : '#374151', fontWeight: v.open_ncrs > 0 ? 700 : 400 }}>{v.open_ncrs}</td>
@@ -637,7 +632,7 @@ export default function CEOCommandCenter({ setPage }) {
                       total={vendorData.summary.total_vendors || 1}
                       rows={(vendorData.health_distribution || []).map(d => ({
                         label: d.label, count: d.count,
-                        color: d.label === 'Preferred' ? '#16a34a' : d.label === 'Approved' ? '#2563eb' : d.label === 'Watchlist' ? '#d97706' : '#dc2626',
+                        color: d.label === 'Preferred' ? '#16a34a' : d.label === 'Approved' ? '#2563eb' : d.label === 'Watchlist' ? '#6d28d9' : '#dc2626',
                       }))}
                     />
                   </Panel>
@@ -660,6 +655,6 @@ export default function CEOCommandCenter({ setPage }) {
           )
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

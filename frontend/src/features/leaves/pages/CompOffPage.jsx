@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Plus, CheckCircle, XCircle, RefreshCw, Clock, AlertTriangle, X } from 'lucide-react';
+import {
+  Plus, CheckCircle, XCircle, RefreshCw, Clock, AlertTriangle, X,
+  CalendarDays,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 
 const STATUS_COLOR = {
-  pending:  { bg:'#fef3c7', color:'#92400e' },
+  pending:  { bg:'#ede9fe', color:'#5b21b6' },
   approved: { bg:'#d1fae5', color:'#065f46' },
   rejected: { bg:'#fee2e2', color:'#991b1b' },
   used:     { bg:'#f3f4f6', color:'#6b7280' },
@@ -44,7 +48,7 @@ function RequestModal({ holidays, projects, onSave, onClose }) {
           <button onClick={onClose} style={{ background:'none',border:'none',cursor:'pointer',color:'#6b7280',fontSize:20 }}>×</button>
         </div>
 
-        <div style={{ background:'#fef9c3',border:'1px solid #fde68a',borderRadius:8,padding:'10px 14px',marginBottom:16,fontSize:12,color:'#713f12',display:'flex',gap:8,alignItems:'flex-start' }}>
+        <div style={{ background:'#ede9fe',border:'1px solid #ddd6fe',borderRadius:8,padding:'10px 14px',marginBottom:16,fontSize:12,color:'#4c1d95',display:'flex',gap:8,alignItems:'flex-start' }}>
           <AlertTriangle size={14} style={{ flexShrink:0,marginTop:1 }}/>
           <span>Submit this form for days you worked during a holiday or weekend. Your manager will approve and the comp off will be credited to your leave balance automatically.</span>
         </div>
@@ -181,32 +185,33 @@ export default function CompOffPage() {
   const pendingCount = records.filter(r => r.status === 'pending').length;
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarDays}
+        eyebrow="Leave"
+        title="Compensatory Off"
+        subtitle="Earn comp off for working on holidays and weekends"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={13}/> Refresh
+          </button>
+          <button className="plh-cta" onClick={() => setShowModal(true)}>
+            <Plus size={14}/> Request Comp Off
+          </button>
+        </>}
+      />
+    }>
       {showModal && <RequestModal holidays={holidays} projects={projects} onSave={submitRequest} onClose={() => setShowModal(false)} />}
 
       {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:24, flexWrap:'wrap', gap:12 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Compensatory Off</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Earn comp off for working on holidays and weekends</p>
-        </div>
-        <div style={{ display:'flex', gap:10 }}>
-          <button onClick={load} style={{ display:'flex',alignItems:'center',gap:5,padding:'8px 14px',border:'1px solid #e5e7eb',borderRadius:8,background:'#fff',fontSize:13,cursor:'pointer' }}>
-            <RefreshCw size={13}/> Refresh
-          </button>
-          <button onClick={() => setShowModal(true)}
-            style={{ display:'flex',alignItems:'center',gap:6,padding:'8px 18px',background:'#6366f1',color:'#fff',border:'none',borderRadius:8,fontWeight:600,fontSize:13,cursor:'pointer' }}>
-            <Plus size={14}/> Request Comp Off
-          </button>
-        </div>
-      </div>
+
 
       {/* Balance cards */}
       {balance && (
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(180px,1fr))', gap:14, marginBottom:24 }}>
           {[
             { label:'Available Days', value:Number(balance.available_days||0).toFixed(1), color:'#10b981', bg:'#d1fae5' },
-            { label:'Pending Requests', value:balance.pending_requests||0, color:'#f59e0b', bg:'#fef9c3' },
+            { label:'Pending Requests', value:balance.pending_requests||0, color:'#7c5cf0', bg:'#ede9fe' },
             { label:'Earned Credits', value:balance.available_credits||0, color:'#6366f1', bg:'#eef2ff' },
             { label:'Expired', value:balance.expired_credits||0, color:'#ef4444', bg:'#fee2e2' },
           ].map(({ label, value, color, bg }) => (
@@ -302,6 +307,6 @@ export default function CompOffPage() {
           </table>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

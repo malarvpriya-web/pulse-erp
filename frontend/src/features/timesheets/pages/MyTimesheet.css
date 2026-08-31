@@ -15,7 +15,7 @@
 .mts-icon-btn:disabled { opacity: .4; cursor: default; }
 
 .mts-clock-btn  { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fff; color: #374151; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; cursor: pointer; font-weight: 500; }
-.mts-clock-active { background: #fef3c7; color: #92400e; border-color: #f59e0b; }
+.mts-clock-active { background: #ede9fe; color: #5b21b6; border-color: #7c5cf0; }
 
 .mts-week-nav   { display: flex; align-items: center; gap: 2px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 2px; }
 .mts-week-label { background: none; border: none; font-size: 12px; font-weight: 500; color: #374151; cursor: pointer; padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
@@ -92,7 +92,7 @@ td.mts-weekend { background: #f5f6f8 !important; }
 .mts-row:hover td.mts-weekend { background: #ededf0 !important; }
 .mts-foot-row td.mts-weekend  { background: #eef0f2 !important; }
 .mts-weekend-tag { font-size: 9px; font-weight: 700; color: #9ca3af; text-transform: uppercase; margin-top: 2px; letter-spacing: 0.5px; }
-.mts-hrs-ot { color: #f59e0b !important; }
+.mts-hrs-ot { color: #7c5cf0 !important; }
 
 /* running timer in clock button */
 .mts-clock-timer { font-family: monospace; font-size: 11px; margin-left: 4px; opacity: 0.85; }

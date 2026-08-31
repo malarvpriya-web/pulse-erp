@@ -5,6 +5,7 @@ import {
   X, ChevronLeft, ChevronRight, CheckCircle, XCircle,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -214,8 +215,8 @@ function PunchLogModal({ device, onClose }) {
                     <td style={{ padding: '9px 12px' }}>
                       <span style={{
                         padding: '2px 10px', borderRadius: 10, fontSize: 11, fontWeight: 700,
-                        background: p.punch_type === 'in' ? '#d1fae5' : '#fef3c7',
-                        color: p.punch_type === 'in' ? '#065f46' : '#92400e',
+                        background: p.punch_type === 'in' ? '#d1fae5' : '#ede9fe',
+                        color: p.punch_type === 'in' ? '#065f46' : '#5b21b6',
                       }}>
                         {(p.punch_type || 'IN').toUpperCase()}
                       </span>
@@ -369,25 +370,25 @@ export default function DeviceManagement() {
   const typeLabel = (t) => DEVICE_TYPES.find(x => x.id === t)?.label || t;
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Device Management</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Biometric device registration, health monitoring, and punch sync · Auto-refreshes every 30s</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => { setLoading(true); load(); }}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 10, border: '1px solid #e9e4ff', background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Cpu}
+        eyebrow="Attendance"
+        title="Device Management"
+        subtitle="Biometric device registration, health monitoring, and punch sync · Auto-refreshes every 30s"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => { setLoading(true); load(); }}>
             <RefreshCw size={14} /> Refresh
           </button>
-          <button onClick={() => { setEditDevice(null); setShowForm(true); }}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 18px', borderRadius: 10, border: 'none', background: P, color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+          <button className="plh-cta" onClick={() => { setEditDevice(null); setShowForm(true); }}>
             <Plus size={16} /> Register Device
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      {/* Header */}
+
 
       {/* Flash message */}
       {msg && (
@@ -429,7 +430,7 @@ export default function DeviceManagement() {
         <strong>Supported vendors:</strong> ZKTeco, eSSL, Matrix, Suprema, Hikvision, Realtime
         &nbsp;·&nbsp; Default port: 4370 (ZKTeco / eSSL standard)
         &nbsp;·&nbsp; Communication: TCP/IP — Test Connection pings the real device socket
-        &nbsp;·&nbsp; <span style={{ color: '#d97706', fontWeight: 600 }}>SDK: node-zklib required for live punch sync</span>
+        &nbsp;·&nbsp; <span style={{ color: '#6d28d9', fontWeight: 600 }}>SDK: node-zklib required for live punch sync</span>
       </div>
 
       {/* Device list */}
@@ -464,7 +465,7 @@ export default function DeviceManagement() {
                     </span>
                     {d.vendor && <span style={{ background: '#f5f3ff', color: P, borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 500 }}>{d.vendor}</span>}
                     {d.attendance_direction && d.attendance_direction !== 'both' && (
-                      <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 500 }}>
+                      <span style={{ background: '#ede9fe', color: '#5b21b6', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 500 }}>
                         {dirLabel(d.attendance_direction)}
                       </span>
                     )}
@@ -515,12 +516,12 @@ export default function DeviceManagement() {
 
       {/* Offline/Error advisory */}
       {devices.some(d => d.status !== 'online') && (
-        <div style={{ ...CARD, marginTop: 16, background: '#fffbeb', border: '1px solid #fde68a', padding: '14px 18px' }}>
+        <div style={{ ...CARD, marginTop: 16, background: '#f5f3ff', border: '1px solid #ddd6fe', padding: '14px 18px' }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-            <AlertCircle size={16} color="#d97706" style={{ flexShrink: 0, marginTop: 1 }} />
+            <AlertCircle size={16} color="#6d28d9" style={{ flexShrink: 0, marginTop: 1 }} />
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#92400e', marginBottom: 3 }}>Offline / Error Devices</div>
-              <div style={{ fontSize: 12, color: '#92400e' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#5b21b6', marginBottom: 3 }}>Offline / Error Devices</div>
+              <div style={{ fontSize: 12, color: '#5b21b6' }}>
                 Use <strong>Test Conn</strong> to verify TCP reachability. Offline devices queue punches internally — sync after connectivity is restored.
                 Error devices need manual intervention: check IP, port, network ACLs, and device power.
               </div>
@@ -578,6 +579,6 @@ export default function DeviceManagement() {
       {punchLogDevice && (
         <PunchLogModal device={punchLogDevice} onClose={() => setPunchLogDevice(null)} />
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -114,10 +114,14 @@ exists for exactly one persona. Natural extensions, same pattern:
   it an assumption dressed up as a signal. Verified via a rolled-back synthetic
   transaction (3/5 tests failed, 8% scrap → correctly scored 50/`high`); real data
   correctly returns nothing (both real open production orders have zero tests recorded).
-- **Individual-level attrition risk** — today's model is department-aggregate only;
-  the same tenure/status signal used there could plausibly rank individual
-  flight-risk, if the business wants that granularity (worth confirming appetite —
-  individual risk scoring is more sensitive than a department rollup).
+- **Individual-level attrition risk** — ⛔ **Reviewed and declined 2026-08-06**, see
+  `MODULE_FEATURE_CONNECTION_MANUAL.md` §81. Asked the user directly whether to build
+  this; the answer was no. This is the only §27.2 item that would score a real, named
+  person on a sensitive predicted trait rather than a business object or an aggregate —
+  at pilot scale (8 users) the score would be statistical noise a manager could still
+  mistake for signal and act on. The department-aggregate version already exists
+  (department digests, done 2026-08-06) without that exposure. Not planned; would need
+  a fresh, explicit ask to revisit.
 - ~~**Vendor delivery-delay prediction**~~ — ✅ **Done 2026-08-06**, see
   `MODULE_FEATURE_CONNECTION_MANUAL.md` §74. A 9th `/prescriptive` recommendation ranks
   vendors by historical late-delivery rate (≥2 delivered POs, ≥34% late) who currently
@@ -152,14 +156,14 @@ exists for exactly one persona. Natural extensions, same pattern:
   opportunities in the dev DB — produced a genuinely differentiated 61-95 ranking.
 
 ### Assist
-- **In-context drafting, not just navigation/search** — nothing today helps a human
-  *compose* something (a rejection email, an offer letter, an AMC renewal quote, a QC
-  non-conformance description). The chat copilot exists but is a separate,
-  general-purpose surface, not embedded in the specific form a user is already filling.
-  Lowest-risk starting point: a "draft this" button next to a free-text field that
-  calls the same `/llm-chat` infrastructure with a task-specific prompt, keeping a
-  human in the loop to edit/approve before saving — same spirit as `ceo-insights`'
-  "never invents operational data" rule.
+- ~~**In-context drafting, not just navigation/search**~~ — 🟡 **Piloted 2026-08-06**, see
+  `MODULE_FEATURE_CONNECTION_MANUAL.md` §80. Built the reusable primitive exactly as
+  scoped here — `components/ai/DraftAssistButton.jsx` calls the existing `/llm-chat`
+  with a task-specific prompt, human stays in the loop (fills the field, doesn't
+  auto-submit), zero backend changes needed. Wired into one real form so far: NCR
+  creation's Description field (the audit's own named example). The other 3 named
+  candidates (rejection email, offer letter, AMC renewal quote) remain unwired — each
+  is a one-line follow-up with the component that exists now, not new work.
 
 ---
 

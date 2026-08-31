@@ -1,20 +1,24 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Download, FileText, Bell, Clock, Users, TrendingUp, CheckSquare } from 'lucide-react';
+import {
+  ChevronLeft, ChevronRight, Download, FileText, Bell, Clock, Users,
+  TrendingUp, CheckSquare, BarChart3,
+} from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
   PieChart, Pie, Cell,
 } from 'recharts';
 import api from '@/services/api/client';
 import './WeeklyProductionReport.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Chart data is loaded from the API — no hardcoded fallbacks.
 // Empty arrays produce "No data" states in the charts below.
 
-const PIE_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#3b82f6', '#8b5cf6'];
+const PIE_COLORS = ['#6366f1', '#10b981', '#7c5cf0', '#3b82f6', '#8b5cf6'];
 
 const DEPT_COLORS = {
   Engineering: '#6366f1',
-  HR:          '#f59e0b',
+  HR:          '#7c5cf0',
   Finance:     '#10b981',
   Sales:       '#3b82f6',
   Product:     '#8b5cf6',
@@ -23,7 +27,7 @@ const DEPT_COLORS = {
 
 const STATUS_STYLE = {
   Approved: { bg:'#dcfce7', color:'#15803d' },
-  Pending:  { bg:'#fef3c7', color:'#92400e' },
+  Pending:  { bg:'#ede9fe', color:'#5b21b6' },
   Rejected: { bg:'#fee2e2', color:'#dc2626' },
 };
 
@@ -32,7 +36,7 @@ function hrsColor(h) {
   if (h > 9)  return { background: '#dbeafe', color: '#1e40af' };
   if (h >= 8) return { background: '#dcfce7', color: '#15803d' };
   if (h >= 5) return { background: '#d1fae5', color: '#065f46' };
-  if (h >= 1) return { background: '#fef3c7', color: '#92400e' };
+  if (h >= 1) return { background: '#ede9fe', color: '#5b21b6' };
   return { background: '#f3f4f6', color: '#d1d5db' };
 }
 
@@ -149,7 +153,28 @@ export default function WeeklyProductionReport({ setPage: _setPage }) {
   };
 
   return (
-    <div className="wpr-root">
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Timesheets"
+        title="Weekly Production Report"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setWeekOffset(o => o - 1)}>
+              <ChevronLeft size={14} />
+            </button>
+          <button className="plh-cta plh-cta--ghost" disabled={weekOffset>= 0}
+              onClick={() => setWeekOffset(o => o + 1)}>
+              <ChevronRight size={14} />
+            </button>
+          <button className="plh-cta plh-cta--ghost" onClick={exportCSV}>
+            <Download size={14} /> Export CSV
+          </button>
+          <button className="plh-cta" onClick={() => window.print()}>
+            <FileText size={14} /> Download PDF
+          </button>
+        </>}
+      />
+    }>
       {toast && (
         <div style={{ position:'fixed', bottom:24, right:24, zIndex:9999, background: toast.type==='error'?'#ef4444':'#10b981', color:'#fff', padding:'10px 18px', borderRadius:8, fontSize:14, boxShadow:'0 4px 12px rgba(0,0,0,.15)' }}>
           {toast.msg}
@@ -165,30 +190,6 @@ export default function WeeklyProductionReport({ setPage: _setPage }) {
         <div style={{ background: '#f3f4f6', borderRadius: '8px', padding: '20px', textAlign: 'center', color: '#6b7280', fontSize: '13px', marginBottom: '16px' }}>Loading…</div>
       )}
 
-      {/* Header */}
-      <div className="wpr-header">
-        <div>
-          <h1 className="wpr-title">Weekly Production Report</h1>
-          <div className="wpr-week-nav">
-            <button className="wpr-icon-btn" onClick={() => setWeekOffset(o => o - 1)}>
-              <ChevronLeft size={14} />
-            </button>
-            <span className="wpr-week-label">{fmtWeekLabel(weekDates)}</span>
-            <button className="wpr-icon-btn" disabled={weekOffset >= 0}
-              onClick={() => setWeekOffset(o => o + 1)}>
-              <ChevronRight size={14} />
-            </button>
-          </div>
-        </div>
-        <div className="wpr-header-r">
-          <button className="wpr-btn-outline" onClick={exportCSV}>
-            <Download size={14} /> Export CSV
-          </button>
-          <button className="wpr-btn-outline" onClick={() => window.print()}>
-            <FileText size={14} /> Download PDF
-          </button>
-        </div>
-      </div>
 
       {/* KPI Row */}
       <div className="wpr-kpi-row">
@@ -214,7 +215,7 @@ export default function WeeklyProductionReport({ setPage: _setPage }) {
           </div>
         </div>
         <div className="wpr-kpi-card">
-          <div className="wpr-kpi-icon" style={{ background:'#fef3c7', color:'#92400e' }}><CheckSquare size={18} /></div>
+          <div className="wpr-kpi-icon" style={{ background:'#ede9fe', color:'#5b21b6' }}><CheckSquare size={18} /></div>
           <div>
             <div className="wpr-kpi-num">{onTime}/{employees.length + missing.length} employees</div>
             <div className="wpr-kpi-lbl">On-Time Submissions</div>
@@ -226,7 +227,7 @@ export default function WeeklyProductionReport({ setPage: _setPage }) {
       {missing.length > 0 && (
         <div className="wpr-alert">
           <div className="wpr-alert-title">
-            <Bell size={16} style={{ color:'#d97706' }} />
+            <Bell size={16} style={{ color:'#6d28d9' }} />
             {missing.length} employee{missing.length > 1 ? 's have' : ' has'} not submitted timesheet for this week
           </div>
           <div className="wpr-alert-list">
@@ -377,6 +378,6 @@ export default function WeeklyProductionReport({ setPage: _setPage }) {
           <span key={label} className="wpr-legend-item" style={style}>{label}</span>
         ))}
       </div>
-    </div>
+    </PageShell>
   );
 }

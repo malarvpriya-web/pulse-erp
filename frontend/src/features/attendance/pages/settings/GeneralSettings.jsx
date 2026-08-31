@@ -4,6 +4,7 @@ import {
   IndianRupee, Layers, FileText, ChevronRight, Check, Save,
   Globe, ToggleLeft, ToggleRight, Users, AlertCircle, RefreshCw,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 
@@ -14,11 +15,11 @@ const SECTIONS = [
   { id: 'general',   label: 'General Settings',     icon: Settings,   color: '#6B3FDB' },
   { id: 'shift',     label: 'Shift Settings',        icon: Clock,      color: '#0369a1' },
   { id: 'geo',       label: 'Geo Settings',          icon: MapPin,     color: '#10b981' },
-  { id: 'face',      label: 'Face Attendance',       icon: Camera,     color: '#f59e0b' },
+  { id: 'face',      label: 'Face Attendance',       icon: Camera,     color: '#7c5cf0' },
   { id: 'device',    label: 'Device Settings',       icon: Cpu,        color: '#ef4444' },
   { id: 'policy',    label: 'Policy Settings',       icon: Shield,     color: '#8b5cf6' },
   { id: 'approval',  label: 'Approval Matrix',       icon: GitBranch,  color: '#06b6d4' },
-  { id: 'payroll',   label: 'Payroll Sync Settings', icon: IndianRupee, color: '#f97316' },
+  { id: 'payroll',   label: 'Payroll Sync Settings', icon: IndianRupee, color: '#7c5cf0' },
   { id: 'workcentre',label: 'Work Centre Settings',  icon: Layers,     color: '#84cc16' },
   { id: 'reports',   label: 'Reports & Export',      icon: FileText,   color: '#a78bfa' },
 ];
@@ -76,6 +77,7 @@ function Row({ label, desc, children }) {
 }
 
 export default function GeneralSettings() {
+  const navigate = useNavigate();
   const toast = useToast();
   const [activeSection, setActiveSection] = useState('general');
   const [general, setGeneral] = useState(null);
@@ -85,6 +87,13 @@ export default function GeneralSettings() {
   const [deviceSettings, setDeviceSettings] = useState({ auto_sync: true, sync_interval_minutes: 15, duplicate_window_minutes: 5, offline_sync: true });
   const [reportSettings, setReportSettings] = useState({ auto_monthly_report: true, report_email: '', export_format: 'xlsx', include_photos: false });
   const [wc, setWc] = useState({ track_work_centres: false, require_wc_for_factory: true, units_produced_tracking: false, include_in_reports: true });
+  // These three were rendered from hardcoded `checked` literals with no-op
+  // onChange handlers, so the section reported a fixed configuration and
+  // discarded every edit. "Enable Face Attendance" was pinned to false while the
+  // stored value was true, i.e. it misreported the live setting.
+  const [faceSettings, setFaceSettings] = useState({ enabled: false, selfie_required: false, anti_spoof: true });
+  const [editingWorkflow, setEditingWorkflow] = useState(null);
+  const [levelDraft, setLevelDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState('');
 
@@ -96,13 +105,15 @@ export default function GeneralSettings() {
       api.get('/attendance/device-settings'),
       api.get('/attendance/report-settings'),
       api.get('/attendance/workcentre-settings'),
-    ]).then(([gRes, wRes, geoRes, devRes, repRes, wcRes]) => {
+      api.get('/attendance/face-settings'),
+    ]).then(([gRes, wRes, geoRes, devRes, repRes, wcRes, faceRes]) => {
       if (gRes.status === 'fulfilled' && gRes.value.data) setGeneral(gRes.value.data);
       if (wRes.status === 'fulfilled' && Array.isArray(wRes.value.data)) setWorkflows(wRes.value.data);
       if (geoRes.status === 'fulfilled' && geoRes.value.data) setGeoSettings(g => ({ ...g, ...geoRes.value.data }));
       if (devRes.status === 'fulfilled' && devRes.value.data) setDeviceSettings(d => ({ ...d, ...devRes.value.data }));
       if (repRes.status === 'fulfilled' && repRes.value.data) setReportSettings(r => ({ ...r, ...repRes.value.data }));
       if (wcRes.status === 'fulfilled' && wcRes.value.data) setWc(w => ({ ...w, ...wcRes.value.data }));
+      if (faceRes.status === 'fulfilled' && faceRes.value.data) setFaceSettings(f => ({ ...f, ...faceRes.value.data }));
     }).finally(() => setSettingsLoading(false));
   }, []);
 
@@ -154,6 +165,19 @@ export default function GeneralSettings() {
       toast.success('Work centre settings saved');
       setTimeout(() => setSaved(''), 3000);
     } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save work centre settings'); } finally { setSaving(false); }
+  };
+
+  const saveFace = async () => {
+    setSaving(true);
+    try {
+      // PUT replaces the whole settings blob, so send back everything that was
+      // loaded and not just the three flags this screen exposes -- otherwise
+      // saving here would wipe the thresholds the Face Attendance module owns.
+      await api.put('/attendance/face-settings', faceSettings);
+      setSaved('face');
+      toast.success('Face attendance settings saved');
+      setTimeout(() => setSaved(''), 3000);
+    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save face attendance settings'); } finally { setSaving(false); }
   };
 
   const toggleWorkingDay = (day) => {
@@ -257,11 +281,10 @@ export default function GeneralSettings() {
       case 'shift': return (
         <SectionCard icon={Clock} color="#0369a1" label="Shift Settings">
           <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, color: '#0369a1' }}>
-            Shift configuration is managed in the <strong>Shift Management</strong> module. Use the settings here to configure global shift behaviour.
+            Shift configuration is managed in the <strong>Shift Management</strong> module. Only the two
+            global defaults below are set here — overlap prevention, night-shift allowance and rotation
+            are owned by that module and by the OT policy.
           </div>
-          <Row label="Shift Overlap Prevention" desc="Block assigning an employee to overlapping shifts">
-            <Toggle checked={true} onChange={() => {}} />
-          </Row>
           <Row label="Grace Period (default, minutes)" desc="Minutes late before marking Late (used when shift has no override)">
             <input type="number" min="0" max="60"
               value={general?.default_grace_minutes ?? 10}
@@ -273,12 +296,6 @@ export default function GeneralSettings() {
               value={general?.ot_multiplier ?? 1.5}
               onChange={e => setGeneral(g => ({ ...g, ot_multiplier: parseFloat(e.target.value) }))}
               style={{ ...inp, width: 80 }} />
-          </Row>
-          <Row label="Night Shift Allowance" desc="Auto-apply night shift multiplier (from OT policy)">
-            <Toggle checked={true} onChange={() => {}} />
-          </Row>
-          <Row label="Shift Rotation" desc="Enable shift rotation schedules">
-            <Toggle checked={false} onChange={() => {}} />
           </Row>
           <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
             <button onClick={saveGeneral} disabled={saving}
@@ -332,16 +349,30 @@ export default function GeneralSettings() {
       );
 
       case 'face': return (
-        <SectionCard icon={Camera} color="#f59e0b" label="Face Attendance Settings">
-          <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, color: '#d97706' }}>
+        <SectionCard icon={Camera} color="#7c5cf0" label="Face Attendance Settings">
+          <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, color: '#6d28d9' }}>
             Full face attendance configuration is in the <strong>Face Attendance</strong> module. Configure thresholds, anti-spoof settings, and view suspicious attempt logs there.
           </div>
-          <Row label="Enable Face Attendance" desc="Allow face recognition as an attendance method"><Toggle checked={false} onChange={() => {}} /></Row>
-          <Row label="Selfie Validation" desc="Require a selfie photo for mobile attendance"><Toggle checked={true} onChange={() => {}} /></Row>
-          <Row label="Anti-Spoof Detection" desc="Block photo/screen-based spoof attempts"><Toggle checked={true} onChange={() => {}} /></Row>
+          <Row label="Enable Face Attendance" desc="Allow face recognition as an attendance method">
+            <Toggle checked={!!faceSettings.enabled}
+              onChange={v => setFaceSettings(f => ({ ...f, enabled: v }))} />
+          </Row>
+          <Row label="Selfie Validation" desc="Require a selfie photo for mobile attendance">
+            <Toggle checked={!!faceSettings.selfie_required}
+              onChange={v => setFaceSettings(f => ({ ...f, selfie_required: v }))} />
+          </Row>
+          <Row label="Anti-Spoof Detection" desc="Block photo/screen-based spoof attempts">
+            <Toggle checked={!!faceSettings.anti_spoof}
+              onChange={v => setFaceSettings(f => ({ ...f, anti_spoof: v }))} />
+          </Row>
           <div style={{ marginTop: 16, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#f59e0b', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+            <button onClick={() => navigate('/FaceAttendance')}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: '1px solid #ddd6fe', background: '#fff', color: '#7c5cf0', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
               Open Face Attendance Module →
+            </button>
+            <button onClick={saveFace} disabled={saving}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#7c5cf0', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+              {saved === 'face' ? <><Check size={14} /> Saved</> : <><Save size={14} /> Save Face Settings</>}
             </button>
           </div>
         </SectionCard>
@@ -365,7 +396,7 @@ export default function GeneralSettings() {
           <Row label="Offline Sync" desc="Queue and sync records when device reconnects">
             <Toggle checked={deviceSettings.offline_sync} onChange={v => setDeviceSettings(d => ({ ...d, offline_sync: v }))} />
           </Row>
-          <div style={{ background: '#fff7f0', border: '1px solid #fed7aa', borderRadius: 8, padding: 14, marginTop: 12, fontSize: 13, color: '#c2410c' }}>
+          <div style={{ background: '#fff7f0', border: '1px solid #ddd6fe', borderRadius: 8, padding: 14, marginTop: 12, fontSize: 13, color: '#5b21b6' }}>
             Supported devices: <strong>ZKTeco, eSSL, Matrix, Suprema</strong>. Register and manage devices in the <strong>Devices</strong> module.
           </div>
           <div style={{ marginTop: 16, textAlign: 'right' }}>
@@ -407,25 +438,63 @@ export default function GeneralSettings() {
           </p>
           {WORKFLOW_TYPES.map(wt => {
             const existing = workflows.find(w => w.workflow_type === wt.id);
-            const levels = existing?.levels || [];
+            const levels = Array.isArray(existing?.levels) ? existing.levels : [];
+            const isEditing = editingWorkflow === wt.id;
             return (
               <div key={wt.id} style={{ padding: 16, borderRadius: 10, border: '1px solid #e0f2fe', background: '#f0f9ff', marginBottom: 12 }}>
-                <div style={{ display: 'flex', justify: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 600 }}>{wt.label}</div>
                     <div style={{ fontSize: 12, color: '#9ca3af' }}>{wt.desc}</div>
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Employee →</span>
-                  {['Reporting Manager (L1)', 'HR Admin (L2)', 'Department Head (L3)'].slice(0, levels.length || 2).map((l, i) => (
-                    <React.Fragment key={i}>
-                      <span style={{ background: '#06b6d415', color: '#0891b2', borderRadius: 12, padding: '3px 10px', fontSize: 12, fontWeight: 500 }}>{l}</span>
-                      {i < (levels.length || 2) - 1 && <span style={{ color: '#9ca3af' }}>→</span>}
-                    </React.Fragment>
-                  ))}
-                  <button style={{ marginLeft: 8, border: 'none', background: '#06b6d4', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}>Edit</button>
-                </div>
+                {/* The chain used to be three hardcoded labels sliced by
+                    `levels.length || 2`, so an unconfigured workflow still drew a
+                    plausible two-step chain and a configured one drew those same
+                    fixed labels rather than its actual levels. */}
+                {isEditing ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <input
+                      value={levelDraft}
+                      onChange={e => setLevelDraft(e.target.value)}
+                      placeholder="Reporting Manager, HR Admin"
+                      style={{ ...inp, flex: 1, minWidth: 240 }} />
+                    <button
+                      onClick={async () => {
+                        const parsed = levelDraft.split(',').map(x => x.trim()).filter(Boolean);
+                        await saveWorkflow(wt.id, parsed);
+                        setEditingWorkflow(null);
+                      }}
+                      style={{ border: 'none', background: '#06b6d4', color: '#fff', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
+                      Save
+                    </button>
+                    <button onClick={() => setEditingWorkflow(null)}
+                      style={{ border: '1px solid #bae6fd', background: '#fff', color: '#0369a1', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Employee →</span>
+                    {levels.length === 0 ? (
+                      <span style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic' }}>
+                        No approval levels configured
+                      </span>
+                    ) : levels.map((l, i) => (
+                      <React.Fragment key={i}>
+                        <span style={{ background: '#06b6d415', color: '#0891b2', borderRadius: 12, padding: '3px 10px', fontSize: 12, fontWeight: 500 }}>
+                          {l} (L{i + 1})
+                        </span>
+                        {i < levels.length - 1 && <span style={{ color: '#9ca3af' }}>→</span>}
+                      </React.Fragment>
+                    ))}
+                    <button
+                      onClick={() => { setEditingWorkflow(wt.id); setLevelDraft(levels.join(', ')); }}
+                      style={{ marginLeft: 8, border: 'none', background: '#06b6d4', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}>
+                      Edit
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -437,34 +506,24 @@ export default function GeneralSettings() {
       );
 
       case 'payroll': return (
-        <SectionCard icon={IndianRupee} color="#f97316" label="Payroll Sync Settings">
-          <Row label="Payroll Sync Day" desc="Day of month to freeze attendance for payroll">
-            <input type="number" min="1" max="31" defaultValue={1} style={{ ...inp, width: 80 }} />
-          </Row>
-          <Row label="Allow Manual Override" desc="Allow HR to unfreeze and re-sync attendance">
-            <Toggle checked={true} onChange={() => {}} />
-          </Row>
-          <Row label="Include OT in Sync" desc="Include overtime hours in payroll sync data">
-            <Toggle checked={true} onChange={() => {}} />
-          </Row>
-          <Row label="Auto-Calculate OT" desc="Recalculate OT before payroll sync">
-            <Toggle checked={false} onChange={() => {}} />
-          </Row>
-          <Row label="Payroll System Integration" desc="External payroll system to push sync data to">
-            <select style={inp}>
-              <option>Pulse Payroll (Internal)</option>
-              <option>GreytHR</option>
-              <option>Keka</option>
-              <option>CSV Export</option>
-            </select>
-          </Row>
-          <div style={{ background: '#fff7f0', border: '1px solid #fed7aa', borderRadius: 8, padding: 14, marginTop: 12, fontSize: 13, color: '#c2410c' }}>
-            Once attendance is frozen for a month, records are marked <strong>immutable</strong>. Only a Super Admin can unfreeze.
+        <SectionCard icon={IndianRupee} color="#7c5cf0" label="Payroll Sync Settings">
+          {/* This section previously rendered a sync-day input, three toggles and
+              a payroll-system dropdown above a "Save Payroll Settings" button.
+              None of them were bound to state and the button had no handler:
+              there is no payroll-settings store in the schema or the API, so
+              every edit here was discarded silently while looking saved. What IS
+              implemented is the sync action itself (POST /attendance/payroll-sync),
+              so the section now describes the real behaviour instead of offering
+              settings that cannot persist. */}
+          <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: 14, fontSize: 13, color: '#0369a1', lineHeight: 1.6 }}>
+            <AlertCircle size={13} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+            Payroll sync is run per month from the <strong>Payroll</strong> module, not configured here.
+            Running it freezes that month's attendance records and marks them <strong>immutable</strong>;
+            overtime hours are included in the synced totals.
           </div>
-          <div style={{ marginTop: 16, textAlign: 'right' }}>
-            <button style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#f97316', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer', marginLeft: 'auto' }}>
-              <Save size={14} /> Save Payroll Settings
-            </button>
+          <div style={{ background: '#fff7f0', border: '1px solid #ddd6fe', borderRadius: 8, padding: 14, marginTop: 12, fontSize: 13, color: '#5b21b6', lineHeight: 1.6 }}>
+            Re-syncing a month that is already frozen is rejected unless it is forced,
+            and only an HR Admin or Admin can run either.
           </div>
         </SectionCard>
       );

@@ -1,6 +1,8 @@
 // frontend/src/features/hr/pages/SuccessionReports.jsx
 import React, { useState, useEffect, useCallback } from 'react';
+import { BarChart3 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const BTN = (v = 'primary', sm = false) => ({
   border: 'none', borderRadius: 7, cursor: 'pointer', fontWeight: 600,
@@ -10,9 +12,9 @@ const BTN = (v = 'primary', sm = false) => ({
   ...(v === 'outline' ? { border: '1px solid #6B3FDB', background: 'none', color: '#6B3FDB' } : {}),
 });
 
-const RISK_COLORS  = { high: '#dc2626', medium: '#d97706', low: '#16a34a' };
+const RISK_COLORS  = { high: '#dc2626', medium: '#6d28d9', low: '#16a34a' };
 const READY_LABELS = { 'ready-now': 'Ready Now', '1-2-years': '1-2 Yrs', '3-5-years': '3-5 Yrs', 'not_ready': 'Not Ready' };
-const READY_COLORS = { 'ready-now': '#16a34a', '1-2-years': '#d97706', '3-5-years': '#6b7280', 'not_ready': '#ef4444' };
+const READY_COLORS = { 'ready-now': '#16a34a', '1-2-years': '#6d28d9', '3-5-years': '#6b7280', 'not_ready': '#ef4444' };
 
 function Spinner() {
   return (
@@ -45,7 +47,7 @@ function ReadyBadge({ level }) {
 }
 
 function ProgressBar({ value }) {
-  const color = value >= 80 ? '#16a34a' : value >= 40 ? '#d97706' : '#6B3FDB';
+  const color = value >= 80 ? '#16a34a' : value >= 40 ? '#6d28d9' : '#6B3FDB';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div style={{ flex: 1, height: 6, background: '#e9e4ff', borderRadius: 3, overflow: 'hidden' }}>
@@ -120,13 +122,15 @@ export default function SuccessionReports() {
   });
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Succession Reports</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-          Downloadable reports for talent reviews and board presentations
-        </p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Human Resources"
+        title="Succession Reports"
+        subtitle="Downloadable reports for talent reviews and board presentations"
+      />
+    }>
+
 
       {msg.text && (
         <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontWeight: 500, fontSize: 14,
@@ -216,7 +220,7 @@ export default function SuccessionReports() {
                           {row.successor_count}
                         </td>
                         <td style={{ padding: '9px 12px', textAlign: 'center', fontWeight: 700, color: '#16a34a' }}>{row.ready_now}</td>
-                        <td style={{ padding: '9px 12px', textAlign: 'center', color: '#d97706' }}>{row.ready_1_2yr}</td>
+                        <td style={{ padding: '9px 12px', textAlign: 'center', color: '#6d28d9' }}>{row.ready_1_2yr}</td>
                         <td style={{ padding: '9px 12px', textAlign: 'center', color: '#6b7280' }}>{row.ready_3_5yr}</td>
                         <td style={{ padding: '9px 12px' }}>
                           <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
@@ -326,7 +330,7 @@ export default function SuccessionReports() {
                   </thead>
                   <tbody>
                     {data.map((row, i) => {
-                      const statusColors = { active: '#6B3FDB', completed: '#16a34a', paused: '#d97706', cancelled: '#ef4444' };
+                      const statusColors = { active: '#6B3FDB', completed: '#16a34a', paused: '#6d28d9', cancelled: '#ef4444' };
                       const sc = statusColors[row.status] || '#6b7280';
                       return (
                         <tr key={i} style={{ borderBottom: '1px solid #f0ebff' }}>
@@ -448,6 +452,6 @@ export default function SuccessionReports() {
           )}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

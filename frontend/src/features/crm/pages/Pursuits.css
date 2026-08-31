@@ -8,7 +8,7 @@
 
 /* ── Toast ── */
 .pu-toast {
-  position: fixed; top: 18px; right: 18px; z-index: 200;
+  position: fixed; top: 18px; right: 18px; z-index: 1020;
   padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
   color: #fff; box-shadow: 0 6px 20px rgba(0,0,0,0.16);
 }
@@ -110,7 +110,7 @@
 .pu-progress-track { margin-top: 4px; height: 4px; width: 100px; border-radius: 3px; background: #eceaf3; overflow: hidden; }
 .pu-progress-bar { height: 100%; border-radius: 3px; }
 .pu-badge { padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-.pu-stars { color: #f59e0b; letter-spacing: 1px; }
+.pu-stars { color: #7c5cf0; letter-spacing: 1px; }
 
 .pu-expand, .pu-action {
   background: none; border: none; cursor: pointer; padding: 4px; display: inline-flex;
@@ -142,7 +142,7 @@
 .pu-pager-btns button:disabled { opacity: 0.5; cursor: default; }
 
 /* ── Modal / drawer ── */
-.pu-overlay { position: fixed; inset: 0; background: rgba(17,24,39,0.35); z-index: 100; display: flex; align-items: center; justify-content: center; }
+.pu-overlay { position: fixed; inset: 0; background: rgba(17,24,39,0.35); z-index: 1000; display: flex; align-items: center; justify-content: center; }
 .pu-modal {
   background: var(--color-background-primary, #fff); border-radius: 12px; width: 420px; max-width: calc(100vw - 32px);
   max-height: calc(100vh - 48px); display: flex; flex-direction: column; overflow: hidden;
@@ -151,7 +151,7 @@
 .pu-modal-lg { width: 640px; }
 .pu-drawer {
   position: fixed; right: 0; top: 0; bottom: 0; width: 460px; max-width: 100vw;
-  background: var(--color-background-primary, #fff); z-index: 101; display: flex; flex-direction: column;
+  background: var(--color-background-primary, #fff); z-index: 1001; display: flex; flex-direction: column;
   box-shadow: -4px 0 24px rgba(0,0,0,0.14);
 }
 .pu-modal-hd {

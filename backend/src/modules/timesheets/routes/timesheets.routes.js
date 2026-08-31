@@ -4,6 +4,8 @@ import timesheetRepository from '../repositories/timesheet.repository.js';
 import { recalculateProjectCost } from '../../projects/services/projectCostRollup.service.js';
 import { companyOf } from '../../../shared/scope.js';
 import { CLOSED_PROJECT_STATUSES } from '../../projects/projectStatus.js';
+import { respondError } from '../../../shared/pgErrors.js';
+import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 
 const router = express.Router();
 const cid = req => req.scope?.company_id ?? companyOf(req);
@@ -102,7 +104,7 @@ router.get('/timesheets/approvals', async (req, res) => {
          LEFT JOIN projects p ON te.project_id = p.id
          WHERE te.status = 'submitted'
            AND te.deleted_at IS NULL
-           AND (p.project_manager_id = $1 OR e.manager_id = $1)
+           AND (p.project_manager_id = $1 OR e.reporting_manager_id = $1)
            ${company_id ? 'AND te.company_id = $2' : ''}
          ORDER BY te.submitted_at ASC`,
         company_id ? [managerEid, company_id] : [managerEid]
@@ -126,6 +128,112 @@ router.get('/timesheets/weekly-summary', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Weekly production report — aggregates all employees' hours for a given week
+router.get('/timesheets/weekly-report', async (req, res) => {
+  try {
+    const { week_start } = req.query;
+    if (!week_start) return res.status(422).json({ error: 'week_start is required (YYYY-MM-DD)' });
+
+    const weekEnd = new Date(week_start);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    const week_end = weekEnd.toISOString().split('T')[0];
+
+    // Per-employee daily breakdown
+    const empRows = await timesheetRepository.findAll({ start_date: week_start, end_date: week_end });
+
+    // Aggregate by employee
+    const byEmp = {};
+    for (const row of empRows) {
+      const id = row.employee_id;
+      if (!byEmp[id]) {
+        byEmp[id] = {
+          id,
+          name: row.employee_name || `Employee ${id}`,
+          dept: row.department || '—',
+          mon: 0, tue: 0, wed: 0, thu: 0, fri: 0,
+          total: 0, billable: 0,
+          submitted: null,
+          status: 'Pending',
+        };
+      }
+      const e = byEmp[id];
+      const dow = new Date(row.work_date).getDay(); // 0=Sun,1=Mon...
+      const hrs = parseFloat(row.hours_worked) || 0;
+      if (dow === 1) e.mon += hrs;
+      else if (dow === 2) e.tue += hrs;
+      else if (dow === 3) e.wed += hrs;
+      else if (dow === 4) e.thu += hrs;
+      else if (dow === 5) e.fri += hrs;
+      e.total += hrs;
+      if (row.is_billable) e.billable += hrs;
+      if (row.submitted_at && (!e.submitted || row.submitted_at > e.submitted)) e.submitted = row.submitted_at?.toISOString?.()?.split('T')[0] ?? row.submitted_at;
+      if (row.status === 'approved') e.status = 'Approved';
+      else if (row.status === 'rejected') e.status = 'Rejected';
+    }
+
+    const employees = Object.values(byEmp).map(e => ({
+      ...e,
+      mon: +e.mon.toFixed(1), tue: +e.tue.toFixed(1), wed: +e.wed.toFixed(1),
+      thu: +e.thu.toFixed(1), fri: +e.fri.toFixed(1),
+      total: +e.total.toFixed(1), billable: +e.billable.toFixed(1),
+    }));
+
+    // Employees who have no entries this week (missing submissions)
+    const allEmpsResult = await timesheetRepository.findAll({});
+    const submittedIds = new Set(Object.keys(byEmp).map(Number));
+    const missingMap = {};
+    for (const row of allEmpsResult) {
+      const id = row.employee_id;
+      if (!submittedIds.has(id) && !missingMap[id]) {
+        missingMap[id] = {
+          name: row.employee_name || `Employee ${id}`,
+          dept: row.department || '—',
+          due: week_end,
+        };
+      }
+    }
+    const missing = Object.values(missingMap);
+
+    // Project distribution (hours by project for this week)
+    const projRows = empRows.filter(r => r.project_name);
+    const byProject = {};
+    for (const r of projRows) {
+      const name = r.project_name;
+      byProject[name] = (byProject[name] || 0) + (parseFloat(r.hours_worked) || 0);
+    }
+    const totalProjectHrs = Object.values(byProject).reduce((s, v) => s + v, 0);
+    const project_distribution = Object.entries(byProject)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, value]) => ({
+        name,
+        value: +value.toFixed(1),
+        pct: totalProjectHrs > 0 ? +(value / totalProjectHrs * 100).toFixed(1) : 0,
+      }));
+
+    // Daily hours by department (Mon–Fri)
+    const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri'];
+    const byDept = {};
+    for (const e of employees) {
+      const dept = e.dept || 'Other';
+      if (!byDept[dept]) byDept[dept] = { day: dept, mon: 0, tue: 0, wed: 0, thu: 0, fri: 0 };
+      for (const d of DAYS) byDept[dept][d] += e[d];
+    }
+    const daily_by_dept = [
+      { day: 'Mon', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.mon.toFixed(1)])) },
+      { day: 'Tue', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.tue.toFixed(1)])) },
+      { day: 'Wed', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.wed.toFixed(1)])) },
+      { day: 'Thu', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.thu.toFixed(1)])) },
+      { day: 'Fri', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.fri.toFixed(1)])) },
+    ];
+
+    res.json({ employees, missing, project_distribution, daily_by_dept });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── Company-wide utilization (bare path — mounted at /api/timesheets/utilization) ──
 
 router.get('/timesheets/:id', async (req, res) => {
   try {
@@ -249,8 +357,24 @@ router.post('/timesheets/clock-out', async (req, res) => {
 router.post('/timesheets/approve', async (req, res) => {
   try {
     const { ids, approved_by } = req.body;
+    const { rows: targets } = await pool.query(
+      `SELECT te.id, te.employee_id, te.hours_worked, p.project_name
+       FROM timesheet_entries te LEFT JOIN projects p ON p.id = te.project_id
+       WHERE te.id = ANY($1)`,
+      [ids]
+    );
     await timesheetRepository.approveEntries(ids, approved_by);
-    
+
+    targets.forEach(t => {
+      if (!t.employee_id) return;
+      notifyWorkflowEvent('approved', {
+        module: 'Timesheet',
+        recordId: t.id,
+        recipientIds: [t.employee_id],
+        context: { projectName: t.project_name, hours: t.hours_worked },
+      });
+    });
+
     // Recalculate full project cost (all 9 sources), not just labour — updateLabourCost()
     // used to overwrite total_cost/profit/margin_pct unconditionally from labour_cost alone,
     // silently collapsing the correct multi-source rollup on every approval.
@@ -259,7 +383,7 @@ router.post('/timesheets/approve', async (req, res) => {
     for (const projectId of projectIds) {
       await recalculateProjectCost(projectId);
     }
-    
+
     res.json({ message: 'Timesheets approved' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -269,7 +393,25 @@ router.post('/timesheets/approve', async (req, res) => {
 router.post('/timesheets/reject', async (req, res) => {
   try {
     const { ids, approved_by, reason } = req.body;
+    const { rows: targets } = await pool.query(
+      `SELECT te.id, te.employee_id, p.project_name
+       FROM timesheet_entries te LEFT JOIN projects p ON p.id = te.project_id
+       WHERE te.id = ANY($1)`,
+      [ids]
+    );
     await timesheetRepository.rejectEntries(ids, approved_by, reason);
+
+    targets.forEach(t => {
+      if (!t.employee_id) return;
+      notifyWorkflowEvent('rejected', {
+        module: 'Timesheet',
+        recordId: t.id,
+        recipientIds: [t.employee_id],
+        context: { projectName: t.project_name },
+        comments: reason,
+      });
+    });
+
     res.json({ message: 'Timesheets rejected' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -305,111 +447,6 @@ router.get('/timesheets/pending-approvals/:manager_id', async (req, res) => {
   }
 });
 
-// Weekly production report — aggregates all employees' hours for a given week
-router.get('/timesheets/weekly-report', async (req, res) => {
-  try {
-    const { week_start } = req.query;
-    if (!week_start) return res.status(422).json({ error: 'week_start is required (YYYY-MM-DD)' });
-
-    const weekEnd = new Date(week_start);
-    weekEnd.setDate(weekEnd.getDate() + 6);
-    const week_end = weekEnd.toISOString().split('T')[0];
-
-    // Per-employee daily breakdown
-    const empRows = await timesheetRepository.findAll({ start_date: week_start, end_date: week_end });
-
-    // Aggregate by employee
-    const byEmp = {};
-    for (const row of empRows) {
-      const id = row.employee_id;
-      if (!byEmp[id]) {
-        byEmp[id] = {
-          id,
-          name: row.employee_name || `Employee ${id}`,
-          dept: row.department || '—',
-          mon: 0, tue: 0, wed: 0, thu: 0, fri: 0,
-          total: 0, billable: 0,
-          submitted: null,
-          status: 'Pending',
-        };
-      }
-      const e = byEmp[id];
-      const dow = new Date(row.work_date).getDay(); // 0=Sun,1=Mon...
-      const hrs = parseFloat(row.hours_worked) || 0;
-      if (dow === 1) e.mon += hrs;
-      else if (dow === 2) e.tue += hrs;
-      else if (dow === 3) e.wed += hrs;
-      else if (dow === 4) e.thu += hrs;
-      else if (dow === 5) e.fri += hrs;
-      e.total += hrs;
-      if (row.is_billable) e.billable += hrs;
-      if (row.submitted_at && (!e.submitted || row.submitted_at > e.submitted)) e.submitted = row.submitted_at?.toISOString?.()?.split('T')[0] ?? row.submitted_at;
-      if (row.status === 'approved') e.status = 'Approved';
-      else if (row.status === 'rejected') e.status = 'Rejected';
-    }
-
-    const employees = Object.values(byEmp).map(e => ({
-      ...e,
-      mon: +e.mon.toFixed(1), tue: +e.tue.toFixed(1), wed: +e.wed.toFixed(1),
-      thu: +e.thu.toFixed(1), fri: +e.fri.toFixed(1),
-      total: +e.total.toFixed(1), billable: +e.billable.toFixed(1),
-    }));
-
-    // Employees who have no entries this week (missing submissions)
-    const allEmpsResult = await timesheetRepository.findAll({});
-    const submittedIds = new Set(Object.keys(byEmp).map(Number));
-    const missingMap = {};
-    for (const row of allEmpsResult) {
-      const id = row.employee_id;
-      if (!submittedIds.has(id) && !missingMap[id]) {
-        missingMap[id] = {
-          name: row.employee_name || `Employee ${id}`,
-          dept: row.department || '—',
-          due: week_end,
-        };
-      }
-    }
-    const missing = Object.values(missingMap);
-
-    // Project distribution (hours by project for this week)
-    const projRows = empRows.filter(r => r.project_name);
-    const byProject = {};
-    for (const r of projRows) {
-      const name = r.project_name;
-      byProject[name] = (byProject[name] || 0) + (parseFloat(r.hours_worked) || 0);
-    }
-    const totalProjectHrs = Object.values(byProject).reduce((s, v) => s + v, 0);
-    const project_distribution = Object.entries(byProject)
-      .sort((a, b) => b[1] - a[1])
-      .map(([name, value]) => ({
-        name,
-        value: +value.toFixed(1),
-        pct: totalProjectHrs > 0 ? +(value / totalProjectHrs * 100).toFixed(1) : 0,
-      }));
-
-    // Daily hours by department (Mon–Fri)
-    const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri'];
-    const byDept = {};
-    for (const e of employees) {
-      const dept = e.dept || 'Other';
-      if (!byDept[dept]) byDept[dept] = { day: dept, mon: 0, tue: 0, wed: 0, thu: 0, fri: 0 };
-      for (const d of DAYS) byDept[dept][d] += e[d];
-    }
-    const daily_by_dept = [
-      { day: 'Mon', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.mon.toFixed(1)])) },
-      { day: 'Tue', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.tue.toFixed(1)])) },
-      { day: 'Wed', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.wed.toFixed(1)])) },
-      { day: 'Thu', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.thu.toFixed(1)])) },
-      { day: 'Fri', ...Object.fromEntries(Object.entries(byDept).map(([dept, v]) => [dept, +v.fri.toFixed(1)])) },
-    ];
-
-    res.json({ employees, missing, project_distribution, daily_by_dept });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ── Company-wide utilization (bare path — mounted at /api/timesheets/utilization) ──
 router.get('/utilization', async (req, res) => {
   try {
     const { period = 'month' } = req.query;
@@ -573,35 +610,44 @@ router.get('/weekly-report', async (req, res) => {
 router.get('/assign-tasks', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT t.id, t.title, t.status, t.priority, t.due_date,
+      `SELECT t.id, t.task_title AS title, t.status, t.priority, t.due_date,
               e.first_name || ' ' || COALESCE(e.last_name,'') AS assigned_to,
-              p.name AS project_name
+              p.project_name
        FROM tasks t
        LEFT JOIN employees e ON e.id = t.assigned_to
-       LEFT JOIN projects p  ON p.id = t.project_id
-       WHERE LOWER(e.department) LIKE '%marketing%'
-          OR LOWER(p.name) LIKE '%marketing%'
+       LEFT JOIN projects p  ON p.id = t.project_id AND p.deleted_at IS NULL
+       WHERE t.deleted_at IS NULL
+         AND (LOWER(e.department) LIKE '%marketing%'
+              OR LOWER(p.project_name) LIKE '%marketing%')
        ORDER BY t.due_date NULLS LAST LIMIT 200`
-    ).catch(() => ({ rows: [] }));
+    );
     res.json(rows);
-  } catch { res.json([]); }
+  } catch (e) { respondError(res, e); }
 });
 
 router.get('/marketing-entry', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT ts.id, ts.week_start_date, ts.total_hours, ts.status,
+      // A timesheet is per employee per week and carries no project_id; the
+      // project lives on its entries. The projects listed here are therefore the
+      // distinct projects the week's entries were booked against.
+      `SELECT ts.id, ts.week_start AS week_start_date, ts.total_hours, ts.status,
               e.first_name || ' ' || COALESCE(e.last_name,'') AS employee_name,
-              p.name AS project_name
+              (SELECT STRING_AGG(DISTINCT p.project_name, ', ')
+                 FROM timesheet_entries te
+                 JOIN projects p ON p.id = te.project_id AND p.deleted_at IS NULL
+                WHERE te.timesheet_id = ts.id) AS project_name
        FROM timesheets ts
        LEFT JOIN employees e ON e.id = ts.employee_id
-       LEFT JOIN projects p  ON p.id = ts.project_id
        WHERE LOWER(e.department) LIKE '%marketing%'
-          OR LOWER(p.name) LIKE '%marketing%'
-       ORDER BY ts.week_start_date DESC LIMIT 200`
-    ).catch(() => ({ rows: [] }));
+          OR EXISTS (SELECT 1 FROM timesheet_entries te
+                       JOIN projects p ON p.id = te.project_id
+                      WHERE te.timesheet_id = ts.id
+                        AND LOWER(p.project_name) LIKE '%marketing%')
+       ORDER BY ts.week_start DESC LIMIT 200`
+    );
     res.json(rows);
-  } catch { res.json([]); }
+  } catch (e) { respondError(res, e); }
 });
 
 export default router;

@@ -1,9 +1,9 @@
 // frontend/src/features/inventory/pages/QualityManagement.jsx
 import { useState, useEffect, useCallback } from 'react';
-import { ClipboardList, FileSearch, ListChecks } from 'lucide-react';
+import { ClipboardList, FileSearch, ListChecks, ShieldCheck } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 
 /* ── helpers ── */
@@ -11,7 +11,7 @@ function statusBadge(status) {
   const map = {
     pass:        { bg:'#d1fae5', color:'#16a34a', label:'✓ Pass' },
     fail:        { bg:'#fee2e2', color:'#dc2626', label:'✗ Fail' },
-    conditional: { bg:'#fef3c7', color:'#d97706', label:'⚠ Conditional' },
+    conditional: { bg:'#ede9fe', color:'#6d28d9', label:'⚠ Conditional' },
     pending:     { bg:'#f3f4f6', color:'#6b7280', label:'Pending' },
   };
   const s = map[status] || map.pending;
@@ -22,8 +22,8 @@ function statusBadge(status) {
 function sevBadge(sev) {
   const map = {
     critical: ['#fee2e2','#dc2626'],
-    major:    ['#ffedd5','#c2410c'],
-    minor:    ['#fef3c7','#d97706'],
+    major:    ['#ede9fe','#5b21b6'],
+    minor:    ['#ede9fe','#6d28d9'],
   };
   const [bg, color] = map[sev] || ['#f3f4f6','#6b7280'];
   return <span style={{ padding:'2px 8px', borderRadius:10, fontSize:11, fontWeight:700, background:bg, color }}>{sev}</span>;
@@ -116,7 +116,7 @@ function ChecklistsTab() {
     </div>
   );
 
-  const typeColor = { inward:'#dbeafe|#2563eb', 'in-process':'#fef3c7|#d97706', final:'#d1fae5|#16a34a', fat:'#ede9fe|#6B3FDB', periodic:'#f3f4f6|#6b7280' };
+  const typeColor = { inward:'#dbeafe|#2563eb', 'in-process':'#ede9fe|#6d28d9', final:'#d1fae5|#16a34a', fat:'#ede9fe|#6B3FDB', periodic:'#f3f4f6|#6b7280' };
 
   return (
     <div>
@@ -381,7 +381,7 @@ function NCRTab() {
 
   const columns = [
     { key:'open',         label:'Open',         color:'#dc2626', bg:'#fee2e2' },
-    { key:'under-review', label:'Under Review',  color:'#d97706', bg:'#fef3c7' },
+    { key:'under-review', label:'Under Review',  color:'#6d28d9', bg:'#ede9fe' },
     { key:'resolved',     label:'Resolved',      color:'#2563eb', bg:'#dbeafe' },
     { key:'closed',       label:'Closed',        color:'#16a34a', bg:'#d1fae5' },
   ];
@@ -552,10 +552,10 @@ function CAPATab() {
   };
 
   const Stars = ({ rating }) => (
-    <span>{[1,2,3,4,5].map(i => <span key={i} style={{ color: i<=(rating||0)?'#f59e0b':'#d1d5db', fontSize:14 }}>★</span>)}</span>
+    <span>{[1,2,3,4,5].map(i => <span key={i} style={{ color: i<=(rating||0)?'#7c5cf0':'#d1d5db', fontSize:14 }}>★</span>)}</span>
   );
 
-  const statusColors = { open:'#fef3c7|#d97706', 'in-progress':'#dbeafe|#2563eb', completed:'#d1fae5|#16a34a', verified:'#ede9fe|#6B3FDB' };
+  const statusColors = { open:'#ede9fe|#6d28d9', 'in-progress':'#dbeafe|#2563eb', completed:'#d1fae5|#16a34a', verified:'#ede9fe|#6B3FDB' };
 
   return (
     <div>
@@ -687,11 +687,16 @@ export default function QualityManagement() {
   const [tab, setTab] = useState('Inspection Checklists');
 
   return (
-    <PageLayout>
-      <PageHeader
-        description="Inspection checklists, NCR tracking, and corrective action management"
-        filters={
-          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={ShieldCheck}
+          eyebrow="Inventory"
+          title="Quality Management"
+          subtitle="Inspection checklists, NCR tracking, and corrective action management"
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
             {TABS.map(t => (
               <button
                 key={t}
@@ -702,13 +707,15 @@ export default function QualityManagement() {
                 {t}
               </button>
             ))}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
       {tab==='Inspection Checklists' && <ChecklistsTab />}
       {tab==='Inspection Reports'    && <ReportsTab />}
       {tab==='NCR Board'             && <NCRTab />}
       {tab==='CAPA'                  && <CAPATab />}
-    </PageLayout>
+    </PageShell>
   );
 }

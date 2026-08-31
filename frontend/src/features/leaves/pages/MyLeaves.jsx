@@ -3,8 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
-import { Calendar, Clock, CheckCircle, XCircle, AlertCircle, RefreshCw } from 'lucide-react';
+import {
+  Calendar, Clock, CheckCircle, XCircle, AlertCircle, RefreshCw,
+  CalendarDays,
+} from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 
@@ -22,7 +26,7 @@ function ApprovalPipeline({ leave }) {
   }
   if (mgr === 'pending') return (
     <div style={{ display:'flex', gap:4, alignItems:'center', flexWrap:'wrap' }}>
-      <Chip bg="#fed7aa" color="#9a3412">L1 Pending</Chip>
+      <Chip bg="#ddd6fe" color="#4c1d95">L1 Pending</Chip>
       <span style={{ color:'#d1d5db', fontSize:11 }}>→ L2 → HR</span>
     </div>
   );
@@ -43,7 +47,7 @@ function ApprovalPipeline({ leave }) {
       <Chip bg="#dbeafe" color="#1d4ed8">HR Pending</Chip>
     </div>
   );
-  return <Chip bg="#fed7aa" color="#9a3412">Pending Review</Chip>;
+  return <Chip bg="#ddd6fe" color="#4c1d95">Pending Review</Chip>;
 }
 
 function Chip({ bg, color, children }) {
@@ -57,7 +61,7 @@ function Chip({ bg, color, children }) {
 // Mobile card view for a single leave
 function LeaveCard({ leave, onCancel, cancelling }) {
   const canCancelThis = ['pending','approved'].includes(leave.status) && new Date(leave.start_date) >= new Date(new Date().toDateString());
-  const typeColor = { 'Sick Leave':'#ef4444', 'Casual Leave':'#f59e0b', 'Earned Leave':'#10b981', 'Annual Leave':'#10b981', 'Maternity Leave':'#ec4899', 'Paternity Leave':'#6366f1', 'Compensatory Leave':'#8b5cf6', 'Loss of Pay':'#9ca3af' };
+  const typeColor = { 'Sick Leave':'#ef4444', 'Casual Leave':'#7c5cf0', 'Earned Leave':'#10b981', 'Annual Leave':'#10b981', 'Maternity Leave':'#ec4899', 'Paternity Leave':'#6366f1', 'Compensatory Leave':'#8b5cf6', 'Loss of Pay':'#9ca3af' };
   const tc = typeColor[leave.leave_name||leave.leave_type] || '#6366f1';
 
   return (
@@ -161,7 +165,22 @@ export default function MyLeaves({ setPage }) {
   const stats = leaves.reduce((acc, l) => { acc[l.status] = (acc[l.status]||0)+1; return acc; }, {});
 
   return (
-    <div style={{ padding:'20px 16px', maxWidth:900, margin:'0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarDays}
+        eyebrow="Leave"
+        title="My Leave Applications"
+        subtitle="Your complete leave history and status"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={fetchMyLeaves}>
+            <RefreshCw size={13}/>
+          </button>
+          <button className="plh-cta" onClick={() => setPage ? setPage('ApplyLeave') : navigate('/leaves/apply')}>
+            + Apply Leave
+          </button>
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingHandleCancel}
         title="Cancel Leave"
@@ -172,25 +191,11 @@ export default function MyLeaves({ setPage }) {
         onCancel={() => setPendingHandleCancel(null)}
       />
       {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:20, flexWrap:'wrap', gap:10 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>My Leave Applications</h1>
-          <p style={{ fontSize:13, color:'#6b7280', margin:'4px 0 0' }}>Your complete leave history and status</p>
-        </div>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          <button onClick={fetchMyLeaves} style={{ display:'flex',alignItems:'center',gap:5,padding:'7px 12px',border:'1px solid #e5e7eb',borderRadius:8,background:'#fff',fontSize:13,cursor:'pointer' }}>
-            <RefreshCw size={13}/>
-          </button>
-          <button onClick={() => setPage ? setPage('ApplyLeave') : navigate('/leaves/apply')}
-            style={{ padding:'8px 18px',background:'#6366f1',color:'#fff',border:'none',borderRadius:8,fontWeight:600,fontSize:13,cursor:'pointer' }}>
-            + Apply Leave
-          </button>
-        </div>
-      </div>
+
 
       {/* Summary pills */}
       <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap' }}>
-        {[['','All',leaves.length,'#6b7280'],['pending','Pending',stats.pending||0,'#f59e0b'],['approved','Approved',stats.approved||0,'#10b981'],['rejected','Rejected',stats.rejected||0,'#ef4444'],['cancelled','Cancelled',stats.cancelled||0,'#9ca3af']].map(([v,l,cnt,color]) => (
+        {[['','All',leaves.length,'#6b7280'],['pending','Pending',stats.pending||0,'#7c5cf0'],['approved','Approved',stats.approved||0,'#10b981'],['rejected','Rejected',stats.rejected||0,'#ef4444'],['cancelled','Cancelled',stats.cancelled||0,'#9ca3af']].map(([v,l,cnt,color]) => (
           <button key={v} onClick={() => setFStatus(v)}
             style={{ padding:'6px 14px', borderRadius:20, border:`1.5px solid ${fStatus===v?color:'#e5e7eb'}`, background:fStatus===v?color+'18':'#fff', color:fStatus===v?color:'#6b7280', fontSize:12, fontWeight:600, cursor:'pointer' }}>
             {l} <strong>{cnt}</strong>
@@ -201,7 +206,7 @@ export default function MyLeaves({ setPage }) {
       {/* Approval chain explainer */}
       <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16, padding:'8px 14px', background:'#f0f9ff', borderRadius:8, border:'1px solid #bae6fd', fontSize:12, flexWrap:'wrap' }}>
         <strong style={{ color:'#0369a1' }}>Approval Flow:</strong>
-        <Chip bg="#fef3c7" color="#92400e">L1 Manager</Chip>
+        <Chip bg="#ede9fe" color="#5b21b6">L1 Manager</Chip>
         <span style={{ color:'#9ca3af' }}>→</span>
         <Chip bg="#dbeafe" color="#1d4ed8">L2 Dept Head</Chip>
         <span style={{ color:'#9ca3af' }}>→</span>
@@ -233,6 +238,6 @@ export default function MyLeaves({ setPage }) {
           ))}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

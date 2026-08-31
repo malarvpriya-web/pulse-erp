@@ -5,7 +5,7 @@
  * Layered on top of, not instead of, the existing canonical classes:
  *   - Layout.css's .pulse-page / .pulse-card / .pulse-btn-* / .pulse-field /
  *     .pulse-empty / .pulse-skeleton (real adoption, CLAUDE.md-documented)
- *   - global-overrides.css's --color-*/--radius-card tokens
+ *   - global-overrides.css's --color-* and --radius-card tokens
  * Visually mirrors dashboard/dashkit.css's .dk-kpi/.dk-kpis spec (so
  * dashboards can adopt this later as a no-op) without importing it, since
  * dashboards are a separate rollout.
@@ -122,6 +122,105 @@
 }
 .pl-toolbar-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
+/* ── dashboard filter bar (DashboardFilterBar.jsx) ───────────────────
+   Standalone card so dashboards that don't use <PageHeader> can drop it in
+   directly above their KPI row. */
+/* Compact single-row bar (2026-08-20). The label used to sit ABOVE its input,
+   which made every field two lines tall and turned the bar into a ~64px block
+   — on a dashboard that is 64px stolen from the content. Labels are now inline
+   chips to the left of their control, so the whole bar is one ~34px row. */
+.pl-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  background: #fff;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+}
+.pl-filterbar-ico { color: var(--color-text-muted, #9ca3af); margin: 0 2px 0 0; flex-shrink: 0; }
+.pl-filterbar-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 7px;
+  overflow: hidden;
+  background: #fff;
+}
+.pl-filterbar-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #6d28d9;
+  background: #f5f3ff;
+  padding: 0 8px;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  border-right: 1px solid #ede9fe;
+  white-space: nowrap;
+}
+.pl-filterbar-input {
+  padding: 5px 8px;
+  min-width: 108px;
+  border: none;
+  border-radius: 0;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--color-text, #111827);
+  background: #fff;
+  outline: none;
+  cursor: pointer;
+  transition: box-shadow .15s;
+}
+.pl-filterbar-field:focus-within {
+  border-color: var(--color-primary, #6B3FDB);
+  box-shadow: 0 0 0 3px rgba(107, 63, 219, .1);
+}
+/* The input itself draws no ring — `.pl-filterbar-field:focus-within` above
+   rings the whole label+input capsule. A rule here too nested a second ring
+   inside the first. */
+.pl-filterbar-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--color-text-muted, #6b7280);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.pl-filterbar-reset:hover {
+  border-color: var(--color-primary, #6B3FDB);
+  color: var(--color-primary, #6B3FDB);
+}
+.pl-filterbar-badge {
+  background: var(--color-primary, #6B3FDB);
+  color: #fff;
+  border-radius: 10px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 17px;
+}
+.pl-filterbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+@media (max-width: 640px) {
+  .pl-filterbar-field, .pl-filterbar-input { width: 100%; }
+  .pl-filterbar-actions { margin-left: 0; }
+}
+
 /* ── KPI grid (mirrors dk-kpis/dk-kpi) ──────────────────────────────── */
 .pl-kpis {
   display: grid;
@@ -155,7 +254,7 @@ button.pl-kpi { border: 1px solid var(--color-border-tertiary, #f0f0f4); }
   background: var(--color-info-bg, #dbeafe); color: var(--color-info, #1d4ed8);
 }
 .pl-kpi-ico.pl-tone-success { background: var(--color-success-bg, #dcfce7); color: var(--color-success, #15803d); }
-.pl-kpi-ico.pl-tone-warning { background: var(--color-warning-bg, #fef3c7); color: var(--color-warning, #d97706); }
+.pl-kpi-ico.pl-tone-warning { background: var(--color-warning-bg, #ede9fe); color: var(--color-warning, #6d28d9); }
 .pl-kpi-ico.pl-tone-danger  { background: var(--color-danger-bg, #fee2e2); color: var(--color-danger, #dc2626); }
 .pl-kpi-ico.pl-tone-info    { background: var(--color-info-bg, #dbeafe); color: var(--color-info, #1d4ed8); }
 .pl-kpi-ico.pl-tone-default { background: #f4f1fe; color: var(--color-primary, #6B3FDB); }

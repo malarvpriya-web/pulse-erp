@@ -270,7 +270,7 @@ export default function FaceClockModal({ employeeId, action = 'in', onVerified, 
 
   const scoreReady = stillMode ? true : liveScore >= MIN_SCORE;
   const canAct     = stillMode ? true : (scoreReady && live);
-  const ringColor  = phase === 'success' ? '#16a34a' : canAct ? '#16a34a' : scoreReady ? '#3b82f6' : liveScore > 0.3 ? '#f59e0b' : '#9ca3af';
+  const ringColor  = phase === 'success' ? '#16a34a' : canAct ? '#16a34a' : scoreReady ? '#3b82f6' : liveScore > 0.3 ? '#7c5cf0' : '#9ca3af';
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,0.72)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>

@@ -16,6 +16,7 @@ import { useAuth } from '@/context/AuthContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { VizCard, HBarList, Donut, DonutLegend } from '@/components/charts/PulseViz';
 import logoSrc from '@/assets/logo.png';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 import {
   QrCode, FileUp, Link2, Type as TypeIcon, Contact, Download, Copy,
   Trash2, Power, RefreshCw, Eye, ScanLine, Users, BarChart3,
@@ -42,7 +43,7 @@ const TYPE_BADGE = {
   file:  { bg: '#f5f3ff', color: '#6B3FDB', label: 'File' },
   url:   { bg: '#dbeafe', color: '#1d4ed8', label: 'Link' },
   text:  { bg: '#f0fdf4', color: '#15803d', label: 'Text' },
-  vcard: { bg: '#fff7ed', color: '#c2410c', label: 'Card' },
+  vcard: { bg: '#fff7ed', color: '#5b21b6', label: 'Card' },
 };
 
 /* ── QR canvas rendering (with optional centered logo) ─────────────────── */
@@ -322,7 +323,7 @@ export default function QRCodeStudio() {
                   <button title="Download QR PNG" onClick={() => downloadQrPng(r, r.title)} style={iconBtn}><Download size={15} /></button>
                   <button title="Copy share link" onClick={() => copyLink(r.share_token)} style={iconBtn}><Copy size={15} /></button>
                   <button title="Scan log" onClick={() => openScans(r)} style={iconBtn}><Eye size={15} /></button>
-                  <button title={r.is_active ? 'Deactivate' : 'Reactivate'} onClick={() => toggleActive(r, refresh)} style={{ ...iconBtn, color: r.is_active ? '#b45309' : '#15803d' }}><Power size={15} /></button>
+                  <button title={r.is_active ? 'Deactivate' : 'Reactivate'} onClick={() => toggleActive(r, refresh)} style={{ ...iconBtn, color: r.is_active ? '#6d28d9' : '#15803d' }}><Power size={15} /></button>
                   <button title="Delete" onClick={() => setConfirmDel(r)} style={{ ...iconBtn, color: '#dc2626' }}><Trash2 size={15} /></button>
                 </td>
               </tr>
@@ -334,25 +335,21 @@ export default function QRCodeStudio() {
   );
 
   return (
-    <div className="pulse-page">
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
-        <div>
-          <h2 style={{ fontWeight: 800, fontSize: 22, color: '#1f2937', margin: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <QrCode size={22} style={{ color: '#6B3FDB' }} /> QR Code Studio
-          </h2>
-          <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4, maxWidth: 640 }}>
-            Turn files, links, text and visiting cards into shareable QR codes. Send only the QR —
-            every scan is tracked. (Attendance clock-in QRs live under Attendance → QR Attendance.)
-          </p>
-        </div>
-        {(tab === 'mine' || tab === 'all') && (
-          <button className="pulse-btn-secondary" onClick={() => (tab === 'all' ? loadAll() : loadMine())}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+    <PageShell dock={
+      <PageHero
+        icon={QrCode}
+        eyebrow="tools"
+        title="QR Code Studio"
+        subtitle="Turn files, links, text and visiting cards into shareable QR codes. Send only the QR — every scan is tracked. (Attendance clock-in QRs live under Attendance → QR Attendance.)"
+        actions={(tab === 'mine' || tab === 'all') && (
+          <button className="plh-cta" onClick={() => (tab === 'all' ? loadAll() : loadMine())}>
             <RefreshCw size={14} /> Refresh
           </button>
         )}
-      </div>
+      />
+    }>
+      {/* Header */}
+
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 22, borderBottom: `2px solid ${BORDER}`, flexWrap: 'wrap' }}>
@@ -633,7 +630,7 @@ export default function QRCodeStudio() {
         onConfirm={doDelete}
         onCancel={() => setConfirmDel(null)}
       />
-    </div>
+    </PageShell>
   );
 }
 

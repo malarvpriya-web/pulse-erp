@@ -1,11 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Plus, Play, X, Edit2, RefreshCw, ChevronDown, ChevronUp, CheckCircle, Clock, AlertCircle } from 'lucide-react';
+import {
+  Plus, Play, X, Edit2, RefreshCw, ChevronDown, ChevronUp, CheckCircle,
+  Clock, AlertCircle, Target,
+} from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_COLOR = {
-  draft: { bg: '#f59e0b18', text: '#f59e0b' },
+  draft: { bg: '#7c5cf018', text: '#7c5cf0' },
   active: { bg: '#10b98118', text: '#10b981' },
   calibration: { bg: '#3b82f618', text: '#3b82f6' },
   closed: { bg: '#6b728018', text: '#6b7280' },
@@ -103,7 +107,18 @@ export default function ReviewCycleManager() {
   const inp = { background: 'var(--color-background)', border: '1px solid var(--color-border-tertiary)', borderRadius: 8, padding: '8px 12px', fontSize: 13, width: '100%', color: 'var(--color-text-primary)' };
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Performance"
+        title="Review Cycle Manager"
+        actions={isHR && (
+          <button className="plh-cta" onClick={openNew}>
+            <Plus size={15} /> New Cycle
+          </button>
+        )}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingClose}
@@ -114,18 +129,6 @@ export default function ReviewCycleManager() {
         onConfirm={close}
         onCancel={() => setPendingClose(null)}
       />
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: 'var(--color-text-primary)' }}>Review Cycle Manager</h1>
-        {isHR && (
-          <button onClick={openNew} style={{
-            display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px',
-            background: 'var(--color-primary)', color: '#fff', border: 'none',
-            borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600,
-          }}>
-            <Plus size={15} /> New Cycle
-          </button>
-        )}
-      </div>
 
       {error && (
         <div style={{ background: '#ef444418', color: '#ef4444', padding: '10px 14px', borderRadius: 8, marginBottom: 16, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -304,6 +307,6 @@ export default function ReviewCycleManager() {
           ))}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -22,7 +22,7 @@ router.get('/', async (req, res) => {
     SELECT pm.*,
       TRIM(e.first_name || ' ' || COALESCE(e.last_name,'')) AS employee_name,
       e.designation, e.department, e.photo_url,
-      p.name AS project_name, p.status AS project_status
+      p.project_name AS project_name, p.status AS project_status
     FROM project_members pm
     JOIN employees e ON e.id = pm.employee_id
     JOIN projects p  ON p.id = pm.project_id
@@ -31,7 +31,7 @@ router.get('/', async (req, res) => {
   if (cid != null)        { params.push(cid);              q += ` AND pm.company_id = $${i++}`; }
   if (project_id)         { params.push(parseInt(project_id,10)); q += ` AND pm.project_id = $${i++}`; }
   if (employee_id)        { params.push(parseInt(employee_id,10)); q += ` AND pm.employee_id = $${i++}`; }
-  q += ` ORDER BY p.name, e.first_name`;
+  q += ` ORDER BY p.project_name, e.first_name`;
   try {
     const { rows } = await pool.query(q, params);
     res.json(rows);

@@ -8,20 +8,20 @@ const fmtINR = n => {
 
 const C = {
   primary: '#6B3FDB', light: '#f5f3ff', border: '#e9e4ff',
-  green: '#16a34a', red: '#dc2626', amber: '#d97706', blue: '#2563eb',
+  green: '#16a34a', red: '#dc2626', amber: '#6d28d9', blue: '#2563eb',
   card: { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12 },
 };
 
 const RISK_CFG = {
   Low:      { color: '#16a34a', bg: '#dcfce7', icon: '✅', score: 1 },
-  Medium:   { color: '#d97706', bg: '#fef3c7', icon: '⚠️', score: 2 },
+  Medium:   { color: '#6d28d9', bg: '#ede9fe', icon: '⚠️', score: 2 },
   High:     { color: '#dc2626', bg: '#fee2e2', icon: '🔴', score: 3 },
   Critical: { color: '#7f1d1d', bg: '#fecaca', icon: '🚨', score: 4 },
 };
 
 const OVERALL_CFG = {
   Low:      { color: '#16a34a', bg: '#dcfce7', label: 'Low Risk',      desc: 'Vendor is performing well across all dimensions.' },
-  Medium:   { color: '#d97706', bg: '#fef3c7', label: 'Medium Risk',   desc: 'Some areas need attention. Monitor closely.' },
+  Medium:   { color: '#6d28d9', bg: '#ede9fe', label: 'Medium Risk',   desc: 'Some areas need attention. Monitor closely.' },
   High:     { color: '#dc2626', bg: '#fee2e2', label: 'High Risk',     desc: 'Significant issues detected. Action required.' },
   Critical: { color: '#7f1d1d', bg: '#fecaca', label: 'Critical Risk', desc: 'Immediate escalation required. Consider alternate vendor.' },
 };
@@ -37,7 +37,7 @@ function RiskBadge({ level }) {
 
 function RiskMeter({ level }) {
   const score = RISK_CFG[level]?.score || 1;
-  const colors = ['#16a34a', '#d97706', '#dc2626', '#7f1d1d'];
+  const colors = ['#16a34a', '#6d28d9', '#dc2626', '#7f1d1d'];
   return (
     <div style={{ display: 'flex', gap: 3 }}>
       {[1, 2, 3, 4].map(i => (

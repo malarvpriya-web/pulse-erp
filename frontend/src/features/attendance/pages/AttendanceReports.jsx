@@ -1,10 +1,11 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
-  FileText, Download, BarChart2, Users, Clock, AlertTriangle,
-  Zap, Calendar, RefreshCw, Printer, CheckCircle, AlertCircle, TrendingUp,
-  GitCompare, LogOut,
+  FileText, Download, BarChart2, Users, Clock, AlertTriangle, Zap,
+  Calendar, RefreshCw, Printer, CheckCircle, AlertCircle, TrendingUp,
+  GitCompare, LogOut, BarChart3,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 const P    = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -15,23 +16,20 @@ const REPORT_TYPES = [
   // Monthly Summary lives in the dedicated Monthly Report page (Attendance → Monthly Report)
   // which has Sync to Payroll, LOP computation, and richer per-employee columns.
   { id: 'absenteeism',          label: 'Absenteeism Report',        icon: AlertTriangle,  color: '#ef4444', desc: 'Chronic absenteeism trends — last 12 months' },
-  { id: 'late_arrivals',        label: 'Late Arrivals Report',       icon: Clock,          color: '#f59e0b', desc: 'Late marks, grace violations, repeat offenders' },
+  { id: 'late_arrivals',        label: 'Late Arrivals Report',       icon: Clock,          color: '#7c5cf0', desc: 'Late marks, grace violations, repeat offenders' },
   { id: 'overtime',             label: 'Overtime Report',            icon: Zap,            color: '#8b5cf6', desc: 'OT hours by department and approval status' },
   { id: 'department_wise',      label: 'Department-Wise',            icon: BarChart2,      color: '#10b981', desc: 'Attendance percentage by department' },
   { id: 'shift_efficiency',     label: 'Shift Efficiency',           icon: Users,          color: '#0369a1', desc: 'Shift fill rate, utilization, and average hours' },
   { id: 'leave_reconciliation', label: 'Leave Reconciliation',       icon: GitCompare,     color: '#dc2626', desc: 'Absences without leave approval + approved leave ignored' },
-  { id: 'early_exit',           label: 'Early Exit Report',          icon: LogOut,         color: '#ea580c', desc: 'Employees who left before shift end time' },
+  { id: 'early_exit',           label: 'Early Exit Report',          icon: LogOut,         color: '#6d28d9', desc: 'Employees who left before shift end time' },
 ];
 
 // ── Shared micro-components ───────────────────────────────────────────────────
 
 function KpiCard({ label, value, color }) {
-  return (
-    <div style={{ background: `${color}0f`, border: `1px solid ${color}22`, borderRadius: 10, padding: '12px 14px', textAlign: 'center' }}>
-      <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
-      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{label}</div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} color={color} />;
 }
 
 function DeltaBadge({ cur, prev, lowerIsBetter = false }) {
@@ -373,12 +371,12 @@ export default function AttendanceReports() {
           <KpiCard label="Employees"       value={records.length}                       color={P}        />
           <KpiCard label="Present (total)" value={totalPresent}                         color="#10b981"  />
           <KpiCard label="Absent (total)"  value={totalAbsent}                          color="#ef4444"  />
-          <KpiCard label="Late (total)"    value={totalLate}                            color="#f59e0b"  />
+          <KpiCard label="Late (total)"    value={totalLate}                            color="#7c5cf0"  />
           <KpiCard label="OT Hours"        value={`${totalOT.toFixed(1)}h`}            color="#8b5cf6"  />
         </div>
 
         {/* Payroll sync status */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 14px', borderRadius: 8, marginBottom: 16, fontSize: 13, background: synced === records.length ? '#dcfce7' : '#fef3c7', border: `1px solid ${synced === records.length ? '#86efac' : '#fde68a'}`, color: synced === records.length ? '#166534' : '#92400e' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 14px', borderRadius: 8, marginBottom: 16, fontSize: 13, background: synced === records.length ? '#dcfce7' : '#ede9fe', border: `1px solid ${synced === records.length ? '#86efac' : '#ddd6fe'}`, color: synced === records.length ? '#166534' : '#5b21b6' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
             {synced === records.length ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
             {synced === records.length
@@ -405,7 +403,7 @@ export default function AttendanceReports() {
                 <div style={{ fontWeight: 700, fontSize: 11, color: '#374151', marginBottom: 5 }}>{p.label}</div>
                 <div style={{ display: 'flex', gap: 14, fontSize: 13 }}>
                   <span>Absent: <b style={{ color: '#ef4444' }}>{sum(p.recs, 'absent_days')}</b></span>
-                  <span>Late: <b style={{ color: '#f59e0b' }}>{sum(p.recs, 'late_arrivals')}</b></span>
+                  <span>Late: <b style={{ color: '#7c5cf0' }}>{sum(p.recs, 'late_arrivals')}</b></span>
                   <span>OT: <b style={{ color: '#8b5cf6' }}>{sum(p.recs, 'total_ot_hours').toFixed(1)}h</b></span>
                 </div>
               </div>
@@ -441,7 +439,7 @@ export default function AttendanceReports() {
                       {r.absent_days}
                       {cmp && <DeltaBadge cur={r.absent_days} prev={cmp.absent_days} lowerIsBetter />}
                     </td>
-                    <td style={{ padding: '8px 11px', color: '#f59e0b' }}>
+                    <td style={{ padding: '8px 11px', color: '#7c5cf0' }}>
                       {r.late_days}
                       {cmp && <DeltaBadge cur={r.late_days} prev={cmp.late_days} lowerIsBetter />}
                     </td>
@@ -467,7 +465,7 @@ export default function AttendanceReports() {
                 <td colSpan={2} style={{ padding: '8px 11px', fontWeight: 700, color: P, fontSize: 11 }}>TOTAL</td>
                 <td style={{ padding: '8px 11px', fontWeight: 700, color: '#10b981' }}>{totalPresent}</td>
                 <td style={{ padding: '8px 11px', fontWeight: 700, color: '#ef4444' }}>{totalAbsent}</td>
-                <td style={{ padding: '8px 11px', fontWeight: 700, color: '#f59e0b' }}>{sum(records, 'late_days').toFixed(0)}</td>
+                <td style={{ padding: '8px 11px', fontWeight: 700, color: '#7c5cf0' }}>{sum(records, 'late_days').toFixed(0)}</td>
                 <td style={{ padding: '8px 11px' }}>{sum(records, 'wfh_days').toFixed(0)}</td>
                 <td style={{ padding: '8px 11px' }}>{sum(records, 'half_days').toFixed(0)}</td>
                 <td style={{ padding: '8px 11px', fontWeight: 700, color: '#ef4444' }}>{totalLate}</td>
@@ -498,13 +496,13 @@ export default function AttendanceReports() {
 
     return (
       <div>
-        <div style={{ marginBottom: 8, padding: '7px 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 7, fontSize: 11, color: '#92400e' }}>
+        <div style={{ marginBottom: 8, padding: '7px 12px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 7, fontSize: 11, color: '#5b21b6' }}>
           This report always reflects the last 12 months — month/year filter does not apply here.
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
           <KpiCard label="Avg Rate (12 months)" value={`${avgRate}%`}                                            color="#ef4444" />
-          <KpiCard label="Peak Month"           value={peak ? `${MONTHS_S[parseInt(peak.month) - 1]} ${peak.year}` : '—'} color="#f59e0b" />
+          <KpiCard label="Peak Month"           value={peak ? `${MONTHS_S[parseInt(peak.month) - 1]} ${peak.year}` : '—'} color="#7c5cf0" />
           <KpiCard label="Recent Trend"         value={trendDir}                                                  color={trendColor} />
         </div>
 
@@ -519,14 +517,14 @@ export default function AttendanceReports() {
             {trends.map((r, i) => {
               const rate = parseFloat(r.absenteeism_rate || 0);
               const pct  = maxRate > 0 ? Math.min((rate / maxRate) * 100, 100) : 0;
-              const color = rate > 20 ? '#ef4444' : rate > 10 ? '#f59e0b' : '#10b981';
+              const color = rate > 20 ? '#ef4444' : rate > 10 ? '#7c5cf0' : '#10b981';
               return (
                 <tr key={i} style={{ borderBottom: '1px solid #f9fafb' }}>
                   <td style={{ padding: '10px 11px', fontWeight: 600, color: '#111827' }}>{MONTHS_S[parseInt(r.month) - 1]} {r.year}</td>
                   <td style={{ padding: '10px 11px' }}>{r.total_records}</td>
                   <td style={{ padding: '10px 11px', color: '#ef4444', fontWeight: 600 }}>{r.absent_count}</td>
                   <td style={{ padding: '10px 11px', color: '#10b981' }}>{r.present_count}</td>
-                  <td style={{ padding: '10px 11px', color: '#f59e0b' }}>{r.late_count}</td>
+                  <td style={{ padding: '10px 11px', color: '#7c5cf0' }}>{r.late_count}</td>
                   <td style={{ padding: '10px 11px' }}>{r.unique_employees}</td>
                   <td style={{ padding: '10px 11px', minWidth: 160 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -564,19 +562,19 @@ export default function AttendanceReports() {
     return (
       <div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 14 }}>
-          <KpiCard label="Employees Late"    value={lateOnly.length}                                     color="#f59e0b" />
+          <KpiCard label="Employees Late"    value={lateOnly.length}                                     color="#7c5cf0" />
           <KpiCard label="Total Late Count"  value={totalCount}                                          color="#ef4444" />
           <KpiCard label="Total Late Time"   value={`${Math.floor(totalMins / 60)}h ${totalMins % 60}m`} color="#8b5cf6" />
           <KpiCard label="Most Affected Dept" value={worstDept}                                          color="#0369a1" />
         </div>
 
-        <div style={{ marginBottom: 12, padding: '7px 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 7, fontSize: 11, color: '#92400e' }}>
+        <div style={{ marginBottom: 12, padding: '7px 12px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 7, fontSize: 11, color: '#5b21b6' }}>
           Monthly aggregates per employee. For per-day records with actual check-in times and severity — use <strong>Attendance → Late Arrivals</strong>.
         </div>
 
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
-            <tr style={{ background: '#fffbeb', borderBottom: '1px solid #f0f0f4' }}>
+            <tr style={{ background: '#f5f3ff', borderBottom: '1px solid #f0f0f4' }}>
               <TH>#</TH><TH>Employee</TH><TH>Department</TH><TH>Present</TH>
               <TH>Absent</TH><TH>Late Days</TH><TH>Late Count</TH><TH>Total Late Time</TH>
               <TH>Avg Hours</TH><TH>Risk</TH>
@@ -587,7 +585,7 @@ export default function AttendanceReports() {
               const count = parseInt(r.late_arrivals || 0);
               const mins  = parseInt(r.total_late_minutes || 0);
               const risk  = count >= 10 ? { label: 'High',   bg: '#fee2e2', color: '#991b1b' }
-                          : count >= 5  ? { label: 'Medium', bg: '#fef3c7', color: '#92400e' }
+                          : count >= 5  ? { label: 'Medium', bg: '#ede9fe', color: '#5b21b6' }
                           :               { label: 'Low',    bg: '#dcfce7', color: '#166534' };
               return (
                 <tr key={i} style={{ borderBottom: '1px solid #f9fafb' }}>
@@ -596,7 +594,7 @@ export default function AttendanceReports() {
                   <td style={{ padding: '8px 11px', color: '#6b7280' }}>{r.department}</td>
                   <td style={{ padding: '8px 11px', color: '#10b981' }}>{r.present_days}</td>
                   <td style={{ padding: '8px 11px', color: '#ef4444' }}>{r.absent_days}</td>
-                  <td style={{ padding: '8px 11px', color: '#f59e0b', fontWeight: 700 }}>{r.late_days}</td>
+                  <td style={{ padding: '8px 11px', color: '#7c5cf0', fontWeight: 700 }}>{r.late_days}</td>
                   <td style={{ padding: '8px 11px', color: count >= 5 ? '#ef4444' : '#374151', fontWeight: count >= 5 ? 700 : 400 }}>{count}×</td>
                   <td style={{ padding: '8px 11px' }}>{Math.floor(mins / 60)}h {mins % 60}m</td>
                   <td style={{ padding: '8px 11px' }}>{parseFloat(r.avg_hours || 0).toFixed(1)}h</td>
@@ -630,7 +628,7 @@ export default function AttendanceReports() {
           <KpiCard label="Total OT Hours"     value={`${totalOT.toFixed(1)}h`} color={P}        />
           <KpiCard label="Employees with OT"  value={totalEmpOT}               color="#10b981"  />
           <KpiCard label="Approved"           value={totalAppr}                color="#0369a1"  />
-          <KpiCard label="Pending Approval"   value={totalPend}                color="#f59e0b"  />
+          <KpiCard label="Pending Approval"   value={totalPend}                color="#7c5cf0"  />
         </div>
 
         {cmpData && cmpDepts.length > 0 && (
@@ -664,7 +662,7 @@ export default function AttendanceReports() {
                     {cmp && <DeltaBadge cur={parseFloat(d.total_ot_hours || 0).toFixed(1)} prev={parseFloat(cmp.total_ot_hours || 0).toFixed(1)} lowerIsBetter />}
                   </td>
                   <td style={{ padding: '10px 11px', color: '#10b981', fontWeight: 600 }}>{d.approved_ot}</td>
-                  <td style={{ padding: '10px 11px', color: parseInt(d.pending_ot) > 0 ? '#f59e0b' : '#9ca3af', fontWeight: parseInt(d.pending_ot) > 0 ? 700 : 400 }}>{d.pending_ot}</td>
+                  <td style={{ padding: '10px 11px', color: parseInt(d.pending_ot) > 0 ? '#7c5cf0' : '#9ca3af', fontWeight: parseInt(d.pending_ot) > 0 ? 700 : 400 }}>{d.pending_ot}</td>
                   <td style={{ padding: '10px 11px', color: parseInt(d.rejected_ot) > 0 ? '#ef4444' : '#9ca3af' }}>{d.rejected_ot}</td>
                   <td style={{ padding: '10px 11px' }}>{parseFloat(d.avg_multiplier || 1.5).toFixed(2)}×</td>
                 </tr>
@@ -677,7 +675,7 @@ export default function AttendanceReports() {
               <td style={{ padding: '8px 11px', fontWeight: 700 }}>{totalEmpOT}</td>
               <td style={{ padding: '8px 11px', fontWeight: 700, color: P }}>{totalOT.toFixed(1)}h</td>
               <td style={{ padding: '8px 11px', fontWeight: 700, color: '#10b981' }}>{totalAppr}</td>
-              <td style={{ padding: '8px 11px', fontWeight: 700, color: '#f59e0b' }}>{totalPend}</td>
+              <td style={{ padding: '8px 11px', fontWeight: 700, color: '#7c5cf0' }}>{totalPend}</td>
               <td style={{ padding: '8px 11px', fontWeight: 700, color: '#ef4444' }}>{totalRej}</td>
               <td />
             </tr>
@@ -700,7 +698,7 @@ export default function AttendanceReports() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
           {depts.slice(0, 3).map((d, i) => {
             const rate  = parseFloat(d.absenteeism_rate || 0);
-            const color = rate > 20 ? '#ef4444' : rate > 10 ? '#f59e0b' : '#10b981';
+            const color = rate > 20 ? '#ef4444' : rate > 10 ? '#7c5cf0' : '#10b981';
             return (
               <div key={i} style={{ border: `1px solid ${color}25`, borderRadius: 10, padding: 14, background: `${color}08` }}>
                 <div style={{ fontWeight: 700, fontSize: 12, color: '#374151' }}>{d.department || 'Unknown'}</div>
@@ -723,7 +721,7 @@ export default function AttendanceReports() {
             {depts.map((d, i) => {
               const rate  = parseFloat(d.absenteeism_rate || 0);
               const pct   = maxRate > 0 ? (rate / maxRate) * 100 : 0;
-              const color = rate > 20 ? '#ef4444' : rate > 10 ? '#f59e0b' : '#10b981';
+              const color = rate > 20 ? '#ef4444' : rate > 10 ? '#7c5cf0' : '#10b981';
               const cmp   = cmpDepts.find(c => c.department === d.department);
               return (
                 <tr key={i} style={{ borderBottom: '1px solid #f9fafb' }}>
@@ -734,7 +732,7 @@ export default function AttendanceReports() {
                     {d.absent_days}
                     {cmp && <DeltaBadge cur={d.absent_days} prev={cmp.absent_days} lowerIsBetter />}
                   </td>
-                  <td style={{ padding: '10px 11px', color: '#f59e0b' }}>{d.late_days}</td>
+                  <td style={{ padding: '10px 11px', color: '#7c5cf0' }}>{d.late_days}</td>
                   <td style={{ padding: '10px 11px' }}>{parseFloat(d.total_hours || 0).toFixed(0)}h</td>
                   <td style={{ padding: '10px 11px', minWidth: 160 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -771,7 +769,7 @@ export default function AttendanceReports() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
           <KpiCard label="Total Shifts"        value={shifts.length}  color={P}        />
           <KpiCard label="Assigned Employees"  value={totalAssigned}  color="#10b981"  />
-          <KpiCard label="Avg Fill Rate"        value={`${avgRate}%`}  color={parseFloat(avgRate) >= 80 ? '#10b981' : parseFloat(avgRate) >= 60 ? '#f59e0b' : '#ef4444'} />
+          <KpiCard label="Avg Fill Rate"        value={`${avgRate}%`}  color={parseFloat(avgRate) >= 80 ? '#10b981' : parseFloat(avgRate) >= 60 ? '#7c5cf0' : '#ef4444'} />
         </div>
 
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -784,7 +782,7 @@ export default function AttendanceReports() {
           <tbody>
             {shifts.map((s, i) => {
               const rate  = parseFloat(s.attendance_rate || 0);
-              const color = rate >= 80 ? '#10b981' : rate >= 60 ? '#f59e0b' : '#ef4444';
+              const color = rate >= 80 ? '#10b981' : rate >= 60 ? '#7c5cf0' : '#ef4444';
               return (
                 <tr key={i} style={{ borderBottom: '1px solid #f9fafb' }}>
                   <td style={{ padding: '10px 11px', fontWeight: 600, color: '#111827' }}>{s.shift_name}</td>
@@ -793,7 +791,7 @@ export default function AttendanceReports() {
                   </td>
                   <td style={{ padding: '10px 11px' }}>{s.assigned_employees}</td>
                   <td style={{ padding: '10px 11px', color: '#10b981', fontWeight: 600 }}>{s.present_count}</td>
-                  <td style={{ padding: '10px 11px', color: parseInt(s.total_late_minutes) > 0 ? '#f59e0b' : '#9ca3af' }}>
+                  <td style={{ padding: '10px 11px', color: parseInt(s.total_late_minutes) > 0 ? '#7c5cf0' : '#9ca3af' }}>
                     {s.total_late_minutes || 0}m
                   </td>
                   <td style={{ padding: '10px 11px' }}>
@@ -834,7 +832,7 @@ export default function AttendanceReports() {
 
     const CONFLICT_META = {
       absent_no_leave:       { label: 'Absent — No Leave',        bg: '#fef2f2', color: '#dc2626' },
-      present_despite_leave: { label: 'Present — Leave Approved', bg: '#fffbeb', color: '#d97706' },
+      present_despite_leave: { label: 'Present — Leave Approved', bg: '#f5f3ff', color: '#6d28d9' },
     };
 
     return (
@@ -842,7 +840,7 @@ export default function AttendanceReports() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 16 }}>
           <KpiCard label="Total Conflicts"          value={data.total_conflicts}         color="#dc2626" />
           <KpiCard label="Absent Without Leave"     value={data.absent_no_leave}         color="#ef4444" />
-          <KpiCard label="Present Despite Leave"    value={data.present_despite_leave}   color="#f59e0b" />
+          <KpiCard label="Present Despite Leave"    value={data.present_despite_leave}   color="#7c5cf0" />
         </div>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -893,8 +891,8 @@ export default function AttendanceReports() {
     return (
       <div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 16 }}>
-          <KpiCard label="Total Incidents"      value={data.total_incidents}    color="#ea580c" />
-          <KpiCard label="Employees Affected"   value={data.employees_affected} color="#f59e0b" />
+          <KpiCard label="Total Incidents"      value={data.total_incidents}    color="#6d28d9" />
+          <KpiCard label="Employees Affected"   value={data.employees_affected} color="#7c5cf0" />
           <KpiCard label="Min Early Threshold"  value={`${data.min_early_minutes}m`} color="#6b7280" />
         </div>
         <div style={{ overflowX: 'auto' }}>
@@ -914,11 +912,11 @@ export default function AttendanceReports() {
                   </td>
                   <td style={{ padding: '9px 11px', color: '#6b7280', fontSize: 12 }}>{emp.department || '—'}</td>
                   <td style={{ padding: '9px 11px', textAlign: 'center' }}>
-                    <span style={{ background: emp.exit_count >= 5 ? '#fef2f2' : '#fffbeb', color: emp.exit_count >= 5 ? '#dc2626' : '#d97706', borderRadius: 8, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>
+                    <span style={{ background: emp.exit_count >= 5 ? '#fef2f2' : '#f5f3ff', color: emp.exit_count >= 5 ? '#dc2626' : '#6d28d9', borderRadius: 8, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>
                       {emp.exit_count}
                     </span>
                   </td>
-                  <td style={{ padding: '9px 11px', fontWeight: 600, color: '#ea580c', fontVariantNumeric: 'tabular-nums' }}>
+                  <td style={{ padding: '9px 11px', fontWeight: 600, color: '#6d28d9', fontVariantNumeric: 'tabular-nums' }}>
                     {emp.total_early_minutes}m
                   </td>
                   <td style={{ padding: '9px 11px', color: '#ef4444', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
@@ -926,7 +924,7 @@ export default function AttendanceReports() {
                   </td>
                   <td style={{ padding: '9px 11px', fontSize: 11, color: '#6b7280' }}>
                     {(emp.dates || []).slice(0, 3).map(d => (
-                      <span key={d.date} style={{ display: 'inline-block', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 6, padding: '1px 6px', marginRight: 4, marginBottom: 2, whiteSpace: 'nowrap' }}>
+                      <span key={d.date} style={{ display: 'inline-block', background: '#fff7ed', border: '1px solid #ddd6fe', borderRadius: 6, padding: '1px 6px', marginRight: 4, marginBottom: 2, whiteSpace: 'nowrap' }}>
                         {new Date(d.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
                         {' '}({d.early_by}m)
                       </span>
@@ -967,7 +965,27 @@ export default function AttendanceReports() {
   // ── JSX ──────────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }} id="report-print-root">
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Attendance"
+        title="Attendance Reports"
+        subtitle="Generate, compare, and export attendance reports"
+        actions={data && (
+          <div style={{ display: 'flex', gap: 8 }} className="no-print">
+            <button className="plh-cta" onClick={exportCSV}>
+              <Download size={13} /> Export CSV
+            </button>
+            <button className="plh-cta" onClick={exportToExcel}>
+              <Download size={13} /> Export Excel
+            </button>
+            <button className="plh-cta" onClick={exportPDF}>
+              <Printer size={13} /> Print / PDF
+            </button>
+          </div>
+        )}
+      />
+    }>
 
       {/* Toast */}
       {toast && (
@@ -977,28 +995,7 @@ export default function AttendanceReports() {
       )}
 
       {/* Page header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Attendance Reports</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Generate, compare, and export attendance reports</p>
-        </div>
-        {data && (
-          <div style={{ display: 'flex', gap: 8 }} className="no-print">
-            <button onClick={exportCSV}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 9, border: '1px solid #e9e4ff', background: '#fff', fontSize: 13, cursor: 'pointer', color: P, fontWeight: 500 }}>
-              <Download size={13} /> Export CSV
-            </button>
-            <button onClick={exportToExcel}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 9, border: '1px solid #bbf7d0', background: '#f0fdf4', fontSize: 13, cursor: 'pointer', color: '#15803d', fontWeight: 500 }}>
-              <Download size={13} /> Export Excel
-            </button>
-            <button onClick={exportPDF}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 9, border: '1px solid #e5e7eb', background: '#fff', fontSize: 13, cursor: 'pointer', color: '#374151', fontWeight: 500 }}>
-              <Printer size={13} /> Print / PDF
-            </button>
-          </div>
-        )}
-      </div>
+
 
       <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 20, alignItems: 'start' }} className="report-grid">
 
@@ -1127,6 +1124,6 @@ export default function AttendanceReports() {
           * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
       `}</style>
-    </div>
+    </PageShell>
   );
 }

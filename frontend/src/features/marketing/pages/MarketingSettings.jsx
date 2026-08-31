@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Save, Settings, RefreshCw, AlertCircle } from 'lucide-react';
+import { Save, Settings, RefreshCw, AlertCircle, SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const CAMPAIGN_TYPES = ['email', 'social', 'event', 'content', 'paid', 'referral'];
 const PRIORITIES     = ['low', 'medium', 'high', 'critical'];
@@ -114,28 +115,26 @@ export default function MarketingSettings() {
   }
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)', maxWidth: 860 }}>
-      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
-
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Marketing Settings</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Configure defaults and automation for the marketing module</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Marketing"
+        title="Marketing Settings"
+        subtitle="Configure defaults and automation for the marketing module"
+        actions={<>
           {isDirty && (
-            <button onClick={handleReset}
-              style={{ padding: '8px 16px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 8, background: 'var(--color-background-secondary)', cursor: 'pointer', fontSize: 13, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button className="plh-cta plh-cta--ghost" onClick={handleReset}>
               <RefreshCw size={14} /> Reset
             </button>
           )}
-          <button onClick={handleSave} disabled={saving || !isDirty}
-            style={{ padding: '8px 18px', border: 'none', borderRadius: 8, background: isDirty ? '#6B3FDB' : 'var(--color-border-tertiary)', cursor: isDirty ? 'pointer' : 'default', fontSize: 13, fontWeight: 600, color: isDirty ? '#fff' : 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6, transition: 'background 0.2s' }}>
+          <button className="plh-cta" onClick={handleSave} disabled={saving || !isDirty}>
             <Save size={14} /> {saving ? 'Saving…' : 'Save Changes'}
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+
 
       {/* Banners */}
       {error && (
@@ -149,7 +148,7 @@ export default function MarketingSettings() {
         </div>
       )}
       {isDirty && !error && !success && (
-        <div style={{ padding: '8px 14px', borderRadius: 8, background: '#fef3c7', color: '#92400e', fontSize: 12, marginBottom: 16, border: '0.5px solid #fde68a' }}>
+        <div style={{ padding: '8px 14px', borderRadius: 8, background: '#ede9fe', color: '#5b21b6', fontSize: 12, marginBottom: 16, border: '0.5px solid #ddd6fe' }}>
           You have unsaved changes.
         </div>
       )}
@@ -183,7 +182,7 @@ export default function MarketingSettings() {
               style={inputStyle} />
             <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>%</span>
             <div style={{ flex: 1, maxWidth: 180, height: 6, background: 'var(--color-border-tertiary)', borderRadius: 3 }}>
-              <div style={{ height: '100%', width: `${settings.budget_alert_threshold}%`, background: settings.budget_alert_threshold >= 90 ? '#dc2626' : settings.budget_alert_threshold >= 70 ? '#d97706' : '#16a34a', borderRadius: 3 }} />
+              <div style={{ height: '100%', width: `${settings.budget_alert_threshold}%`, background: settings.budget_alert_threshold >= 90 ? '#dc2626' : settings.budget_alert_threshold >= 70 ? '#6d28d9' : '#16a34a', borderRadius: 3 }} />
             </div>
           </div>
         </FieldRow>
@@ -224,6 +223,6 @@ export default function MarketingSettings() {
           </button>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import { TrendingUp, Users, Building2, Briefcase, User, BarChart2 } from 'lucide-react';
+import {
+  TrendingUp, Users, Building2, Briefcase, User, BarChart2,
+  LayoutDashboard,
+} from 'lucide-react';
 import { fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const COLORS = ['#6366f1','#6B3FDB','#8b5cf6','#a78bfa','#c4b5fd','#10b981','#f59e0b','#ef4444','#06b6d4','#f97316'];
+const COLORS = ['#6366f1','#6B3FDB','#8b5cf6','#a78bfa','#c4b5fd','#10b981','#7c5cf0','#ef4444','#06b6d4','#7c5cf0'];
 
 function MiniBar({ value, max, color = '#6B3FDB' }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
@@ -79,12 +83,14 @@ export default function TravelCommandCenter() {
   const maxSpend   = Math.max(...(data.trend?.map(r => Number(r.spend)) || [0]));
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Travel Command Center</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>CEO-level travel cost analytics across all dimensions</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Travel"
+        title="Travel Command Center"
+        subtitle="CEO-level travel cost analytics across all dimensions"
+      />
+    }>
 
       {/* KPI banner */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 24 }}>
@@ -92,7 +98,7 @@ export default function TravelCommandCenter() {
           { label: 'Total Travel Spend', value: fmt(totalSpend), icon: TrendingUp, color: '#6B3FDB' },
           { label: 'Total Trips',         value: totalTrips,      icon: Briefcase,  color: '#6366f1' },
           { label: 'Top Travellers',       value: data.by_employee?.length || 0, icon: Users, color: '#10b981' },
-          { label: 'Projects with Travel', value: data.by_project?.filter(r => r.project_number !== 'Unlinked').length || 0, icon: BarChart2, color: '#f59e0b' },
+          { label: 'Projects with Travel', value: data.by_project?.filter(r => r.project_number !== 'Unlinked').length || 0, icon: BarChart2, color: '#7c5cf0' },
         ].map(k => (
           <div key={k.label} style={{ background: '#fff', borderRadius: 12, padding: 20, border: '1px solid #f0f0f4', boxShadow: '0 1px 3px rgba(0,0,0,.06)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -171,7 +177,7 @@ export default function TravelCommandCenter() {
           />
         </Section>
 
-        <Section title="Travel Cost by Customer" icon={Users} color="#f59e0b">
+        <Section title="Travel Cost by Customer" icon={Users} color="#7c5cf0">
           <RankTable
             rows={data.by_customer?.filter(r => r.customer_name !== 'Unlinked') || []}
             keyCol="customer_name"
@@ -214,6 +220,6 @@ export default function TravelCommandCenter() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

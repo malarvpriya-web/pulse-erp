@@ -2,26 +2,69 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
-import * as ctrl from '../customer360.controller.js';
+import { companyOf } from '../../../shared/scope.js';
+import { respondError } from '../../../shared/pgErrors.js';
 
-// ── 49A Unified Customer 360 Intelligence Layer ───────────────────────────────
-// GET /api/v1/crm/customer-360/:customerId          — full 360 in one call
-// GET /api/v1/crm/customer-360/:customerId/timeline — unified timeline
-// GET /api/v1/crm/customer-360/:customerId/health   — health engine
-// GET /api/v1/crm/customer-360/:customerId/documents — document folder map
+// ── Customer 360 ──────────────────────────────────────────────────────────────
+// The party-keyed endpoints below (`/customer360/:partyId/*`) are the live ones —
+// they are what Customer360.jsx calls.
 //
-// customerId = parties.id (same as partyId used in legacy routes below)
-// All queries enforce company_id scoping. Cache TTL = 60s (in-memory).
+// REMOVED (audit C-20): a second set of `/customer-360/:customerId` routes and
+// the customer360.controller → service → repository stack behind them. Those
+// were unreachable dead code: routes/index.js mounts crm.routes.js BEFORE this
+// file, and crm.routes.js registers `/customer-360/:accountId`, which Express
+// matches first for every request to that path. ~1,000 lines that could never
+// execute, and whose SQL referenced six tables that do not exist
+// (fat_reports, sat_reports, warranty_register, dispatch_records,
+// field_service_visits, crm_activities-as-was) plus several phantom columns on
+// accounts/contacts/projects — all of which sat in the CI baseline as
+// permanently-accepted debt because nothing could ever run them.
+//
+// If a unified party-keyed 360 is wanted again, add it here and give it a path
+// that does not collide with crm.routes.js.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const router = express.Router();
 
-// ── Unified endpoints (49A) ───────────────────────────────────────────────────
-router.get('/customer-360/:customerId',           requirePermission('crm', 'view'), ctrl.getCustomer360);
-router.get('/customer-360/:customerId/timeline',  requirePermission('crm', 'view'), ctrl.getTimeline);
-router.get('/customer-360/:customerId/health',    requirePermission('crm', 'view'), ctrl.getHealth);
-router.get('/customer-360/:customerId/documents', requirePermission('crm', 'view'), ctrl.getDocuments);
-
+// ── Tenant gate for every /customer360/:partyId* route ────────────────────────
+// These endpoints take a customer id straight from the URL and, before this
+// guard, went to the database with it unfiltered: `SELECT * FROM parties WHERE
+// id = $1`, `... FROM invoices WHERE customer_id = $1`, and so on across 19
+// routes. A company-1 token reading a company-29 party id got 200 and that
+// company's data back — proven with a synthetic tenant: `/customer360/:id`
+// returned the foreign customer's profile and `/aging` returned their
+// ₹99,99,999 receivable.
+//
+// The earlier remediation scoped `/customer-360/:accountId` in crm.routes.js,
+// but that route is the shadowed legacy one. These party-keyed routes are what
+// Customer360.jsx actually calls, and they were never covered.
+//
+// `router.param` runs once per request carrying `:partyId`, so a route added
+// below inherits the check instead of having to remember it. `companyOf(req)`
+// returning null means genuinely global scope (super_admin without a company),
+// which stays unrestricted — the same convention as the `$n::int IS NULL OR
+// company_id = $n` clauses elsewhere in CRM.
+router.param('partyId', async (req, res, next, partyId) => {
+  // A malformed uuid would otherwise reach the query and surface as 22P02.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(partyId)) {
+    return res.status(404).json({ error: 'Customer not found' });
+  }
+  const cid = companyOf(req);
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, company_id FROM parties
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [partyId, cid]
+    );
+    // Deliberately 404, not 403: whether a customer id exists in another tenant
+    // is itself information this caller is not entitled to.
+    if (!rows[0]) return res.status(404).json({ error: 'Customer not found' });
+    req.party = rows[0];
+    next();
+  } catch (e) {
+    respondError(res, e);
+  }
+});
 
 function npsCategory(score) {
   if (score <= 6) return 'detractor';
@@ -39,16 +82,27 @@ router.get('/parties', requirePermission('crm', 'view'), async (req, res) => {
       params.push(`%${search}%`);
       extra = `AND (name ILIKE $1 OR gstin ILIKE $1)`;
     }
+    // The column is `party_type`, not `type` — this selected and filtered on a
+    // column that does not exist, so the endpoint 500'd on every call and the
+    // Customer 360 customer picker could never load (audit C-12). Also had no
+    // company filter, which would have leaked the full customer list across
+    // tenants the moment it started working.
+    const cid = companyOf(req);
+    params.push(cid);
+    const cidParam = `$${params.length}`;
     const r = await pool.query(
-      `SELECT id, name, city, state, email, phone, gstin, type
+      `SELECT id, name, city, state, email, phone, gstin, party_type AS type
        FROM parties
-       WHERE (type = 'customer' OR type IS NULL) ${extra}
+       WHERE deleted_at IS NULL
+         AND (LOWER(party_type) = 'customer' OR party_type IS NULL)
+         AND (${cidParam}::int IS NULL OR company_id = ${cidParam})
+         ${extra}
        ORDER BY name LIMIT 200`,
       params
     );
     res.json(r.rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondError(res, e);
   }
 });
 
@@ -78,12 +132,20 @@ router.get('/customer360/:partyId', requirePermission('crm', 'view'), async (req
 
   try {
     const r = await pool.query(
+      // credit_limit and the billing_* address fields live on `parties`, the
+      // canonical customer master — they were never columns on `accounts`, so
+      // this whole SELECT threw 42703 and the empty catch below turned the
+      // account panel into a permanent blank (audit C-31). Ownership is
+      // `assigned_to` on accounts; `owner_id` never existed either.
       `SELECT a.id, a.account_name, a.account_type, a.industry, a.website,
-              a.annual_revenue, a.credit_limit, a.owner_id, a.status,
-              a.billing_street, a.billing_city, a.billing_state, a.billing_country,
+              a.annual_revenue, a.status, a.assigned_to AS owner_id,
+              p.credit_limit,
+              p.address AS billing_street, p.city AS billing_city,
+              p.state   AS billing_state,  p.country AS billing_country,
               e.name AS account_manager_name
        FROM accounts a
-       LEFT JOIN employees e ON e.id = a.owner_id
+       LEFT JOIN parties   p ON p.id = a.party_id
+       LEFT JOIN employees e ON e.id = a.assigned_to
        WHERE a.party_id = $1 AND a.deleted_at IS NULL
        LIMIT 1`,
       [partyId]
@@ -92,11 +154,14 @@ router.get('/customer360/:partyId', requirePermission('crm', 'view'), async (req
   } catch (_) {}
 
   try {
+    // contact_type never existed as a column; the schema's equivalent is
+    // customer_role (User/Admin). Selecting the phantom name threw 42703 and the
+    // empty catch below rendered the contacts panel permanently blank.
     const r = await pool.query(
       `SELECT c.id, c.first_name, c.last_name,
               CONCAT(c.first_name, ' ', c.last_name) AS full_name,
               c.title, c.email, c.phone, c.department,
-              c.contact_type, c.created_at
+              c.customer_role AS contact_type, c.is_primary, c.created_at
        FROM contacts c
        JOIN accounts a ON a.id = c.account_id AND a.deleted_at IS NULL
        WHERE a.party_id = $1 AND c.deleted_at IS NULL
@@ -256,13 +321,18 @@ router.get('/customer360/:partyId/projects', requirePermission('crm', 'view'), a
               p.billing_model, p.project_type, p.created_at,
               e.name AS project_manager_name,
               COALESCE(
-                (SELECT SUM(actual_cost) FROM project_cost_summary WHERE project_id = p.id), 0
+                (SELECT SUM(total_cost) FROM project_cost_summary WHERE project_id = p.id), 0
               ) AS actual_cost,
               (SELECT COUNT(*)::int FROM project_milestones pm WHERE pm.project_id = p.id) AS milestone_count,
               (SELECT COUNT(*)::int FROM project_milestones pm WHERE pm.project_id = p.id AND pm.status = 'completed') AS milestones_done
        FROM projects p
        LEFT JOIN employees e ON e.id = p.project_manager_id
-       WHERE p.customer_id = $1 AND p.deleted_at IS NULL
+       LEFT JOIN opportunities o ON o.id = p.opportunity_id
+       LEFT JOIN accounts     a ON a.id = o.account_id AND a.deleted_at IS NULL
+       LEFT JOIN parties      pt ON pt.id = $1
+       WHERE p.deleted_at IS NULL
+         AND ( a.party_id = $1
+               OR (pt.id IS NOT NULL AND crm_norm_name(p.customer_name) = crm_norm_name(pt.name)) )
        ORDER BY p.created_at DESC`,
       [partyId]
     );
@@ -357,7 +427,11 @@ router.get('/customer360/:partyId/service', requirePermission('crm', 'view'), as
 
   try {
     const r = await pool.query(
-      `SELECT sc.id, sc.contract_number, sc.start_date, sc.end_date, sc.status,
+      // service_contracts carries no contract_number column — selecting it threw
+      // 42703 and blanked the panel. The table's own identifier is its id, so a
+      // readable reference is synthesised from that.
+      `SELECT sc.id, ('SC-' || sc.id::text) AS contract_number,
+              sc.start_date, sc.end_date, sc.status,
               sc.value AS contract_value, sc.contract_type AS coverage_type, sc.created_at
        FROM service_contracts sc
        JOIN parties p ON LOWER(sc.customer_name) = LOWER(p.name)
@@ -532,11 +606,19 @@ router.get('/customer360/:partyId/manufacturing', requirePermission('crm', 'view
 
   try {
     const r = await pool.query(
-      `SELECT id, report_number, status, scheduled_date, completed_date,
-              witness_name, result, notes, created_at
-       FROM fat_reports
-       WHERE customer_id = $1
-       ORDER BY created_at DESC`,
+      // fat_reports never existed; the real table is `fat_trackers`, which keys
+      // off project_id (there is no customer column on it), so the customer is
+      // reached the same way the Projects panel reaches it.
+      `SELECT ft.id, ft.fat_number AS report_number, ft.status,
+              ft.scheduled_date, ft.actual_date AS completed_date,
+              ft.client_witness AS witness_name, ft.serial_number, ft.product_name,
+              ft.certificate_number, ft.remarks AS notes, ft.created_at
+       FROM fat_trackers ft
+       JOIN projects p       ON p.id = ft.project_id AND p.deleted_at IS NULL
+       LEFT JOIN opportunities o ON o.id = p.opportunity_id
+       LEFT JOIN accounts     a ON a.id = o.account_id AND a.deleted_at IS NULL
+       WHERE a.party_id = $1
+       ORDER BY ft.created_at DESC`,
       [partyId]
     );
     fatRecords = r.rows;
@@ -604,11 +686,17 @@ router.get('/customer360/:partyId/commissioning', requirePermission('crm', 'view
 
   try {
     const r = await pool.query(
-      `SELECT id, report_number, status, sat_date, witness_name,
-              result, notes, created_at
-       FROM sat_reports
-       WHERE customer_id = $1
-       ORDER BY created_at DESC`,
+      // sat_reports never existed; the real table is `sat_trackers`.
+      `SELECT st.id, st.sat_number AS report_number, st.status,
+              st.actual_date AS sat_date, st.client_representative AS witness_name,
+              st.site_name, st.serial_number, st.product_name,
+              st.remarks AS notes, st.created_at
+       FROM sat_trackers st
+       JOIN projects p       ON p.id = st.project_id AND p.deleted_at IS NULL
+       LEFT JOIN opportunities o ON o.id = p.opportunity_id
+       LEFT JOIN accounts     a ON a.id = o.account_id AND a.deleted_at IS NULL
+       WHERE a.party_id = $1
+       ORDER BY st.created_at DESC`,
       [partyId]
     );
     satReports = r.rows;
@@ -616,13 +704,18 @@ router.get('/customer360/:partyId/commissioning', requirePermission('crm', 'view
 
   try {
     const r = await pool.query(
-      `SELECT id, dispatch_number, dispatch_date, status,
-              transport_mode, tracking_number, delivery_date,
-              vehicle_number, driver_name, created_at
-       FROM dispatch_records
-       WHERE customer_id = $1
-       ORDER BY dispatch_date DESC`,
-      [partyId]
+      // dispatch_records never existed. `delivery_notes` is the real table; it
+      // carries only a denormalised customer_name, so it is matched on the
+      // normalised party name rather than an id that is not there.
+      `SELECT dn.id, dn.dn_number AS dispatch_number, dn.delivery_date AS dispatch_date,
+              dn.status, dn.delivered_by, dn.items_delivered, dn.delivery_date,
+              dn.notes, dn.created_at
+       FROM delivery_notes dn
+       JOIN parties pt ON pt.id = $1
+        AND crm_norm_name(dn.customer_name) = crm_norm_name(pt.name)
+       WHERE ($2::int IS NULL OR dn.company_id = $2)
+       ORDER BY dn.delivery_date DESC NULLS LAST`,
+      [partyId, companyOf(req)]
     );
     dispatches = r.rows;
   } catch (_) {}
@@ -788,8 +881,18 @@ router.get('/customer360/:partyId/timeline', requirePermission('crm', 'view'), a
 
   try {
     const r = await pool.query(
-      `SELECT id, project_code, project_name, status, created_at
-       FROM projects WHERE customer_id = $1 ORDER BY created_at DESC`,
+      // projects.customer_id never existed — projects reach a customer through
+      // opportunity_id (the Won→Project bridge), with the denormalised
+      // customer_name as a fallback for rows predating it.
+      `SELECT p.id, p.project_code, p.project_name, p.status, p.created_at
+         FROM projects p
+         LEFT JOIN opportunities o ON o.id = p.opportunity_id
+         LEFT JOIN accounts a      ON a.id = o.account_id AND a.deleted_at IS NULL
+         LEFT JOIN parties pt      ON pt.id = $1
+        WHERE p.deleted_at IS NULL
+          AND ( a.party_id = $1
+                OR (pt.id IS NOT NULL AND crm_norm_name(p.customer_name) = crm_norm_name(pt.name)) )
+        ORDER BY p.created_at DESC`,
       [partyId]
     );
     r.rows.forEach(p => events.push({
@@ -935,9 +1038,13 @@ router.post('/nps', requirePermission('crm', 'add'), async (req, res) => {
     if (score === undefined || score < 0 || score > 10)
       return res.status(400).json({ error: 'Score must be between 0 and 10' });
     const r = await pool.query(
-      `INSERT INTO nps_responses (customer_id, customer_name, score, comment, survey_date, category)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [customer_id, customer_name || null, score, comment || null,
+      // nps_responses carries customer_id only — there is no customer_name
+      // column, so writing one threw 42703 and every NPS submission failed. The
+      // name is resolved from `parties` on read (see /nps/responses below),
+      // which is the right place for it: one customer, one name, one source.
+      `INSERT INTO nps_responses (customer_id, score, comment, survey_date, category)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [customer_id, score, comment || null,
        survey_date || new Date().toISOString().split('T')[0], npsCategory(score)]
     );
     res.status(201).json(r.rows[0]);
@@ -992,7 +1099,7 @@ router.get('/nps/summary', requirePermission('crm', 'view'), async (req, res) =>
 router.get('/nps/responses', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const r = await pool.query(`
-      SELECT nr.*, COALESCE(p.name, nr.customer_name, 'Unknown') AS customer_name
+      SELECT nr.*, COALESCE(p.name, 'Unknown') AS customer_name
       FROM nps_responses nr
       LEFT JOIN parties p ON p.id = nr.customer_id
       ORDER BY nr.survey_date DESC LIMIT 100
@@ -1079,12 +1186,20 @@ router.get('/customer360/:partyId/travel', requirePermission('crm', 'view'), asy
   // Project-linked travel (commissioning/engineering travel)
   try {
     const r = await pool.query(
+      // travel_requests has budget and estimated_amount; actual_cost never
+      // existed. estimated_amount is surfaced under the name the callers below
+      // already read, so the cost roll-ups keep working.
       `SELECT tr.id, tr.request_number, tr.travel_type, tr.from_date, tr.to_date,
-              tr.purpose, tr.status, tr.budget, tr.actual_cost, tr.destination,
+              tr.purpose, tr.status, tr.budget,
+              tr.estimated_amount AS actual_cost, tr.destination,
               p.project_code, p.project_name
        FROM travel_requests tr
-       JOIN projects p ON p.id = tr.project_id
-       WHERE p.customer_id = $1
+       JOIN projects p ON p.id = tr.project_id AND p.deleted_at IS NULL
+       LEFT JOIN opportunities o ON o.id = p.opportunity_id
+       LEFT JOIN accounts a      ON a.id = o.account_id AND a.deleted_at IS NULL
+       LEFT JOIN parties pt      ON pt.id = $1
+       WHERE ( a.party_id = $1
+               OR (pt.id IS NOT NULL AND crm_norm_name(p.customer_name) = crm_norm_name(pt.name)) )
          AND tr.status IN ('approved','completed')
        ORDER BY tr.from_date DESC LIMIT 50`,
       [partyId]
@@ -1113,6 +1228,175 @@ router.get('/customer360/:partyId/travel', requirePermission('crm', 'view'), asy
       total_travel_cost: totalProjectTravel,
     },
   });
+});
+
+// ── GET /customer360/:partyId/products ────────────────────────────────────────
+// "What has this customer actually bought from us — which product, on what date,
+//  at what price." The header-level invoice list on `/customer360/:partyId` only
+//  ever showed a total per invoice; the line detail lives one table deeper.
+//
+// Purchases = invoice lines + sales-order lines. Quotation lines are returned
+// separately as `quotes`: a quote is an offer, not a purchase, and folding it
+// into the same totals would overstate what the customer ever bought.
+//
+// Line→component linkage is best-effort by design. sales_order_items and
+// quotation_items carry a free-text `item_code`; invoice_items carries neither
+// an item_id nor a code, only `description`. So the code is matched against
+// inventory_items.item_code where it resolves — that gives the row a live link
+// to the component's sourcing page — and rows that do not resolve still appear,
+// keyed on their text. Nothing is dropped for failing to match.
+router.get('/customer360/:partyId/products', requirePermission('crm', 'view'), async (req, res) => {
+  const { partyId } = req.params;
+  try {
+    const [purchaseRes, quoteRes] = await Promise.all([
+      pool.query(
+        `SELECT 'Invoice'::text AS doc_type, i.id AS doc_id, i.invoice_number AS doc_number,
+                COALESCE(i.invoice_date, i.created_at::date) AS doc_date,
+                i.status, i.currency,
+                NULL::varchar AS item_code,
+                NULLIF(TRIM(ii.description), '') AS product_name,
+                ii.quantity, NULL::varchar AS unit, ii.unit_price,
+                NULL::numeric AS discount_pct, ii.tax_rate,
+                COALESCE(ii.amount, ii.quantity * ii.unit_price) AS amount
+           FROM invoice_items ii
+           JOIN invoices i ON i.id = ii.invoice_id AND i.deleted_at IS NULL
+          WHERE i.customer_id = $1
+          UNION ALL
+         SELECT 'Sales Order', so.id, so.order_number,
+                COALESCE(so.order_date, so.created_at::date),
+                so.order_status, NULL,
+                NULLIF(TRIM(soi.item_code), ''),
+                COALESCE(NULLIF(TRIM(soi.description), ''), NULLIF(TRIM(soi.item_code), '')),
+                soi.quantity, soi.unit, soi.unit_price, soi.discount_pct, soi.tax_rate,
+                COALESCE(soi.total_amount, soi.quantity * soi.unit_price)
+           FROM sales_order_items soi
+           JOIN sales_orders so ON so.id = soi.order_id AND so.deleted_at IS NULL
+          WHERE so.customer_id = $1
+          ORDER BY doc_date DESC NULLS LAST, doc_number DESC
+          LIMIT 500`,
+        [partyId]
+      ),
+      pool.query(
+        `SELECT q.id AS doc_id, q.quotation_number AS doc_number,
+                COALESCE(q.quotation_date, q.created_at::date) AS doc_date,
+                q.status, q.validity_date,
+                NULLIF(TRIM(qi.item_code), '') AS item_code,
+                COALESCE(NULLIF(TRIM(qi.description), ''),
+                         NULLIF(TRIM(qi.item_description), ''),
+                         NULLIF(TRIM(qi.item_code), '')) AS product_name,
+                qi.quantity, qi.unit,
+                COALESCE(qi.unit_price, qi.rate) AS unit_price,
+                qi.discount_pct, COALESCE(qi.tax_rate, qi.tax_percentage) AS tax_rate,
+                COALESCE(qi.total_amount, qi.total, qi.quantity * COALESCE(qi.unit_price, qi.rate)) AS amount
+           FROM quotation_items qi
+           JOIN quotations q ON q.id = qi.quotation_id AND q.deleted_at IS NULL
+          WHERE q.customer_id = $1
+          ORDER BY doc_date DESC NULLS LAST
+          LIMIT 300`,
+        [partyId]
+      ),
+    ]);
+
+    // Resolve the free-text codes we did get against the component master, so a
+    // matched row can deep-link to that component's vendor comparison.
+    const codes = [...new Set(
+      [...purchaseRes.rows, ...quoteRes.rows]
+        .map(r => r.item_code).filter(Boolean)
+    )];
+    let codeMap = {};
+    if (codes.length) {
+      const { rows } = await pool.query(
+        `SELECT id, item_code, item_name, unit_of_measure
+           FROM inventory_items
+          WHERE deleted_at IS NULL AND UPPER(item_code) = ANY($1::text[])`,
+        [codes.map(c => c.toUpperCase())]
+      );
+      codeMap = Object.fromEntries(rows.map(r => [r.item_code.toUpperCase(), r]));
+    }
+
+    const n = v => {
+      if (v == null || v === '') return null;
+      const x = parseFloat(v);
+      return Number.isFinite(x) ? x : null;
+    };
+    const decorate = (r) => {
+      const match = r.item_code ? codeMap[r.item_code.toUpperCase()] : null;
+      return {
+        ...r,
+        item_id:      match?.id ?? null,
+        product_name: match?.item_name || r.product_name || 'Unnamed line',
+        unit:         r.unit || match?.unit_of_measure || null,
+        quantity:     n(r.quantity),
+        unit_price:   n(r.unit_price),
+        discount_pct: n(r.discount_pct),
+        tax_rate:     n(r.tax_rate),
+        amount:       n(r.amount),
+      };
+    };
+
+    const lines  = purchaseRes.rows.map(decorate);
+    const quotes = quoteRes.rows.map(r => ({ ...decorate(r), doc_type: 'Quotation' }));
+
+    // Roll purchases up per product. Key on the resolved component when we have
+    // one, otherwise on the line text — two invoice lines reading the same thing
+    // are the same product as far as the customer is concerned.
+    const byProduct = new Map();
+    for (const l of lines) {
+      const key = l.item_id != null ? `id:${l.item_id}` : `txt:${(l.product_name || '').toLowerCase()}`;
+      const agg = byProduct.get(key) || {
+        item_id: l.item_id, item_code: l.item_code, product_name: l.product_name,
+        unit: l.unit, line_count: 0, total_qty: 0, total_value: 0,
+        first_purchased: null, last_purchased: null,
+        last_price: null, min_price: null, max_price: null,
+        doc_types: new Set(),
+      };
+      agg.line_count += 1;
+      agg.total_qty   += l.quantity || 0;
+      agg.total_value += l.amount   || 0;
+      agg.doc_types.add(l.doc_type);
+      if (l.unit_price != null) {
+        agg.min_price = agg.min_price == null ? l.unit_price : Math.min(agg.min_price, l.unit_price);
+        agg.max_price = agg.max_price == null ? l.unit_price : Math.max(agg.max_price, l.unit_price);
+        // Rows arrive newest-first, so the first price seen is the most recent.
+        if (agg.last_price == null) agg.last_price = l.unit_price;
+      }
+      if (l.doc_date) {
+        if (!agg.last_purchased  || l.doc_date > agg.last_purchased)  agg.last_purchased  = l.doc_date;
+        if (!agg.first_purchased || l.doc_date < agg.first_purchased) agg.first_purchased = l.doc_date;
+      }
+      if (!agg.item_code && l.item_code) agg.item_code = l.item_code;
+      byProduct.set(key, agg);
+    }
+
+    const products = [...byProduct.values()]
+      .map(a => ({
+        ...a,
+        doc_types:   [...a.doc_types],
+        total_qty:   +a.total_qty.toFixed(3),
+        total_value: +a.total_value.toFixed(2),
+        avg_price:   a.total_qty > 0 ? +(a.total_value / a.total_qty).toFixed(2) : null,
+      }))
+      .sort((a, b) => b.total_value - a.total_value);
+
+    const dates = lines.map(l => l.doc_date).filter(Boolean).sort();
+
+    res.json({
+      summary: {
+        line_count:     lines.length,
+        product_count:  products.length,
+        quote_count:    quotes.length,
+        total_value:    +lines.reduce((s, l) => s + (l.amount || 0), 0).toFixed(2),
+        linked_products: products.filter(p => p.item_id != null).length,
+        first_purchase: dates[0] || null,
+        last_purchase:  dates[dates.length - 1] || null,
+      },
+      products,
+      lines,
+      quotes,
+    });
+  } catch (e) {
+    respondError(res, e);
+  }
 });
 
 export default router;

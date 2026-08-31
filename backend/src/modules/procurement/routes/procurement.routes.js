@@ -1,6 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import pool from '../../shared/db.js';
+import { dimension } from '../../../shared/dashboardFilters.js';
 import prRepo from '../repositories/purchaseRequest.repository.js';
 import poRepo from '../repositories/purchaseOrder.repository.js';
 import grnService from '../services/grn.service.js';
@@ -9,10 +10,14 @@ import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationServi
 import { nextRfqNumber, nextPurchaseOrderNumber } from '../../../shared/docNumber.js';
 import { uploadFile } from '../../../services/StorageService.js';
 import { checkAndCreateAlerts } from '../../../services/stockAlerts.js';
-import { sendPurchaseOrderToVendor } from '../../../utils/mailer.js';
+import { sendPurchaseOrderToVendor, sendRfqToVendor } from '../../../utils/mailer.js';
 import { companyOf } from '../../../shared/scope.js';
 import { hasRole, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { requiredBand, assertCanDecideAmount } from '../procurement.authz.js';
+import { rankOptions, TCO_DEFAULTS } from '../engines/tcoEngine.js';
+import {
+  loadTcoParams, loadVendorPerformance, loadAnnualDemand, masterRate, tcoBasis,
+} from '../services/tco.service.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -378,6 +383,207 @@ router.get('/purchase-orders/stats', async (req, res) => {
   }
 });
 
+/**
+ * POST /procurement/tco/advisory — "compare before purchasing" for a PO raised
+ * WITHOUT an RFQ.
+ *
+ * An RFQ has competing quotes to rank, so §128 could rank them. A PO typed
+ * straight into the form has exactly one vendor and no competition, which is
+ * how a direct PO stayed costed on rate alone. This scores the chosen vendor
+ * against every OTHER vendor known to supply the same components — from the
+ * price book, past POs, RFQ quotes and the price log — and reports whether a
+ * cheaper total cost exists.
+ *
+ * Body: { vendor_id, lines: [{ item_id, quantity, rate }] }
+ *
+ * Advisory, never blocking. There are good reasons to buy from a dearer source
+ * and this route does not know them; it only makes sure the buyer is not
+ * unaware of the alternative.
+ */
+router.post('/tco/advisory', async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const vendorId  = Number(req.body?.vendor_id);
+    const lines     = Array.isArray(req.body?.lines) ? req.body.lines : [];
+
+    if (!Number.isFinite(vendorId)) return res.status(422).json({ error: 'vendor_id is required' });
+
+    const params = await loadTcoParams(companyId);
+    if (!params.tco_enabled) {
+      return res.json({ tco_enabled: false, lines: [], totals: null, advisory: null });
+    }
+
+    const priced = lines
+      .map(l => ({ item_id: Number(l.item_id), quantity: parseFloat(l.quantity), rate: parseFloat(l.rate) }))
+      .filter(l => Number.isFinite(l.item_id) && l.quantity > 0);
+
+    if (!priced.length) {
+      return res.json({ tco_enabled: true, lines: [], totals: null, advisory: null,
+        note: 'No PO line carried both a catalogued component and a quantity, so nothing could be costed.' });
+    }
+
+    const results = [];
+    for (const line of priced) {
+      const alt = await alternativesForItem(line.item_id, companyId);
+      // The chosen vendor is costed at the rate ACTUALLY typed on the PO, not
+      // at whatever the price book remembers — that is the commitment being
+      // made. Alternatives are costed at their own best known price.
+      const chosenKnown = alt.find(a => a.vendor_id === vendorId);
+      const options = [
+        {
+          ...(chosenKnown || { vendor_id: vendorId, vendor_name: null }),
+          unit_price: Number.isFinite(line.rate) && line.rate > 0
+            ? line.rate
+            : (chosenKnown?.unit_price ?? null),
+          is_chosen: true,
+        },
+        ...alt.filter(a => a.vendor_id !== vendorId),
+      ].map(o => ({ ...o, quantity: line.quantity }));
+
+      const ranked = rankOptions(options, params);
+      const chosen = ranked.options.find(o => o.is_chosen);
+      const best   = ranked.options.find(o => o.is_lowest_tco);
+
+      results.push({
+        item_id: line.item_id,
+        item_name: alt[0]?.item_name ?? null,
+        quantity: line.quantity,
+        rate: line.rate,
+        chosen_vendor_id: vendorId,
+        chosen_tco_total: chosen?.tco?.tco_total ?? null,
+        chosen_tco_per_unit: chosen?.tco?.tco_per_unit ?? null,
+        chosen_confidence: chosen?.tco?.confidence ?? null,
+        chosen_assumptions: chosen?.tco?.assumptions ?? [],
+        alternative_count: Math.max(0, ranked.options.length - 1),
+        best_vendor_id: best && !best.is_chosen ? best.vendor_id : null,
+        best_vendor_name: best && !best.is_chosen ? best.vendor_name : null,
+        best_tco_total: best && !best.is_chosen ? best.tco?.tco_total ?? null : null,
+        saving: best && !best.is_chosen && chosen?.tco?.tco_total != null && best.tco?.tco_total != null
+          ? +(chosen.tco.tco_total - best.tco.tco_total).toFixed(2)
+          : 0,
+      });
+    }
+
+    const chosenTotal = results.reduce((s, r) => s + (r.chosen_tco_total || 0), 0);
+    const saving      = results.reduce((s, r) => s + (r.saving || 0), 0);
+    const better      = results.filter(r => r.saving > 0);
+
+    res.json({
+      tco_enabled: true,
+      lines: results,
+      totals: {
+        chosen_tco_total: +chosenTotal.toFixed(2),
+        potential_saving: +saving.toFixed(2),
+        lines_with_a_cheaper_source: better.length,
+      },
+      // Null when nothing better was found — an advisory that always says
+      // something gets dismissed, and then it says nothing.
+      advisory: better.length
+        ? {
+            message: `${better.length} of ${results.length} line${results.length === 1 ? '' : 's'} has a lower total cost from another approved vendor.`,
+            saving: +saving.toFixed(2),
+            lines: better.map(b => ({
+              item_id: b.item_id, item_name: b.item_name,
+              better_vendor: b.best_vendor_name, saving: b.saving,
+            })),
+          }
+        : null,
+      basis: tcoBasis(params, { source: 'direct purchase order (no RFQ)' }),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/**
+ * Every vendor known to supply one component, with the best price we know and
+ * the performance we have measured — the same four-source fold and the same
+ * observed-beats-master-data rule as /items/:id/sourcing, reduced to what the
+ * TCO engine needs.
+ */
+async function alternativesForItem(itemId, companyId) {
+  const scoped = companyId == null ? '' : ' AND po.company_id = $2';
+  const args   = companyId == null ? [itemId] : [itemId, companyId];
+
+  const [book, poAgg, item, perf] = await Promise.all([
+    pool.query(
+      `SELECT ivp.vendor_id,
+              ivp.unit_price * (1 - COALESCE(ivp.discount_pct,0)/100.0) AS net_price,
+              ivp.moq, ivp.pack_size, ivp.lead_time_days, ivp.tax_pct,
+              ivp.freight_per_unit, ivp.packaging_per_unit, ivp.duty_pct,
+              ivp.tooling_cost, ivp.scrap_rate_pct
+         FROM item_vendor_prices ivp
+        WHERE ivp.item_id = $1 AND ivp.deleted_at IS NULL`,
+      [itemId]
+    ).catch(() => ({ rows: [] })),
+    pool.query(
+      `SELECT po.supplier_id AS vendor_id,
+              (ARRAY_AGG(poi.rate ORDER BY po.order_date DESC NULLS LAST, po.id DESC))[1] AS last_rate
+         FROM purchase_order_items poi
+         JOIN purchase_orders po ON po.id = poi.po_id AND po.deleted_at IS NULL
+        WHERE poi.item_id = $1 AND poi.rate > 0
+          AND LOWER(COALESCE(po.status,'')) NOT IN ('cancelled','rejected')${scoped}
+        GROUP BY po.supplier_id`,
+      args
+    ).catch(() => ({ rows: [] })),
+    pool.query(
+      `SELECT item_name, gst_rate, default_gst_rate, holding_cost_pct FROM inventory_items WHERE id = $1`,
+      [itemId]
+    ).catch(() => ({ rows: [] })),
+    loadVendorPerformance(itemId, companyId),
+  ]);
+
+  const demand = await loadAnnualDemand(itemId, companyId);
+  const it = item.rows[0] || {};
+  const n = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
+  const itemTax = n(it.gst_rate ?? it.default_gst_rate);
+
+  const byVendor = new Map();
+  for (const r of book.rows) {
+    byVendor.set(Number(r.vendor_id), {
+      vendor_id: Number(r.vendor_id), unit_price: n(r.net_price), price_source: 'Price Book',
+      moq: n(r.moq), pack_size: n(r.pack_size), lead_time_days: r.lead_time_days,
+      lead_time_basis: r.lead_time_days != null ? 'quoted' : 'assumed',
+      tax_pct: n(r.tax_pct) ?? itemTax,
+      freight_per_unit: n(r.freight_per_unit), packaging_per_unit: n(r.packaging_per_unit),
+      duty_pct: n(r.duty_pct), tooling_cost: n(r.tooling_cost), scrap_rate_pct: n(r.scrap_rate_pct),
+    });
+  }
+  for (const r of poAgg.rows) {
+    const k = Number(r.vendor_id);
+    if (byVendor.has(k)) continue;   // a negotiated price outranks what we last paid
+    byVendor.set(k, { vendor_id: k, unit_price: n(r.last_rate), price_source: 'Last PO', tax_pct: itemTax });
+  }
+  if (!byVendor.size) return [];
+
+  const { rows: vRows } = await pool.query(
+    `SELECT id, vendor_name, lead_time_days, payment_terms_days, on_time_pct,
+            defect_rate, is_single_source
+       FROM vendors WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
+    [[...byVendor.keys()]]
+  );
+  const vMap = Object.fromEntries(vRows.map(v => [v.id, v]));
+
+  return [...byVendor.values()].map(o => {
+    const v  = vMap[o.vendor_id] || {};
+    const pf = perf.get(o.vendor_id) || {};
+    return {
+      ...o,
+      item_name: it.item_name ?? null,
+      vendor_name: v.vendor_name || `Vendor #${o.vendor_id}`,
+      lead_time_days: o.lead_time_days ?? v.lead_time_days ?? null,
+      payment_terms_days: v.payment_terms_days ?? null,
+      // Same rule as everywhere else: a hand-maintained 0 means never measured.
+      reject_rate_pct: pf.reject_rate_pct ?? masterRate(o.scrap_rate_pct) ?? masterRate(v.defect_rate),
+      reject_basis:    pf.reject_rate_pct != null ? 'observed' : 'estimated',
+      on_time_pct:     pf.on_time_pct ?? masterRate(v.on_time_pct),
+      on_time_basis:   pf.on_time_pct != null ? 'observed' : 'estimated',
+      freight_pct_observed: pf.freight_pct_observed ?? null,
+      is_single_source: !!v.is_single_source,
+      annual_demand_qty: demand.annual_demand_qty,
+      holding_cost_pct: n(it.holding_cost_pct),
+    };
+  }).filter(o => o.unit_price != null && o.unit_price > 0);
+}
+
 router.post('/purchase-orders', async (req, res) => {
   try {
     const client = await pool.connect();
@@ -581,9 +787,14 @@ router.patch('/purchase-orders/:id/approve', async (req, res) => {
       await client.query('COMMIT');
       logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: po.id, recordType: 'purchase_order', action: 'approve', oldData: oldPo, newData: po, req });
 
-      // Send notification if enabled
-      if (settings.notify_po_approval) {
-        notifyWorkflowEvent('approved', { module: 'Purchase Order', recordId: po.id });
+      // Send notification if enabled. notifyWorkflowEvent's 'approved' event
+      // notifies ctx.submitterUserId by default — never passed here, so this
+      // always resolved to an empty recipient list and silently no-op'd
+      // despite the toggle showing "on" in Settings. recipientIds (employees.id,
+      // resolved to a login internally) is the override path; oldPo.created_by
+      // is the PO's requester in that space, per purchase_orders.created_by FK.
+      if (settings.notify_po_approval && oldPo.created_by) {
+        notifyWorkflowEvent('approved', { module: 'Purchase Order', recordId: po.id, recipientIds: [oldPo.created_by] });
       }
 
       // Automation Opportunity Audit §5.4 — the notification above is
@@ -652,10 +863,22 @@ router.post('/grn', async (req, res) => {
       req.user.employee_id ?? null
     );
 
-    // Send notification if enabled
+    // Send notification if enabled. This used to call notifyWorkflowEvent('received', ...)
+    // — 'received' isn't a key in EVENT_MAP, so `def` came back undefined and the
+    // call returned immediately every time, silently no-op'ing regardless of the
+    // toggle. Fixed key is 'goods_received'; recipient is the PO's requester
+    // (purchase_orders.created_by, an employees.id — same FK as PO-approval above).
     const settings = await getProcSettings(cid(req)).catch(() => PROC_DEFAULTS);
-    if (settings.notify_grn_receipt) {
-      notifyWorkflowEvent('received', { module: 'Goods Receipt', recordId: grn.id });
+    if (settings.notify_grn_receipt && grn.po_id) {
+      const { rows: poRows } = await pool.query('SELECT created_by, po_number FROM purchase_orders WHERE id=$1', [grn.po_id]);
+      if (poRows[0]?.created_by) {
+        notifyWorkflowEvent('goods_received', {
+          module: 'Goods Receipt',
+          recordId: grn.id,
+          recipientIds: [poRows[0].created_by],
+          context: { poNumber: poRows[0].po_number },
+        });
+      }
     }
 
     // Fire-and-forget: check low stock for each received item
@@ -702,6 +925,48 @@ router.get('/grn', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// =====================================================
+// GRN EXPORT
+// =====================================================
+router.get('/grn/export', async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const { from_date, to_date, vendor_id } = req.query;
+    const params = [];
+    const conditions = ['grn.deleted_at IS NULL'];
+    if (companyId) { params.push(companyId); conditions.push(`grn.company_id = $${params.length}`); }
+    if (from_date) { params.push(from_date); conditions.push(`grn.received_date >= $${params.length}`); }
+    if (to_date)   { params.push(to_date);   conditions.push(`grn.received_date <= $${params.length}`); }
+    if (vendor_id) { params.push(vendor_id); conditions.push(`po.supplier_id = $${params.length}`); }
+
+    const { rows } = await pool.query(`
+      SELECT grn.grn_number, grn.received_date, po.po_number,
+             COALESCE(v.vendor_name,'') AS vendor_name,
+             COALESCE(w.warehouse_name,'') AS warehouse,
+             (SELECT COUNT(*) FROM grn_items WHERE grn_id=grn.id)::INT AS items_count,
+             (SELECT SUM(quantity_received) FROM grn_items WHERE grn_id=grn.id) AS total_qty,
+             (SELECT SUM(quantity_rejected) FROM grn_items WHERE grn_id=grn.id) AS rejected_qty,
+             grn.notes
+      FROM goods_receipt_notes grn
+      JOIN purchase_orders po ON po.id = grn.po_id
+      LEFT JOIN vendors v ON v.id = po.supplier_id
+      LEFT JOIN warehouses w ON w.id = grn.warehouse_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY grn.received_date DESC
+    `, params);
+
+    const header = 'GRN No,Date,PO No,Vendor,Warehouse,Items,Received Qty,Rejected Qty,Notes';
+    const csvRows = rows.map(r => [
+      r.grn_number||'', r.received_date||'', r.po_number||'', r.vendor_name||'',
+      r.warehouse||'', r.items_count||0, r.total_qty||0, r.rejected_qty||0, r.notes||'',
+    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="grn-${Date.now()}.csv"`);
+    res.send([header, ...csvRows].join('\n'));
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 router.get('/grn/:id', async (req, res) => {
@@ -771,13 +1036,21 @@ router.get('/vendors', async (req, res) => {
   try {
     const { search, category, status } = req.query;
     const companyId = cid(req);
+    // VendorRiskDashboard has always sent ?risk_rating here, but this handler
+    // only destructured search/category/status — the risk filter was silently
+    // dropped and the list came back unfiltered. vendor_type is accepted too, so
+    // the dashboard filter bar's dimensions both reach the query.
+    const riskRating = dimension(req.query, 'risk_rating');
+    const vendorType = dimension(req.query, 'vendor_type');
     const conditions = ['1=1'];
     const params = [];
     let idx = 1;
-    if (companyId) { conditions.push(`(v.company_id = $${idx++} OR v.company_id IS NULL)`); params.push(companyId); }
-    if (search)    { conditions.push(`(v.vendor_name ILIKE $${idx} OR v.contact_person ILIKE $${idx})`); params.push(`%${search}%`); idx++; }
-    if (category)  { conditions.push(`v.category = $${idx++}`); params.push(category); }
-    if (status)    { conditions.push(`v.status = $${idx++}`); params.push(status); }
+    if (companyId)  { conditions.push(`(v.company_id = $${idx++} OR v.company_id IS NULL)`); params.push(companyId); }
+    if (search)     { conditions.push(`(v.vendor_name ILIKE $${idx} OR v.contact_person ILIKE $${idx})`); params.push(`%${search}%`); idx++; }
+    if (category)   { conditions.push(`v.category = $${idx++}`); params.push(category); }
+    if (status)     { conditions.push(`v.status = $${idx++}`); params.push(status); }
+    if (riskRating) { conditions.push(`v.risk_rating = $${idx++}`); params.push(riskRating); }
+    if (vendorType) { conditions.push(`v.vendor_type = $${idx++}`); params.push(vendorType); }
 
     // Try query with vendor_ratings join; fall back to plain select if table not yet created
     let rows;
@@ -855,12 +1128,178 @@ router.get('/rfqs/:id', async (req, res) => {
       [req.params.id]
     );
     const { rows: quotes } = await pool.query(
-      `SELECT rq.*, v.vendor_name FROM rfq_quotes rq LEFT JOIN vendors v ON v.id=rq.vendor_id WHERE rq.rfq_id=$1 ORDER BY rq.unit_price NULLS LAST`,
+      `SELECT rq.*, v.vendor_name,
+              v.lead_time_days   AS vendor_lead_time_days,
+              v.payment_terms_days AS vendor_payment_terms_days,
+              v.on_time_pct, v.defect_rate, v.is_single_source
+         FROM rfq_quotes rq
+         LEFT JOIN vendors v ON v.id = rq.vendor_id
+        WHERE rq.rfq_id = $1
+        ORDER BY rq.unit_price NULLS LAST`,
       [req.params.id]
     );
-    res.json({ ...rfqRows[0], items, quotes });
+
+    // The Award modal used to badge "Lowest" off MIN(unit_price) and that was
+    // the entire basis for awarding an RFQ. Score every quote on total cost of
+    // ownership so the buyer sees what the part actually costs before awarding.
+    const tco = await scoreRfqQuotes(rfqRows[0], items, quotes, cid(req));
+
+    res.json({ ...rfqRows[0], items, quotes: tco.quotes, tco_comparison: tco.comparison, tco_basis: tco.basis });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+/**
+ * Score an RFQ's quotes on TCO.
+ *
+ * An RFQ quote is stored per-RFQ, not per-line (rfq_quotes has one row per
+ * rfq_id/vendor_id with a single unit_price), so the comparison quantity is the
+ * RFQ's total quantity: the sum of its item lines, falling back to the legacy
+ * scalar `rfqs.quantity` for RFQs raised before rfq_items existed.
+ *
+ * Item context (holding cost, demand, GST) is only attributable when the RFQ
+ * covers exactly ONE component — for a multi-line RFQ the engine is fed the
+ * commercial terms alone and the basis block says so, rather than silently
+ * borrowing the first line's parameters for the whole basket.
+ */
+async function scoreRfqQuotes(rfq, items, quotes, companyId) {
+  const lineQty = items.reduce((s, i) => s + (parseFloat(i.quantity) || 0), 0);
+  const totalQty = lineQty > 0 ? lineQty : (parseFloat(rfq.quantity) || 0) || 1;
+
+  const singleItemId = items.length === 1 && items[0].item_id ? Number(items[0].item_id) : null;
+
+  let itemRow = {}, perf = new Map(), demand = { annual_demand_qty: null };
+  const params = await loadTcoParams(companyId);
+
+  // TCO switched off for this company: return the quotes untouched and a
+  // ranking with null winners, so the award modal falls back to price without
+  // rendering a column of dashes.
+  if (!params.tco_enabled) {
+    const empty = rankOptions([], params);
+    return {
+      quotes: quotes.map(q => ({ ...q, tco: null })),
+      comparison: {
+        quantity: totalQty, best_tco_vendor_id: null, best_price_vendor_id: null,
+        best_tco_per_unit: null, tco_spread_pct: 0, recommendation: empty.recommendation, confidence: 0,
+      },
+      basis: tcoBasis(params, { quantity: totalQty, quantity_basis: lineQty > 0 ? 'sum of RFQ item lines' : 'RFQ header quantity' }),
+    };
+  }
+
+  if (singleItemId) {
+    const [{ rows: ir }, p, d] = await Promise.all([
+      pool.query(
+        `SELECT gst_rate, default_gst_rate, holding_cost_pct, min_order_qty
+           FROM inventory_items WHERE id = $1`, [singleItemId]
+      ).catch(() => ({ rows: [] })),
+      loadVendorPerformance(singleItemId, companyId),
+      loadAnnualDemand(singleItemId, companyId),
+    ]);
+    itemRow = ir[0] || {}; perf = p; demand = d;
+  }
+
+  const n = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
+  const itemTax = n(itemRow.gst_rate ?? itemRow.default_gst_rate);
+
+  const ranked = rankOptions(quotes.map((q) => {
+    const pf = perf.get(Number(q.vendor_id)) || {};
+    // total_amount is the vendor's own price for the whole RFQ; prefer it over
+    // unit_price x qty, which silently disagrees whenever the vendor quoted a
+    // slab or a rounded lot total.
+    const total = n(q.total_amount);
+    const unit = n(q.unit_price) ?? (total != null && totalQty > 0 ? total / totalQty : null);
+    return {
+      vendor_id: Number(q.vendor_id),
+      vendor_name: q.vendor_name || `Vendor #${q.vendor_id}`,
+      quote_id: q.id,
+      unit_price: unit,
+      quantity: totalQty,
+      freight_amount:   n(q.freight_amount),
+      insurance_amount: n(q.insurance_amount),
+      duty_amount:      n(q.duty_amount),
+      packaging_amount: n(q.packaging_amount),
+      other_charges:    n(q.other_charges),
+      tooling_cost:     n(q.tooling_cost),
+      tax_pct:          n(q.tax_pct) ?? itemTax,
+      moq:              n(q.moq),
+      // A quoted delivery is a commitment; the vendor master's standing lead
+      // time is a default. The basis label keeps the two apart.
+      lead_time_days:  q.delivery_days ?? q.vendor_lead_time_days ?? null,
+      lead_time_basis: q.delivery_days != null ? 'quoted'
+        : (q.vendor_lead_time_days != null ? 'estimated' : 'assumed'),
+      payment_terms_days: parsePaymentTermsDays(q.payment_terms) ?? n(q.vendor_payment_terms_days),
+      payment_terms_basis: parsePaymentTermsDays(q.payment_terms) != null ? 'quoted' : 'estimated',
+      // masterRate() reads a hand-maintained 0 as "never measured" rather than
+      // as a real 0% on-time record, which would fabricate a penalty.
+      reject_rate_pct: pf.reject_rate_pct ?? masterRate(q.defect_rate),
+      reject_basis:    pf.reject_rate_pct != null ? 'observed' : 'estimated',
+      on_time_pct:     pf.on_time_pct ?? masterRate(q.on_time_pct),
+      on_time_basis:   pf.on_time_pct != null ? 'observed' : 'estimated',
+      freight_pct_observed: pf.freight_pct_observed ?? null,
+      is_single_source: !!q.is_single_source,
+      annual_demand_qty: demand.annual_demand_qty,
+      holding_cost_pct:  n(itemRow.holding_cost_pct),
+    };
+  }), params);
+
+  const byId = new Map(ranked.options.map(o => [o.quote_id, o]));
+  return {
+    quotes: quotes.map((q) => {
+      const o = byId.get(q.id);
+      return o ? {
+        ...q,
+        tco: o.tco,
+        tco_per_unit: o.tco.tco_per_unit,
+        tco_total: o.tco.tco_total,
+        tco_premium_pct: o.tco.premium_pct,
+        tco_vs_best_pct: o.tco_vs_best_pct,
+        is_lowest_tco: o.is_lowest_tco,
+        is_lowest_price: o.is_lowest_price,
+        tco_confidence: o.tco.confidence,
+      } : { ...q, tco: null };
+    }),
+    comparison: {
+      quantity: totalQty,
+      best_tco_vendor_id: ranked.best_tco_id,
+      best_price_vendor_id: ranked.best_price_id,
+      best_tco_per_unit: ranked.best_tco_per_unit,
+      tco_spread_pct: ranked.tco_spread_pct,
+      recommendation: ranked.recommendation,
+      confidence: ranked.confidence,
+    },
+    basis: tcoBasis(params, {
+      quantity: totalQty,
+      quantity_basis: lineQty > 0 ? 'sum of RFQ item lines' : 'RFQ header quantity',
+      // Says plainly why a multi-line RFQ carries no carrying-cost context.
+      item_context: singleItemId
+        ? 'single-line RFQ — item holding cost, demand and GST applied'
+        : 'multi-line RFQ — commercial terms only; per-item holding cost, demand and GST are not attributable',
+      annual_demand_qty: demand.annual_demand_qty,
+      demand_source: demand.demand_source ?? null,
+      tax_pct: itemTax,
+    }),
+  };
+}
+
+/**
+ * Credit days from a free-text payment terms string ("Net 30", "45 days",
+ * "30 Days from Invoice"). Returns null when nothing parses — an unreadable
+ * term must NOT be scored as cash-on-delivery, which would hand the vendor a
+ * financing penalty they never earned.
+ */
+function parsePaymentTermsDays(text) {
+  if (text == null) return null;
+  const s = String(text).trim();
+  if (!s) return null;
+  if (/\b(advance|prepaid|pia|payment in advance)\b/i.test(s)) {
+    const adv = s.match(/(\d{1,3})\s*(?:days?)?/i);
+    return adv ? -Math.abs(parseInt(adv[1], 10)) : -1;
+  }
+  if (/\b(cod|cash on delivery|immediate|against delivery)\b/i.test(s)) return 0;
+  const m = s.match(/(?:net\s*)?(\d{1,3})\s*(?:days?)?/i);
+  if (!m) return null;
+  const d = parseInt(m[1], 10);
+  return Number.isFinite(d) && d >= 0 && d <= 365 ? d : null;
+}
 
 router.post('/rfqs', async (req, res) => {
   const client = await pool.connect();
@@ -927,6 +1366,30 @@ router.post('/rfqs/:id/send-to-vendors', async (req, res) => {
       [JSON.stringify(vendor_ids), id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'RFQ not found' });
+
+    // "Send to vendors" only ever recorded rfq_quotes rows and flipped the RFQ
+    // to 'sent' — no vendor ever received anything, same gap PO approval had
+    // before sendPurchaseOrderToVendor. Fire-and-forget, same contract as that
+    // one: a delivery failure must not affect an RFQ send that already committed.
+    pool.query(
+      `SELECT ri.item_name, ri.quantity, ri.unit, ri.remarks FROM rfq_items ri WHERE ri.rfq_id=$1 ORDER BY ri.id`,
+      [id]
+    ).then(async ({ rows: rfqItems }) => {
+      const { rows: vendorRows } = await pool.query(
+        `SELECT id, vendor_name, email FROM vendors WHERE id = ANY($1::int[])`,
+        [vendor_ids]
+      );
+      for (const vendor of vendorRows) {
+        if (!vendor.email) continue;
+        await sendRfqToVendor(vendor.email, {
+          rfqNumber: rows[0].rfq_number,
+          vendorName: vendor.vendor_name,
+          items: rfqItems,
+          requiredBy: rows[0].required_by,
+        }).catch((err) => console.error(`[procurement] RFQ email to vendor ${vendor.id} failed:`, err.message));
+      }
+    }).catch((err) => console.error('[procurement] RFQ vendor email dispatch failed:', err.message));
+
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -934,15 +1397,40 @@ router.post('/rfqs/:id/send-to-vendors', async (req, res) => {
 router.post('/rfqs/:rfqId/responses/:vendorId', async (req, res) => {
   try {
     const { rfqId, vendorId } = req.params;
-    const { unit_price, total_amount, delivery_days, payment_terms, notes } = req.body;
+    const {
+      unit_price, total_amount, delivery_days, payment_terms, notes,
+      // TCO adders. Each is optional and each stays NULL when not supplied —
+      // a 0 default would assert "freight is free" and quietly flatter this
+      // vendor against one who did declare their charges.
+      freight_amount, insurance_amount, duty_amount, packaging_amount,
+      other_charges, tooling_cost, tax_pct, warranty_months, moq,
+      currency, valid_until,
+    } = req.body;
+    const nn = (v) => {
+      if (v == null || v === '') return null;
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : null;
+    };
     const { rows } = await pool.query(`
-      INSERT INTO rfq_quotes (rfq_id, vendor_id, unit_price, total_amount, delivery_days, payment_terms, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      INSERT INTO rfq_quotes (
+        rfq_id, vendor_id, unit_price, total_amount, delivery_days, payment_terms, notes,
+        freight_amount, insurance_amount, duty_amount, packaging_amount,
+        other_charges, tooling_cost, tax_pct, warranty_months, moq, currency, valid_until)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       ON CONFLICT (rfq_id, vendor_id) DO UPDATE SET
         unit_price=EXCLUDED.unit_price, total_amount=EXCLUDED.total_amount,
-        delivery_days=EXCLUDED.delivery_days, payment_terms=EXCLUDED.payment_terms, notes=EXCLUDED.notes
+        delivery_days=EXCLUDED.delivery_days, payment_terms=EXCLUDED.payment_terms, notes=EXCLUDED.notes,
+        freight_amount=EXCLUDED.freight_amount, insurance_amount=EXCLUDED.insurance_amount,
+        duty_amount=EXCLUDED.duty_amount, packaging_amount=EXCLUDED.packaging_amount,
+        other_charges=EXCLUDED.other_charges, tooling_cost=EXCLUDED.tooling_cost,
+        tax_pct=EXCLUDED.tax_pct, warranty_months=EXCLUDED.warranty_months,
+        moq=EXCLUDED.moq, currency=EXCLUDED.currency, valid_until=EXCLUDED.valid_until
       RETURNING *
-    `, [rfqId, vendorId, unit_price, total_amount, delivery_days, payment_terms, notes]);
+    `, [rfqId, vendorId, unit_price, total_amount, delivery_days, payment_terms, notes,
+        nn(freight_amount), nn(insurance_amount), nn(duty_amount), nn(packaging_amount),
+        nn(other_charges), nn(tooling_cost), nn(tax_pct),
+        warranty_months == null || warranty_months === '' ? null : parseInt(warranty_months, 10),
+        nn(moq), currency || null, valid_until || null]);
     await pool.query(`UPDATE rfqs SET status='responses_received' WHERE id=$1 AND status='sent'`, [rfqId]);
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1026,9 +1514,137 @@ router.patch('/rfqs/:rfqId/award/:vendorId', async (req, res) => {
     } finally {
       client.release();
     }
-    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: rfqRows[0].id, recordType: 'rfq', action: 'award', oldData: null, newData: { ...rfqRows[0], awarded_vendor_id: vendorId, quote: quoteRows[0] ?? null }, req });
-    res.json({ success: true, rfq: rfqRows[0], quote: quoteRows[0], po });
+    // Freeze what this award was decided on. The rates behind a TCO can change
+    // at any time, and once they do nobody can show what the comparison said on
+    // the day — so the figures and the basis are stored, never recomputed.
+    const decision = await recordAwardDecision({
+      rfqId, vendorId, poId: po?.id ?? null, req,
+    }).catch((e) => {
+      // A failed audit write must not undo a completed award. It is reported
+      // rather than swallowed, because a silent gap here is exactly the debt
+      // this table exists to remove.
+      console.warn('[award] TCO decision record failed:', e.message);
+      return null;
+    });
+
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: rfqRows[0].id, recordType: 'rfq', action: 'award', oldData: null, newData: { ...rfqRows[0], awarded_vendor_id: vendorId, quote: quoteRows[0] ?? null, tco_decision: decision }, req });
+    res.json({ success: true, rfq: rfqRows[0], quote: quoteRows[0], po, tco_decision: decision });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * Score the RFQ as it stood at award time and write one immutable row.
+ *
+ * Re-scores rather than trusting anything the client sent: the decision record
+ * is an audit artefact, and a caller that could post its own TCO figures could
+ * post flattering ones.
+ */
+async function recordAwardDecision({ rfqId, vendorId, poId, req }) {
+  const companyId = cid(req);
+  const { rows: rfqRows } = await pool.query(`SELECT * FROM rfqs WHERE id = $1`, [rfqId]);
+  if (!rfqRows[0]) return null;
+
+  const { rows: items } = await pool.query(
+    `SELECT * FROM rfq_items WHERE rfq_id = $1 ORDER BY id`, [rfqId]
+  );
+  const { rows: quotes } = await pool.query(
+    `SELECT rq.*, v.vendor_name, v.lead_time_days AS vendor_lead_time_days,
+            v.payment_terms_days AS vendor_payment_terms_days,
+            v.on_time_pct, v.defect_rate, v.is_single_source
+       FROM rfq_quotes rq LEFT JOIN vendors v ON v.id = rq.vendor_id
+      WHERE rq.rfq_id = $1`,
+    [rfqId]
+  );
+
+  const scored = await scoreRfqQuotes(rfqRows[0], items, quotes, companyId);
+  const cmp = scored.comparison;
+  const won = scored.quotes.find(q => Number(q.vendor_id) === Number(vendorId));
+
+  const lowestTco   = scored.quotes.find(q => q.is_lowest_tco);
+  const lowestPrice = scored.quotes.find(q => q.is_lowest_price);
+  const followed = cmp.best_tco_vendor_id == null
+    ? null
+    : Number(cmp.best_tco_vendor_id) === Number(vendorId);
+
+  // Only a positive gap is a forgone saving. A negative one would mean the
+  // award beat the "best" option, which cannot happen and would signal a bug.
+  const forgone = won?.tco_total != null && lowestTco?.tco_total != null
+    ? Math.max(0, +(won.tco_total - lowestTco.tco_total).toFixed(2))
+    : null;
+
+  const { rows } = await pool.query(
+    `INSERT INTO procurement_award_decisions (
+       rfq_id, quote_id, awarded_vendor_id, po_id, quantity,
+       awarded_unit_price, awarded_tco_total, awarded_tco_per_unit, awarded_confidence,
+       lowest_tco_vendor_id, lowest_tco_total, lowest_price_vendor_id, lowest_price_total,
+       tco_saving_forgone, followed_recommendation, tco_breakdown, tco_basis,
+       tco_enabled, decided_by_user_id, company_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+     RETURNING id, followed_recommendation, tco_saving_forgone, awarded_tco_total`,
+    [
+      rfqId, won?.id ?? null, vendorId, poId, cmp.quantity,
+      won?.unit_price ?? null, won?.tco_total ?? null, won?.tco_per_unit ?? null,
+      won?.tco_confidence ?? null,
+      cmp.best_tco_vendor_id, lowestTco?.tco_total ?? null,
+      cmp.best_price_vendor_id, lowestPrice?.tco_total ?? null,
+      forgone, followed,
+      won?.tco ? JSON.stringify(won.tco) : null,
+      JSON.stringify(scored.basis),
+      scored.basis.tco_enabled !== false,
+      req.user?.userId ?? req.user?.id ?? null,
+      companyId,
+    ]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * GET /procurement/award-decisions — the review query.
+ *
+ * `?overridden=true` narrows to awards that did NOT go to the lowest-TCO
+ * vendor, which is the list a procurement review actually wants: every one of
+ * them is a decision somebody should be able to explain.
+ */
+router.get('/award-decisions', async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const conds = ['1=1'];
+    const params = [];
+    if (companyId) { params.push(companyId); conds.push(`d.company_id = $${params.length}`); }
+    if (String(req.query.overridden) === 'true') conds.push('d.followed_recommendation = false');
+    if (req.query.rfq_id) { params.push(Number(req.query.rfq_id)); conds.push(`d.rfq_id = $${params.length}`); }
+
+    const { rows } = await pool.query(
+      `SELECT d.*, r.rfq_number, aw.vendor_name AS awarded_vendor_name,
+              lt.vendor_name AS lowest_tco_vendor_name,
+              lp.vendor_name AS lowest_price_vendor_name,
+              po.po_number, u.name AS decided_by_name
+         FROM procurement_award_decisions d
+         JOIN rfqs r         ON r.id  = d.rfq_id
+         LEFT JOIN vendors aw ON aw.id = d.awarded_vendor_id
+         LEFT JOIN vendors lt ON lt.id = d.lowest_tco_vendor_id
+         LEFT JOIN vendors lp ON lp.id = d.lowest_price_vendor_id
+         LEFT JOIN purchase_orders po ON po.id = d.po_id
+         LEFT JOIN users u    ON u.id  = d.decided_by_user_id
+        WHERE ${conds.join(' AND ')}
+        ORDER BY d.created_at DESC
+        LIMIT 200`,
+      params
+    );
+
+    const overridden = rows.filter(r => r.followed_recommendation === false);
+    res.json({
+      decisions: rows,
+      summary: {
+        total: rows.length,
+        overridden: overridden.length,
+        // The headline for a procurement review: what awarding against total
+        // cost of ownership has cost, at the rates in force on each day.
+        total_saving_forgone: +overridden
+          .reduce((s, r) => s + (parseFloat(r.tco_saving_forgone) || 0), 0).toFixed(2),
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── 3-Way Match ───────────────────────────────────────────────────────────────
@@ -1205,8 +1821,8 @@ router.get('/dashboard', async (req, res) => {
 
     // Additional live KPIs
     const [openRFQs, pendingGRNs, ytdSpend, spendByVendor] = await Promise.all([
-      pool.query(`SELECT COUNT(*) AS count FROM rfqs WHERE status NOT IN ('closed','cancelled') AND deleted_at IS NULL${cidFilter}`, params),
-      pool.query(`SELECT COUNT(*) AS count FROM goods_receipt_notes WHERE status IS NULL OR status = 'pending' AND deleted_at IS NULL${cidFilter}`, params),
+      pool.query(`SELECT COUNT(*) AS count FROM rfqs WHERE status NOT IN ('closed','cancelled')${cidFilter}`, params),
+      pool.query(`SELECT COUNT(*) AS count FROM goods_receipt_notes WHERE (status IS NULL OR status = 'pending') AND deleted_at IS NULL${cidFilter}`, params),
       pool.query(`SELECT COALESCE(SUM(total_amount),0) AS total FROM purchase_orders WHERE EXTRACT(year FROM order_date)=EXTRACT(year FROM CURRENT_DATE) AND status!='cancelled' AND deleted_at IS NULL${cidFilter}`, params),
       companyId ? pool.query(`SELECT COALESCE(v.vendor_name,'Unknown') AS vendor, SUM(po.total_amount) AS spend FROM purchase_orders po LEFT JOIN vendors v ON v.id=po.supplier_id WHERE po.company_id=$1 AND po.status!='cancelled' AND po.deleted_at IS NULL AND po.order_date>=DATE_TRUNC('month',CURRENT_DATE) GROUP BY v.vendor_name ORDER BY spend DESC LIMIT 5`, [companyId]) : Promise.resolve({ rows: [] }),
     ]);
@@ -1292,6 +1908,27 @@ router.patch('/three-way-match/:id/approve', allowRoles('super_admin','admin','f
   try {
     const userId = req.user?.userId ?? req.user?.id ?? null;
     const companyId = cid(req);
+
+    // "Block payment on 3-way-match mismatch" was written and read only by
+    // Settings' own CRUD — no bill/approval/payment route ever checked it, so
+    // a flagged discrepancy could be freely approved (and the bill this
+    // creates freely paid) regardless of the setting. This is the one place
+    // a discrepancy actually turns into a payable bill, so it's the correct
+    // choke point: block the approval itself unless the discrepancy has
+    // already been cleared via PATCH /three-way-match/:id/resolve.
+    const { rows: existingRows } = await pool.query(
+      `SELECT match_status FROM three_way_matches WHERE id=$1`, [req.params.id]
+    );
+    if (!existingRows[0]) return res.status(404).json({ error: 'Match record not found' });
+    if (existingRows[0].match_status === 'discrepancy') {
+      const settings = await getProcSettings(companyId);
+      if (settings.block_payment_on_mismatch) {
+        return res.status(400).json({
+          error: 'This PO/GRN/invoice match has a flagged discrepancy and payment-blocking is enabled in Procurement Settings. Resolve the discrepancy first (PATCH /three-way-match/:id/resolve) before approving for payment.',
+        });
+      }
+    }
+
     const { rows } = await pool.query(`
       UPDATE three_way_matches SET match_status='approved', approved_by=$1, approved_at=NOW()
       WHERE id=$2 RETURNING *
@@ -1325,7 +1962,7 @@ router.patch('/three-way-match/:id/approve', allowRoles('super_admin','admin','f
       VALUES
         ($1, $2, $3, $4::date, $5::numeric, $5::numeric,
         'unpaid', 'Auto-created from 3-way match approval', $6, $7)
-      ON CONFLICT (bill_number) DO NOTHING
+      ON CONFLICT (company_id, bill_number) DO NOTHING
       RETURNING id
     `, [
       matchedPartyId,
@@ -1337,13 +1974,29 @@ router.patch('/three-way-match/:id/approve', allowRoles('super_admin','admin','f
       userId,
     ]);
 
+    // ON CONFLICT DO NOTHING returns zero rows on a duplicate invoice number —
+    // this used to be swallowed silently, so the match record showed
+    // "approved" with bill_id: null forever and nobody was told a payable
+    // bill was never created. Surface the existing bill instead so the
+    // approval is traceable to a real (possibly pre-existing) bill.
+    let billId = billRes.rows[0]?.id ?? null;
+    let duplicateBill = false;
+    if (!billId) {
+      const { rows: dupRows } = await pool.query(
+        `SELECT id FROM bills WHERE company_id = $1 AND bill_number = $2 AND deleted_at IS NULL LIMIT 1`,
+        [companyId, rows[0].vendor_invoice_no]
+      );
+      billId = dupRows[0]?.id ?? null;
+      duplicateBill = true;
+    }
+
     logAudit({
       userId, module: 'procurement', recordId: rows[0].id,
       recordType: 'three_way_match', action: 'approve',
       oldData: null, newData: rows[0], req,
     });
 
-    res.json({ ...rows[0], bill_id: billRes.rows[0]?.id ?? null });
+    res.json({ ...rows[0], bill_id: billId, ...(duplicateBill ? { duplicate_invoice: true } : {}) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1749,6 +2402,33 @@ const PROC_DEFAULTS = {
   notify_grn_receipt:          false,
   alert_vendor_rating_drop:    false,
   alert_overdue_delivery:      false,
+  // TCO costing rates — mirrored from the engine so a company with no settings
+  // row still gets a defensible model rather than zeros (zeros would disable
+  // half the cost drivers and make every vendor look identical).
+  ...TCO_DEFAULTS,
+};
+
+// The TCO rates the settings PUT owns. Kept as a list so the INSERT, the
+// ON CONFLICT SET and the validation cannot drift apart the way the 19
+// hand-written columns above already have to be kept in step by eye.
+const TCO_SETTING_COLS = Object.keys(TCO_DEFAULTS);
+
+// Rates are percentages and per-event costs, not free numbers. A negative
+// carrying rate turns holding cost into a rebate and inverts every ranking on
+// the comparison page, so it is rejected at the door rather than clamped
+// silently — a buyer who typed -18 needs to know it did not take.
+const TCO_RANGES = {
+  cost_of_capital_pct:          [0, 100],
+  inventory_carrying_pct:       [0, 100],
+  rework_cost_pct:              [0, 500],
+  default_freight_pct:          [0, 100],
+  gst_input_credit_pct:         [0, 100],
+  single_source_risk_pct:       [0, 100],
+  service_level_z:              [0, 5],
+  ordering_cost_per_po:         [0, 1e9],
+  inspection_cost_per_receipt:  [0, 1e9],
+  expedite_cost_per_late_order: [0, 1e9],
+  tco_horizon_months:           [1, 120],
 };
 
 router.get('/settings', async (req, res) => {
@@ -1776,6 +2456,23 @@ router.put('/settings', async (req, res) => {
     }
     const companyId = cid(req);
     const b = req.body;
+
+    // Validate the TCO rates before they reach SQL. These feed every vendor
+    // comparison in the app, so a typo here silently changes which vendor the
+    // buyer is told to award — reject it rather than clamp it.
+    const tcoValues = [];
+    for (const col of TCO_SETTING_COLS) {
+      const dflt = TCO_DEFAULTS[col];
+      if (typeof dflt === 'boolean') { tcoValues.push(b[col] ?? dflt); continue; }
+      if (b[col] == null || b[col] === '') { tcoValues.push(dflt); continue; }
+      const v = parseFloat(b[col]);
+      const [lo, hi] = TCO_RANGES[col] || [0, Number.MAX_SAFE_INTEGER];
+      if (!Number.isFinite(v) || v < lo || v > hi) {
+        return res.status(422).json({ error: `${col} must be a number between ${lo} and ${hi}` });
+      }
+      tcoValues.push(col === 'tco_horizon_months' ? Math.round(v) : v);
+    }
+
     await pool.query(
       `INSERT INTO procurement_settings (
          company_id,
@@ -1784,8 +2481,11 @@ router.put('/settings', async (req, res) => {
          enforce_3way_match, block_payment_on_mismatch, allowable_price_variance_pct,
          pr_prefix, po_prefix, grn_prefix, rfq_prefix,
          notify_po_approval, notify_grn_receipt, alert_vendor_rating_drop, alert_overdue_delivery,
+         ${TCO_SETTING_COLS.join(', ')},
          updated_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+                 ${TCO_SETTING_COLS.map((_, i) => `$${20 + i}`).join(',')},
+                 NOW())
        ON CONFLICT (company_id) DO UPDATE SET
          default_payment_terms_days  = EXCLUDED.default_payment_terms_days,
          auto_approve_below          = EXCLUDED.auto_approve_below,
@@ -1805,6 +2505,7 @@ router.put('/settings', async (req, res) => {
          notify_grn_receipt          = EXCLUDED.notify_grn_receipt,
          alert_vendor_rating_drop    = EXCLUDED.alert_vendor_rating_drop,
          alert_overdue_delivery      = EXCLUDED.alert_overdue_delivery,
+         ${TCO_SETTING_COLS.map(c => `${c} = EXCLUDED.${c}`).join(', ')},
          updated_at                  = NOW()`,
       [
         companyId,
@@ -1826,57 +2527,16 @@ router.put('/settings', async (req, res) => {
         b.notify_grn_receipt          ?? false,
         b.alert_vendor_rating_drop    ?? false,
         b.alert_overdue_delivery      ?? false,
+        ...tcoValues,
       ]
     );
-    res.json({ ok: true });
+    res.json({ ok: true, tco: Object.fromEntries(TCO_SETTING_COLS.map((c, i) => [c, tcoValues[i]])) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // PR EXPORT — already registered above before /:id route
-
-// =====================================================
-// GRN EXPORT
-// =====================================================
-router.get('/grn/export', async (req, res) => {
-  try {
-    const companyId = cid(req);
-    const { from_date, to_date, vendor_id } = req.query;
-    const params = [];
-    const conditions = ['grn.deleted_at IS NULL'];
-    if (companyId) { params.push(companyId); conditions.push(`grn.company_id = $${params.length}`); }
-    if (from_date) { params.push(from_date); conditions.push(`grn.received_date >= $${params.length}`); }
-    if (to_date)   { params.push(to_date);   conditions.push(`grn.received_date <= $${params.length}`); }
-    if (vendor_id) { params.push(vendor_id); conditions.push(`po.supplier_id = $${params.length}`); }
-
-    const { rows } = await pool.query(`
-      SELECT grn.grn_number, grn.received_date, po.po_number,
-             COALESCE(v.vendor_name,'') AS vendor_name,
-             COALESCE(w.warehouse_name,'') AS warehouse,
-             (SELECT COUNT(*) FROM grn_items WHERE grn_id=grn.id)::INT AS items_count,
-             (SELECT SUM(quantity_received) FROM grn_items WHERE grn_id=grn.id) AS total_qty,
-             (SELECT SUM(quantity_rejected) FROM grn_items WHERE grn_id=grn.id) AS rejected_qty,
-             grn.notes
-      FROM goods_receipt_notes grn
-      JOIN purchase_orders po ON po.id = grn.po_id
-      LEFT JOIN vendors v ON v.id = po.supplier_id
-      LEFT JOIN warehouses w ON w.id = grn.warehouse_id
-      WHERE ${conditions.join(' AND ')}
-      ORDER BY grn.received_date DESC
-    `, params);
-
-    const header = 'GRN No,Date,PO No,Vendor,Warehouse,Items,Received Qty,Rejected Qty,Notes';
-    const csvRows = rows.map(r => [
-      r.grn_number||'', r.received_date||'', r.po_number||'', r.vendor_name||'',
-      r.warehouse||'', r.items_count||0, r.total_qty||0, r.rejected_qty||0, r.notes||'',
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="grn-${Date.now()}.csv"`);
-    res.send([header, ...csvRows].join('\n'));
-  } catch (error) { res.status(500).json({ error: error.message }); }
-});
 
 // =====================================================
 // RETURN TO VENDOR (RTV)

@@ -1,6 +1,8 @@
 // frontend/src/features/hr/pages/EmployeeReports.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { BarChart3 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function downloadCSV(data, filename) {
   if (!data?.length) return;
@@ -72,11 +74,15 @@ export default function EmployeeReports() {
   };
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Employee Reports</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Download headcount, attrition, and document expiry reports as CSV</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Human Resources"
+        title="Employee Reports"
+        subtitle="Download headcount, attrition, and document expiry reports as CSV"
+      />
+    }>
+
 
       {msg.text && (
         <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontWeight: 500, fontSize: 14, background: msg.type === 'error' ? '#fef2f2' : '#f0fdf4', color: msg.type === 'error' ? '#dc2626' : '#16a34a', border: `1px solid ${msg.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>
@@ -126,7 +132,7 @@ export default function EmployeeReports() {
 
       {/* Age Distribution Chart */}
       <AgeDistribution />
-    </div>
+    </PageShell>
   );
 }
 

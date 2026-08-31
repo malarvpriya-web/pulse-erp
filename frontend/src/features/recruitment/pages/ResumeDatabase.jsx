@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 import {
-  Search, Upload, User, Briefcase, ExternalLink,
-  Plus, X, Building2, Clock, Pencil,
+  Search, Upload, User, Briefcase, ExternalLink, Plus, X, Building2,
+  Clock, Pencil, UserPlus,
 } from 'lucide-react';
 
 // ── Stage config ──────────────────────────────────────────────────────────────
@@ -22,7 +23,7 @@ const STAGE_LABEL = Object.fromEntries(STAGES.map(s => [s.value, s.label]));
 
 const STAGE_COLOR = {
   applied:   { bg: '#dbeafe', color: '#1e40af' },
-  screening: { bg: '#fef3c7', color: '#92400e' },
+  screening: { bg: '#ede9fe', color: '#5b21b6' },
   '1st_level':{ bg: '#ede9fe', color: '#5b21b6' },
   '2nd_level':{ bg: '#f3e8ff', color: '#7e22ce' },
   offer:     { bg: '#d1fae5', color: '#065f46' },
@@ -416,20 +417,19 @@ export default function ResumeDatabase() {
   };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Resume Database</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            All candidate profiles — active pipeline &amp; speculative uploads
-          </p>
-        </div>
-        <button onClick={() => setShowUpload(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 18px', borderRadius: 9, border: 'none', background: '#6B3FDB', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Resume Database"
+        subtitle="All candidate profiles — active pipeline & speculative uploads"
+        actions={<button className="plh-cta" onClick={() => setShowUpload(true)}>
           <Upload size={14} /> Upload Resume
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+      {/* Header */}
+
 
       {/* Stats bar */}
       {stats && (
@@ -534,6 +534,6 @@ export default function ResumeDatabase() {
           onSuccess={() => { setEditCandidate(null); fetchResumes(); }}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

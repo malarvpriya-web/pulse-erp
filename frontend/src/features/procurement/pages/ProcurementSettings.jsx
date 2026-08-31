@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, CheckCircle, Link2, Hash, Bell, ShoppingBag, Tag, BarChart2, Shield, Globe, X, Plus } from 'lucide-react';
+import { Settings, CheckCircle, Link2, Hash, Bell, ShoppingBag, Tag, BarChart2, Shield, Globe, Scale, X, Plus } from 'lucide-react';
 import ModuleSettingsShell, {
   SectionCard, Row, Toggle, inputStyle,
 } from '@/features/_shared/ModuleSettingsShell';
@@ -57,6 +57,22 @@ const DEFAULT_SETTINGS = {
   // Currency
   default_currency:             'INR',
   enable_multi_currency:        false,
+  // Total cost of ownership — mirrors backend TCO_DEFAULTS in
+  // modules/procurement/engines/tcoEngine.js. Keep the two in step: the
+  // backend is authoritative, these only stop the inputs rendering blank
+  // before the first GET resolves.
+  tco_enabled:                  true,
+  cost_of_capital_pct:          12,
+  inventory_carrying_pct:       18,
+  ordering_cost_per_po:         750,
+  inspection_cost_per_receipt:  500,
+  expedite_cost_per_late_order: 2500,
+  rework_cost_pct:              25,
+  default_freight_pct:          2,
+  gst_input_credit_pct:         100,
+  single_source_risk_pct:       2,
+  service_level_z:              1.65,
+  tco_horizon_months:           12,
 };
 
 const CURRENCIES = ['INR', 'USD', 'EUR', 'GBP', 'SGD', 'AED', 'JPY', 'CNY'];
@@ -65,12 +81,13 @@ const SECTIONS = [
   { id: 'general',       label: 'General',             icon: Settings,    color: PURPLE    },
   { id: 'approvals',     label: 'Approval Thresholds', icon: CheckCircle, color: '#0369a1' },
   { id: 'three_way',     label: '3-Way Match',          icon: Link2,       color: '#10b981' },
-  { id: 'numbering',     label: 'Numbering Series',     icon: Hash,        color: '#f59e0b' },
+  { id: 'numbering',     label: 'Numbering Series',     icon: Hash,        color: '#7c5cf0' },
   { id: 'notifications', label: 'Notifications',        icon: Bell,        color: '#ef4444' },
   { id: 'vendor_cats',   label: 'Vendor Categories',    icon: Tag,         color: '#8b5cf6' },
   { id: 'mrp',           label: 'MRP Rules',            icon: BarChart2,   color: '#0284c7' },
   { id: 'quality',       label: 'Quality Rules',        icon: Shield,      color: '#16a34a' },
-  { id: 'currency',      label: 'Currency',             icon: Globe,       color: '#b45309' },
+  { id: 'tco',           label: 'Total Cost of Ownership', icon: Scale,     color: '#0d9488' },
+  { id: 'currency',      label: 'Currency',             icon: Globe,       color: '#6d28d9' },
 ];
 
 export default function ProcurementSettings() {
@@ -222,7 +239,7 @@ export default function ProcurementSettings() {
 
       case 'numbering':
         return (
-          <SectionCard icon={Hash} color="#f59e0b" label="Numbering Series">
+          <SectionCard icon={Hash} color="#7c5cf0" label="Numbering Series">
             <Row label="Purchase Request Prefix" desc="Prefix used when generating PR numbers (e.g. PR-2024-001)">
               <TxtInput field="pr_prefix" placeholder="PR" />
             </Row>
@@ -235,7 +252,7 @@ export default function ProcurementSettings() {
             <Row label="RFQ Prefix" desc="Prefix used when generating RFQ numbers (e.g. RFQ-2024-001)">
               <TxtInput field="rfq_prefix" placeholder="RFQ" />
             </Row>
-            <SaveBar color="#f59e0b" />
+            <SaveBar color="#7c5cf0" />
           </SectionCard>
         );
 
@@ -331,9 +348,62 @@ export default function ProcurementSettings() {
           </SectionCard>
         );
 
+      // The rates behind every vendor comparison in the app — Component 360's
+      // TCO column and the RFQ award modal both read them. A wrong rate here
+      // silently changes which vendor a buyer is told to award, so each row
+      // says what the number actually drives.
+      case 'tco':
+        return (
+          <SectionCard icon={Scale} color="#0d9488" label="Total Cost of Ownership">
+            <Row
+              label="Rank vendors by total cost of ownership"
+              desc="When off, comparisons fall back to unit price alone — the cheapest quote is not usually the cheapest buy"
+            >
+              <Toggle checked={!!S.tco_enabled} onChange={v => update('tco_enabled', v)} color="#0d9488" />
+            </Row>
+            <Row label="Evaluation Horizon (months)" desc="Period one-time costs (tooling) and per-order costs are spread over">
+              <NumInput field="tco_horizon_months" min={1} step={1} />
+            </Row>
+            <Row label="Cost of Capital (% / yr)" desc="Prices the money tied up in stock, and the value of a vendor's credit terms">
+              <NumInput field="cost_of_capital_pct" min={0} step={0.5} />
+            </Row>
+            <Row label="Inventory Carrying Cost (% / yr)" desc="Capital, storage, insurance and obsolescence. A component's own holding_cost_pct overrides this">
+              <NumInput field="inventory_carrying_pct" min={0} step={0.5} />
+            </Row>
+            <Row label="Ordering Cost per PO (₹)" desc={`Raising, approving, chasing and 3-way-matching one PO — ${fmtINR(S.ordering_cost_per_po)}. Penalises a low MOQ that forces frequent buys`}>
+              <NumInput field="ordering_cost_per_po" min={0} step={50} />
+            </Row>
+            <Row label="Incoming Inspection per Receipt (₹)" desc="Cost of inspecting one delivery. Set to 0 for dock-to-stock vendors">
+              <NumInput field="inspection_cost_per_receipt" min={0} step={50} />
+            </Row>
+            <Row label="Expediting per Late Order (₹)" desc="Chasing, part loads and line stoppage when a delivery misses its date. Charged in proportion to the vendor's measured late share">
+              <NumInput field="expedite_cost_per_late_order" min={0} step={100} />
+            </Row>
+            <Row label="Rework on a Reject (%)" desc="Handling and replacement cost on top of losing the part, as a % of its landed cost">
+              <NumInput field="rework_cost_pct" min={0} step={5} />
+            </Row>
+            <Row label="Freight when Unquoted (% of value)" desc="Fallback only — a quoted freight amount, or this vendor's own past freight ratio, always wins">
+              <NumInput field="default_freight_pct" min={0} step={0.5} />
+            </Row>
+            <Row
+              label="GST Recoverable as Input Credit (%)"
+              desc="At 100% GST is excluded from TCO because it is fully reclaimed. Lower it only where input credit is blocked — the non-creditable share then becomes a real cost"
+            >
+              <NumInput field="gst_input_credit_pct" min={0} step={5} />
+            </Row>
+            <Row label="Single-Source Premium (% of spend)" desc="Priced against vendors flagged as the only approved source — no alternative means no leverage and no recovery">
+              <NumInput field="single_source_risk_pct" min={0} step={0.5} />
+            </Row>
+            <Row label="Service Level Factor (z)" desc="Safety-stock cover for lead-time risk. 1.65 ≈ 95% service level, 2.33 ≈ 99%">
+              <NumInput field="service_level_z" min={0} step={0.05} />
+            </Row>
+            <SaveBar color="#0d9488" />
+          </SectionCard>
+        );
+
       case 'currency':
         return (
-          <SectionCard icon={Globe} color="#b45309" label="Currency Settings">
+          <SectionCard icon={Globe} color="#6d28d9" label="Currency Settings">
             <Row label="Default Currency" desc="Base currency used for all purchase orders and invoices">
               <select
                 value={S.default_currency || 'INR'}
@@ -344,9 +414,9 @@ export default function ProcurementSettings() {
               </select>
             </Row>
             <Row label="Enable Multi-Currency POs" desc="Allow purchase orders to be issued in foreign currencies with live exchange rates">
-              <Toggle checked={!!S.enable_multi_currency} onChange={v => update('enable_multi_currency', v)} color="#b45309" />
+              <Toggle checked={!!S.enable_multi_currency} onChange={v => update('enable_multi_currency', v)} color="#6d28d9" />
             </Row>
-            <SaveBar color="#b45309" />
+            <SaveBar color="#6d28d9" />
           </SectionCard>
         );
 
@@ -358,7 +428,7 @@ export default function ProcurementSettings() {
   return (
     <ModuleSettingsShell
       title="Procurement Settings"
-      subtitle="Configure approvals, 3-way match, numbering series, and notifications"
+      subtitle="Configure approvals, 3-way match, numbering series, cost-of-ownership rates and notifications"
       icon={ShoppingBag}
       color={PURPLE}
       sections={SECTIONS}

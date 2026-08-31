@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, FileText, X, Search, CheckCircle, XCircle, Send } from 'lucide-react';
+import { Plus, FileText, X, Search, CheckCircle, XCircle, Send, UserPlus } from 'lucide-react';
 import { matchesSearch } from '../shared/search';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = n => n >= 100000 ? `₹${(n/100000).toFixed(1)}L` : `₹${Number(n||0).toLocaleString('en-IN')}`;
 const statusLabel = s => s === 'All' ? 'All' : s === 'pending_approval' ? 'Pending Approval' : s;
@@ -11,7 +12,7 @@ const statusLabel = s => s === 'All' ? 'All' : s === 'pending_approval' ? 'Pendi
 const STATUS_COLOR = {
   draft:             { bg:'#f3f4f6', color:'#374151' },
   pending_approval:  { bg:'#ede9fe', color:'#5b21b6' },
-  sent:              { bg:'#fef3c7', color:'#92400e' },
+  sent:              { bg:'#ede9fe', color:'#5b21b6' },
   accepted:          { bg:'#d1fae5', color:'#065f46' },
   declined:          { bg:'#fee2e2', color:'#991b1b' },
   withdrawn:         { bg:'#e5e7eb', color:'#6b7280' },
@@ -178,18 +179,18 @@ export default function OfferManagement() {
   const STATUS_TABS = ['All', 'draft', 'pending_approval', 'sent', 'accepted', 'declined', 'withdrawn'];
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, flexWrap:'wrap', gap:12 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Offer Management</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>{filtered.length} offers</p>
-        </div>
-        <button
-          onClick={() => setCreateOpen(true)}
-          style={{ display:'flex', alignItems:'center', gap:7, padding:'9px 18px', background:'#4B2DCE', color:'#fff', border:'none', borderRadius:9, cursor:'pointer', fontWeight:700, fontSize:13 }}>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Offer Management"
+        actions={<button className="plh-cta"
+          onClick={() => setCreateOpen(true)}>
           <Plus size={14} /> New Offer
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
 
       {/* Stats — responsive grid */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(110px, 1fr))', gap:12, marginBottom:20 }}>
@@ -311,6 +312,6 @@ export default function OfferManagement() {
           showToast={showToast}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

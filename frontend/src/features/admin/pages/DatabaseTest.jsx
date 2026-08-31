@@ -1,6 +1,8 @@
 import { useState, useCallback } from "react";
+import { SlidersHorizontal } from 'lucide-react';
 import { Play, CheckCircle, XCircle, RefreshCw, Database } from "lucide-react";
 import api from "@/services/api/client";
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const WRITE_TESTS = [
   {
@@ -119,10 +121,17 @@ export default function DatabaseTest() {
     }
   };
 
+  // /status/counts was never built. The same figures come from the System Health
+  // introspection route, which reads the catalog at request time — so this panel
+  // now covers every table in the database rather than a hardcoded shortlist.
   const loadCounts = async () => {
     try {
-      const res = await api.get('/status/counts');
-      setCounts(res.data?.counts || null);
+      const res = await api.get('/system-health/db-tables');
+      const tables = res.data?.tables || res.data || [];
+      if (!Array.isArray(tables) || tables.length === 0) return setCounts(null);
+      setCounts(Object.fromEntries(
+        tables.map(t => [t.qualified_name ?? t.table, Number(t.rows ?? 0)])
+      ));
     } catch { /* counts unavailable */ }
   };
 
@@ -147,26 +156,21 @@ export default function DatabaseTest() {
   const readPassed  = READ_TESTS.filter(t  => readResults[t.id]?.status  === 'pass').length;
 
   return (
-    <div style={{ padding:24 }}>
-      {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:24 }}>
-        <div>
-          <h2 style={{ margin:0, fontSize:20, fontWeight:700 }}>Database Write Tests</h2>
-          <p style={{ margin:'4px 0 0', fontSize:13, color:'#6b7280' }}>Verify all modules save data to PostgreSQL</p>
-        </div>
-        <button onClick={runAll} disabled={isRunning}
-          style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 20px',
-            background: isRunning ? '#e5e7eb' : '#6366f1',
-            color: isRunning ? '#9ca3af' : '#fff',
-            border:'none', borderRadius:8, cursor: isRunning ? 'not-allowed' : 'pointer',
-            fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title="Database Write Tests"
+        subtitle="Verify all modules save data to PostgreSQL"
+        actions={<button className="plh-cta" onClick={runAll} disabled={isRunning}>
           {isRunning
             ? <RefreshCw size={14} style={{ animation:'spin 1s linear infinite' }}/>
             : <Play size={14}/>
           }
           {isRunning ? 'Running…' : 'Run All Tests'}
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Summary bar */}
       {lastRun && (
@@ -244,7 +248,7 @@ export default function DatabaseTest() {
       <div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, overflow:'hidden' }}>
         <div style={{ padding:'14px 16px', borderBottom:'1px solid #f3f4f6', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            <Database size={16} color='#f59e0b'/>
+            <Database size={16} color='#7c5cf0'/>
             <span style={{ fontWeight:700, fontSize:14 }}>DB Record Counts</span>
           </div>
           <button onClick={loadCounts}
@@ -273,7 +277,7 @@ export default function DatabaseTest() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }
 

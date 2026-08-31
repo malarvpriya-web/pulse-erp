@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import pool from '../shared/db.js';
+import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 
 const router = Router();
 
@@ -14,6 +15,23 @@ const safe = fn => async (req, res) => {
 // ── Dashboard ──────────────────────────────────────────────────────────────
 router.get('/dashboard', safe(async (req, res) => {
   const companyId = cid(req);
+  // Dashboard filter bar: ?period / ?from / ?to / ?category / ?priority.
+  // Every panel here is scoped by the R&D project set, so the filters are
+  // applied to eng_rd_projects and the child tables inherit them via their join.
+  const range = resolveRange(req.query, { defaultPeriod: 'all' });
+  const category = dimension(req.query, 'category');
+  const priority = dimension(req.query, 'priority');
+  // $1 company, $2 from, $3 to, $4 category, $5 priority. Every query below
+  // references all five (via the `pf` fragment), so no parameter is left
+  // untyped — Postgres rejects a supplied-but-unreferenced $n.
+  const p = [companyId, range.from, range.to, category, priority];
+  const pf = (alias) => `${alias}.deleted_at IS NULL
+    AND ($1::int IS NULL OR ${alias}.company_id = $1)
+    AND ($2::date IS NULL OR ${alias}.created_at >= $2::date)
+    AND ($3::date IS NULL OR ${alias}.created_at < ($3::date + INTERVAL '1 day'))
+    AND ($4::text IS NULL OR ${alias}.category = $4)
+    AND ($5::text IS NULL OR ${alias}.priority = $5)`;
+
   const [projStats, phaseStats, protoStats, testStats, recentProjects] = await Promise.all([
     pool.query(`
       SELECT
@@ -26,9 +44,8 @@ router.get('/dashboard', safe(async (req, res) => {
         COUNT(*) FILTER (WHERE status = 'cancelled')::INT                 AS cancelled,
         COALESCE(SUM(budget),0)::NUMERIC                                  AS total_budget,
         COALESCE(SUM(spent),0)::NUMERIC                                   AS total_spent
-      FROM eng_rd_projects WHERE deleted_at IS NULL
-        AND ($1::int IS NULL OR company_id = $1)
-    `, [companyId]),
+      FROM eng_rd_projects p WHERE ${pf('p')}
+    `, p),
     pool.query(`
       SELECT dp.phase_name,
         COUNT(*)::INT                                                AS total,
@@ -36,11 +53,10 @@ router.get('/dashboard', safe(async (req, res) => {
         COUNT(*) FILTER (WHERE dp.status = 'in_progress')::INT      AS in_progress
       FROM eng_design_phases dp
       JOIN eng_rd_projects p ON p.id = dp.project_id
-      WHERE p.deleted_at IS NULL
-        AND ($1::int IS NULL OR p.company_id = $1)
+      WHERE ${pf('p')}
       GROUP BY dp.phase_name
       ORDER BY MIN(dp.phase_order)
-    `, [companyId]),
+    `, p),
     pool.query(`
       SELECT
         COUNT(*)::INT                                                AS total,
@@ -49,9 +65,8 @@ router.get('/dashboard', safe(async (req, res) => {
         COUNT(*) FILTER (WHERE pt.status = 'building')::INT         AS building
       FROM eng_prototypes pt
       JOIN eng_rd_projects p ON p.id = pt.project_id
-      WHERE p.deleted_at IS NULL
-        AND ($1::int IS NULL OR p.company_id = $1)
-    `, [companyId]),
+      WHERE ${pf('p')}
+    `, p),
     pool.query(`
       SELECT
         COUNT(*)::INT                                                AS total,
@@ -60,28 +75,46 @@ router.get('/dashboard', safe(async (req, res) => {
         COUNT(*) FILTER (WHERE tp.status = 'in_progress')::INT      AS in_progress
       FROM eng_test_plans tp
       JOIN eng_rd_projects p ON p.id = tp.project_id
-      WHERE p.deleted_at IS NULL
-        AND ($1::int IS NULL OR p.company_id = $1)
-    `, [companyId]),
+      WHERE ${pf('p')}
+    `, p),
     pool.query(`
-      SELECT id, code, name, status, priority, manager_name, target_date, budget, spent
-      FROM eng_rd_projects
-      WHERE deleted_at IS NULL
-        AND ($1::int IS NULL OR company_id = $1)
-      ORDER BY updated_at DESC
+      SELECT p.id, p.code, p.name, p.status, p.priority, p.manager_name, p.target_date, p.budget, p.spent
+      FROM eng_rd_projects p
+      WHERE ${pf('p')}
+      ORDER BY p.updated_at DESC
       LIMIT 6
-    `, [companyId]),
+    `, p),
   ]);
 
   res.json({
     success: true,
     data: {
+      period:         range.period,
+      period_label:   range.label,
       projects:       projStats.rows[0],
       phases:         phaseStats.rows,
       prototypes:     protoStats.rows[0],
       tests:          testStats.rows[0],
       recentProjects: recentProjects.rows,
     },
+  });
+}));
+
+// ── Dashboard filter options ───────────────────────────────────────────────
+// Distinct values across ALL R&D projects in scope, so selecting one doesn't
+// collapse the dropdown. Declared before any `/:id` route in this file.
+router.get('/dashboard/filter-options', safe(async (req, res) => {
+  const distinct = (col) => pool
+    .query(`SELECT DISTINCT ${col} AS v FROM eng_rd_projects
+             WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+               AND ${col} IS NOT NULL AND TRIM(${col}) <> ''
+             ORDER BY v`, [cid(req)])
+    .catch(() => ({ rows: [] }));
+  const [categories, priorities] = await Promise.all([distinct('category'), distinct('priority')]);
+  res.json({
+    success: true,
+    categories: categories.rows.map(r => r.v),
+    priorities: priorities.rows.map(r => r.v),
   });
 }));
 

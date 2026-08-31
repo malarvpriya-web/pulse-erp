@@ -8,7 +8,7 @@ let _nextId = 1;
 const ICONS = {
   success: { Icon: CheckCircle,   color: '#10b981', bg: '#dcfce7', border: '#bbf7d0' },
   error:   { Icon: AlertCircle,   color: '#ef4444', bg: '#fee2e2', border: '#fecaca' },
-  warning: { Icon: AlertTriangle, color: '#f59e0b', bg: '#fef3c7', border: '#fde68a' },
+  warning: { Icon: AlertTriangle, color: '#7c5cf0', bg: '#ede9fe', border: '#ddd6fe' },
   info:    { Icon: Info,          color: '#3b82f6', bg: '#dbeafe', border: '#bfdbfe' },
 };
 

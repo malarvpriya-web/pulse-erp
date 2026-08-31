@@ -1,15 +1,16 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
-  GitCompare, Search, X, RefreshCw, Star, TrendingUp,
-  TrendingDown, Package, ShoppingCart, Award, BarChart2,
-  CheckCircle, AlertTriangle, Minus, ChevronDown, ChevronRight,
-  ArrowUp, ArrowDown, Tag, SendHorizonal,
+  GitCompare, Search, X, RefreshCw, Star, TrendingUp, TrendingDown,
+  Package, ShoppingCart, Award, BarChart2, CheckCircle, AlertTriangle,
+  Minus, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tag,
+  SendHorizonal, Building2,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './VendorComparison.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const VENDOR_COLORS = [
-  '#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+  '#6366f1', '#10b981', '#7c5cf0', '#ef4444', '#8b5cf6',
 ];
 
 const INR = n => n == null ? '—' : `₹${parseFloat(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -19,7 +20,7 @@ const pct = n => n == null ? '—' : `${parseFloat(n).toFixed(1)}%`;
 function scoreLabel(s) {
   if (s >= 80) return { text: 'Excellent', color: '#15803d', border: '#86efac', bg: '#f0fdf4' };
   if (s >= 60) return { text: 'Good',      color: '#2563eb', border: '#93c5fd', bg: '#eff6ff' };
-  if (s >= 40) return { text: 'Average',   color: '#d97706', border: '#fcd34d', bg: '#fffbeb' };
+  if (s >= 40) return { text: 'Average',   color: '#6d28d9', border: '#c4b5fd', bg: '#f5f3ff' };
   return               { text: 'Poor',     color: '#dc2626', border: '#fca5a5', bg: '#fff1f2' };
 }
 
@@ -502,7 +503,7 @@ function ItemVendorSearch({ onToast }) {
                       <td>
                         {ratingStars != null ? (
                           <div className="vc-iv-rating">
-                            <Star size={11} fill="#f59e0b" color="#f59e0b" />
+                            <Star size={11} fill="#7c5cf0" color="#7c5cf0" />
                             <span>{v.rating.toFixed(1)}</span>
                           </div>
                         ) : <span style={{ color: '#d1d5db', fontSize: 12 }}>—</span>}
@@ -617,22 +618,17 @@ export default function VendorComparison() {
   const selectedVendorObjects = selected.map(id => allVendors.find(v => v.id === id)).filter(Boolean);
 
   return (
-    <div className="vc-root">
+    <PageShell dock={
+      <PageHero
+        icon={Building2}
+        eyebrow="Procurement"
+        title="Vendor Comparison"
+        subtitle="Side-by-side analysis of vendor performance, pricing and reliability"
+        actions={<button className="plh-cta" onClick={loadComparison} title="Refresh"><RefreshCw size={14} /></button>}
+      />
+    }>
       {toast && <div className={`vc-toast vc-toast-${toast.type}`}>{toast.msg}</div>}
 
-      {/* Header */}
-      <div className="vc-header">
-        <div className="vc-header-left">
-          <div className="vc-header-icon"><GitCompare size={20} /></div>
-          <div>
-            <h1 className="vc-title">Vendor Comparison</h1>
-            <p className="vc-sub">Side-by-side analysis of vendor performance, pricing and reliability</p>
-          </div>
-        </div>
-        <div className="vc-header-right">
-          <button className="vc-icon-btn" onClick={loadComparison} title="Refresh"><RefreshCw size={14} /></button>
-        </div>
-      </div>
 
       <div className="vc-body">
         {/* Item-based vendor comparison */}
@@ -745,12 +741,12 @@ export default function VendorComparison() {
 
         {selected.length > 0 && !loading && compared.length === 0 && (
           <div className="vc-empty">
-            <AlertTriangle size={40} color="#fcd34d" />
+            <AlertTriangle size={40} color="#c4b5fd" />
             <p>Could not load vendor data</p>
             <small>The selected vendors may not exist in the database yet.</small>
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

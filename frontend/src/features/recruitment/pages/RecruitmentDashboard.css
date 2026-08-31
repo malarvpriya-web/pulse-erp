@@ -349,7 +349,7 @@
   border-radius: 12px;
 }
 .rec-iv-scheduled { background: #f0fdf4; color: #166534; }
-.rec-iv-pending { background: #fffbeb; color: #92400e; }
+.rec-iv-pending { background: #f5f3ff; color: #5b21b6; }
 
 /* Analytics */
 .rec-analytics-grid {

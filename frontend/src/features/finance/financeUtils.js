@@ -48,7 +48,7 @@ export const statusColor = (s) => {
   if (m === 'paid')                    return { bg: '#dcfce7', color: '#16a34a' };
   if (m === 'overdue')                 return { bg: '#fee2e2', color: '#dc2626' };
   if (m === 'approved')                return { bg: '#dbeafe', color: '#1d4ed8' };
-  if (m === 'pending' || m === 'sent') return { bg: '#fef3c7', color: '#92400e' };
+  if (m === 'pending' || m === 'sent') return { bg: '#ede9fe', color: '#5b21b6' };
   if (m === 'draft')                   return { bg: '#f3f4f6', color: '#6b7280' };
   if (m === 'rejected')                return { bg: '#fee2e2', color: '#dc2626' };
   return { bg: '#f3f4f6', color: '#6b7280' };

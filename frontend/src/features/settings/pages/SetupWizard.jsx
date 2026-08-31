@@ -7,8 +7,10 @@ import {
   Building2, Network, Users, Shield, IndianRupee, Calendar, Plug,
   Check, ChevronLeft, ChevronRight, X, Plus, Trash2, CheckCircle,
   Upload, RefreshCw, Zap, AlertCircle, LogOut, Eye, EyeOff, Landmark,
+  SlidersHorizontal,
 } from 'lucide-react';
 import '@/features/settings/SetupWizard.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Step catalogue ────────────────────────────────────────────────────────────
 const STEPS = [
@@ -1330,7 +1332,7 @@ export default function SetupWizard({ setPage: setPageProp }) {
 
   // Load existing roles on mount
   useEffect(() => {
-    api.get('/auth/roles').then(({ data }) => {
+    api.get('/admin/roles-catalog').then(({ data }) => {
       setStepData(prev => ({
         ...prev,
         roles: { ...prev.roles, existing: Array.isArray(data) ? data : [] },
@@ -1446,7 +1448,7 @@ export default function SetupWizard({ setPage: setPageProp }) {
       }
       case 'users': {
         const valid = d.rows.filter(r => r.name && isValidEmail(r.email));
-        if (valid.length > 0) await api.post('/auth/users/bulk', { users: valid });
+        if (valid.length > 0) await api.post('/admin/users/bulk', { users: valid });
         break;
       }
       case 'roles': {
@@ -1454,7 +1456,7 @@ export default function SetupWizard({ setPage: setPageProp }) {
           const payload = d.newRoles.map(r => ({
             name: r.name, description: r.description, permissions: r.perms,
           }));
-          await api.post('/auth/roles/bulk', { roles: payload });
+          await api.post('/admin/roles/bulk', { roles: payload });
         }
         break;
       }
@@ -1654,30 +1656,23 @@ export default function SetupWizard({ setPage: setPageProp }) {
   };
 
   return (
-    <div className="wizard-layout">
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Settings"
+        title="First-Time Setup"
+        subtitle="Pulse ERP — get started in 8 steps"
+        actions={<button className="plh-cta" onClick={() => setConfirmExit(true)}>
+            <X size={13} /> Exit wizard
+          </button>}
+      />
+    }>
       {/* ── Top progress bar ── */}
       <div className="wizard-progress-bar-track">
         <div className="wizard-progress-bar" style={{ width: `${pct}%` }} />
       </div>
 
       {/* ── Header ── */}
-      <div className="wizard-header">
-        <div className="wizard-header-title">
-          <div className="wizard-header-logo">
-            <Zap size={16} color="#6B3FDB" />
-          </div>
-          <div className="wizard-header-text">
-            <h2>First-Time Setup</h2>
-            <span>Pulse ERP — get started in 8 steps</span>
-          </div>
-        </div>
-        <div className="wizard-header-actions">
-          <span className="wizard-step-badge">Step {currentStep + 1} of {STEPS.length}</span>
-          <button className="wizard-exit-btn" onClick={() => setConfirmExit(true)}>
-            <X size={13} /> Exit wizard
-          </button>
-        </div>
-      </div>
 
       {/* ── Body ── */}
       <div className="wizard-body">
@@ -1820,6 +1815,6 @@ export default function SetupWizard({ setPage: setPageProp }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

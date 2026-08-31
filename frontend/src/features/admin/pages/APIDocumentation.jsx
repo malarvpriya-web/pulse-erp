@@ -1,7 +1,8 @@
 // frontend/src/features/admin/pages/APIDocumentation.jsx
 import { useState } from 'react';
-import { Code2, Copy, Check, Download, FileX } from 'lucide-react';
+import { Code2, Copy, Check, Download, FileX, FileText } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const LOCAL_API   = import.meta.env.VITE_API_URL       || 'http://localhost:5000/api';
 const STAGING_API = import.meta.env.VITE_API_URL_STAGING    || '';
@@ -18,7 +19,7 @@ const ENVS = Object.fromEntries(
 const ENDPOINT_STATS = [
   { method:'GET',    count:47, color:'#16a34a', bg:'#d1fae5' },
   { method:'POST',   count:28, color:'#2563eb', bg:'#dbeafe' },
-  { method:'PUT',    count:18, color:'#d97706', bg:'#fef3c7' },
+  { method:'PUT',    count:18, color:'#6d28d9', bg:'#ede9fe' },
   { method:'DELETE', count:9,  color:'#dc2626', bg:'#fee2e2' },
   { method:'PATCH',  count:6,  color:'#6B3FDB', bg:'#ede9fe' },
 ];
@@ -53,17 +54,15 @@ export default function APIDocumentation() {
   };
 
   return (
-    <div style={{ padding:24, background:'#fff', minHeight:'100vh', display:'flex', flexDirection:'column' }}>
+    <PageShell dock={
+      <PageHero
+        icon={FileText}
+        eyebrow="Administration"
+        title="API Documentation"
+        subtitle="Interactive Swagger UI — explore and test all Pulse ERP endpoints"
+      />
+    }>
       {/* header */}
-      <div className="page-header" style={{ marginBottom:20, display:'flex', alignItems:'center', gap:10 }}>
-        <Code2 size={22} color="var(--color-text-primary, #111827)" />
-        <div>
-          <h1 className="page-title" style={{ margin:0 }}>API Documentation</h1>
-          <p className="page-subtitle" style={{ margin:0 }}>
-            Interactive Swagger UI — explore and test all Pulse ERP endpoints
-          </p>
-        </div>
-      </div>
 
       {/* stats */}
       <div style={{ display:'flex', gap:10, marginBottom:16, flexWrap:'wrap' }}>
@@ -163,6 +162,6 @@ export default function APIDocumentation() {
       </div>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </PageShell>
   );
 }

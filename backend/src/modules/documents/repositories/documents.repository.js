@@ -1,13 +1,24 @@
+/**
+ * documents.repository.js
+ *
+ * Column names here drifted from the schema: the repository wrote
+ * name/content/variables/category on
+ * `document_templates` and content/file_url/category on
+ * `generated_documents`. None of those columns exist, so every template create
+ * and every document generation threw 42703. Mapped to the real names below;
+ * only reference_id/reference_type were genuinely missing and are added by
+ * migration 20260819000009.
+ */
 import pool from '../../shared/db.js';
 import { pickUpdatable } from '../../../shared/safeUpdate.js';
 
 const documentsRepository = {
   async createTemplate(data) {
-    const { template_name, document_type, template_html, variables_json, created_by } = data;
+    const { name, category, content, variables, created_by } = data;
     const result = await pool.query(
-      `INSERT INTO document_templates (template_name, document_type, template_html, variables_json, created_by)
+      `INSERT INTO document_templates (name, category, content, variables, created_by)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [template_name, document_type, template_html, JSON.stringify(variables_json), created_by]
+      [name, category, content, JSON.stringify(variables), created_by]
     );
     return result.rows[0];
   },
@@ -17,9 +28,9 @@ const documentsRepository = {
     const params = [];
     let paramCount = 1;
 
-    if (filters.document_type) {
-      query += ` AND document_type = $${paramCount}`;
-      params.push(filters.document_type);
+    if (filters.category) {
+      query += ` AND category = $${paramCount}`;
+      params.push(filters.category);
       paramCount++;
     }
 
@@ -57,7 +68,7 @@ const documentsRepository = {
 
     Object.keys(safe).forEach(key => {
       fields.push(`${key} = $${paramCount}`);
-      values.push(key === 'variables_json' ? JSON.stringify(safe[key]) : safe[key]);
+      values.push(key === 'variables' ? JSON.stringify(safe[key]) : safe[key]);
       paramCount++;
     });
 
@@ -80,11 +91,11 @@ const documentsRepository = {
   },
 
   async saveGeneratedDocument(data) {
-    const { template_id, document_type, reference_id, reference_type, document_data_json, file_path, generated_by } = data;
+    const { template_id, category, reference_id, reference_type, content, file_url, generated_by } = data;
     const result = await pool.query(
-      `INSERT INTO generated_documents (template_id, document_type, reference_id, reference_type, document_data_json, file_path, generated_by)
+      `INSERT INTO generated_documents (template_id, category, reference_id, reference_type, content, file_url, generated_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [template_id, document_type, reference_id, reference_type, JSON.stringify(document_data_json), file_path, generated_by]
+      [template_id, category, reference_id, reference_type, JSON.stringify(content), file_url, generated_by]
     );
     return result.rows[0];
   },
@@ -100,9 +111,9 @@ const documentsRepository = {
       paramCount += 2;
     }
 
-    if (filters.document_type) {
-      query += ` AND document_type = $${paramCount}`;
-      params.push(filters.document_type);
+    if (filters.category) {
+      query += ` AND category = $${paramCount}`;
+      params.push(filters.category);
       paramCount++;
     }
 

@@ -8,6 +8,7 @@ import { assertCanDecideFor } from "../attendance/attendance.authz.js";
 import { getEmployeeApprovals } from "../../home/home.service.js";
 import { triggerEmail } from "../../services/emailTrigger.js";
 import recruitmentRepository from "../recruitment/repositories/recruitment.repository.js";
+import { getOfferValidityDays } from "../recruitment/offerValidity.js";
 
 const uid  = (req) => req.user?.userId ?? req.user?.id ?? null;
 const cid  = (req) => req.scope?.company_id ?? null;
@@ -753,6 +754,36 @@ async function assertCanActOnRegularization(req, sourceId) {
   }
 }
 
+// Overtime needs the same treatment as regularization above, and for the same
+// reason: PUT /attendance/overtime/:id/approve|reject runs assertCanDecideFor
+// plus a pending-state guard, and the Approval Center is a second write path to
+// the same row. It previously ran neither -- canActOnApproval only checks that
+// the caller holds *an* approver role and can claim the 'ot' category, not that
+// they manage this employee -- so any approver-role user could approve any OT
+// record in the company, and could flip an already-rejected one back to
+// approved. See ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §3.
+async function assertCanActOnOvertime(req, sourceId) {
+  const rows = await safeQuery(
+    `SELECT employee_id, company_id, status FROM attendance_ot_records WHERE id = $1`,
+    [sourceId]
+  );
+  const row = rows[0];
+  if (!row) return; // let the UPDATE's own WHERE clause no-op, as the other cases do
+
+  if (row.status !== 'pending') {
+    const err = new Error(`OT record is already ${row.status}`);
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const decide = await assertCanDecideFor(pool, req, row.employee_id, row.company_id, 'overtime');
+  if (decide) {
+    const err = new Error(decide.body?.message || decide.body?.error || 'Forbidden');
+    err.statusCode = decide.status;
+    throw err;
+  }
+}
+
 async function approveSourceItem(modulePrefix, sourceId, userId, req) {
   switch (modulePrefix) {
     case 'leave':
@@ -798,6 +829,7 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
       break;
     }
     case 'ot':
+      await assertCanActOnOvertime(req, sourceId);
       await safeQuery(
         `UPDATE attendance_ot_records SET status = 'approved', approved_by = $2, approved_at = NOW() WHERE id = $1`,
         [sourceId, userId]
@@ -805,9 +837,17 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
       break;
     case 'pr':
       await assertCanDecidePR(req, sourceId, 'approve');
+      // purchase_requests.approved_by FKs employees(id), NOT users(id) — the
+      // same trap as stock_ledger.created_by, already documented and fixed at
+      // the module's own approve route (procurement.routes.js). Passing the
+      // users.id raised a 23503 FK violation for every approver whose users.id
+      // did not coincidentally exist as an employees.id, so the Approval
+      // Center's Approve button 500'd on every Purchase Request. Admin accounts
+      // (employee_id IS NULL) resolve to NULL, which the column accepts; the
+      // caller's logAudit() is the durable record of who approved.
       await safeQuery(
         `UPDATE purchase_requests SET status = 'approved', approved_by = $2, approved_at = NOW() WHERE id = $1::integer`,
-        [sourceId, userId]
+        [sourceId, await myEmployeeId(req)]
       );
       break;
     case 'exp':
@@ -818,9 +858,15 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
       );
       break;
     case 'ecn':
+      // Same identity mismatch as the pr case above, but silent: this column
+      // has no FK, so a users.id was stored happily AND the sibling
+      // approved_by_name subquery — which looks $2 up in employees — quietly
+      // resolved to NULL. engineering_changes' actor columns are employee ids
+      // (pendingECNs joins employees on ec.requested_by), so both halves of
+      // this statement want the same employee id.
       await safeQuery(
         `UPDATE engineering_changes SET status = 'approved', approved_by = $2, approved_by_name = (SELECT CONCAT(first_name,' ',last_name) FROM employees WHERE id = $2 LIMIT 1), approved_at = NOW() WHERE id = $1`,
-        [sourceId, userId]
+        [sourceId, await myEmployeeId(req)]
       );
       break;
     case 'pay':
@@ -829,25 +875,100 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
         [sourceId, userId]
       );
       break;
-    case 'requisition':
+    case 'requisition': {
       // job_requisitions has no approved_by/approved_at column (unlike pr/ecn/
       // pay above) — status is the only record of the decision. The caller
       // (approveRequest) already logAudit()s this action, which is where the
       // "who/when" lives instead.
-      await safeQuery(
-        `UPDATE job_requisitions SET status = 'approved', updated_at = NOW() WHERE id = $1::integer`,
+      //
+      // Segregation of duties: requisition/offer are deliberately NOT narrowed
+      // in APPROVER_CATEGORY_SCOPE (see approvals.authz.js), so any APPROVER_ROLES
+      // member — including manager/department_head, the same roles that can raise
+      // a requisition — could otherwise claim and approve their own request from
+      // the shared unassigned pool. Block that specific case here.
+      const reqRows = await safeQuery(
+        `SELECT requested_by FROM job_requisitions WHERE id = $1::integer`,
         [sourceId]
       );
+      const requestedBy = reqRows[0]?.requested_by;
+      if (requestedBy != null) {
+        const actorEmployeeId = await myEmployeeId(req);
+        if (actorEmployeeId != null && String(actorEmployeeId) === String(requestedBy)) {
+          const err = new Error('You cannot approve a requisition you raised yourself. Ask another approver to review it.');
+          err.statusCode = 403;
+          throw err;
+        }
+      }
+      // Compare-and-swap on the prior state, matching the central approvals-table
+      // path below (`UPDATE approvals ... WHERE status='Pending' RETURNING *`).
+      // Without the status guard this UPDATE was unconditional, so two approvers
+      // racing the same requisition both "succeeded" — each firing its own audit
+      // entry and notification — and an approve could silently overwrite a
+      // concurrent reject. pendingRequisitions() only ever surfaces
+      // status='pending_approval' rows, so that is the only valid prior state.
+      const reqUpdated = await safeQuery(
+        `UPDATE job_requisitions SET status = 'approved', updated_at = NOW()
+          WHERE id = $1::integer AND status = 'pending_approval' RETURNING id`,
+        [sourceId]
+      );
+      if (!reqUpdated.length) {
+        const err = new Error('This requisition is no longer pending approval — someone else may have already actioned it.');
+        err.statusCode = 409;
+        throw err;
+      }
       break;
+    }
     case 'offer': {
       // No approved_by/approved_at column here either — offer_sent_date
       // doubles as the "when" (also feeds getTimeToHire()'s calc, which
       // previously only got populated if a caller happened to pass it
       // explicitly to PUT /offers/:id — the UI's "Send" button never did).
-      await safeQuery(
-        `UPDATE offer_letters SET offer_status = 'sent', offer_sent_date = CURRENT_DATE, updated_at = NOW() WHERE id = $1::uuid`,
-        [sourceId]
+      // Same compare-and-swap guard as the requisition case above — without it
+      // two approvers racing the same offer both succeeded, each firing a
+      // duplicate candidate-facing 'offer_sent' email below.
+      //
+      // Segregation of duties, matching the requisition case. This was previously
+      // impossible — offer_letters had no created_by column — which left the more
+      // consequential of the two approvals (committing to a salary) as the one
+      // without a self-approval guard. Migration 20260813000002 added the column;
+      // POST /recruitment/offers stamps it server-side from the caller's employee
+      // id. Rows created before that migration, and offers auto-drafted by
+      // autoDraftOfferForCandidate(), have created_by NULL and are treated as
+      // "author unknown, allow" — exactly how the requisition case treats a null
+      // requested_by, rather than locking out approval of historical rows.
+      // Stamp the expiry date at send time from the company's configured
+      // validity. COALESCE so an expiry a recruiter deliberately set on the
+      // draft survives approval rather than being overwritten by the default.
+      // Storing it (rather than deriving it on read, as this used to) is what
+      // makes a one-off extension for a single candidate possible — see
+      // migration 20260813000001.
+      const offerRow = await safeQuery(
+        `SELECT company_id, created_by FROM offer_letters WHERE id = $1::uuid`, [sourceId]
       );
+      const offerAuthor = offerRow[0]?.created_by;
+      if (offerAuthor != null) {
+        const actorEmployeeId = await myEmployeeId(req);
+        if (actorEmployeeId != null && String(actorEmployeeId) === String(offerAuthor)) {
+          const err = new Error('You cannot approve an offer you raised yourself. Ask another approver to review it.');
+          err.statusCode = 403;
+          throw err;
+        }
+      }
+      const validityDays = await getOfferValidityDays(offerRow[0]?.company_id ?? null);
+      const offerUpdated = await safeQuery(
+        `UPDATE offer_letters
+            SET offer_status = 'sent',
+                offer_sent_date = CURRENT_DATE,
+                offer_expiry_date = COALESCE(offer_expiry_date, (CURRENT_DATE + $2::int)::date),
+                updated_at = NOW()
+          WHERE id = $1::uuid AND offer_status = 'pending_approval' RETURNING id`,
+        [sourceId, validityDays]
+      );
+      if (!offerUpdated.length) {
+        const err = new Error('This offer is no longer pending approval — someone else may have already actioned it.');
+        err.statusCode = 409;
+        throw err;
+      }
       // Candidate-facing "offer sent" email — previously fired from
       // recruitment.routes.js's PUT /offers/:id handler when offer_status
       // was set to 'sent' directly; that write path is gone now that
@@ -901,6 +1022,7 @@ async function rejectSourceItem(modulePrefix, sourceId, userId, comment, req) {
       break;
     }
     case 'ot':
+      await assertCanActOnOvertime(req, sourceId);
       await safeQuery(
         `UPDATE attendance_ot_records SET status = 'rejected', rejection_remarks = $2 WHERE id = $1`,
         [sourceId, comment]
@@ -932,26 +1054,43 @@ async function rejectSourceItem(modulePrefix, sourceId, userId, comment, req) {
         [sourceId, comment]
       );
       break;
-    case 'requisition':
+    case 'requisition': {
       // No 'rejected' state exists in job_requisitions' status CHECK
       // constraint (draft/pending_approval/approved/open/closed) and no
       // rejection-reason column either — bounces back to 'draft' for the
       // requester to revise and resubmit. The rejection comment is preserved
       // in the audit log (logAudit in the caller), not on the row itself.
-      await safeQuery(
-        `UPDATE job_requisitions SET status = 'draft', updated_at = NOW() WHERE id = $1::integer`,
+      // Status-guarded for the same reason as the approve path — otherwise a
+      // reject racing a concurrent approve could bounce an already-approved
+      // requisition back to draft.
+      const reqRejected = await safeQuery(
+        `UPDATE job_requisitions SET status = 'draft', updated_at = NOW()
+          WHERE id = $1::integer AND status = 'pending_approval' RETURNING id`,
         [sourceId]
       );
+      if (!reqRejected.length) {
+        const err = new Error('This requisition is no longer pending approval — someone else may have already actioned it.');
+        err.statusCode = 409;
+        throw err;
+      }
       break;
-    case 'offer':
+    }
+    case 'offer': {
       // Bounces back to draft for the requester to revise, same pattern as
       // requisition above. offer_letters has no rejection-reason column —
       // the comment lives in the audit log only.
-      await safeQuery(
-        `UPDATE offer_letters SET offer_status = 'draft', updated_at = NOW() WHERE id = $1::uuid`,
+      const offerRejected = await safeQuery(
+        `UPDATE offer_letters SET offer_status = 'draft', updated_at = NOW()
+          WHERE id = $1::uuid AND offer_status = 'pending_approval' RETURNING id`,
         [sourceId]
       );
+      if (!offerRejected.length) {
+        const err = new Error('This offer is no longer pending approval — someone else may have already actioned it.');
+        err.statusCode = 409;
+        throw err;
+      }
       break;
+    }
     default:
       break;
   }
@@ -1110,7 +1249,7 @@ export const rejectRequest = async (req, res) => {
     res.json(approval);
   } catch (err) {
     console.error("Reject request error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 

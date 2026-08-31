@@ -72,7 +72,7 @@ export const SAMPLE_PIPELINE_COUNTS = [
   { stage: 'Applied',   count: 112, color: '#94a3b8' },
   { stage: 'Screening', count: 64,  color: '#60a5fa' },
   { stage: 'Interview', count: 28,  color: '#a78bfa' },
-  { stage: 'Offer',     count: 9,   color: '#f59e0b' },
+  { stage: 'Offer',     count: 9,   color: '#7c5cf0' },
   { stage: 'Hired',     count: 5,   color: '#22c55e' },
 ];
 

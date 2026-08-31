@@ -38,6 +38,7 @@
 .pt-sum-label{font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;margin:0 0 2px;}
 .pt-sum-val{font-size:20px;font-weight:700;color:#111827;margin:0;}
 .pt-sum-sub{font-size:11px;color:#9ca3af;margin:0;}
+.pt-sum-inactive{font-size:11px;font-weight:500;color:#9ca3af;margin-left:7px;letter-spacing:0;}
 .pt-sum-arrow{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:#d1d5db;}
 
 /* filters */
@@ -50,6 +51,8 @@
 .pt-filter-tab.active{background:#6B3FDB;color:#fff;border-color:#6B3FDB;}
 .pt-filter-count{font-size:11px;background:rgba(0,0,0,.08);padding:1px 6px;border-radius:20px;}
 .pt-filter-tab.active .pt-filter-count{background:rgba(255,255,255,.25);}
+.pt-status-filter{display:flex;align-items:center;gap:8px;}
+.pt-filter-label{font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;}
 
 /* table */
 .pt-table-wrap{background:#fff;border-radius:12px;border:1px solid #f0f0f4;overflow:hidden;}
@@ -75,7 +78,7 @@
 .pt-terms{font-size:12px;color:#6b7280;}
 .pt-td-r{text-align:right;}
 .pt-outstanding{font-weight:600;color:#374151;}
-.pt-out-pos{color:#f59e0b;}
+.pt-out-pos{color:#7c5cf0;}
 .pt-credit-cell{display:flex;align-items:center;gap:6px;}
 .pt-credit-bar-wrap{flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:hidden;}
 .pt-credit-bar{height:100%;border-radius:3px;transition:width .5s;}
@@ -113,7 +116,7 @@
 .pt-fin-item:last-child{border-right:none;}
 .pt-fin-item span{display:block;font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;}
 .pt-fin-item strong{font-size:16px;font-weight:700;color:#111827;}
-.pt-fin-outstanding{background:#fffbeb;}
+.pt-fin-outstanding{background:#f5f3ff;}
 
 /* view tabs */
 .pt-view-tabs{display:flex;border-bottom:2px solid #f0f0f4;flex-shrink:0;padding:0 22px;}
@@ -153,7 +156,7 @@
 .pt-txn-type{font-size:11px;font-weight:500;padding:2px 8px;border-radius:20px;}
 .pt-txn-invoice{background:#dbeafe;color:#1d4ed8;}
 .pt-txn-receipt{background:#dcfce7;color:#16a34a;}
-.pt-txn-bill{background:#fef3c7;color:#92400e;}
+.pt-txn-bill{background:#ede9fe;color:#5b21b6;}
 .pt-txn-payment{background:#dcfce7;color:#16a34a;}
 .pt-dr-amt{color:#374151;font-weight:500;text-align:right;}
 .pt-cr-amt{color:#10b981;font-weight:500;text-align:right;}
@@ -176,7 +179,7 @@
 .pt-type-btn{display:flex;align-items:center;gap:6px;padding:8px 18px;border-radius:8px;border:1.5px solid #e5e7eb;font-size:13px;font-weight:500;cursor:pointer;background:#fff;color:#6b7280;}
 .pt-type-btn.active.pt-type-customer{background:#dbeafe;border-color:#3b82f6;color:#1d4ed8;}
 .pt-type-btn.active.pt-type-supplier{background:#dcfce7;border-color:#10b981;color:#15803d;}
-.pt-type-btn.active.pt-type-both{background:#fef3c7;border-color:#f59e0b;color:#92400e;}
+.pt-type-btn.active.pt-type-both{background:#ede9fe;border-color:#7c5cf0;color:#5b21b6;}
 
 /* toggle */
 .pt-toggle-wrap{display:flex;align-items:center;gap:10px;padding:10px 0;}
@@ -190,7 +193,7 @@
 .pt-inactive-lbl{font-size:13px;color:#9ca3af;}
 
 /* colours */
-.green{color:#10b981;}.amber{color:#f59e0b;}.red{color:#ef4444;}
+.green{color:#10b981;}.amber{color:#7c5cf0;}.red{color:#ef4444;}
 
 /* field error/hint */
 .pt-field-error{display:block;font-size:11px;color:#dc2626;margin-top:3px;}
@@ -198,7 +201,7 @@
 /* transaction type badge */
 .pt-txn-type{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500;}
 .pt-txn-invoice{background:#dbeafe;color:#1d4ed8;}
-.pt-txn-bill{background:#fef3c7;color:#92400e;}
+.pt-txn-bill{background:#ede9fe;color:#5b21b6;}
 
 /* ageing */
 .pt-view-outstanding{padding:4px 0;}
@@ -223,6 +226,6 @@
 .pt-preview-table-wrap{max-height:200px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;}
 .pt-import-result{display:flex;flex-direction:column;gap:6px;padding:12px;border-radius:8px;font-size:13px;}
 .pt-import-result.success{background:#dcfce7;color:#16a34a;}
-.pt-import-result.has-errors{background:#fef3c7;color:#92400e;}
+.pt-import-result.has-errors{background:#ede9fe;color:#5b21b6;}
 .pt-import-errors{margin-top:6px;display:flex;flex-direction:column;gap:3px;}
 .pt-import-error{font-size:11px;color:#dc2626;}

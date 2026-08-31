@@ -1,18 +1,22 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, X, ChevronRight, Search, RefreshCw } from 'lucide-react';
+import {
+  Plus, Pencil, Trash2, X, ChevronRight, Search, RefreshCw,
+  FolderKanban,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import './RDProjects.css';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_OPTS = ['concept','design','prototype','testing','approved','cancelled'];
 const PRIORITY_OPTS = ['low','medium','high'];
 const CATEGORY_OPTS = ['Product Development','Process Improvement','Research','Feasibility Study','Regulatory','Other'];
 
 const STATUS_COLOR = {
-  concept:   '#6366f1', design: '#3b82f6', prototype: '#f59e0b',
+  concept:   '#6366f1', design: '#3b82f6', prototype: '#7c5cf0',
   testing:   '#8b5cf6', approved: '#10b981', cancelled: '#6b7280',
 };
-const PRI_COLOR = { high: '#ef4444', medium: '#f59e0b', low: '#10b981' };
+const PRI_COLOR = { high: '#ef4444', medium: '#7c5cf0', low: '#10b981' };
 
 const EMPTY_FORM = {
   name: '', code: '', description: '', category: '', status: 'concept',
@@ -165,16 +169,18 @@ export default function RDProjects({ setPage }) {
   const toFormDate = iso => iso ? iso.slice(0, 10) : '';
 
   return (
-    <div className="rdp-page">
-      <div className="rdp-header">
-        <div>
-          <h1 className="rdp-title">R&amp;D Projects</h1>
-          <p className="rdp-sub">Track research and development initiatives from concept to approval</p>
-        </div>
-        <button className="rdp-btn-new" onClick={() => setModal('create')}>
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Engineering"
+        title="R&D Projects"
+        subtitle="Track research and development initiatives from concept to approval"
+        actions={<button className="plh-cta" onClick={() => setModal('create')}>
           <Plus size={15} /> New Project
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
 
       <div className="rdp-toolbar">
         <div className="rdp-search">
@@ -291,6 +297,6 @@ export default function RDProjects({ setPage }) {
           </div>
         </Modal>
       )}
-    </div>
+    </PageShell>
   );
 }

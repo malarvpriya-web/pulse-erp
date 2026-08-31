@@ -4766,7 +4766,7 @@ ALTER SEQUENCE public.customer_equipment_id_seq OWNED BY public.customer_equipme
 CREATE TABLE public.customer_health_alerts (
     id integer NOT NULL,
     company_id integer,
-    customer_id integer NOT NULL,
+    customer_id uuid NOT NULL,
     customer_name text,
     alert_type text NOT NULL,
     alert_severity text DEFAULT 'warning'::text NOT NULL,
@@ -4810,7 +4810,7 @@ ALTER SEQUENCE public.customer_health_alerts_id_seq OWNED BY public.customer_hea
 CREATE TABLE public.customer_health_history (
     id integer NOT NULL,
     company_id integer,
-    customer_id integer NOT NULL,
+    customer_id uuid NOT NULL,
     snapshot_month date NOT NULL,
     health_score integer DEFAULT 0 NOT NULL,
     health_status text DEFAULT 'Critical'::text NOT NULL,
@@ -4856,7 +4856,7 @@ ALTER SEQUENCE public.customer_health_history_id_seq OWNED BY public.customer_he
 CREATE TABLE public.customer_health_scores (
     id integer NOT NULL,
     company_id integer,
-    customer_id integer NOT NULL,
+    customer_id uuid NOT NULL,
     customer_name text,
     health_score integer DEFAULT 0 NOT NULL,
     health_status text DEFAULT 'Critical'::text NOT NULL,
@@ -5776,7 +5776,8 @@ CREATE TABLE public.discount_approvals (
     approved_at timestamp with time zone,
     order_value numeric(15,2) DEFAULT 0,
     company_id integer,
-    quotation_id integer
+    quotation_id integer,
+    requested_by_employee_id integer
 );
 
 
@@ -5956,7 +5957,8 @@ CREATE TABLE public.document_master (
     company_id integer,
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    expiry_date date
 );
 
 
@@ -7863,7 +7865,10 @@ CREATE TABLE public.field_visits (
     travel_km numeric DEFAULT 0,
     cost numeric DEFAULT 0,
     customer_signature text,
-    report_url text
+    report_url text,
+    customer_rating numeric(2,1),
+    customer_feedback text,
+    CONSTRAINT field_visits_customer_rating_check CHECK (((customer_rating IS NULL) OR ((customer_rating >= (1)::numeric) AND (customer_rating <= (5)::numeric))))
 );
 
 
@@ -15298,6 +15303,9 @@ CREATE TABLE public.projects (
     actual_delivery_date date,
     product_line_id integer,
     site_state character varying(80),
+    customer_rating integer,
+    customer_feedback text,
+    CONSTRAINT projects_customer_rating_check CHECK (((customer_rating IS NULL) OR ((customer_rating >= 1) AND (customer_rating <= 5)))),
     CONSTRAINT projects_status_check CHECK (((status)::text = ANY ((ARRAY['planning'::character varying, 'active'::character varying, 'on_hold'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[])))
 );
 
@@ -18976,7 +18984,11 @@ CREATE TABLE public.sla_policies (
     resolution_time_hours integer DEFAULT 24,
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    company_id integer
+    company_id integer,
+    first_response_hours numeric DEFAULT 4 NOT NULL,
+    resolution_hours numeric DEFAULT 24 NOT NULL,
+    escalation_hours numeric DEFAULT 8,
+    business_hours_only boolean DEFAULT true
 );
 
 
@@ -20092,6 +20104,7 @@ CREATE TABLE public.tasks (
     wbs_level integer DEFAULT 1,
     wbs_number character varying(30),
     billable_hours numeric(8,2) DEFAULT 0,
+    schedule_status character varying(20) DEFAULT 'on_track'::character varying,
     CONSTRAINT tasks_assignment_type_check CHECK (((assignment_type)::text = ANY ((ARRAY['all_employees'::character varying, 'managers'::character varying, 'individual'::character varying])::text[]))),
     CONSTRAINT tasks_priority_check CHECK (((priority)::text = ANY ((ARRAY['low'::character varying, 'medium'::character varying, 'high'::character varying, 'critical'::character varying])::text[]))),
     CONSTRAINT tasks_status_check CHECK (((status)::text = ANY ((ARRAY['todo'::character varying, 'in_progress'::character varying, 'review'::character varying, 'done'::character varying, 'blocked'::character varying])::text[])))
@@ -23140,7 +23153,8 @@ CREATE TABLE public.work_centres (
     created_at timestamp with time zone DEFAULT now(),
     efficiency_pct numeric(6,2) DEFAULT 100,
     working_days_per_week integer DEFAULT 5,
-    num_machines integer DEFAULT 1
+    num_machines integer DEFAULT 1,
+    labour_rate_per_hour numeric(10,2) DEFAULT 0
 );
 
 
@@ -27560,11 +27574,11 @@ ALTER TABLE ONLY public.bill_items
 
 
 --
--- Name: bills bills_bill_number_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: bills bills_company_bill_number_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.bills
-    ADD CONSTRAINT bills_bill_number_key UNIQUE (bill_number);
+    ADD CONSTRAINT bills_company_bill_number_key UNIQUE (company_id, bill_number);
 
 
 --
@@ -40492,6 +40506,14 @@ ALTER TABLE ONLY public.discount_approvals
 
 ALTER TABLE ONLY public.discount_approvals
     ADD CONSTRAINT discount_approvals_quotation_id_fkey FOREIGN KEY (quotation_id) REFERENCES public.quotations(id);
+
+
+--
+-- Name: discount_approvals discount_approvals_requested_by_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.discount_approvals
+    ADD CONSTRAINT discount_approvals_requested_by_employee_id_fkey FOREIGN KEY (requested_by_employee_id) REFERENCES public.employees(id) ON DELETE SET NULL;
 
 
 --

@@ -2,7 +2,7 @@ import { AlertCircle } from 'lucide-react';
 
 export default function AbsenteeismCard({ data = {}, loading }) {
   const { rate = 0, avgDays = 0, chronic = 0 } = data;
-  const color = rate > 4 ? '#ef4444' : rate > 2.5 ? '#f59e0b' : '#10b981';
+  const color = rate > 4 ? '#ef4444' : rate > 2.5 ? '#7c5cf0' : '#10b981';
 
 
   return (

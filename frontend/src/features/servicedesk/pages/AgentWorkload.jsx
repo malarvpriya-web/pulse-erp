@@ -1,9 +1,10 @@
 // ─── AgentWorkload.jsx ────────────────────────────────────────────────────────
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import { Users } from 'lucide-react';
+import { Users, LifeBuoy } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899'];
+const COLORS = ['#6366f1','#10b981','#7c5cf0','#ef4444','#3b82f6','#8b5cf6','#ec4899'];
 
 export default function AgentWorkload() {
   const [teams,   setTeams]   = useState([]);
@@ -18,11 +19,14 @@ export default function AgentWorkload() {
   }, []);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Team Workload</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>Ticket distribution across support teams</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="Team Workload"
+        subtitle="Ticket distribution across support teams"
+      />
+    }>
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading…</div>
@@ -49,7 +53,7 @@ export default function AgentWorkload() {
                 </div>
                 <div style={{ display: 'flex', gap: 20, marginBottom: 10 }}>
                   <span style={{ fontSize: 12, color: '#6366f1', fontWeight: 600 }}>{open} open</span>
-                  <span style={{ fontSize: 12, color: '#f59e0b', fontWeight: 600 }}>{inProg} in progress</span>
+                  <span style={{ fontSize: 12, color: '#7c5cf0', fontWeight: 600 }}>{inProg} in progress</span>
                   <span style={{ fontSize: 12, color: '#10b981', fontWeight: 600 }}>{closed} resolved / closed</span>
                 </div>
                 <div style={{ background: '#f3f4f6', borderRadius: 4, height: 6, overflow: 'hidden' }}>
@@ -61,6 +65,6 @@ export default function AgentWorkload() {
           })}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

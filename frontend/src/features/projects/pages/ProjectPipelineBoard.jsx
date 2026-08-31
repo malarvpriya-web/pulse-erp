@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  RefreshCw, ChevronDown, ChevronLeft, ChevronRight, Truck, ExternalLink, Lock,
+  RefreshCw, ChevronDown, ChevronLeft, ChevronRight, Truck,
+  ExternalLink, Lock, Filter,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmtDate } from '@/utils/dateFormatter';
 import { useAuth } from '@/context/AuthContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Canonical Manifest SST/HVDC production pipeline — mirrors PRODUCTION_STAGES in
 // backend deliveryTracker.routes.js and STAGES in ProductionDeliveryTracker.jsx.
@@ -15,7 +17,7 @@ const STAGE_META = {
   created:     { label: 'Created',      bg: '#f3f4f6', color: '#6b7280' },
   handover:    { label: 'Handover',     bg: '#dbeafe', color: '#2563eb' },
   dr_approval: { label: 'Dr Approval',  bg: '#ede9fe', color: '#7c3aed' },
-  procurement: { label: 'Procurement',  bg: '#fef3c7', color: '#d97706' },
+  procurement: { label: 'Procurement',  bg: '#ede9fe', color: '#6d28d9' },
   production:  { label: 'Production',   bg: '#e0e7ff', color: '#4338ca' },
   clearing:    { label: 'Clearing',     bg: '#e0f2fe', color: '#0891b2' },
   dispatched:  { label: 'Dispatched',   bg: '#d1fae5', color: '#16a34a' },
@@ -123,7 +125,14 @@ export default function ProjectPipelineBoard({ setPage }) {
     : 'All Statuses';
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)', minHeight: '100%' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Filter}
+        eyebrow="Projects"
+        title="Project Pipeline"
+        actions={<button className="plh-cta" onClick={load} title="Refresh"><RefreshCw size={14} /></button>}
+      />
+    }>
       <style>{`@keyframes ppspin { to { transform: rotate(360deg); } }
         .pp-col-body::-webkit-scrollbar{width:7px}
         .pp-col-body::-webkit-scrollbar-thumb{background:var(--color-border-tertiary);border-radius:4px}
@@ -135,14 +144,6 @@ export default function ProjectPipelineBoard({ setPage }) {
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 240 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Project Pipeline</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Production pipeline by stage — {boardTotal} project{boardTotal !== 1 ? 's' : ''} · drag a card, or use the arrows, to change stage</p>
-        </div>
-        <button onClick={load} title="Refresh" style={toolBtn}><RefreshCw size={14} /></button>
-      </div>
 
       {/* Filter bar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -286,6 +287,6 @@ export default function ProjectPipelineBoard({ setPage }) {
           <Lock size={12} /> You have view-only access — stage changes are disabled.
         </p>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import {
-  Plus, Building, X, Phone, Mail, Globe, Search,
-  Users, TrendingUp, Calendar, ChevronRight, Pencil,
-  ToggleLeft, ToggleRight, Trash2, Tag,
+  Plus, Building, X, Phone, Mail, Globe, Search, Users, TrendingUp,
+  Calendar, ChevronRight, Pencil, ToggleLeft, ToggleRight, Trash2, Tag,
+  UserPlus,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { fmtDate } from '@/utils/dateFormatter';
 import Drawer from '../shared/components/Drawer';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY_FORM = {
   name: '', contact_person: '', email: '', phone: '', website: '',
@@ -198,7 +199,7 @@ function CandidatesPanel({ agency, onClose }) {
   const STAGE_COLORS = {
     applied:     { bg:'#dbeafe', color:'#1d4ed8' },
     screening:   { bg:'#ede9fe', color:'#6d28d9' },
-    interview:   { bg:'#fef3c7', color:'#92400e' },
+    interview:   { bg:'#ede9fe', color:'#5b21b6' },
     offer:       { bg:'#d1fae5', color:'#065f46' },
     hired:       { bg:'#dcfce7', color:'#15803d' },
     rejected:    { bg:'#fee2e2', color:'#b91c1c' },
@@ -297,7 +298,17 @@ export default function RecruitmentAgencies() {
   const onSaved = () => { closeModal(); load(); };
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Recruitment Agencies"
+        actions={<button className="plh-cta"
+          onClick={openAdd}>
+          <Plus size={15}/> Add Agency
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeleteAgency}
         title="Delete Agency"
@@ -308,20 +319,7 @@ export default function RecruitmentAgencies() {
         onCancel={() => setPendingDeleteAgency(null)}
       />
       {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Recruitment Agencies</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
-            {agencies.length} agency partner{agencies.length !== 1 ? 's' : ''}
-          </p>
-        </div>
-        <button
-          onClick={openAdd}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}
-        >
-          <Plus size={15}/> Add Agency
-        </button>
-      </div>
+
 
       {/* Search */}
       <div style={{ position:'relative', marginBottom:20, maxWidth:340 }}>
@@ -378,7 +376,7 @@ export default function RecruitmentAgencies() {
                       {a.city && <p style={{ fontSize:11, color:'#9ca3af', margin:'2px 0 0' }}>{a.city}</p>}
                     </div>
                     {a.fee_percentage != null && (
-                      <span style={{ background:'#fef3c7', color:'#92400e', borderRadius:20, padding:'3px 8px', fontSize:11, fontWeight:600, flexShrink:0 }}>
+                      <span style={{ background:'#ede9fe', color:'#5b21b6', borderRadius:20, padding:'3px 8px', fontSize:11, fontWeight:600, flexShrink:0 }}>
                         {a.fee_percentage}% fee
                       </span>
                     )}
@@ -438,7 +436,7 @@ export default function RecruitmentAgencies() {
                   {[
                     { label:'Sourced',  value: a.total_candidates ?? 0, icon: Users,      color:'#6366f1' },
                     { label:'Hired',    value: a.hired_count ?? 0,       icon: TrendingUp, color:'#10b981' },
-                    { label:'Success',  value: a.success_rate != null ? `${a.success_rate}%` : '—', icon: null, color:'#f59e0b' },
+                    { label:'Success',  value: a.success_rate != null ? `${a.success_rate}%` : '—', icon: null, color:'#7c5cf0' },
                   ].map((s, i) => (
                     <div key={s.label} style={{ textAlign:'center', padding:'4px 0', borderRight: i < 2 ? '1px solid #f0f0f4' : 'none' }}>
                       <p style={{ fontSize:16, fontWeight:700, color:s.color, margin:0 }}>{s.value}</p>
@@ -463,7 +461,7 @@ export default function RecruitmentAgencies() {
                   </button>
                   <button
                     onClick={() => handleDeactivate(a)}
-                    style={{ display:'flex', alignItems:'center', gap:4, padding:'6px 10px', background: a.is_active ? '#fef3c7' : '#dcfce7', color: a.is_active ? '#92400e' : '#15803d', border:'none', borderRadius:7, cursor:'pointer', fontSize:11 }}
+                    style={{ display:'flex', alignItems:'center', gap:4, padding:'6px 10px', background: a.is_active ? '#ede9fe' : '#dcfce7', color: a.is_active ? '#5b21b6' : '#15803d', border:'none', borderRadius:7, cursor:'pointer', fontSize:11 }}
                   >
                     {a.is_active ? <ToggleLeft size={12}/> : <ToggleRight size={12}/>}
                     {a.is_active ? 'Deactivate' : 'Activate'}
@@ -490,6 +488,6 @@ export default function RecruitmentAgencies() {
       {viewCandidates && (
         <CandidatesPanel agency={viewCandidates} onClose={() => setViewCandidates(null)}/>
       )}
-    </div>
+    </PageShell>
   );
 }

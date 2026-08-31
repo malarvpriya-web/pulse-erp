@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Wrench, MapPin, Camera, Play, CheckCircle2, RefreshCw, X, ChevronRight, Navigation,
+  Wrench, MapPin, Camera, Play, CheckCircle2, RefreshCw, X,
+  ChevronRight, Navigation, LifeBuoy,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { getPosition, capturePhoto } from '@/mobile/native';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /**
  * EngineerHome — the field-engineer mobile home. A touch-first list of the
@@ -12,7 +14,7 @@ import { getPosition, capturePhoto } from '@/mobile/native';
  * start / resolve. Every action posts a field-update logged to the ticket.
  */
 
-const PRIORITY = { high: '#dc2626', medium: '#d97706', low: '#0369a1' };
+const PRIORITY = { high: '#dc2626', medium: '#6d28d9', low: '#0369a1' };
 const STATUS = { open: '#6b7280', 'in progress': '#6366f1', resolved: '#059669' };
 const card = { background: '#fff', border: '1px solid #eceaf3', borderRadius: 14, padding: 16, boxShadow: '0 1px 2px rgba(17,24,39,.04)' };
 const chip = (color) => ({ background: `${color}1a`, color, padding: '2px 9px', borderRadius: 999, fontSize: 11, fontWeight: 700, textTransform: 'capitalize', whiteSpace: 'nowrap' });
@@ -111,14 +113,17 @@ export default function EngineerHome() {
   const highCount = jobs.filter((j) => (j.priority || '').toLowerCase() === 'high').length;
 
   return (
-    <div className="pulse-page" style={{ maxWidth: 620, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-        <Wrench size={22} color="#6B3FDB" />
-        <h1 style={{ margin: 0, fontSize: 21, fontWeight: 700, color: '#111827' }}>My Field Jobs</h1>
-        <button onClick={load} title="Refresh" style={{ marginLeft: 'auto', border: '1px solid #e5e7eb', background: '#fff', borderRadius: 10, padding: 8, cursor: 'pointer' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="My Field Jobs"
+        actions={<button className="plh-cta" onClick={load} title="Refresh">
           <RefreshCw size={16} className={loading ? 'spin' : ''} />
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
       <p style={{ margin: '0 0 16px', color: '#6b7280', fontSize: 13 }}>
         {jobs.length} open job{jobs.length === 1 ? '' : 's'} assigned to you{highCount ? ` · ${highCount} high priority` : ''}.
       </p>
@@ -149,6 +154,6 @@ export default function EngineerHome() {
       {selected && <JobSheet ticket={selected} onClose={() => setSelected(null)}
         onChanged={(status) => { load(); if (status === 'Resolved') setSelected(null); }} />}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } } .spin { animation: spin 1s linear infinite; }`}</style>
-    </div>
+    </PageShell>
   );
 }

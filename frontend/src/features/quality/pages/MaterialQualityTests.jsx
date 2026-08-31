@@ -5,8 +5,13 @@
 // production operation (any level of production), lets Quality record readings
 // inline (auto-evaluated, auto-NCR on fail) and filter their queue.
 import { useState, useEffect, useCallback } from 'react';
+import {
+  FlaskConical, ClipboardList, Hourglass, CheckCircle2, XCircle,
+  PackageCheck, Factory,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell, StatBand, Stat, MeterCard, MeterGrid } from '@/components/pulse-ui';
 
 const RESULT_COLORS = {
   pending: ['#f3f4f6', '#6b7280'], pass: ['#d1fae5', '#16a34a'],
@@ -15,15 +20,6 @@ const RESULT_COLORS = {
 function ResultBadge({ result }) {
   const [bg, color] = RESULT_COLORS[result] || RESULT_COLORS.pending;
   return <span style={{ background: bg, color, padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 700 }}>{(result || 'pending').toUpperCase()}</span>;
-}
-
-function Tile({ label, value, tone }) {
-  return (
-    <div style={{ background: '#fff', border: '1px solid #eef0f4', borderRadius: 12, padding: '16px 18px', flex: 1, minWidth: 150 }}>
-      <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 800, color: tone || '#111827', marginTop: 4 }}>{value}</div>
-    </div>
-  );
 }
 
 const FILTERS = [
@@ -71,23 +67,62 @@ export default function MaterialQualityTests() {
     } catch (e) { toast.error(e?.response?.data?.error || 'Could not record'); }
   };
 
-  return (
-    <div className="pulse-page">
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#111827' }}>Material & Production Quality Tests</h1>
-        <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>
-          Tests raised on material received into Stores and at every level of production. Record readings to auto-evaluate against spec.
-        </p>
-      </div>
+  const passed  = Number(summary.passed ?? 0);
+  const failed  = Number(summary.failed ?? 0);
+  const pending = Number(summary.pending ?? 0);
+  const decided = passed + failed;
+  const passRate = decided ? Math.round((passed / decided) * 100) : 0;
 
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
-        <Tile label="Total tests" value={summary.total ?? 0} />
-        <Tile label="Pending" value={summary.pending ?? 0} tone="#d97706" />
-        <Tile label="Passed" value={summary.passed ?? 0} tone="#16a34a" />
-        <Tile label="Failed" value={summary.failed ?? 0} tone="#dc2626" />
-        <Tile label="Material (Stores)" value={summary.material_tests ?? 0} tone="#6B3FDB" />
-        <Tile label="Production" value={summary.production_tests ?? 0} tone="#6B3FDB" />
-      </div>
+  return (
+    <PageShell dock={
+        <PageHero
+          icon={FlaskConical}
+          eyebrow="Quality"
+          title="Material & Production Quality Tests"
+          subtitle="Tests raised on material received into Stores and at every level of production — record readings to auto-evaluate against spec"
+          meta={[
+            { value: summary.total ?? 0, label: 'total tests' },
+            { value: `${passRate}%`, label: 'pass rate', tone: passRate >= 95 ? 'good' : passRate >= 80 ? 'warn' : 'bad' },
+            { value: pending, label: 'awaiting readings', tone: pending ? 'warn' : 'good' },
+          ]}
+          tiles={[
+            { label: 'Passed',  value: passed },
+            { label: 'Failed',  value: failed },
+            { label: 'Pending', value: pending },
+          ]}
+        />
+    }>
+
+      <StatBand cols={6}>
+        <Stat index={0} icon={ClipboardList} tone="primary" label="Total Tests"       value={summary.total ?? 0}           sub="all sources" />
+        <Stat index={1} icon={Hourglass}     tone="warning" label="Pending"           value={pending}                      sub="readings not recorded" />
+        <Stat index={2} icon={CheckCircle2}  tone="success" label="Passed"            value={passed}                       sub={`${passRate}% of decided`} />
+        <Stat index={3} icon={XCircle}       tone="danger"  label="Failed"            value={failed}                       sub="auto-raises NCR" />
+        <Stat index={4} icon={PackageCheck}  tone="teal"    label="Material (Stores)" value={summary.material_tests ?? 0}  sub="from GRN" />
+        <Stat index={5} icon={Factory}       tone="info"    label="Production"        value={summary.production_tests ?? 0} sub="from operations" />
+      </StatBand>
+
+      <MeterGrid>
+        <MeterCard
+          title="Test Pass Rate"
+          value={passRate}
+          legend={[
+            { value: passed, label: 'passed', color: '#16a34a' },
+            { value: failed, label: 'failed', color: '#dc2626' },
+            { value: pending, label: 'pending', color: '#6d28d9' },
+          ]}
+        />
+        <MeterCard
+          title="Queue Progress"
+          caption={`${summary.total ? Math.round((decided / summary.total) * 100) : 0}% recorded`}
+          tone="primary"
+          value={summary.total ? (decided / summary.total) * 100 : 0}
+          legend={[
+            { value: decided, label: 'recorded', color: '#6B3FDB' },
+            { value: pending, label: 'outstanding', color: '#6d28d9' },
+          ]}
+        />
+      </MeterGrid>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         {FILTERS.map(([v, l]) => (
@@ -123,7 +158,7 @@ export default function MaterialQualityTests() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }
 

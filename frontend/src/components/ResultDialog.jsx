@@ -23,7 +23,7 @@ import './ResultDialog.css';
 const TYPE_CFG = {
   success : { Icon: CheckCircle,   color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0', iconBg: '#dcfce7' },
   error   : { Icon: XCircle,       color: '#dc2626', bg: '#fef2f2', border: '#fecaca', iconBg: '#fee2e2' },
-  warning : { Icon: AlertTriangle, color: '#d97706', bg: '#fffbeb', border: '#fde68a', iconBg: '#fef3c7' },
+  warning : { Icon: AlertTriangle, color: '#6d28d9', bg: '#f5f3ff', border: '#ddd6fe', iconBg: '#ede9fe' },
   info    : { Icon: Info,          color: '#0369a1', bg: '#eff6ff', border: '#bfdbfe', iconBg: '#dbeafe' },
 };
 

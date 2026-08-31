@@ -157,7 +157,7 @@
 }
 .pom-action-approve { background: #dcfce7; color: #15803d; }
 .pom-action-receive { background: #dbeafe; color: #1d4ed8; }
-.pom-action-send    { background: #fef3c7; color: #92400e; }
+.pom-action-send    { background: #ede9fe; color: #5b21b6; }
 .pom-action-cancel {
   padding: 5px; border-radius: 6px; background: #fef2f2;
   border: none; cursor: pointer; color: #dc2626; display: flex;
@@ -208,7 +208,7 @@
 }
 .pom-da-approve { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
 .pom-da-receive { background: linear-gradient(135deg, #3b82f6, #1d4ed8); color: #fff; }
-.pom-da-send    { background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; }
+.pom-da-send    { background: linear-gradient(135deg, #7c5cf0, #6d28d9); color: #fff; }
 .pom-da-cancel  { background: #fef2f2; color: #dc2626; }
 .pom-da-approve:hover { opacity: .9; }
 .pom-da-receive:hover { opacity: .9; }

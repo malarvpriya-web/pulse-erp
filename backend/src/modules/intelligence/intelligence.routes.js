@@ -5,9 +5,54 @@
  * Masters, Multi-company, Insights, Validation
  */
 import { Router } from 'express';
+import auditRepository from '../audit/repositories/audit.repository.js';
+import { companyOf } from '../../shared/scope.js';
 import pool from '../../config/db.js';
+import { sqlEmployeeActive } from '../../shared/statusSets.js';
 
 const router = Router();
+
+/**
+ * Endpoints whose backing table has never existed.
+ *
+ * `sla_config`, `sla_tracking`, `dashboard_widgets`, `documents`,
+ * `project_costs`, `budget_vs_actual`, `profit_tracker`, `masters` and
+ * `insights_cache` appear in no migration in the repository's history, so these
+ * handlers have never returned data in any environment. Until this was found
+ * they answered with a 500 carrying the raw Postgres text
+ * ("relation \"masters\" does not exist"), which reads to a caller as a server
+ * fault and, outside production, discloses schema internals.
+ *
+ * 501 is the honest code: the route is recognised, the capability is not
+ * implemented. It is deliberately a short-circuit in front of the handlers
+ * rather than a deletion of them — the query bodies are the only surviving
+ * record of the intended schema, and whoever builds these tables will want them.
+ *
+ * Removing these routes outright, or building the nine tables, is a product
+ * decision rather than a correctness one. See ANALYTICS_AI_FINAL_HARDENING_REPORT.md.
+ */
+const UNBACKED_PREFIXES = [
+  ['/sla-config',       'sla_config'],
+  ['/sla-tracking',     'sla_tracking'],
+  ['/widgets',          'dashboard_widgets'],
+  ['/documents',        'documents'],
+  ['/project-costs',    'project_costs'],
+  ['/budget-vs-actual', 'budget_vs_actual'],
+  ['/profit-tracker',   'profit_tracker'],
+  ['/masters',          'masters'],
+  ['/insights',         'insights_cache'],
+];
+
+router.use((req, res, next) => {
+  const p = req.path || '/';
+  const hit = UNBACKED_PREFIXES.find(([prefix]) => p === prefix || p.startsWith(prefix + '/'));
+  if (!hit) return next();
+  return res.status(501).json({
+    error: 'This capability is not implemented — it has no backing table in the schema.',
+    capability: hit[0].slice(1),
+    available: false,
+  });
+});
 
 
 // ════════════════════════════════════════════════════════════
@@ -19,8 +64,9 @@ router.get('/rules', async (req, res) => {
     const r = await pool.query(
       `SELECT * FROM rules_master
        WHERE ($1::text IS NULL OR module_name = $1) AND is_active = true
+         AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)
        ORDER BY priority, module_name`,
-      [module || null]
+      [module || null, companyOf(req) ?? null]
     );
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -94,7 +140,12 @@ router.post('/rules/evaluate', async (req, res) => {
 // ════════════════════════════════════════════════════════════
 router.get('/roles', async (req, res) => {
   try {
-    const r = await pool.query('SELECT * FROM roles ORDER BY id');
+    // `roles` carries company_id. Rows with a NULL company_id are the built-in
+    // global role catalogue and stay visible to everyone; anything a tenant has
+    // defined for itself must not appear in another tenant's list.
+    const r = await pool.query(
+      'SELECT * FROM roles WHERE ($1::int IS NULL OR company_id = $1 OR company_id IS NULL) ORDER BY id',
+      [companyOf(req) ?? null]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -102,8 +153,19 @@ router.get('/roles', async (req, res) => {
 router.get('/role-permissions', async (req, res) => {
   try {
     const { role } = req.query;
+        // `role_permissions` is (role_id, module, can_view/can_add/can_edit/
+    // can_delete/can_approve/can_export) joined to `roles` — the shape
+    // PermissionService and auth.middleware actually enforce. This endpoint
+    // used a (role_name, action, is_allowed) model that has never existed, so
+    // every call threw. Roles are identified by code, not by a free-text name.
     const r = await pool.query(
-      'SELECT * FROM role_permissions WHERE ($1::text IS NULL OR role_name=$1) ORDER BY module, action',
+      `SELECT rp.id, r.code AS role_name, rp.role_id, rp.module,
+              rp.can_view, rp.can_add, rp.can_edit,
+              rp.can_delete, rp.can_approve, rp.can_export
+         FROM role_permissions rp
+         JOIN roles r ON r.id = rp.role_id
+        WHERE ($1::text IS NULL OR LOWER(r.code) = LOWER($1))
+        ORDER BY rp.module`,
       [role || null]
     );
     res.json(r.rows);
@@ -112,13 +174,35 @@ router.get('/role-permissions', async (req, res) => {
 
 router.put('/role-permissions', async (req, res) => {
   try {
-    const { role_name, module, action, is_allowed } = req.body;
+        const { role_name, module, action, is_allowed } = req.body;
+
+    // `action` selects one of the boolean columns. Whitelisted: this value
+    // reaches the SQL as an identifier, and a permission grant is exactly the
+    // place not to interpolate free text.
+    const ACTION_COLUMN = {
+      view: 'can_view', add: 'can_add', create: 'can_add', edit: 'can_edit',
+      update: 'can_edit', delete: 'can_delete', approve: 'can_approve',
+      export: 'can_export',
+    };
+    const col = ACTION_COLUMN[String(action || '').toLowerCase()];
+    if (!col) {
+      return res.status(400).json({
+        error: `action must be one of: ${Object.keys(ACTION_COLUMN).join(', ')}`,
+      });
+    }
+    if (!role_name || !module) {
+      return res.status(400).json({ error: 'role_name and module are required' });
+    }
+
+    const roleRes = await pool.query(`SELECT id FROM roles WHERE LOWER(code) = LOWER($1)`, [role_name]);
+    if (!roleRes.rows[0]) return res.status(404).json({ error: `Unknown role: ${role_name}` });
+
     const r = await pool.query(
-      `INSERT INTO role_permissions (role_name, module, action, is_allowed)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (role_name, module, action) DO UPDATE SET is_allowed=$4
+      `INSERT INTO role_permissions (role_id, module, ${col})
+       VALUES ($1,$2,$3)
+       ON CONFLICT (role_id, module) DO UPDATE SET ${col} = $3
        RETURNING *`,
-      [role_name, module, action, is_allowed]
+      [roleRes.rows[0].id, module, Boolean(is_allowed)]
     );
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -127,9 +211,13 @@ router.put('/role-permissions', async (req, res) => {
 router.get('/field-permissions', async (req, res) => {
   try {
     const { role, module } = req.query;
+        // Same drift: field_permissions keys on role_id, not a role_name string.
     const r = await pool.query(
-      `SELECT * FROM field_permissions
-       WHERE ($1::text IS NULL OR role_name=$1) AND ($2::text IS NULL OR module=$2)`,
+      `SELECT fp.*, r.code AS role_name
+         FROM field_permissions fp
+         JOIN roles r ON r.id = fp.role_id
+        WHERE ($1::text IS NULL OR LOWER(r.code) = LOWER($1))
+          AND ($2::text IS NULL OR fp.module = $2)`,
       [role || null, module || null]
     );
     res.json(r.rows);
@@ -138,13 +226,19 @@ router.get('/field-permissions', async (req, res) => {
 
 router.put('/field-permissions', async (req, res) => {
   try {
-    const { role_name, module, field_name, is_visible, is_editable } = req.body;
+        const { role_name, module, field_name, is_visible, is_editable } = req.body;
+    if (!role_name || !module || !field_name) {
+      return res.status(400).json({ error: 'role_name, module and field_name are required' });
+    }
+    const roleRes = await pool.query(`SELECT id FROM roles WHERE LOWER(code) = LOWER($1)`, [role_name]);
+    if (!roleRes.rows[0]) return res.status(404).json({ error: `Unknown role: ${role_name}` });
+
     const r = await pool.query(
-      `INSERT INTO field_permissions (role_name, module, field_name, is_visible, is_editable)
+      `INSERT INTO field_permissions (role_id, module, field_name, is_visible, is_editable)
        VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (role_name, module, field_name)
+       ON CONFLICT (role_id, module, field_name)
        DO UPDATE SET is_visible=$4, is_editable=$5 RETURNING *`,
-      [role_name, module, field_name, is_visible, is_editable]
+      [roleRes.rows[0].id, module, field_name, is_visible, is_editable]
     );
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -177,12 +271,12 @@ router.get('/workflow-instances', async (req, res) => {
               u.name as started_by_name
        FROM workflow_instances wi
        JOIN workflow_master wm ON wi.workflow_id = wm.id
-       LEFT JOIN workflow_steps ws ON wi.current_step = ws.id
-       LEFT JOIN users u ON wi.started_by = u.id
+       LEFT JOIN workflow_steps ws ON wi.current_step_id = ws.id
+       LEFT JOIN users u ON wi.initiated_by = u.id
        WHERE ($1::text IS NULL OR wi.module=$1)
-         AND ($2::int  IS NULL OR wi.record_id=$2)
+         AND ($2::int  IS NULL OR wi.entity_id=$2)
          AND ($3::text IS NULL OR wi.status=$3)
-       ORDER BY wi.started_at DESC`,
+       ORDER BY wi.created_at DESC`,
       [module || null, record_id ? parseInt(record_id) : null, status || null]
     );
     res.json(r.rows);
@@ -197,7 +291,7 @@ router.post('/workflow-instances', async (req, res) => {
       [workflow_id]
     );
     const r = await pool.query(
-      `INSERT INTO workflow_instances (workflow_id, module, record_id, current_step, started_by)
+      `INSERT INTO workflow_instances (workflow_id, module, entity_id, current_step_id, initiated_by)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,
       [workflow_id, module, record_id, firstStep.rows[0]?.id || null, req.user?.userId]
     );
@@ -216,17 +310,17 @@ router.post('/workflow-instances/:id/advance', async (req, res) => {
        FROM workflow_transitions wt
        JOIN workflow_steps ws ON wt.to_step_id = ws.id
        WHERE wt.workflow_id=$1 AND wt.from_step_id=$2 AND wt.action_label=$3`,
-      [inst.rows[0].workflow_id, inst.rows[0].current_step, action]
+      [inst.rows[0].workflow_id, inst.rows[0].current_step_id, action]
     );
 
     if (!transition.rows.length) return res.status(400).json({ error: `No transition found for action: ${action}` });
 
     const next = transition.rows[0];
-    await pool.query('UPDATE workflow_instances SET current_step=$1 WHERE id=$2', [next.next_id, req.params.id]);
+    await pool.query('UPDATE workflow_instances SET current_step_id=$1 WHERE id=$2', [next.next_id, req.params.id]);
     await pool.query(
       `INSERT INTO workflow_instance_history (instance_id, step_id, action, actor_id, comment)
        VALUES ($1,$2,$3,$4,$5)`,
-      [req.params.id, inst.rows[0].current_step, action, req.user?.userId, comment || '']
+      [req.params.id, inst.rows[0].current_step_id, action, req.user?.userId, comment || '']
     );
     res.json({ success: true, next_step: next.step_name });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -331,7 +425,11 @@ router.get('/sla-tracking/breaches', async (req, res) => {
 // ════════════════════════════════════════════════════════════
 router.get('/notification-rules', async (req, res) => {
   try {
-    const r = await pool.query('SELECT * FROM notification_rules WHERE is_active=true ORDER BY module, event_name');
+    const r = await pool.query(
+      `SELECT * FROM notification_rules WHERE enabled=true
+         AND ($1::int IS NULL OR company_id = $1 OR company_id IS NULL)
+       ORDER BY event_key`,
+      [companyOf(req) ?? null]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -340,7 +438,7 @@ router.put('/notification-rules/:id', async (req, res) => {
   try {
     const { is_active, template, channel } = req.body;
     const r = await pool.query(
-      'UPDATE notification_rules SET is_active=$1, template=$2, channel=$3 WHERE id=$4 RETURNING *',
+      'UPDATE notification_rules SET enabled=$1, template=$2, channel=$3 WHERE id=$4 RETURNING *',
       [is_active, template, channel, req.params.id]
     );
     res.json(r.rows[0]);
@@ -352,7 +450,7 @@ router.post('/notification-rules/fire', async (req, res) => {
   try {
     const { event_name, module, record_id, data, target_user_ids } = req.body;
     const rules = await pool.query(
-      'SELECT * FROM notification_rules WHERE event_name=$1 AND is_active=true',
+      'SELECT * FROM notification_rules WHERE event_key=$1 AND enabled=true',
       [event_name]
     );
     let created = 0;
@@ -368,7 +466,7 @@ router.post('/notification-rules/fire', async (req, res) => {
       }
       for (const uid of userIds) {
         await pool.query(
-          `INSERT INTO notifications (user_id, message, module, record_id, is_read, created_at)
+          `INSERT INTO notifications (user_id, message, module_name, reference_id, is_read, created_at)
            VALUES ($1,$2,$3,$4,false,NOW())`,
           [uid, msg, module, record_id]
         );
@@ -480,15 +578,16 @@ router.get('/audit-logs', async (req, res) => {
     const r = await pool.query(
       `SELECT al.*, u.name as user_name_resolved
        FROM audit_logs al LEFT JOIN users u ON al.user_id = u.id
-       WHERE ($1::text IS NULL OR al.module=$1)
+       WHERE ($1::text IS NULL OR al.module_name=$1)
          AND ($2::int  IS NULL OR al.user_id=$2)
-         AND ($3::text IS NULL OR al.action=$3)
-         AND ($4::text IS NULL OR al.timestamp >= $4::timestamptz)
-         AND ($5::text IS NULL OR al.timestamp <= $5::timestamptz)
-       ORDER BY al.timestamp DESC
+         AND ($3::text IS NULL OR al.action_type=$3)
+         AND ($4::text IS NULL OR al.created_at >= $4::timestamptz)
+         AND ($5::text IS NULL OR al.created_at <= $5::timestamptz)
+         AND ($7::int  IS NULL OR al.company_id = $7)
+       ORDER BY al.created_at DESC
        LIMIT $6`,
       [module||null, user_id?parseInt(user_id):null, action||null,
-       from_date||null, to_date||null, parseInt(limit||100)]
+       from_date||null, to_date||null, parseInt(limit||100), companyOf(req) ?? null]
     );
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -500,13 +599,26 @@ router.post('/audit-logs', async (req, res) => {
     const changed = old_data && new_data
       ? Object.keys(new_data).filter(k => JSON.stringify(old_data[k]) !== JSON.stringify(new_data[k]))
       : [];
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, user_name, user_role, module, record_id, action, old_data, new_data, changed_fields, ip_address)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [req.user?.userId, req.user?.name||'System', req.user?.role||'system',
-       module, record_id||null, action, old_data?JSON.stringify(old_data):null,
-       new_data?JSON.stringify(new_data):null, changed, req.ip]
-    );
+    // Was a second, hand-rolled INSERT writing eight columns that do not exist
+    // on audit_logs (user_name, user_role, module, record_id, action, old_data,
+    // new_data, changed_fields) — so every write through this endpoint threw and
+    // nothing was ever audited by it. The canonical writer is
+    // audit/repositories/audit.repository.js; using it means one shape, one place.
+    //
+    // `changed_fields` has no column, so the computed diff is carried inside
+    // new_data_json where it stays queryable rather than being dropped.
+    await auditRepository.create({
+      user_id:        req.user?.userId ?? null,
+      module_name:    module,
+      action_type:    action,
+      reference_id:   record_id || null,
+      reference_type: req.body.reference_type || null,
+      old_data_json:  old_data || null,
+      new_data_json:  new_data ? { ...new_data, __changed_fields: changed } : null,
+      ip_address:     req.ip,
+      user_agent:     req.headers['user-agent'] || null,
+      company_id:     companyOf(req),
+    });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -514,11 +626,14 @@ router.post('/audit-logs', async (req, res) => {
 router.get('/audit-logs/summary', async (req, res) => {
   try {
     const r = await pool.query(`
-      SELECT action, module, COUNT(*) as count
+      -- audit_logs carries company_id. Unscoped, this summary reported another
+      -- tenant's activity mix to anyone who opened the page.
+      SELECT action_type AS action, module_name AS module, COUNT(*) as count
       FROM audit_logs
-      WHERE timestamp >= NOW() - INTERVAL '7 days'
-      GROUP BY action, module ORDER BY count DESC LIMIT 20
-    `);
+      WHERE created_at >= NOW() - INTERVAL '7 days'
+        AND ($1::int IS NULL OR company_id = $1)
+      GROUP BY action_type, module_name ORDER BY count DESC LIMIT 20
+    `, [companyOf(req) ?? null]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -632,10 +747,15 @@ router.delete('/masters/:id', async (req, res) => {
 router.get('/companies', async (req, res) => {
   try {
     const r = await pool.query(`
+      -- A scoped caller sees only their own company. companies has no
+      -- company_id of its own, so the predicate is on the primary key; an
+      -- unassigned super admin (companyOf === null) still sees every tenant,
+      -- which is the established convention across this surface.
       SELECT c.*, COUNT(b.id) as branch_count
       FROM companies c LEFT JOIN branches b ON b.company_id=c.id
-      WHERE c.is_active=true GROUP BY c.id ORDER BY c.company_name
-    `);
+      WHERE c.is_active=true AND ($1::int IS NULL OR c.id = $1)
+      GROUP BY c.id ORDER BY c.name
+    `, [companyOf(req) ?? null]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -644,7 +764,7 @@ router.post('/companies', async (req, res) => {
   try {
     const { company_name, company_code, address, city, country, gst_number, pan_number, email, phone } = req.body;
     const r = await pool.query(
-      `INSERT INTO companies (company_name, company_code, address, city, country, gst_number, pan_number, email, phone)
+      `INSERT INTO companies (name, code, address, city, country, gstin, pan, email, phone)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [company_name, company_code, address||'', city||'', country||'India', gst_number||'', pan_number||'', email||'', phone||'']
     );
@@ -656,13 +776,16 @@ router.get('/branches', async (req, res) => {
   try {
     const { company_id } = req.query;
     const r = await pool.query(
-      `SELECT b.*, c.company_name, COUNT(e.id) as employee_count
+      `SELECT b.*, c.name AS company_name, COUNT(e.id) as employee_count
        FROM branches b
        JOIN companies c ON b.company_id = c.id
-       LEFT JOIN employees e ON e.branch_id = b.id AND e.status IN ('active', 'probation', 'notice')
+       LEFT JOIN employees e ON e.branch_id = b.id AND ${sqlEmployeeActive('e.status')}
+       -- The caller's own company always wins over the ?company_id query param,
+       -- so the parameter can narrow the result but never widen it past the
+       -- caller's tenant.
        WHERE ($1::int IS NULL OR b.company_id=$1) AND b.is_active=true
-       GROUP BY b.id, c.company_name ORDER BY c.company_name, b.branch_name`,
-      [company_id ? parseInt(company_id) : null]
+       GROUP BY b.id, c.name ORDER BY c.name, b.name`,
+      [companyOf(req) ?? (company_id ? parseInt(company_id) : null)]
     );
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -672,9 +795,10 @@ router.post('/branches', async (req, res) => {
   try {
     const { company_id, branch_name, branch_code, city, address, is_head_office } = req.body;
     const r = await pool.query(
-      `INSERT INTO branches (company_id, branch_name, branch_code, city, address, is_head_office)
+      `INSERT INTO branches (company_id, name, code, city, address, branch_type)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [company_id, branch_name, branch_code, city||'', address||'', is_head_office||false]
+      [company_id, branch_name, branch_code, city||'', address||'',
+       is_head_office ? 'head_office' : 'branch']
     );
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -733,11 +857,13 @@ router.post('/insights/refresh', async (req, res) => {
     } catch (_) {}
 
     // Ops: Average ticket resolution
+    // service_tickets doesn't exist — real table is support_tickets, real status values
+    // are Title-case ('Open'/'Resolved'/'In Progress', confirmed live).
     try {
       const tkt = await pool.query(`
         SELECT AVG(EXTRACT(EPOCH FROM (updated_at-created_at))/3600) as avg_hours,
-               COUNT(*) FILTER (WHERE status='open' AND created_at < NOW()-INTERVAL '24h') as sla_breach
-        FROM service_tickets WHERE status IN ('resolved','closed')
+               COUNT(*) FILTER (WHERE status='Open' AND created_at < NOW()-INTERVAL '24h') as sla_breach
+        FROM support_tickets WHERE status IN ('Resolved','Closed')
           AND updated_at >= NOW()-INTERVAL '30d'
       `);
       await pool.query(
@@ -760,8 +886,9 @@ router.get('/validation-rules', async (req, res) => {
     const r = await pool.query(
       `SELECT * FROM validation_rules
        WHERE ($1::text IS NULL OR module=$1) AND is_active=true
-       ORDER BY module, field_name, priority`,
-      [module || null]
+         AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)
+       ORDER BY module, field_name`,
+      [module || null, companyOf(req) ?? null]
     );
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -769,13 +896,13 @@ router.get('/validation-rules', async (req, res) => {
 
 router.post('/validation-rules', async (req, res) => {
   try {
-    const { module, field_name, rule_type, rule_value, error_message, priority } = req.body;
+    const { module, field_name, rule_type, rule_value, error_message } = req.body;
     const r = await pool.query(
-      `INSERT INTO validation_rules (module, field_name, rule_type, rule_value, error_message, priority)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO validation_rules (module, field_name, rule_type, rule_expr, error_message)
+       VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (module, field_name, rule_type) DO UPDATE
-       SET rule_value=$4, error_message=$5 RETURNING *`,
-      [module, field_name, rule_type, rule_value||null, error_message||'', priority||10]
+       SET rule_expr=$4, error_message=$5 RETURNING *`,
+      [module, field_name, rule_type, rule_value||null, error_message||'']
     );
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -786,12 +913,13 @@ router.post('/validation-rules/validate', async (req, res) => {
   try {
     const { module, data } = req.body;
     const rules = await pool.query(
-      'SELECT * FROM validation_rules WHERE module=$1 AND is_active=true ORDER BY field_name, priority',
+      'SELECT * FROM validation_rules WHERE module=$1 AND is_active=true ORDER BY field_name',
       [module]
     );
     const errors = {};
     for (const rule of rules.rows) {
-      const { field_name, rule_type, rule_value, error_message } = rule;
+      // The stored expression lives in rule_expr; `rule_value` is the request-side name.
+      const { field_name, rule_type, rule_expr: rule_value, error_message } = rule;
       const val = data[field_name];
       let fail = false;
 

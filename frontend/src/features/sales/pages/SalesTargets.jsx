@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Target, TrendingUp, Plus, X, Trash2, Edit2, Users, Globe, Building2 } from 'lucide-react';
+import {
+  Target, TrendingUp, Plus, X, Trash2, Edit2, Users, Globe, Building2,
+  ShoppingCart,
+} from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtL = (n) => {
@@ -39,7 +43,7 @@ const defaultPeriod = () => {
 const pctColor = (pct) => {
   const v = Number(pct || 0);
   if (v >= 100) return '#10b981';
-  if (v >= 70)  return '#f59e0b';
+  if (v >= 70)  return '#7c5cf0';
   return '#ef4444';
 };
 
@@ -422,26 +426,21 @@ export default function SalesTargets() {
   const filterLabel = periodLabel(filter.period_type, filter.period_year, filter.period_value);
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Sales Targets</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
-            {repCount} {repCount === 1 ? 'rep' : 'reps'} · Team achievement {fmtPct(teamPct)} · {filterLabel}
-          </p>
-        </div>
-        <div style={{ display:'flex', gap:10 }}>
-          <button onClick={() => setShowTeamModal(true)}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 16px', background:'#fff', color:'#374151', border:'1px solid #e5e7eb', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Sales Targets"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setShowTeamModal(true)}>
             <Users size={14}/> Team Target
           </button>
-          <button onClick={() => { setEditTarget(null); setShowModal(true); }}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 16px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+          <button className="plh-cta" onClick={() => { setEditTarget(null); setShowModal(true); }}>
             <Plus size={14}/> Individual Target
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       {/* Period filter bar */}
       <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #f0f0f4', marginBottom:20, display:'flex', flexWrap:'wrap', gap:12, alignItems:'center' }}>
@@ -542,7 +541,7 @@ export default function SalesTargets() {
                         <td style={{ padding:'12px 14px', fontSize:13, color:'#374151' }}>{fmtL(t.achieved_amount)}</td>
                         <td style={{ padding:'12px 14px' }}>
                           <span style={{ display:'inline-block', padding:'3px 10px', borderRadius:12,
-                                         background: pct >= 100 ? '#d1fae5' : pct >= 70 ? '#fef3c7' : '#fee2e2',
+                                         background: pct >= 100 ? '#d1fae5' : pct >= 70 ? '#ede9fe' : '#fee2e2',
                                          color: clr, fontSize:12, fontWeight:700 }}>
                             {pct >= 100 ? 'On Target' : `${pct.toFixed(1)}%`}
                           </span>
@@ -652,6 +651,6 @@ export default function SalesTargets() {
       {showTeamModal && (
         <TeamTargetModal onClose={() => setShowTeamModal(false)} onSaved={load} />
       )}
-    </div>
+    </PageShell>
   );
 }

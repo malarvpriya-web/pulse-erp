@@ -3,6 +3,7 @@ import {
   Boxes, Wallet, Wrench, UserCheck, ShieldAlert, RefreshCw, X, Layers,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const SOURCE_META = {
   finance:     { label: 'Fixed Asset', bg: '#ede9fe', color: '#4f46e5' },
@@ -130,12 +131,15 @@ export default function AssetRegister() {
   }, [assets, srcFilter, search]);
 
   return (
-    <div className="pulse-page">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <Boxes size={22} color="#6B3FDB" />
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>Asset Register</h1>
-        <button onClick={load} style={{ ...btn, marginLeft: 'auto' }}><RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh</button>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Wrench}
+        eyebrow="Assets"
+        title="Asset Register"
+        actions={<button className="plh-cta" onClick={load}><RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh</button>}
+      />
+    }>
+
       <p style={{ margin: '0 0 16px', color: '#6b7280', fontSize: 13 }}>
         Unified view across Finance fixed assets, Maintenance serviceable assets, and HR allocations — one register, full lifecycle.
       </p>
@@ -145,7 +149,7 @@ export default function AssetRegister() {
         <Kpi icon={Layers} label="Fixed assets" value={summary.fixed_assets ?? 0} color="#6B3FDB" />
         <Kpi icon={Wrench} label="Under maintenance" value={summary.under_maintenance ?? 0} color="#0369a1" />
         <Kpi icon={UserCheck} label="Allocated" value={summary.allocated ?? 0} color="#15803d" />
-        <Kpi icon={ShieldAlert} label="Warranty ≤90d" value={summary.warranty_expiring ?? 0} color="#d97706" />
+        <Kpi icon={ShieldAlert} label="Warranty ≤90d" value={summary.warranty_expiring ?? 0} color="#6d28d9" />
       </div>
 
       <div style={{ ...CARD, padding: 0, overflow: 'hidden' }}>
@@ -186,6 +190,6 @@ export default function AssetRegister() {
       </div>
 
       {selected && <AssetDrawer asset={selected} onClose={() => setSelected(null)} />}
-    </div>
+    </PageShell>
   );
 }

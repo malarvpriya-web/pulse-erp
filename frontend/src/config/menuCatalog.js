@@ -36,7 +36,9 @@ function entryLabel(entry) {
  */
 export function getMenuSections() {
   return NAV_ITEMS
-    .filter(g => g && g.name && !ALWAYS_VISIBLE.has(g.name))
+    // `divider` rows are the sidebar's visual domain bands (Insights, Revenue,
+    // …) — they carry no pages and are not configurable sections.
+    .filter(g => g && !g.divider && g.name && !ALWAYS_VISIBLE.has(g.name))
     .map(g => {
       const pages = [];
       if (g.page) pages.push({ page: g.page, label: g.name });
@@ -56,7 +58,7 @@ export function getMenuSections() {
 export function getSectionForPage(page) {
   if (!page) return null;
   for (const g of NAV_ITEMS) {
-    if (!g || !g.name) continue;
+    if (!g || g.divider || !g.name) continue;
     if (g.page === page) return g.name;
     const subs = g.submenu || g.children || [];
     for (const s of subs) {
@@ -150,6 +152,22 @@ export function canFinanceAccessPage(page) {
     return FINANCE_SELF_SERVICE_PAGES.has(page);
   }
   return true;
+}
+
+// True only for the specific Leaves/Attendance/Timesheets self-service pages
+// the finance-family carve-out above grants. Layout.jsx's generic
+// `route.module` + `hasPermission(module,'view')` gate runs AFTER
+// canFinanceAccessPage and would otherwise re-block these same pages: finance/
+// finance_manager/accounts_exec deliberately hold no real 'attendance'/
+// 'leaves'/'timesheets' role_permissions grant (that's the whole point of
+// self-service instead of full module access), so hasPermission always
+// returns false for them here. Layout.jsx uses this to bypass that specific
+// gate for exactly these pages, without loosening it for anything else —
+// e.g. the 'Finance' module itself still goes through the normal
+// hasPermission check.
+export function isFinanceSelfServicePage(page) {
+  const section = getSectionForPage(page);
+  return !!section && FINANCE_RESTRICTED_SECTIONS.has(section) && FINANCE_SELF_SERVICE_PAGES.has(page);
 }
 
 // ── HR scoping within the shared 'Analytics & AI' menu ─────────────────────
@@ -390,11 +408,14 @@ export const ROLE_SECTION_ALLOWLIST = {
   // both roles a role_permissions row on the 'notifications' module. Listed
   // here too — redundant with the fallback but harmless — so the grant stays
   // visible without cross-referencing role_permissions.
-  // 'Leaves'/'Attendance' (2026-07-28): mirrors the self-service carve-out
-  // the coarse `finance` role already had — these two granular roles never
-  // got it, so a finance_manager/accounts_exec had no menu path to apply for
-  // their own leave. Scoped to self-service only via FINANCE_RESTRICTED_
-  // SECTIONS / FINANCE_SELF_SERVICE_PAGES, same as `finance`.
+  // 'Leaves'/'Attendance' (2026-07-28) and 'Timesheets' (2026-08-10): mirrors
+  // the self-service carve-out the coarse `finance` role already had — these
+  // two granular roles never got it, so a finance_manager/accounts_exec had
+  // no menu path to apply for their own leave / log their own timesheet.
+  // Scoped to self-service only via FINANCE_RESTRICTED_SECTIONS /
+  // FINANCE_SELF_SERVICE_PAGES, same as `finance` (canFinanceAccessPage /
+  // isFinanceSelfServicePage already cover finance_manager/accounts_exec by
+  // name, so no code change beyond this allowlist entry was needed).
   // finance_manager keeps 'Approvals' — it IS in approvals.authz.js's
   // APPROVER_ROLES (unscoped, VAEP). accounts_exec's role_permissions
   // 'approvals' module grant (VA, "executor") is a generic CRUD flag on a
@@ -407,10 +428,10 @@ export const ROLE_SECTION_ALLOWLIST = {
   // try again" toast. See hr_exec's comment above for the full mechanism.
   finance_manager: [
     'Home', 'Approvals', 'Finance', 'Reports', 'Leaves', 'Attendance',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Timesheets', 'Notifications', 'Org Chart', 'QR Codes',
   ],
   accounts_exec: [
-    'Home', 'Finance', 'Reports', 'Leaves', 'Attendance',
+    'Home', 'Finance', 'Reports', 'Leaves', 'Attendance', 'Timesheets',
     'Notifications', 'Org Chart', 'QR Codes',
   ],
   // Phase-42 project-delivery seat (20260529000001_phase42_security_roles.js

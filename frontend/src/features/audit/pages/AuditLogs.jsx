@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Shield, Search, RefreshCw, Download, ChevronRight,
-  Plus, Edit2, Trash2, CheckCircle, XCircle, LogIn, LogOut,
-  Eye, FileText, Activity, Clock, User, Monitor, Hash,
-  AlertTriangle, Database,
+  Shield, Search, RefreshCw, Download, ChevronRight, Plus, Edit2,
+  Trash2, CheckCircle, XCircle, LogIn, LogOut, Eye, FileText, Activity,
+  Clock, User, Monitor, Hash, AlertTriangle, Database, ScrollText,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './AuditLogs.css';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 // ── FY helpers ────────────────────────────────────────────────────────────────
 function getFYOptions() {
@@ -35,18 +35,18 @@ const ACTION_CFG = {
   UPDATE  : { icon: Edit2,        color: '#3b82f6', bg: '#eff6ff', label: 'Update',  risk: 'low'    },
   DELETE  : { icon: Trash2,       color: '#ef4444', bg: '#fef2f2', label: 'Delete',  risk: 'high'   },
   APPROVE : { icon: CheckCircle,  color: '#059669', bg: '#ecfdf5', label: 'Approve', risk: 'medium' },
-  REJECT  : { icon: XCircle,      color: '#f59e0b', bg: '#fffbeb', label: 'Reject',  risk: 'medium' },
+  REJECT  : { icon: XCircle,      color: '#7c5cf0', bg: '#f5f3ff', label: 'Reject',  risk: 'medium' },
   LOGIN   : { icon: LogIn,        color: '#6366f1', bg: '#eef2ff', label: 'Login',   risk: 'low'    },
   LOGOUT  : { icon: LogOut,       color: '#8b5cf6', bg: '#f5f3ff', label: 'Logout',  risk: 'low'    },
   VIEW    : { icon: Eye,          color: '#0ea5e9', bg: '#f0f9ff', label: 'View',    risk: 'info'   },
-  EXPORT  : { icon: Download,     color: '#d97706', bg: '#fffbeb', label: 'Export',  risk: 'medium' },
+  EXPORT  : { icon: Download,     color: '#6d28d9', bg: '#f5f3ff', label: 'Export',  risk: 'medium' },
   IMPORT  : { icon: Database,     color: '#6B3FDB', bg: '#f5f3ff', label: 'Import',  risk: 'medium' },
   default : { icon: Activity,     color: '#6b7280', bg: '#f9fafb', label: '—',       risk: 'info'   },
 };
 
 const RISK_CFG = {
   high:   { label: 'HIGH',   bg: '#fef2f2', color: '#dc2626', border: '#fecaca' },
-  medium: { label: 'MED',    bg: '#fffbeb', color: '#d97706', border: '#fde68a' },
+  medium: { label: 'MED',    bg: '#f5f3ff', color: '#6d28d9', border: '#ddd6fe' },
   low:    { label: 'LOW',    bg: '#f0fdf4', color: '#16a34a', border: '#bbf7d0' },
   info:   { label: 'INFO',   bg: '#f0f9ff', color: '#0284c7', border: '#bae6fd' },
 };
@@ -58,8 +58,8 @@ function getActionCfg(type = '') {
 // ── Module color hash ─────────────────────────────────────────────────────────
 const MOD_COLORS = [
   { bg:'#eff6ff', color:'#1d4ed8' }, { bg:'#f0fdf4', color:'#15803d' },
-  { bg:'#fdf4ff', color:'#9333ea' }, { bg:'#fff7ed', color:'#c2410c' },
-  { bg:'#f0fdfa', color:'#0f766e' }, { bg:'#fefce8', color:'#a16207' },
+  { bg:'#fdf4ff', color:'#9333ea' }, { bg:'#fff7ed', color:'#5b21b6' },
+  { bg:'#f0fdfa', color:'#0f766e' }, { bg:'#f5f3ff', color:'#6d28d9' },
   { bg:'#fef2f2', color:'#b91c1c' }, { bg:'#f8fafc', color:'#334155' },
 ];
 function modColor(name = '') {
@@ -115,17 +115,9 @@ const PAGE_SIZE = 50;
 
 // ── KPI card ──────────────────────────────────────────────────────────────────
 function KpiCard({ icon: Icon, label, value, color, bg }) {
-  return (
-    <div className="al-kpi">
-      <div className="al-kpi-icon" style={{ background: bg, color }}>
-        <Icon size={20} />
-      </div>
-      <div>
-        <div className="al-kpi-val">{value ?? '—'}</div>
-        <div className="al-kpi-label">{label}</div>
-      </div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat icon={Icon} label={label} value={value} color={color} bg={bg} />;
 }
 
 // ── Log entry row ─────────────────────────────────────────────────────────────
@@ -368,31 +360,28 @@ export default function AuditLogs() {
   const hasFilters = search || module || actionType || startDate || endDate;
 
   return (
-    <div className="al-root al-audit-page">
-
-      {/* Header */}
-      <div className="al-header">
-        <div className="al-header-left">
-          <div className="al-header-icon"><Shield size={22}/></div>
-          <div>
-            <h1 className="al-title">Audit Logs</h1>
-            <p className="al-subtitle">Complete trail of all system events and user actions</p>
-          </div>
-        </div>
-        <div className="al-header-right">
+    <PageShell dock={
+      <PageHero
+        icon={ScrollText}
+        eyebrow="Audit"
+        title="Audit Logs"
+        subtitle="Complete trail of all system events and user actions"
+        actions={<>
           {hasFilters && (
-            <button className="al-btn al-btn-ghost" onClick={clearAll}>
+            <button className="plh-cta plh-cta--ghost" onClick={clearAll}>
               Clear Filters
             </button>
           )}
-          <button className="al-btn al-btn-ghost" onClick={() => fetchLogs(page)} title="Refresh">
+          <button className="plh-cta plh-cta--ghost" onClick={() => fetchLogs(page)} title="Refresh">
             <RefreshCw size={14}/>
           </button>
-          <button className="al-btn al-btn-primary" onClick={() => exportCSV(logs)}>
+          <button className="plh-cta" onClick={() => exportCSV(logs)}>
             <Download size={14}/> Export CSV
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
 
       {/* KPI cards */}
       <div className="al-kpi-row">
@@ -615,6 +604,6 @@ export default function AuditLogs() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

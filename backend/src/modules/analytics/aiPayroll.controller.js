@@ -36,10 +36,15 @@ function toCache(key, data) {
 export const payrollTrends = async (req, res) => {
   try {
     const months = parseInt(req.query.months) || 12;
-    const key    = `trends:${months}`;
+    // THE CACHE KEY MUST CARRY THE TENANT. Without it the first company to warm
+    // the cache serves its payroll totals to every other company for the life of
+    // the entry — a leak that survives the query being scoped correctly. Same
+    // defect metricsEngine had, and the same fix.
+    const cid    = req.scope?.company_id ?? null;
+    const key    = `trends:${cid}:${months}`;
     const cached = fromCache(key);
     if (cached) return res.json({ success: true, data: cached, message: 'Payroll trends retrieved (cached)' });
-    const data = await getPayrollTrends(months);
+    const data = await getPayrollTrends(months, cid);
     toCache(key, data);
     res.json({ success: true, data, message: 'Payroll trends retrieved' });
   } catch (err) {
@@ -49,10 +54,11 @@ export const payrollTrends = async (req, res) => {
 
 export const departmentCosts = async (req, res) => {
   try {
-    const key    = 'departments';
+    const cid    = req.scope?.company_id ?? null;
+    const key    = `departments:${cid}`;
     const cached = fromCache(key);
     if (cached) return res.json({ success: true, data: cached, message: 'Department costs retrieved (cached)' });
-    const data = await getDepartmentCostAnalysis();
+    const data = await getDepartmentCostAnalysis(cid);
     toCache(key, data);
     res.json({ success: true, data, message: 'Department costs retrieved' });
   } catch (err) {
@@ -63,10 +69,11 @@ export const departmentCosts = async (req, res) => {
 export const anomalyFlags = async (req, res) => {
   try {
     const threshold = parseFloat(req.query.threshold) || 0.20;
-    const key       = `anomalies:${threshold}`;
+    const cid       = req.scope?.company_id ?? null;
+    const key       = `anomalies:${cid}:${threshold}`;
     const cached    = fromCache(key);
     if (cached) return res.json({ success: true, data: cached, message: 'Anomaly flags retrieved (cached)' });
-    const data = await getAnomalyFlags(threshold);
+    const data = await getAnomalyFlags(threshold, cid);
     toCache(key, data);
     res.json({ success: true, data, message: 'Anomaly flags retrieved' });
   } catch (err) {
@@ -77,10 +84,11 @@ export const anomalyFlags = async (req, res) => {
 export const cashflowForecast = async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 30;
-    const key = `cashflow:${days}`;
+    const cid = req.scope?.company_id ?? null;
+    const key = `cashflow:${cid}:${days}`;
     const cached = fromCache(key);
     if (cached) return res.json({ success: true, data: cached, message: 'Cash flow forecast (cached)' });
-    const data = await getPredictiveCashFlow(days);
+    const data = await getPredictiveCashFlow(days, cid);
     toCache(key, data);
     res.json({ success: true, data, message: 'Cash flow forecast retrieved' });
   } catch (err) {

@@ -1,6 +1,6 @@
 export default function OfferAcceptanceCard({ data = {}, loading }) {
   const { rate = 0, offered = 0, accepted = 0, declined = 0 } = data;
-  const color = rate >= 80 ? '#10b981' : rate >= 70 ? '#f59e0b' : '#ef4444';
+  const color = rate >= 80 ? '#10b981' : rate >= 70 ? '#7c5cf0' : '#ef4444';
 
 
   return (

@@ -88,10 +88,16 @@ async function main() {
          VALUES ($1, $2, $3, $4, 'Active', $5, CURRENT_DATE) RETURNING id`,
         [p.first, p.last, p.email, p.dept, COMPANY_ID]
       );
+      // users.role is a legacy mirror of the user_roles primary row (see
+      // userRoles.js's syncPrimaryRole doc comment: "users.role == the code of
+      // the user_roles row with is_primary = true" — leaving it at its 'user'
+      // column default here, as this used to, drifts that invariant and breaks
+      // every frontend/backend check that reads the singular role instead of
+      // the roles array).
       const { rows: [user] } = await client.query(
-        `INSERT INTO users (email, password_hash, name, is_active, employee_id, must_change_password)
-         VALUES ($1, $2, $3, true, $4, true) RETURNING id`,
-        [p.email.toLowerCase(), await bcrypt.hash(password, 10), `${p.first} ${p.last}`, emp.id]
+        `INSERT INTO users (email, password_hash, name, is_active, employee_id, must_change_password, role)
+         VALUES ($1, $2, $3, true, $4, true, $5) RETURNING id`,
+        [p.email.toLowerCase(), await bcrypt.hash(password, 10), `${p.first} ${p.last}`, emp.id, p.role]
       );
       await client.query(
         `INSERT INTO user_roles (user_id, role_id, is_primary) VALUES ($1, $2, true)`,

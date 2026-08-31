@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-05T10:47:06.315Z",
+  "generated_at": "2026-08-11T17:00:13.682Z",
   "source": "Pulse@localhost:5432",
   "migrations": [
     "20260330000000_core_schema.js",
@@ -286,6 +286,17 @@
     "20260805000003_notification_rules_workflow_submitted.js",
     "20260805000004_notification_rules_marketing_campaign.js",
     "20260805000005_marketing_campaigns_campaign_name_nullable.js",
-    "20260805000006_crm_settings_missing_columns.js"
+    "20260805000006_crm_settings_missing_columns.js",
+    "20260806000001_sla_policies_missing_columns.js",
+    "20260806000002_document_master_expiry_date.js",
+    "20260806000003_discount_approvals_requester_employee.js",
+    "20260806000004_workflow_steps_sla_hours_seed.js",
+    "20260806000005_customer_health_customer_id_uuid.js",
+    "20260806000005_travel_approval_workflow_seed.js",
+    "20260811000001_bills_scoped_bill_number_unique.js",
+    "20260811000002_work_centre_labour_rate.js",
+    "20260811000003_tasks_schedule_status.js",
+    "20260811000004_field_visits_customer_rating.js",
+    "20260811000005_projects_closure_customer_rating.js"
   ]
 }

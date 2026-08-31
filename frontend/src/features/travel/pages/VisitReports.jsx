@@ -3,7 +3,8 @@ import api from '@/services/api/client';
 import { getPosition } from '@/mobile/native';
 import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
-import { Plus, X, Search, MapPin, FileText, CheckCircle } from 'lucide-react';
+import { Plus, X, Search, MapPin, FileText, CheckCircle, BarChart3 } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const VISIT_TYPES = [
   'Sales Visit', 'Customer Meeting', 'Application Engineering',
@@ -122,27 +123,24 @@ export default function VisitReports() {
   const fmtDate = d => d ? d.slice(0, 10) : '—';
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Visit Reports</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            Customer / Site visit documentation with action items
-          </p>
-        </div>
-        <button onClick={() => { setForm(EMPTY); setShowForm(true); }}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Travel"
+        title="Visit Reports"
+        subtitle="Customer / Site visit documentation with action items"
+        actions={<button className="plh-cta" onClick={() => { setForm(EMPTY); setShowForm(true); }}>
           <Plus size={15} /> New Report
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 20 }}>
         {[
           { label: 'Total Reports',      value: stats.total || 0,             color: '#6366f1' },
           { label: 'This Month',         value: stats.this_month || 0,        color: '#6B3FDB' },
-          { label: 'Draft / Pending',    value: stats.pending_reports || 0,   color: '#f59e0b' },
+          { label: 'Draft / Pending',    value: stats.pending_reports || 0,   color: '#7c5cf0' },
           { label: 'Upcoming Follow-ups',value: stats.upcoming_followups || 0,color: '#10b981' },
         ].map(k => (
           <div key={k.label} style={{ background: '#fff', borderRadius: 12, padding: '16px 20px', border: '1px solid #f0f0f4' }}>
@@ -217,7 +215,7 @@ export default function VisitReports() {
                 {r.project_number && <span>📋 {r.project_number}</span>}
                 {r.site_name && <span><MapPin size={10} style={{ verticalAlign: 'middle' }} /> {r.site_name}</span>}
                 {r.next_followup && (
-                  <span style={{ color: '#f59e0b' }}>
+                  <span style={{ color: '#7c5cf0' }}>
                     📅 Follow-up: {r.next_followup?.slice(0,10)}
                   </span>
                 )}
@@ -276,9 +274,9 @@ export default function VisitReports() {
             )}
 
             {selected.next_followup_notes && (
-              <div style={{ marginTop: 12, padding: 12, background: '#fffbeb', borderRadius: 8 }}>
-                <div style={{ fontSize: 11, color: '#92400e', fontWeight: 600, marginBottom: 6 }}>FOLLOW-UP NOTES</div>
-                <p style={{ margin: 0, fontSize: 13, color: '#92400e' }}>{selected.next_followup_notes}</p>
+              <div style={{ marginTop: 12, padding: 12, background: '#f5f3ff', borderRadius: 8 }}>
+                <div style={{ fontSize: 11, color: '#5b21b6', fontWeight: 600, marginBottom: 6 }}>FOLLOW-UP NOTES</div>
+                <p style={{ margin: 0, fontSize: 13, color: '#5b21b6' }}>{selected.next_followup_notes}</p>
               </div>
             )}
 
@@ -295,7 +293,7 @@ export default function VisitReports() {
                         Owner: {ai.owner || '—'} {ai.due_date ? `· Due: ${ai.due_date}` : ''}
                       </div>
                     </div>
-                    <span style={{ fontSize: 11, color: ai.status === 'Closed' ? '#10b981' : '#f59e0b', fontWeight: 600 }}>{ai.status}</span>
+                    <span style={{ fontSize: 11, color: ai.status === 'Closed' ? '#10b981' : '#7c5cf0', fontWeight: 600 }}>{ai.status}</span>
                   </div>
                 ))}
               </div>
@@ -449,6 +447,6 @@ export default function VisitReports() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

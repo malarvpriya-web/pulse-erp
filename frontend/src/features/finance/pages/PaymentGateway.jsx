@@ -1,6 +1,8 @@
 // frontend/src/features/finance/pages/PaymentGateway.jsx
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { ReceiptIndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function formatINR(n) {
@@ -25,7 +27,7 @@ function loadRazorpayScript() {
 const LINK_BADGE = {
   not_sent: { bg: '#f3f4f6', color: '#6b7280', label: 'Link Not Sent' },
   sent:     { bg: '#dbeafe', color: '#1d4ed8', label: 'Link Sent'     },
-  viewed:   { bg: '#fef3c7', color: '#92400e', label: 'Link Opened'   },
+  viewed:   { bg: '#ede9fe', color: '#5b21b6', label: 'Link Opened'   },
   paid:     { bg: '#dcfce7', color: '#16a34a', label: 'Paid'          },
   failed:   { bg: '#fee2e2', color: '#dc2626', label: 'Failed'        },
 };
@@ -33,7 +35,7 @@ const LINK_BADGE = {
 const STATUS_BADGE = {
   sent:     { bg: '#dbeafe', color: '#2563eb' },
   overdue:  { bg: '#fee2e2', color: '#dc2626' },
-  partial:  { bg: '#fef3c7', color: '#d97706' },
+  partial:  { bg: '#ede9fe', color: '#6d28d9' },
   paid:     { bg: '#dcfce7', color: '#16a34a' },
 };
 
@@ -274,27 +276,30 @@ export default function PaymentGateway() {
 
   // ── render ────────────────────────────────────────────────────────────────
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ReceiptIndianRupee}
+        eyebrow="Finance"
+        title="Payment Collection"
+        subtitle="Collect payments via Razorpay — UPI, Cards, Net Banking, Wallets"
+      />
+    }>
 
       {/* header */}
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: '0 0 4px', color: '#4c1d95', fontSize: 22 }}>Payment Collection</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Collect payments via Razorpay — UPI, Cards, Net Banking, Wallets</p>
-      </div>
 
       {/* gateway mode banner — generic, no env var names */}
       {gwMode === 'unconfigured' && (
-        <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, padding: '10px 16px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 8, padding: '10px 16px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 18 }}>⚠️</span>
-          <div style={{ fontSize: 13, color: '#92400e' }}>
+          <div style={{ fontSize: 13, color: '#5b21b6' }}>
             <strong>Test Mode:</strong> Payment gateway is in test mode. Contact your administrator to enable live payments.
           </div>
         </div>
       )}
       {gwMode === 'test' && (
-        <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, padding: '10px 16px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 8, padding: '10px 16px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 18 }}>🧪</span>
-          <div style={{ fontSize: 13, color: '#92400e' }}>
+          <div style={{ fontSize: 13, color: '#5b21b6' }}>
             <strong>Razorpay Test Mode</strong> — Payments processed in test environment. Switch to live mode when ready.
           </div>
         </div>
@@ -325,7 +330,7 @@ export default function PaymentGateway() {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
           {kpiCard('Total Outstanding',     formatINR(kpis.total_outstanding),    'across open invoices',   '#dc2626')}
           {kpiCard('Collected This Month',  formatINR(kpis.collected_this_month), 'via all payment modes',  '#16a34a')}
-          {kpiCard('Overdue Invoices',      kpis.overdue_count,                   'past due date',          '#d97706')}
+          {kpiCard('Overdue Invoices',      kpis.overdue_count,                   'past due date',          '#6d28d9')}
           {kpiCard('Payment Links Sent',    kpis.links_sent,                      'this month',             '#2563eb')}
         </div>
       )}
@@ -491,7 +496,7 @@ export default function PaymentGateway() {
                           {p.paid_at ? new Date(p.paid_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
                         </td>
                         <td style={{ padding: '8px 10px' }}>
-                          <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: p.status === 'captured' ? '#d1fae5' : '#fef3c7', color: p.status === 'captured' ? '#16a34a' : '#d97706' }}>
+                          <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: p.status === 'captured' ? '#d1fae5' : '#ede9fe', color: p.status === 'captured' ? '#16a34a' : '#6d28d9' }}>
                             {p.status}
                           </span>
                         </td>
@@ -517,7 +522,7 @@ export default function PaymentGateway() {
           loading={marking === markModal?.id}
         />
       )}
-    </div>
+    </PageShell>
   );
 }
 

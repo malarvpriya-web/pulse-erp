@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { UserPlus } from 'lucide-react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import { STAGE_LABELS } from '../shared/constants';
 import './Recruitment.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const ACTIVE_STAGES = ['applied', 'screening', '1st_level', '2nd_level', 'offer', 'hired'];
 
 const STAGE_COLORS = {
   applied:      { bg: '#dbeafe', color: '#1e40af' },
-  screening:    { bg: '#fef3c7', color: '#92400e' },
+  screening:    { bg: '#ede9fe', color: '#5b21b6' },
   '1st_level':  { bg: '#e0e7ff', color: '#4338ca' },
   '2nd_level':  { bg: '#fce7f3', color: '#9d174d' },
   offer:        { bg: '#dcfce7', color: '#15803d' },
@@ -140,7 +142,14 @@ const CandidateDetail = ({ setPage }) => {
   const sc = STAGE_COLORS[candidate.current_stage] || { bg: '#f3f4f6', color: '#374151' };
 
   return (
-    <div className="recruitment-page">
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Scheduled Interviews"
+        subtitle="No interviews scheduled yet."
+      />
+    }>
       <div className="page-header">
         <div>
           <button className="back-btn" onClick={() => setPage('Candidates', { tab: 'all' })}>← Back</button>
@@ -328,34 +337,7 @@ const CandidateDetail = ({ setPage }) => {
         </div>
       </div>
 
-      <div className="section">
-        <h2>Scheduled Interviews</h2>
-        {interviews.length === 0
-          ? <p style={{ color: '#9ca3af', fontSize: 13 }}>No interviews scheduled yet.</p>
-          : (
-            <div className="table-container">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Date</th><th>Time</th><th>Mode</th><th>Interviewer</th><th>Status</th><th>Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {interviews.map(iv => (
-                    <tr key={iv.id}>
-                      <td>{fmtDate(iv.interview_date)}</td>
-                      <td>{iv.interview_time}</td>
-                      <td><span className="badge">{iv.interview_mode}</span></td>
-                      <td>{iv.interviewer_name || 'TBD'}</td>
-                      <td><span className="status-badge">{iv.status}</span></td>
-                      <td>{iv.notes}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-      </div>
+
 
       <div className="section">
         <h2>Interview Feedback</h2>
@@ -381,7 +363,7 @@ const CandidateDetail = ({ setPage }) => {
             </div>
           )}
       </div>
-    </div>
+    </PageShell>
   );
 };
 

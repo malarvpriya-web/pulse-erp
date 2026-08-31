@@ -15,6 +15,11 @@ import {
   computeSalesKPIs,
 } from '../services/metricsEngine.js';
 import { calcAttritionRate } from '../services/metricsCalculator.js';
+import { resolveRange, dimension, assertDateParams } from '../../shared/dashboardFilters.js';
+import {
+  EMPLOYEE_ACTIVE, EMPLOYEE_EXITED, PROJECT_CLOSED, PROJECT_ACTIVE,
+  LEAVE_PENDING, INVOICE_PAID, isIn, notIn,
+} from '../../shared/statusSets.js';
 import pqRouter  from './powerQuality.routes.js';
 import mfgRouter from './manufacturing.routes.js';
 import recruitmentRepository from '../../modules/recruitment/repositories/recruitment.repository.js';
@@ -35,7 +40,86 @@ function scopeFrags(company_id) {
   return { where: `WHERE company_id = $1`, and: `AND company_id = $1`, params: [company_id] };
 }
 
+/**
+ * Scope + dashboard-filter fragments for the HR Analytics endpoints.
+ *
+ * Extends scopeFrags with the department dimension and the period range from
+ * the dashboard filter bar (?department=&period=&from=&to=). Param positions are
+ * allocated dynamically because the company and department clauses are each
+ * optional — never hand-number $n against this.
+ *
+ * Every fragment builder takes the param array it should append to and numbers
+ * $n from that array's length. Each query MUST own its list — Postgres rejects a
+ * bind that supplies more parameters than the statement references, so a shared
+ * array mutated by one query's fragment breaks its siblings.
+ *
+ * Usage:
+ *   const f = hrFrags(req);
+ *   sqN(`SELECT … FROM employees WHERE deleted_at IS NULL ${f.and}`, f.base());
+ *
+ *   const p = f.base();                       // own copy
+ *   const period = f.between('joining_date', p);
+ *   sqN(`SELECT … WHERE 1=1 ${f.and} ${period}`, p);
+ */
+function hrFrags(req, { defaultPeriod = 'last12m' } = {}) {
+  const company_id = req.scope?.company_id ?? null;
+  const department = dimension(req.query, 'department');
+  const range = resolveRange(req.query, { defaultPeriod });
+
+  // Base params, in the order `and` references them.
+  const baseParams = [];
+  let and = '';
+  if (company_id != null) { baseParams.push(company_id); and += ` AND company_id = $${baseParams.length}`; }
+  if (department)         { baseParams.push(department); and += ` AND department = $${baseParams.length}`; }
+
+  return {
+    company_id, department, range, and,
+
+    /** A fresh param list matching `and`. Never hand the same one to two queries. */
+    base: () => [...baseParams],
+
+    /** Period predicate on `col`, appending its bounds to `params`. */
+    between(col, params) {
+      if (range.isAll || (!range.from && !range.to)) return '';
+      let sql = '';
+      if (range.from) { params.push(range.from); sql += ` AND ${col} >= $${params.length}::date`; }
+      if (range.to)   { params.push(range.to);   sql += ` AND ${col} < ($${params.length}::date + INTERVAL '1 day')`; }
+      return sql;
+    },
+
+    /** Company predicate alone, for tables without a department column. */
+    companyOnly(params) {
+      if (company_id == null) return '';
+      params.push(company_id);
+      return ` AND company_id = $${params.length}`;
+    },
+
+    /**
+     * Department predicate for tables that have no `department` column of their
+     * own (leave_applications, …) — matches through employees.
+     */
+    deptViaEmployee(col, params) {
+      if (!department) return '';
+      params.push(department);
+      return ` AND ${col} IN (SELECT id FROM employees WHERE department = $${params.length})`;
+    },
+  };
+}
+
 const router = Router();
+
+/*
+ * REMOVED 2026-08-18 — five endpoints with no caller anywhere in the frontend:
+ *   GET /revenue                  (only consumer was services/modules/analyticsService.js, itself dead)
+ *   GET /hr-kpis                  ┐
+ *   GET /department-distribution  │ served only HRAnalyticsDashboard, a page registered
+ *   GET /employee-status          │ in routes.jsx but absent from every nav menu and
+ *   GET /pending-leaves           ┘ therefore unreachable. Its one genuine advantage —
+ *                                   passing filter params to every call — has been ported
+ *                                   into HR Dashboard's Analytics tab, and the page deleted.
+ * Each duplicated an endpoint HR Dashboard already uses (/headcount, /dept-workforce,
+ * /attrition, /leaves). Restore from git history if a caller ever needs them.
+ */
 
 /* ── Sub-routers ── */
 router.use('/pq',            pqRouter);
@@ -71,16 +155,6 @@ router.get('/dept-workforce', async (req, res) => {
   }
 });
 
-// GET /api/analytics/revenue
-router.get('/revenue', async (req, res) => {
-  try {
-    const data = await computeRevenueMetrics(req.scope?.company_id ?? null);
-    res.json({ data });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // GET /api/analytics/sales
 router.get('/sales', async (req, res) => {
   try {
@@ -108,21 +182,23 @@ router.get('/gender', async (req, res) => {
 // GET /api/analytics/attrition-trend — monthly attrition rate last 6 months
 router.get('/attrition-trend', async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
-    const p1 = params.length + 1;
+    // Window was hardcoded to 6 months; it now follows the dashboard period,
+    // defaulting to the same 6 months so an unfiltered call is unchanged.
+    const f = hrFrags(req, { defaultPeriod: 'last6m' });
+    const { and } = f;
+    const depParams = f.base();
+    const depRange = f.between('COALESCE(exit_date, updated_at)', depParams);
 
     const [depRows, hcRow] = await Promise.all([
       sqN(`SELECT TO_CHAR(DATE_TRUNC('month', COALESCE(exit_date, updated_at) AT TIME ZONE 'Asia/Kolkata'), 'Mon') AS month,
                   DATE_TRUNC('month', COALESCE(exit_date, updated_at) AT TIME ZONE 'Asia/Kolkata') AS month_ts,
                   COUNT(*) AS cnt
            FROM employees
-           WHERE LOWER(status) IN ('inactive','terminated','left','resigned','ex-employee')
-             AND COALESCE(exit_date, updated_at) >= NOW() - INTERVAL '6 months'
-             ${and}
+           WHERE ${isIn('status', EMPLOYEE_EXITED)}
+             ${and} ${depRange}
            GROUP BY DATE_TRUNC('month', COALESCE(exit_date, updated_at) AT TIME ZONE 'Asia/Kolkata')
-           ORDER BY month_ts`, params),
-      sq1(`SELECT COUNT(*) AS total FROM employees WHERE LOWER(status) IN ('active','probation') ${and}`, params),
+           ORDER BY month_ts`, depParams),
+      sq1(`SELECT COUNT(*) AS total FROM employees WHERE ${isIn('status', EMPLOYEE_ACTIVE)} ${and}`, f.base()),
     ]);
     const headcount = parseInt(hcRow?.total || 1);
     const data = depRows.map(r => ({
@@ -139,28 +215,32 @@ router.get('/attrition-trend', async (req, res) => {
 // GET /api/analytics/hiring-trend — monthly hires vs departures last 6 months
 router.get('/hiring-trend', async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
+    // Same as attrition-trend: the fixed 6-month window is now the default,
+    // overridable by the dashboard period selector.
+    const f = hrFrags(req, { defaultPeriod: 'last6m' });
+    const { and } = f;
+    const hireParams = f.base();
+    const hireRange = f.between('joining_date', hireParams);
+    const depParams = f.base();
+    const depRange = f.between('updated_at', depParams);
 
     const [hireRows, depRows] = await Promise.all([
       sqN(`SELECT TO_CHAR(DATE_TRUNC('month', joining_date AT TIME ZONE 'Asia/Kolkata'), 'Mon') AS month,
                   DATE_TRUNC('month', joining_date AT TIME ZONE 'Asia/Kolkata') AS month_ts,
                   COUNT(*) AS cnt
            FROM employees
-           WHERE joining_date >= NOW() - INTERVAL '6 months'
-             AND joining_date IS NOT NULL
-             ${and}
+           WHERE joining_date IS NOT NULL
+             ${and} ${hireRange}
            GROUP BY DATE_TRUNC('month', joining_date AT TIME ZONE 'Asia/Kolkata')
-           ORDER BY month_ts`, params),
+           ORDER BY month_ts`, hireParams),
       sqN(`SELECT TO_CHAR(DATE_TRUNC('month', updated_at AT TIME ZONE 'Asia/Kolkata'), 'Mon') AS month,
                   DATE_TRUNC('month', updated_at AT TIME ZONE 'Asia/Kolkata') AS month_ts,
                   COUNT(*) AS cnt
            FROM employees
-           WHERE LOWER(status) IN ('inactive','terminated','left')
-             AND updated_at >= NOW() - INTERVAL '6 months'
-             ${and}
+           WHERE ${isIn('status', EMPLOYEE_EXITED)}
+             ${and} ${depRange}
            GROUP BY DATE_TRUNC('month', updated_at AT TIME ZONE 'Asia/Kolkata')
-           ORDER BY month_ts`, params),
+           ORDER BY month_ts`, depParams),
     ]);
     /* merge by month label */
     const map = {};
@@ -200,14 +280,18 @@ router.get('/absenteeism', async (req, res) => {
     const { and, params } = scopeFrags(cid);
 
     const [attRow, hcRow] = await Promise.all([
+      // `attendance` carries no company_id — the bare `AND company_id = $1` raised
+      // 42703 on every call and sq1 returned null, so the absenteeism rate had
+      // always been 0.0%. Scope through the employee, the same way every other
+      // attendance read in the app does.
       sq1(`SELECT
-             COUNT(*) FILTER (WHERE LOWER(status) = 'absent') AS absent_days,
+             COUNT(*) FILTER (WHERE LOWER(a.status) = 'absent') AS absent_days,
              COUNT(*) AS total_days
-           FROM attendance
-           WHERE date >= NOW() - INTERVAL '30 days'
-           ${cid != null ? `AND company_id = $1` : ''}`,
-           cid != null ? [cid] : []),
-      sq1(`SELECT COUNT(*) AS total FROM employees WHERE LOWER(status) IN ('active','probation') ${and}`, params),
+           FROM attendance a
+           JOIN employees e ON e.id = a.employee_id
+           WHERE a.date >= CURRENT_DATE - INTERVAL '30 days'
+             AND ($1::int IS NULL OR e.company_id = $1)`, [cid]),
+      sq1(`SELECT COUNT(*) AS total FROM employees WHERE ${isIn('status', EMPLOYEE_ACTIVE)} ${and}`, params),
     ]);
     const absentDays  = parseInt(attRow?.absent_days || 0);
     const totalDays   = parseInt(attRow?.total_days  || 1);
@@ -224,16 +308,20 @@ router.get('/absenteeism', async (req, res) => {
 // GET /api/analytics/productivity — task completion rate by month (last 6 months)
 router.get('/productivity', async (req, res) => {
   try {
+    // `tasks` has no company_id of its own — scope through its project.
+    const cid = req.scope?.company_id ?? null;
     const rows = await sqN(`
-      SELECT TO_CHAR(DATE_TRUNC('month', created_at), 'Mon') AS month,
-             DATE_TRUNC('month', created_at) AS month_ts,
+      SELECT TO_CHAR(DATE_TRUNC('month', t.created_at), 'Mon') AS month,
+             DATE_TRUNC('month', t.created_at) AS month_ts,
              COUNT(*) AS total,
-             COUNT(*) FILTER (WHERE status = 'done') AS done
-      FROM tasks
-      WHERE created_at >= NOW() - INTERVAL '6 months'
-      GROUP BY DATE_TRUNC('month', created_at)
+             COUNT(*) FILTER (WHERE LOWER(t.status) IN ('done','completed')) AS done
+      FROM tasks t
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE t.created_at >= NOW() - INTERVAL '6 months'
+        AND ($1::int IS NULL OR p.company_id = $1 OR p.id IS NULL)
+      GROUP BY DATE_TRUNC('month', t.created_at)
       ORDER BY month_ts
-    `);
+    `, [cid]);
     const data = rows.map(r => ({
       month: r.month,
       score: parseInt(r.total) > 0
@@ -257,10 +345,10 @@ router.get('/top-performers', async (req, res) => {
       SELECT e.id,
              CONCAT(e.first_name, ' ', COALESCE(e.last_name, '')) AS name,
              e.department AS dept,
-             ROUND(AVG(COALESCE(pr.overall_rating, pr.rating, 0))::numeric, 1) AS score
+             ROUND(AVG(COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0))::numeric, 1) AS score
       FROM employees e
       JOIN performance_reviews pr ON pr.employee_id = e.id
-      WHERE LOWER(e.status) IN ('active','probation')
+      WHERE ${isIn('e.status', EMPLOYEE_ACTIVE)}
         AND pr.created_at >= NOW() - INTERVAL '12 months'
         ${cidClause}
       GROUP BY e.id, e.first_name, e.last_name, e.department
@@ -330,12 +418,26 @@ router.get('/ceo/kpis', async (req, res) => {
       computeAttrition(cid),
       computeRevenueMetrics(cid),
       computeSalesKPIs(cid),
+      // `projects.status = 'on-track'` is impossible: projects_status_check permits
+      // only planning|active|on_hold|completed|cancelled, so the old filter made this
+      // tile read 0/N forever. Project health is DERIVED, never stored — a project is
+      // on track when it is not past its end date and not over budget, which is the
+      // same rule /ceo-intelligence/projects already applies per row. Computing it
+      // the same way here keeps the KPI strip and the Projects tab in agreement.
+      // Also now company-scoped and deleted_at-aware; it was neither.
       pool.query(`
         SELECT
-          COUNT(*) FILTER (WHERE LOWER(status) NOT IN ('completed','cancelled')) AS active,
-          COUNT(*) FILTER (WHERE LOWER(status) = 'on-track') AS on_track
-        FROM projects
-      `).catch(() => ({ rows: [{ active: 0, on_track: 0 }] })),
+          COUNT(*) FILTER (WHERE ${notIn('p.status', PROJECT_CLOSED)}) AS active,
+          COUNT(*) FILTER (
+            WHERE ${notIn('p.status', PROJECT_CLOSED)}
+              AND (p.end_date IS NULL OR p.end_date >= CURRENT_DATE)
+              AND COALESCE(cs.total_cost, 0) <= COALESCE(p.budget_amount, 0) * 1.10
+          ) AS on_track
+        FROM projects p
+        LEFT JOIN project_cost_summary cs ON cs.project_id = p.id
+        WHERE p.deleted_at IS NULL
+          AND ($1::int IS NULL OR p.company_id = $1)
+      `, [cid]).catch(() => ({ rows: [{ active: 0, on_track: 0 }] })),
     ]);
     const safe = (r, fallback) => r.status === 'fulfilled' ? r.value : fallback;
 
@@ -350,7 +452,7 @@ router.get('/ceo/kpis', async (req, res) => {
     res.json({
       kpis: {
         revenue:         { value: revenue.revenue || 0,         growth: revenue.growth || 0, label: 'Total Revenue (YTD)' },
-        arr:             { value: revenue.arr || 0,             growth: 0,                   label: 'ARR (Ann.)', sub: 'MRR × 12' },
+        arr:             { value: revenue.arr || 0,             growth: 0,                   label: 'ARR (Ann.)', sub: 'Active AMC contracts' },
         headcount:       { value: headcount.total || 0,         growth: headcount.growth || 0, label: 'Headcount' },
         attrition:       { value: attrition.rate || 0,         growth: 0,                   label: 'Attrition Rate', unit: '%' },
         openPipeline:    { value: salesKPI.pipelineValue || 0,  growth: 0,                   label: 'Sales Pipeline' },
@@ -412,8 +514,14 @@ router.get('/salary-bands', async (req, res) => {
         COUNT(*) AS count,
         ROUND(AVG(basic_salary) FILTER (WHERE basic_salary > 0)) AS avg_salary
       FROM employees
-      WHERE LOWER(status) IN ('active','probation') ${and}
-      GROUP BY band
+      WHERE ${isIn('status', EMPLOYEE_ACTIVE)} ${and}
+      -- GROUP BY 1, never GROUP BY band. employees has a real band column, and
+      -- Postgres resolves an ambiguous GROUP BY name to the INPUT column, so
+      -- GROUP BY band grouped on employees.band and left the CASE expression
+      -- ungrouped — 42803 on every call, which the catch below turned into
+      -- {"data":[]}. This chart had been permanently empty. Same trap as the
+      -- gender query in metricsEngine.js, which is why that one also uses 1.
+      GROUP BY 1
       ORDER BY MIN(COALESCE(basic_salary, 0))
     `, params);
     const BAND_ORDER = ['< ₹20K','₹20K–40K','₹40K–60K','₹60K–1L','> ₹1L','Not Set'];
@@ -451,23 +559,23 @@ router.get('/satisfaction', async (req, res) => {
     const [scoreRow, trendRows] = await Promise.all([
       sq1(`
         SELECT
-          ROUND(AVG(COALESCE(pr.overall_rating, pr.rating, 0))::numeric, 1) AS score,
+          ROUND(AVG(COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0))::numeric, 1) AS score,
           COUNT(*) AS reviews,
-          COUNT(*) FILTER (WHERE COALESCE(pr.overall_rating, pr.rating, 0) >= 80) AS satisfied,
-          COUNT(*) FILTER (WHERE COALESCE(pr.overall_rating, pr.rating, 0) < 50) AS at_risk
+          COUNT(*) FILTER (WHERE COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 80) AS satisfied,
+          COUNT(*) FILTER (WHERE COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) < 50) AS at_risk
         FROM performance_reviews pr
         JOIN employees e ON e.id = pr.employee_id
         WHERE pr.created_at >= NOW() - INTERVAL '12 months'
-          AND LOWER(e.status) IN ('active','probation')
+          AND ${isIn('e.status', EMPLOYEE_ACTIVE)}
           ${cidClause}
       `, params),
       sqN(`
         SELECT TO_CHAR(DATE_TRUNC('month', pr.created_at), 'Mon') AS month,
-               ROUND(AVG(COALESCE(pr.overall_rating, pr.rating, 0))::numeric, 1) AS score
+               ROUND(AVG(COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0))::numeric, 1) AS score
         FROM performance_reviews pr
         JOIN employees e ON e.id = pr.employee_id
         WHERE pr.created_at >= NOW() - INTERVAL '6 months'
-          AND LOWER(e.status) IN ('active','probation')
+          AND ${isIn('e.status', EMPLOYEE_ACTIVE)}
           ${cidClause}
         GROUP BY DATE_TRUNC('month', pr.created_at)
         ORDER BY DATE_TRUNC('month', pr.created_at)
@@ -503,7 +611,7 @@ router.get('/onboarding', async (req, res) => {
           COUNT(*) FILTER (WHERE joining_date >= NOW() - INTERVAL '30 days') AS joined_30d,
           COUNT(*) FILTER (WHERE joining_date >= NOW() - INTERVAL '7 days')  AS joined_7d
         FROM employees
-        WHERE LOWER(status) IN ('active','probation')
+        WHERE ${isIn('status', EMPLOYEE_ACTIVE)}
           AND joining_date >= NOW() - INTERVAL '90 days'
           ${and}
       `, params),
@@ -511,7 +619,7 @@ router.get('/onboarding', async (req, res) => {
         SELECT id, first_name, last_name, department, designation,
                joining_date, probation_end_date, status
         FROM employees
-        WHERE LOWER(status) IN ('active','probation')
+        WHERE ${isIn('status', EMPLOYEE_ACTIVE)}
           AND joining_date >= NOW() - INTERVAL '90 days'
           ${and}
         ORDER BY joining_date DESC
@@ -554,7 +662,7 @@ router.get('/compliance-alerts', async (req, res) => {
       JOIN employees e ON e.id = cd.employee_id
       WHERE cd.status = 'valid'
         AND cd.expiry_date <= CURRENT_DATE + INTERVAL '90 days'
-        AND LOWER(e.status) IN ('active','probation')
+        AND ${isIn('e.status', EMPLOYEE_ACTIVE)}
         ${cidClause}
       ORDER BY cd.expiry_date ASC
       LIMIT 20
@@ -575,118 +683,29 @@ router.get('/compliance-alerts', async (req, res) => {
   }
 });
 
-// GET /api/analytics/hr-kpis — consolidated HR KPIs for HR Analytics Dashboard
-router.get('/hr-kpis', async (req, res) => {
+// GET /api/analytics/hr-filter-options — dimension values for the HR dashboard
+// filter bar. Deliberately ignores the active department filter so choosing one
+// doesn't collapse the dropdown to a single entry.
+router.get('/hr-filter-options', async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
-    const [hcRow, attrRow, tenureRow, probRow, leaveRow] = await Promise.all([
-      sq1(`SELECT
-             COUNT(*) AS total,
-             COUNT(*) FILTER (WHERE LOWER(status) IN ('active','probation')) AS active,
-             COUNT(*) FILTER (WHERE LOWER(status) = 'probation') AS probation
-           FROM employees WHERE deleted_at IS NULL ${and}`, params),
-      sq1(`SELECT COUNT(*) AS departed FROM employees
-           WHERE LOWER(status) IN ('inactive','terminated','left','resigned','ex-employee')
-             AND COALESCE(exit_date, updated_at) >= NOW() - INTERVAL '12 months' ${and}`, params),
-      sq1(`SELECT ROUND(AVG(EXTRACT(EPOCH FROM AGE(NOW(), joining_date)) / 31536000)::numeric, 1) AS avg_tenure
-           FROM employees WHERE LOWER(status) IN ('active','probation') AND joining_date IS NOT NULL ${and}`, params),
-      sq1(`SELECT COUNT(*) AS on_leave FROM leave_applications
-           WHERE (hr_status = 'approved' OR manager_status = 'approved')
-             AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE
-             ${cid != null ? `AND company_id = $${params.length + 1}` : ''}`,
-           cid != null ? [...params, cid] : params),
-    ]);
-    const total    = parseInt(hcRow?.total      || 0);
-    const active   = parseInt(hcRow?.active     || 0);
-    const probation= parseInt(hcRow?.probation  || 0);
-    const departed = parseInt(attrRow?.departed || 0);
-    const attrRate = active > 0 ? parseFloat(((departed / Math.max(active, 1)) * 100).toFixed(1)) : 0;
-    res.json({
-      total_employees:  total,
-      active_employees: active,
-      probation_count:  probation,
-      on_leave:         parseInt(leaveRow?.on_leave || 0),
-      attrition_rate:   attrRate,
-      avg_tenure_years: parseFloat(tenureRow?.avg_tenure || 0),
-    });
-  } catch (e) {
-    res.json({ total_employees: 0, active_employees: 0, probation_count: 0, on_leave: 0, attrition_rate: 0, avg_tenure_years: 0 });
-  }
-});
-
-// GET /api/analytics/department-distribution — headcount and avg tenure by department
-router.get('/department-distribution', async (req, res) => {
-  try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
+    const { and, params } = scopeFrags(req.scope?.company_id ?? null);
     const rows = await sqN(`
-      SELECT department,
-             COUNT(*) AS count,
-             ROUND(AVG(EXTRACT(EPOCH FROM AGE(NOW(), joining_date)) / 31536000)::numeric, 1) AS avg_tenure,
-             COUNT(*) FILTER (WHERE LOWER(designation) LIKE '%manager%'
-                               OR LOWER(designation) LIKE '%head%'
-                               OR LOWER(designation) LIKE '%lead%') AS managers
-      FROM employees
-      WHERE deleted_at IS NULL
-        AND LOWER(status) IN ('active','probation')
-        AND department IS NOT NULL AND department <> ''
-        ${and}
-      GROUP BY department
-      ORDER BY count DESC
+      SELECT DISTINCT department FROM employees
+      WHERE deleted_at IS NULL AND department IS NOT NULL AND TRIM(department) <> '' ${and}
+      ORDER BY department
     `, params);
-    const departments = rows.map(r => ({
-      department: r.department,
-      count:      parseInt(r.count || 0),
-      avg_tenure: parseFloat(r.avg_tenure || 0),
-      managers:   parseInt(r.managers || 0),
-    }));
-    res.json({ departments, total: departments.reduce((s, d) => s + d.count, 0) });
+    res.json({ departments: rows.map(r => r.department) });
   } catch (e) {
-    res.json({ departments: [], total: 0 });
-  }
-});
-
-// GET /api/analytics/employee-status — headcount grouped by employment status
-router.get('/employee-status', async (req, res) => {
-  try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
-    const rows = await sqN(`
-      SELECT COALESCE(status, 'Unknown') AS status, COUNT(*) AS count
-      FROM employees
-      WHERE deleted_at IS NULL ${and}
-      GROUP BY status
-      ORDER BY count DESC
-    `, params);
-    const statuses = rows.map(r => ({ status: r.status, count: parseInt(r.count || 0) }));
-    res.json({ statuses, total: statuses.reduce((s, d) => s + d.count, 0) });
-  } catch (e) {
-    res.json({ statuses: [], total: 0 });
-  }
-});
-
-// GET /api/analytics/pending-leaves — count of unactioned leave applications
-router.get('/pending-leaves', async (req, res) => {
-  try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
-    const row = await sq1(`
-      SELECT COUNT(*) AS pending
-      FROM leave_applications
-      WHERE (hr_status = 'pending' OR manager_status = 'pending') ${and}
-    `, params);
-    res.json({ count: parseInt(row?.pending || 0), pending: parseInt(row?.pending || 0) });
-  } catch (e) {
-    res.json({ count: 0, pending: 0 });
+    res.json({ departments: [] });
   }
 });
 
 // GET /api/analytics/age-distribution — headcount by age bracket
 router.get('/age-distribution', async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
+    const f = hrFrags(req);
+    const { and } = f;
+    const params = f.base();
     const rows = await sqN(`
       SELECT
         CASE
@@ -700,11 +719,11 @@ router.get('/age-distribution', async (req, res) => {
         END AS bracket,
         COUNT(*) AS count
       FROM (
-        SELECT EXTRACT(YEAR FROM AGE(CURRENT_DATE, COALESCE(dob, date_of_birth))) AS age
+        SELECT EXTRACT(YEAR FROM AGE(CURRENT_DATE, dob)) AS age
         FROM employees
         WHERE deleted_at IS NULL
-          AND LOWER(status) IN ('active','probation')
-          AND COALESCE(dob, date_of_birth) IS NOT NULL
+          AND ${isIn('status', EMPLOYEE_ACTIVE)}
+          AND dob IS NOT NULL
           ${and}
       ) sub
       GROUP BY bracket
@@ -731,8 +750,17 @@ async function sendXlsx(res, sheetName, rows, filename) {
 // GET /api/analytics/employee-reports/headcount — headcount report (JSON or CSV or XLSX)
 router.get('/employee-reports/headcount', async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
+    // A malformed date used to reach Postgres and return a 500 carrying raw
+    // driver text; the caller could not tell a bad request from an outage.
+    const bad = assertDateParams(req.query);
+    if (bad) return res.status(bad.status).json(bad.body);
+    // EXPORT MUST MATCH THE SCREEN. This accepted only ?format and ignored the
+    // department and period the user had selected, so "export what I am looking
+    // at" silently produced the whole company. hrFrags is the same filter
+    // vocabulary the seven sibling /analytics endpoints already use.
+    const f = hrFrags(req, { defaultPeriod: 'all' });
+    const p = f.base();
+    const period = f.between('joining_date', p);
     const { rows } = await pool.query(`
       SELECT office_id AS "Emp Code",
              first_name || ' ' || COALESCE(last_name,'') AS "Name",
@@ -742,9 +770,9 @@ router.get('/employee-reports/headcount', async (req, res) => {
              status AS "Status", gender AS "Gender",
              COALESCE(grade,'') AS "Grade", COALESCE(band,'') AS "Band"
       FROM employees
-      WHERE deleted_at IS NULL AND LOWER(status) IN ('active','probation') ${and}
+      WHERE deleted_at IS NULL AND ${isIn('status', EMPLOYEE_ACTIVE)} ${f.and} ${period}
       ORDER BY department, first_name
-    `, params);
+    `, p);
     if (req.query.format === 'xlsx') return sendXlsx(res, 'Headcount', rows, 'Headcount_Report.xlsx');
     res.json({ data: rows, total: rows.length });
   } catch (e) {
@@ -755,13 +783,20 @@ router.get('/employee-reports/headcount', async (req, res) => {
 // GET /api/analytics/employee-reports/attrition — attrition report for CSV export
 router.get('/employee-reports/attrition', async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
-    const { and, params } = scopeFrags(cid);
+    // A malformed date used to reach Postgres and return a 500 carrying raw
+    // driver text; the caller could not tell a bad request from an outage.
+    const bad = assertDateParams(req.query);
+    if (bad) return res.status(bad.status).json(bad.body);
+    // Department now propagates alongside the date window, matching the page.
+    const f = hrFrags(req, { defaultPeriod: 'all' });
+    const p = f.base();
     const { from, to } = req.query;
-    const p = [...params];
     let dateClause = '';
-    if (from) { p.push(from); dateClause += ` AND COALESCE(exit_date, updated_at) >= $${p.length}`; }
-    if (to)   { p.push(to);   dateClause += ` AND COALESCE(exit_date, updated_at) <= $${p.length}`; }
+    if (from) { p.push(from); dateClause += ` AND COALESCE(exit_date, updated_at) >= $${p.length}::date`; }
+    // Half-open upper bound: `<= $n` against a date literal is midnight, so an
+    // exit recorded on the last day of the window was excluded from the export.
+    if (to)   { p.push(to);   dateClause += ` AND COALESCE(exit_date, updated_at) < ($${p.length}::date + INTERVAL '1 day')`; }
+    const and = f.and;
     const { rows } = await pool.query(`
       SELECT office_id AS "Emp Code",
              first_name || ' ' || COALESCE(last_name,'') AS "Name",
@@ -772,7 +807,7 @@ router.get('/employee-reports/attrition', async (req, res) => {
              COALESCE(exit_reason,'') AS "Exit Reason"
       FROM employees
       WHERE deleted_at IS NULL
-        AND LOWER(status) IN ('inactive','terminated','left','resigned','ex-employee')
+        AND ${isIn('status', EMPLOYEE_EXITED)}
         ${and}${dateClause}
       ORDER BY COALESCE(exit_date, updated_at) DESC
     `, p);
@@ -786,6 +821,10 @@ router.get('/employee-reports/attrition', async (req, res) => {
 // GET /api/analytics/employee-reports/doc-expiry — document expiry report for CSV export
 router.get('/employee-reports/doc-expiry', async (req, res) => {
   try {
+    // A malformed date used to reach Postgres and return a 500 carrying raw
+    // driver text; the caller could not tell a bad request from an outage.
+    const bad = assertDateParams(req.query);
+    if (bad) return res.status(bad.status).json(bad.body);
     const cid = req.scope?.company_id ?? null;
     const cidClause = cid != null ? `AND e.company_id = $1` : '';
     const params    = cid != null ? [cid] : [];
@@ -801,7 +840,7 @@ router.get('/employee-reports/doc-expiry', async (req, res) => {
       FROM employee_documents d
       JOIN employees e ON e.id = d.employee_id
       WHERE d.expiry_date IS NOT NULL
-        AND LOWER(e.status) IN ('active','probation')
+        AND ${isIn('e.status', EMPLOYEE_ACTIVE)}
         ${cidClause}
       ORDER BY d.expiry_date ASC
     `, params);
@@ -815,6 +854,10 @@ router.get('/employee-reports/doc-expiry', async (req, res) => {
 // GET /api/analytics/employee-reports/salary-bands — salary band distribution (HR only)
 router.get('/employee-reports/salary-bands', async (req, res) => {
   try {
+    // A malformed date used to reach Postgres and return a 500 carrying raw
+    // driver text; the caller could not tell a bad request from an outage.
+    const bad = assertDateParams(req.query);
+    if (bad) return res.status(bad.status).json(bad.body);
     const cid = req.scope?.company_id ?? null;
     const { and, params } = scopeFrags(cid);
     const { rows } = await pool.query(`
@@ -826,7 +869,7 @@ router.get('/employee-reports/salary-bands', async (req, res) => {
         MIN(COALESCE(basic_salary,0)) AS "Min Salary",
         MAX(COALESCE(basic_salary,0)) AS "Max Salary"
       FROM employees
-      WHERE LOWER(status) IN ('active','probation')
+      WHERE ${isIn('status', EMPLOYEE_ACTIVE)}
         AND deleted_at IS NULL
         ${and}
       GROUP BY band, grade
@@ -842,6 +885,10 @@ router.get('/employee-reports/salary-bands', async (req, res) => {
 // GET /api/analytics/employee-reports/onboarding-progress — onboarding cohort report
 router.get('/employee-reports/onboarding-progress', async (req, res) => {
   try {
+    // A malformed date used to reach Postgres and return a 500 carrying raw
+    // driver text; the caller could not tell a bad request from an outage.
+    const bad = assertDateParams(req.query);
+    if (bad) return res.status(bad.status).json(bad.body);
     const cid = req.scope?.company_id ?? null;
     const cidClause = cid != null ? `AND e.company_id = $1` : '';
     const params = cid != null ? [cid] : [];
@@ -856,7 +903,7 @@ router.get('/employee-reports/onboarding-progress', async (req, res) => {
         ROUND(100.0 * SUM(CASE WHEN p.done THEN 1 ELSE 0 END) / NULLIF(COUNT(p.id),0),1) AS "% Done"
       FROM employees e
       LEFT JOIN hr_onboarding_checklist_progress p ON p.employee_id = e.id
-      WHERE LOWER(e.status) IN ('active','probation')
+      WHERE ${isIn('e.status', EMPLOYEE_ACTIVE)}
         ${cidClause}
       GROUP BY e.id, e.office_id, e.first_name, e.last_name, e.department, e.joining_date
       ORDER BY e.joining_date DESC
@@ -871,6 +918,10 @@ router.get('/employee-reports/onboarding-progress', async (req, res) => {
 // GET /api/analytics/employee-reports/pending-confirmations
 router.get('/employee-reports/pending-confirmations', async (req, res) => {
   try {
+    // A malformed date used to reach Postgres and return a 500 carrying raw
+    // driver text; the caller could not tell a bad request from an outage.
+    const bad = assertDateParams(req.query);
+    if (bad) return res.status(bad.status).json(bad.body);
     const cid = req.scope?.company_id ?? null;
     const { and, params } = scopeFrags(cid);
     const { rows } = await pool.query(`
@@ -900,9 +951,61 @@ router.get('/employee-reports/pending-confirmations', async (req, res) => {
 router.get('/hr-benchmarks', async (req, res) => {
   try {
     const cid  = req.scope?.company_id ?? null;
-    const empC = cid != null ? 'AND company_id = $1'   : '';
-    const eJC  = cid != null ? 'AND e.company_id = $1' : '';
-    const p    = cid != null ? [cid] : [];
+
+    // Dashboard period (?period / ?from / ?to). Every subquery below used to
+    // hardcode `NOW() - INTERVAL '12 months'`; that is now the default, not a
+    // fixed window.
+    const range = resolveRange(req.query, { defaultPeriod: 'last12m' });
+
+    /**
+     * Per-subquery scope builder. Each query gets its OWN param array holding
+     * exactly the placeholders it references — a shared fixed-position array
+     * breaks any query that skips one (Postgres: "could not determine data type
+     * of parameter"). See the pg-unreferenced-param note in the manual.
+     *
+     * @param {string} [alias] table alias plus dot, e.g. 'e.'
+     */
+    const scope = (alias = '') => {
+      const params = [];
+      const a = alias ? `${alias}` : '';
+      let and = '';
+      if (cid != null) { params.push(cid); and = ` AND ${a}company_id = $${params.length}`; }
+      return {
+        params, and,
+        /** Period predicate on `col`; appends its bounds to this query's params. */
+        between(col) {
+          let sql = '';
+          if (range.from) { params.push(range.from); sql += ` AND ${col} >= $${params.length}::date`; }
+          if (range.to)   { params.push(range.to);   sql += ` AND ${col} <= $${params.length}::date`; }
+          return sql;
+        },
+      };
+    };
+
+    // [0][1][3] were previously passed `[]` — i.e. NOT company-scoped at all, so
+    // time-to-hire, offer acceptance and training effectiveness were computed
+    // across every tenant. They are scoped now.
+    // Build every subquery's scope up front. Order matters within each: `and`
+    // is allocated first, then between() appends its bounds, so the $n numbers
+    // in the SQL match the array positions.
+    const s0 = scope('e.');  const w0 = s0.between('e.joining_date');
+    const s1 = scope();      const w1 = s1.between('updated_at');
+    const s2 = scope();      const w2 = s2.between('created_at');
+    const s3 = scope();      const w3 = s3.between('created_at');
+    const s4 = scope('e.');  const w4 = s4.between('pr.created_at');
+    const s5 = scope();      const w5 = s5.between('COALESCE(exit_date, updated_at)');
+    const s6 = scope('e.');  const w6 = s6.between('pr.created_at');
+    const s7 = scope();      const w7 = s7.between('joining_date');
+    // [8]–[10] are point-in-time (salary bands, gender split, leadership mix):
+    // company scope only, no window.
+    const s8 = scope(), s9 = scope(), s10 = scope();
+    // [11]–[13] are period activity.
+    const s11 = scope(); const w11 = s11.between('created_at');
+    const s12 = scope(); const w12 = s12.between('updated_at');
+    // s13/w13 previously scoped the cost-per-hire query. Retained so the
+    // subquery indices below stay readable against the results array.
+    const s13 = scope(); const w13 = s13.between('created_at');
+    void s13; void w13;
 
     const results = await Promise.allSettled([
       // [0] Time to hire (candidate application → joining)
@@ -910,71 +1013,88 @@ router.get('/hr-benchmarks', async (req, res) => {
                   COUNT(*) AS matched
            FROM employees e
            JOIN candidates c ON LOWER(c.email) = LOWER(e.company_email)
-           WHERE e.joining_date >= NOW() - INTERVAL '12 months'
-             AND c.stage IN ('joined','accepted')
-             AND e.joining_date >= c.created_at::date`, []),
+           WHERE c.stage IN ('joined','accepted')
+             AND e.joining_date >= c.created_at::date
+             ${s0.and} ${w0}`, s0.params),
 
-      // [1] Offer acceptance / decline metrics
-      sq1(`SELECT
-             COUNT(*) FILTER (WHERE LOWER(status) IN ('offered','accepted','joined','declined')) AS offered,
-             COUNT(*) FILTER (WHERE LOWER(status) IN ('accepted','joined'))                      AS accepted,
-             COUNT(*) FILTER (WHERE LOWER(status) = 'declined')                                 AS declined
-           FROM candidates
-           WHERE updated_at >= NOW() - INTERVAL '12 months'`, []),
+      // [1] Offer acceptance / decline.
+      //
+      // Was `candidates.status IN ('offered','accepted','joined','declined')`.
+      // Nothing in the app ever writes an offer outcome to candidates.status —
+      // offers live on offer_letters.offer_status — so this returned 0/0 and the
+      // page reported 0% acceptance while HR Dashboard, reading the correct table
+      // through recruitmentRepository, reported the true rate for the same KPI.
+      // Both surfaces now call the same function, so they cannot disagree again.
+      recruitmentRepository.getOfferAcceptanceRate(cid),
 
-      // [2] Revenue from paid invoices (current FY)
+      // [2] Revenue for revenue-per-employee.
+      //
+      // The comment said "from paid invoices" but the query carried no status
+      // filter, so it summed drafts, sent, pending and overdue invoices too —
+      // 48x the figure every other page in this module calls revenue, making
+      // revenue-per-employee read in lakhs instead of thousands. Now uses the
+      // same paid-only definition as metricsEngine and executive-summary.
       sq1(`SELECT COALESCE(SUM(total_amount), 0) AS total_revenue
            FROM invoices
-           WHERE EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM NOW())
-             ${empC}`, p),
+           WHERE ${isIn('status', INVOICE_PAID)} ${s2.and} ${w2}`, s2.params),
 
-      // [3] Training effectiveness from assessment submissions
-      sq1(`SELECT ROUND(AVG(score)::numeric, 1) AS avg_score,
+      // [3] Training effectiveness.
+      //
+      // Queried `assessment_submissions`, a table that has never existed here —
+      // sq1 swallowed the "relation does not exist" error and returned null, so
+      // the card silently showed 0% "Below target" forever with no way to tell
+      // that from a genuine zero. The real table is `assessment_attempts`
+      // (score, max_score, score_pct, passed, company_id). It is currently empty,
+      // now reported honestly as "no data" rather than as a failing score.
+      sq1(`SELECT ROUND(AVG(score_pct)::numeric, 1) AS avg_score,
                   COUNT(*) AS total,
-                  COUNT(*) FILTER (WHERE score >= 70) AS passed
-           FROM assessment_submissions
-           WHERE created_at >= NOW() - INTERVAL '12 months'
-             AND score IS NOT NULL`, []),
+                  COUNT(*) FILTER (WHERE passed IS TRUE) AS passed
+           FROM assessment_attempts
+           WHERE score_pct IS NOT NULL AND submitted_at IS NOT NULL ${s3.and} ${w3}`, s3.params),
 
       // [4] Performance appraisal rating distribution
       sqN(`SELECT
              CASE
-               WHEN COALESCE(pr.overall_rating, pr.rating, 0) >= 90 THEN 'Exceptional'
-               WHEN COALESCE(pr.overall_rating, pr.rating, 0) >= 75 THEN 'Exceeds'
-               WHEN COALESCE(pr.overall_rating, pr.rating, 0) >= 60 THEN 'Meets'
-               WHEN COALESCE(pr.overall_rating, pr.rating, 0) >= 40 THEN 'Below'
+               WHEN COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 90 THEN 'Exceptional'
+               WHEN COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 75 THEN 'Exceeds'
+               WHEN COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 60 THEN 'Meets'
+               WHEN COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 40 THEN 'Below'
                ELSE 'PIP'
              END AS band,
              COUNT(*) AS count
            FROM performance_reviews pr
            JOIN employees e ON e.id = pr.employee_id
-           WHERE pr.created_at >= NOW() - INTERVAL '12 months'
-             AND LOWER(e.status) IN ('active','probation')
-             ${eJC}
-           GROUP BY band
-           ORDER BY MIN(COALESCE(pr.overall_rating, pr.rating, 0)) DESC`, p),
+           WHERE ${isIn('e.status', EMPLOYEE_ACTIVE)}
+             ${s4.and} ${w4}
+           -- GROUP BY 1, not "band": employees.band is a real column, and
+           -- Postgres resolves a bare GROUP BY name to the INPUT column ahead of
+           -- the output alias. That grouped by e.band and made the CASE
+           -- expression unaggregated, so this query always errored out.
+           GROUP BY 1
+           ORDER BY MIN(COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0)) DESC`, s4.params),
 
-      // [5] Turnover / attrition
+      // [5] Turnover / attrition — departures within the period; the active
+      // headcount it is measured against is point-in-time, so only the
+      // `departed` FILTER carries the window.
       sq1(`SELECT
-             COUNT(*) FILTER (WHERE LOWER(status) IN ('inactive','terminated','left','resigned','ex-employee')
-               AND COALESCE(exit_date, updated_at) >= NOW() - INTERVAL '12 months') AS departed,
-             COUNT(*) FILTER (WHERE LOWER(status) IN ('active','probation'))          AS active
-           FROM employees WHERE deleted_at IS NULL ${empC}`, p),
+             COUNT(*) FILTER (WHERE ${isIn('status', EMPLOYEE_EXITED)}
+               ${w5}) AS departed,
+             COUNT(*) FILTER (WHERE ${isIn('status', EMPLOYEE_ACTIVE)})          AS active
+           FROM employees WHERE deleted_at IS NULL ${s5.and}`, s5.params),
 
       // [6] Engagement score from performance reviews
-      sq1(`SELECT ROUND(AVG(COALESCE(pr.overall_rating, pr.rating, 0))::numeric, 1) AS score,
-                  COUNT(*) FILTER (WHERE COALESCE(pr.overall_rating, pr.rating, 0) >= 75) AS engaged
+      sq1(`SELECT ROUND(AVG(COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0))::numeric, 1) AS score,
+                  COUNT(*) FILTER (WHERE COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 75) AS engaged
            FROM performance_reviews pr
            JOIN employees e ON e.id = pr.employee_id
-           WHERE pr.created_at >= NOW() - INTERVAL '12 months'
-             AND LOWER(e.status) IN ('active','probation')
-             ${eJC}`, p),
+           WHERE ${isIn('e.status', EMPLOYEE_ACTIVE)}
+             ${s6.and} ${w6}`, s6.params),
 
-      // [7] Acquisition (new hires last 12 months)
+      // [7] Acquisition (new hires within the period)
       sq1(`SELECT
-             COUNT(*) FILTER (WHERE joining_date >= NOW() - INTERVAL '12 months') AS new_hires,
-             COUNT(*) FILTER (WHERE LOWER(status) IN ('active','probation'))       AS active_count
-           FROM employees WHERE deleted_at IS NULL ${empC}`, p),
+             COUNT(*) FILTER (WHERE TRUE ${w7}) AS new_hires,
+             COUNT(*) FILTER (WHERE ${isIn('status', EMPLOYEE_ACTIVE)})       AS active_count
+           FROM employees WHERE deleted_at IS NULL ${s7.and}`, s7.params),
 
       // [8] Salary statistics for compa-ratio
       sq1(`SELECT
@@ -983,8 +1103,8 @@ router.get('/hr-benchmarks', async (req, res) => {
              ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY COALESCE(basic_salary,0))::numeric,0) AS p25,
              ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY COALESCE(basic_salary,0))::numeric,0) AS p75
            FROM employees
-           WHERE LOWER(status) IN ('active','probation')
-             AND deleted_at IS NULL AND basic_salary > 0 ${empC}`, p),
+           WHERE ${isIn('status', EMPLOYEE_ACTIVE)}
+             AND deleted_at IS NULL AND basic_salary > 0 ${s8.and}`, s8.params),
 
       // [9] Gender diversity (overall)
       sq1(`SELECT
@@ -992,38 +1112,41 @@ router.get('/hr-benchmarks', async (req, res) => {
              COUNT(*) FILTER (WHERE LOWER(gender) IN ('male','m','man'))     AS male,
              COUNT(*) AS total
            FROM employees
-           WHERE LOWER(status) IN ('active','probation') AND deleted_at IS NULL ${empC}`, p),
+           WHERE ${isIn('status', EMPLOYEE_ACTIVE)} AND deleted_at IS NULL ${s9.and}`, s9.params),
 
       // [10] Leadership gender diversity (representation in senior roles)
       sq1(`SELECT
              COUNT(*) FILTER (WHERE LOWER(gender) IN ('female','f','woman')) AS female_leaders,
              COUNT(*) AS total_leaders
            FROM employees
-           WHERE LOWER(status) IN ('active','probation') AND deleted_at IS NULL
+           WHERE ${isIn('status', EMPLOYEE_ACTIVE)} AND deleted_at IS NULL
              AND (LOWER(designation) LIKE '%manager%' OR LOWER(designation) LIKE '%director%'
                OR LOWER(designation) LIKE '%head%'    OR LOWER(designation) LIKE '%vp%'
                OR LOWER(designation) LIKE '%chief%'   OR LOWER(designation) LIKE '%president%'
                OR LOWER(designation) LIKE '%lead%')
-             ${empC}`, p),
+             ${s10.and}`, s10.params),
 
       // [11] Leave utilization (proxy for benefits utilization)
       sq1(`SELECT COUNT(DISTINCT employee_id) AS utilizers
            FROM leave_applications
-           WHERE created_at >= NOW() - INTERVAL '12 months'
-             ${empC}`, p),
+           WHERE 1=1 ${s11.and} ${w11}`, s11.params),
 
       // [12] Time to fill from job_openings (if table exists)
       sq1(`SELECT ROUND(AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 86400)) AS avg_fill_days
            FROM job_openings
            WHERE LOWER(status) IN ('filled','closed')
-             AND updated_at >= NOW() - INTERVAL '12 months'
-             ${empC}`, p),
+             ${s12.and} ${w12}`, s12.params),
 
-      // [13] Cost per hire from recruitment_costs (if table exists)
-      sq1(`SELECT ROUND(SUM(amount) / NULLIF(COUNT(DISTINCT hire_id), 0)) AS cost_per_hire
-           FROM recruitment_costs
-           WHERE created_at >= NOW() - INTERVAL '12 months'
-             ${empC}`, p),
+      // [13] Cost per hire.
+      //
+      // Queried `recruitment_costs`, which has never existed. There is no
+      // recruitment-spend ledger anywhere in this schema, so the metric has no
+      // honest source. Rather than keep a query that can only fail silently, it
+      // resolves to null and the card renders "Not tracked" via
+      // `costPerHireAvailable`. Wire this up when a recruitment cost ledger
+      // exists; do not approximate from recruitment_agencies.commission_pct,
+      // which covers only agency-sourced hires.
+      Promise.resolve(null),
     ]);
 
     const s = (i, fb) => results[i].status === 'fulfilled' ? results[i].value : fb;
@@ -1046,6 +1169,7 @@ router.get('/hr-benchmarks', async (req, res) => {
     const offered      = parseInt(off?.offered      || 0);
     const accepted     = parseInt(off?.accepted     || 0);
     const declined     = parseInt(off?.declined     || 0);
+    const costPerHire  = cph == null ? null : (parseInt(cph.cost_per_hire || 0) || null);
     const departed     = parseInt(att?.departed     || 0);
     const activeHC     = Math.max(parseInt(att?.active || 0), 1);
     const newHires     = parseInt(acq?.new_hires    || 0);
@@ -1061,20 +1185,31 @@ router.get('/hr-benchmarks', async (req, res) => {
     const totalRevenue = parseFloat(rev?.total_revenue || 0);
 
     res.json({
+      // Echoed so the cards can name the window they measured instead of
+      // asserting a fixed "last 12 months".
+      period:       range.period,
+      period_label: range.label,
       recruitment: {
         avgDaysToHire:       parseInt(tth?.avg_days || 0),
         timeToFill:          parseInt(ttf?.avg_fill_days || 0),
         offerAcceptanceRate: offered > 0 ? parseFloat(((accepted / offered) * 100).toFixed(1)) : 0,
+        // `offerExceptionRate` used to be emitted here as a second name for the
+        // identical declined/offered expression, and the UI presented the two as
+        // different metrics. One number, one name.
         offerDeclineRate:    offered > 0 ? parseFloat(((declined / offered) * 100).toFixed(1)) : 0,
-        offerExceptionRate:  offered > 0 ? parseFloat(((declined / offered) * 100).toFixed(1)) : 0,
-        costPerHire:         parseInt(cph?.cost_per_hire || 0),
+        costPerHire,
+        costPerHireAvailable: costPerHire != null,
         totalOffered:        offered,
         totalAccepted:       accepted,
         totalDeclined:       declined,
+        offerDataAvailable:  offered > 0,
       },
       performance: {
         revenuePerEmployee:         activeHC > 1 ? parseFloat((totalRevenue / activeHC).toFixed(0)) : 0,
+        revenueBasis:               'paid invoices in period',
         trainingEffectivenessScore: parseFloat(trn?.avg_score || 0),
+        // Lets the card tell "0% pass rate" apart from "no assessments recorded".
+        trainingDataAvailable:      parseInt(trn?.total || 0) > 0,
         totalAssessments:           parseInt(trn?.total   || 0),
         trainingPassRate:           parseInt(trn?.total   || 0) > 0
           ? parseFloat(((parseInt(trn?.passed || 0) / parseInt(trn.total)) * 100).toFixed(1)) : 0,

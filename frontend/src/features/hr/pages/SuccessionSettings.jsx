@@ -1,6 +1,8 @@
 // frontend/src/features/hr/pages/SuccessionSettings.jsx
 import React, { useState, useEffect } from 'react';
+import { SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const INP = { width: '100%', boxSizing: 'border-box', padding: '7px 10px',
               border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 };
@@ -110,29 +112,18 @@ export default function SuccessionSettings() {
   if (loading) return <div style={{ padding: 24 }}><Spinner /></div>;
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
-                    marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Succession Settings</h2>
-          <p style={{ margin: 0, color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-            Configure alert thresholds, review frequency, and notification preferences
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {dirty && (
-            <span style={{ fontSize: 12, color: '#d97706', fontWeight: 500 }}>
-              Unsaved changes
-            </span>
-          )}
-          <button onClick={save} disabled={saving || !dirty} style={{
-            ...BTN('primary'),
-            opacity: saving || !dirty ? 0.6 : 1,
-          }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Human Resources"
+        title="Succession Settings"
+        subtitle="Configure alert thresholds, review frequency, and notification preferences"
+        actions={<button className="plh-cta" onClick={save} disabled={saving || !dirty}>
             {saving ? 'Saving...' : 'Save Settings'}
-          </button>
-        </div>
-      </div>
+          </button>}
+      />
+    }>
+
 
       {msg.text && (
         <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontWeight: 500, fontSize: 14,
@@ -254,7 +245,7 @@ export default function SuccessionSettings() {
           })}
         </div>
         {(settings.notify_roles || []).length === 0 && (
-          <div style={{ marginTop: 12, fontSize: 12, color: '#d97706', fontWeight: 500 }}>
+          <div style={{ marginTop: 12, fontSize: 12, color: '#6d28d9', fontWeight: 500 }}>
             Warning: No roles selected — alerts will not be sent to anyone.
           </div>
         )}
@@ -272,6 +263,6 @@ export default function SuccessionSettings() {
         Alerts can be reviewed in the Bench Strength tab's alert banner.
         The review frequency setting is informational — it does not trigger automatic notifications in this version.
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Package, Warehouse, RotateCw, BookOpen, CheckSquare,
-  ChevronRight, ChevronLeft, Check, PlayCircle, CheckCircle,
-  Star, X, Plus,
+  Package, Warehouse, RotateCw, BookOpen, CheckSquare, ChevronRight,
+  ChevronLeft, Check, PlayCircle, CheckCircle, Star, X, Plus,
+  ArrowLeft,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero } from '@/components/pulse-ui';
 
 const P  = '#6B3FDB';
 const PL = '#f5f3ff';
@@ -71,7 +72,7 @@ const STEPS = [
     title: 'Configure Reorder Rules',
     subtitle: 'Set safety stock and auto-PR triggers',
     icon: RotateCw,
-    color: '#d97706',
+    color: '#6d28d9',
     desc: 'Define reorder levels, safety stock, and maximum stock for each item category. Enable auto-PR generation when stock falls below reorder point.',
     tasks: [
       'Set minimum stock (safety stock) per item',
@@ -360,9 +361,9 @@ function WarehouseModal({ tasksDone, onTaskCheck, onClose, onComplete }) {
 
             <div style={{
               marginTop: 20, padding: '12px 14px', borderRadius: 8,
-              background: '#fffbeb', border: '1px solid #fef3c7',
+              background: '#f5f3ff', border: '1px solid #ede9fe',
             }}>
-              <div style={{ fontSize: 11, color: '#92400e', lineHeight: 1.5 }}>
+              <div style={{ fontSize: 11, color: '#5b21b6', lineHeight: 1.5 }}>
                 <strong>Tip:</strong> For bin/rack structure, visit{' '}
                 <button
                   onClick={() => window.open('/WarehouseManagement', '_blank')}
@@ -479,30 +480,23 @@ export default function InventorySetupWizard() {
       )}
 
       {/* Header */}
-      <div style={{ background: '#fff', borderBottom: '1px solid #f0f0f4', padding: '16px 32px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{
-              width: 36, height: 36, borderRadius: 8, background: PL,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <PlayCircle size={18} color={P} />
-            </div>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: '#1f2937' }}>Inventory Setup Wizard</div>
-              <div style={{ fontSize: 11, color: '#6b7280' }}>
-                Step {step + 1} of {STEPS.length} — {current.title}
-              </div>
-            </div>
-          </div>
-          <button onClick={() => navigate('/SystemSettings')} style={{
-            padding: '7px 14px', borderRadius: 7, border: '1px solid #e5e7eb',
-            background: '#fff', fontSize: 12, color: '#6b7280', cursor: 'pointer',
-          }}>
-            Back to Settings
+      {/* Header — the shared hero. Wizard progress reads as hero meta, so the
+          step count stays visible without a second header band. */}
+      <PageHero
+        icon={Package}
+        eyebrow="Setup"
+        title="Inventory Setup Wizard"
+        subtitle={`Step ${step + 1} of ${STEPS.length} — ${current.title}`}
+        meta={completed.size > 0
+          ? [{ value: completed.size, label: `step${completed.size > 1 ? 's' : ''} done`, tone: 'good' }]
+          : undefined}
+        actions={
+          <button className="plh-cta plh-cta--ghost" onClick={() => navigate('/SystemSettings')}>
+            <ArrowLeft size={14} /> Back to Settings
           </button>
-        </div>
-      </div>
+        }
+      />
+
 
       <div style={{ display: 'flex', maxWidth: 1100, margin: '0 auto', padding: '32px 24px', gap: 28 }}>
 
@@ -655,10 +649,10 @@ export default function InventorySetupWizard() {
             </div>
 
             {/* Pro tip */}
-            <div style={{ padding: '16px 32px', background: '#fffbeb', borderBottom: '1px solid #fef3c7' }}>
+            <div style={{ padding: '16px 32px', background: '#f5f3ff', borderBottom: '1px solid #ede9fe' }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                <Star size={14} color="#d97706" style={{ flexShrink: 0, marginTop: 1 }} />
-                <div style={{ fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
+                <Star size={14} color="#6d28d9" style={{ flexShrink: 0, marginTop: 1 }} />
+                <div style={{ fontSize: 12, color: '#5b21b6', lineHeight: 1.5 }}>
                   <strong>Pro tip:</strong> {current.tip}
                 </div>
               </div>

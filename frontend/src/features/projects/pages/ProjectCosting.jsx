@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
+import { Wallet } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const money = (n) =>
   `₹${parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const pctBar = (pct) => {
   const capped = Math.min(pct, 100);
-  const color = pct > 90 ? '#dc2626' : pct > 70 ? '#d97706' : '#059669';
+  const color = pct > 90 ? '#dc2626' : pct > 70 ? '#6d28d9' : '#059669';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div style={{ flex: 1, height: 6, background: '#f0f0f4', borderRadius: 3, overflow: 'hidden' }}>
@@ -84,8 +86,14 @@ export default function ProjectCosting() {
   const selectedProject = (projects ?? []).find((p) => String(p.id) === String(selectedId));
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <h2 style={{ margin: '0 0 6px 0', fontSize: 22, fontWeight: 700, color: '#111827' }}>Project Costing</h2>
+    <PageShell dock={
+      <PageHero
+        icon={Wallet}
+        eyebrow="Projects"
+        title="Project Costing"
+      />
+    }>
+
       <p style={{ margin: '0 0 20px 0', color: '#6b7280', fontSize: 14 }}>
         Final project cost is rolled up from material, labour, travel, and manufacturing when completed.
       </p>
@@ -222,6 +230,6 @@ export default function ProjectCosting() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

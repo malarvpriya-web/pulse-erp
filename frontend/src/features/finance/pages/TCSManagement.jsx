@@ -1,7 +1,9 @@
 // frontend/src/features/finance/pages/TCSManagement.jsx
 // Tax Collected at Source (Section 206C) — mirrors the TDS module.
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT_BG = '#f5f3ff';
@@ -27,7 +29,7 @@ function formatINR(value) {
 function badge(status) {
   const s = String(status || '').toLowerCase();
   if (s.includes('issued') || s.includes('deposited')) return { background: '#dcfce7', color: '#166534' };
-  if (s.includes('pending') || s.includes('draft')) return { background: '#fef3c7', color: '#92400e' };
+  if (s.includes('pending') || s.includes('draft')) return { background: '#ede9fe', color: '#5b21b6' };
   return { background: LIGHT_BG, color: '#5b21b6' };
 }
 
@@ -158,11 +160,14 @@ export default function TCSManagement() {
   }
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>TCS Management</h1>
-        <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>Tax Collected at Source (Section 206C) — collection register, Form 27EQ &amp; Form 27D.</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="TCS Management"
+        subtitle="Tax Collected at Source (Section 206C) — collection register, Form 27EQ & Form 27D."
+      />
+    }>
 
       {notice && <div style={{ background: LIGHT_BG, color: '#5b21b6', padding: '8px 14px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{notice}</div>}
 
@@ -285,7 +290,7 @@ export default function TCSManagement() {
               <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 8 }}>
                 <div style={{ background: LIGHT_BG, borderRadius: 8, padding: '10px 16px' }}><div style={{ fontSize: 11, color: '#6b7280' }}>Total TCS</div><div style={{ fontWeight: 700, color: PURPLE }}>{formatINR(quarterly.total_tcs_collected)}</div></div>
                 <div style={{ background: LIGHT_BG, borderRadius: 8, padding: '10px 16px' }}><div style={{ fontSize: 11, color: '#6b7280' }}>Deposited</div><div style={{ fontWeight: 700, color: '#166534' }}>{formatINR(quarterly.total_deposited)}</div></div>
-                <div style={{ background: LIGHT_BG, borderRadius: 8, padding: '10px 16px' }}><div style={{ fontSize: 11, color: '#6b7280' }}>Pending</div><div style={{ fontWeight: 700, color: '#92400e' }}>{formatINR(quarterly.pending_amount)}</div></div>
+                <div style={{ background: LIGHT_BG, borderRadius: 8, padding: '10px 16px' }}><div style={{ fontSize: 11, color: '#6b7280' }}>Pending</div><div style={{ fontWeight: 700, color: '#5b21b6' }}>{formatINR(quarterly.pending_amount)}</div></div>
               </div>
             ) : <div style={{ color: '#9ca3af', fontSize: 13 }}>Select FY and quarter, then Load.</div>}
           </Panel>
@@ -367,6 +372,6 @@ export default function TCSManagement() {
           </Panel>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

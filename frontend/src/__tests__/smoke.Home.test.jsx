@@ -272,4 +272,59 @@ describe('Home — smoke', () => {
     expect(screen.getByText('Clock In').closest('button').disabled).toBe(true);
   });
 
+  // ── Load failures must not masquerade as empty data ────────────────────────
+  // Reported symptom: "sometimes when the home page is loading, Policies &
+  // Brand Vault show no data". Two distinct causes, one test each.
+
+  it('keeps the skeleton up when a superseded request is aborted mid-load', async () => {
+    // StrictMode's double effect (and any refresh landing mid-load) aborts the
+    // first request. Its rejection must not flip `loading` to false while the
+    // replacement is still in flight, or every panel flashes its empty state —
+    // Policies/Brand Vault reading as "no documents" when none had loaded yet.
+    const aborted = Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' });
+    let firstSignal;
+    api.get
+      .mockImplementationOnce((_url, cfg) => {
+        firstSignal = cfg.signal;
+        return new Promise((_res, rej) => cfg.signal.addEventListener('abort', () => rej(aborted)));
+      })
+      .mockImplementationOnce(() => new Promise(() => {}));   // replacement never settles
+
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(firstSignal).toBeDefined());
+
+    fireEvent.click(screen.getByLabelText('Refresh'));        // supersedes request #1
+    await waitFor(() => expect(api.get.mock.calls.length).toBe(2));
+    await waitFor(() => expect(firstSignal.aborted).toBe(true));
+
+    expect(document.querySelector('.hm-skeleton-list')).not.toBeNull();
+    expect(screen.queryByText('No policy documents yet.')).toBeNull();
+    expect(screen.queryByText('No templates yet.')).toBeNull();
+  });
+
+  it('offers a retry instead of an empty state when the summary request fails', async () => {
+    api.get.mockRejectedValue(Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' }));
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText("Couldn't load policies.")).toBeDefined());
+    expect(screen.getByText("Couldn't load brand vault.")).toBeDefined();
+    expect(screen.queryByText('No policy documents yet.')).toBeNull();
+
+    stubApi();
+    const before = api.get.mock.calls.length;
+    fireEvent.click(screen.getAllByText('Retry')[0]);
+    await waitFor(() => expect(api.get.mock.calls.length).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByText('No policy documents yet.')).toBeDefined());
+  });
+
+  it('treats a server-side degraded slice as a failure, not as an empty list', async () => {
+    // /home/summary answers 200 with an empty `policies` because that query
+    // errored server-side; `degraded` says so, so the panel must not claim
+    // there are no policy documents.
+    stubApi(summary({ degraded: ['policies'] }));
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText("Couldn't load policies.")).toBeDefined());
+    expect(screen.queryByText('No policy documents yet.')).toBeNull();
+    expect(screen.getByText('No templates yet.')).toBeDefined();   // brandAssets is genuinely empty
+  });
+
 });

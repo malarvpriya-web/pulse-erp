@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  UserCheck, Plus, Trash2, RefreshCw, Check, AlertTriangle,
-  Calendar, ArrowRight, Shield,
+  UserCheck, Plus, Trash2, RefreshCw, Check, AlertTriangle, Calendar,
+  ArrowRight, Shield, CheckSquare,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P    = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -97,7 +98,17 @@ export default function ApprovalDelegation() {
   };
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CheckSquare}
+        eyebrow="Attendance"
+        title="Approval Delegation"
+        subtitle="Temporarily delegate approval authority when a manager is unavailable"
+        actions={<button className="plh-cta" onClick={load}>
+          <RefreshCw size={13} /> Refresh
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={removeId !== null}
         title="Deactivate Delegation"
@@ -109,23 +120,7 @@ export default function ApprovalDelegation() {
       />
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <UserCheck size={18} color={P} />
-            </div>
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#1f2937' }}>Approval Delegation</h2>
-          </div>
-          <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
-            Temporarily delegate approval authority when a manager is unavailable
-          </p>
-        </div>
-        <button onClick={load}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', fontSize: 13, cursor: 'pointer' }}>
-          <RefreshCw size={13} /> Refresh
-        </button>
-      </div>
+
 
       {msg.text && (
         <div style={{ background: msg.ok ? '#f0fdf4' : '#fef2f2', border: `1px solid ${msg.ok ? '#86efac' : '#fca5a5'}`, borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: msg.ok ? '#15803d' : '#dc2626', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -283,6 +278,6 @@ export default function ApprovalDelegation() {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

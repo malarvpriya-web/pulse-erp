@@ -20,24 +20,29 @@ export function useData(endpoint, params = {}, options = {}) {
 
   const fetch = useCallback(async (overrideParams = {}) => {
     if (skip) return;
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
+    abortRef.current?.abort();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    // A superseded call must not write state: its rejection lands AFTER the
+    // replacement request has started, so clearing `loading` there drops the
+    // consumer's skeleton and renders an empty result mid-load.
+    const isStale = () => myCtrl.signal.aborted || abortRef.current !== myCtrl;
 
     setLoading(true);
     setError(null);
     try {
       const res = await api.get(endpoint, {
         params: { ...params, ...overrideParams },
-        signal: abortRef.current.signal,
+        signal: myCtrl.signal,
       });
+      if (isStale()) return;
       setData(transform(res.data));
     } catch (err) {
-      if (err.name !== 'AbortError' && err.name !== 'CanceledError') {
-        setError(err.response?.data?.message || err.message || 'Failed to load');
-        if (initialData !== null) setData(initialData);
-      }
+      if (isStale() || err.name === 'AbortError' || err.name === 'CanceledError') return;
+      setError(err.response?.data?.message || err.message || 'Failed to load');
+      if (initialData !== null) setData(initialData);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endpoint, JSON.stringify(params), skip, ...deps]);

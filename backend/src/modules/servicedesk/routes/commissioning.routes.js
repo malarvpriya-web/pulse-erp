@@ -369,6 +369,31 @@ router.post('/:id/signoff', verifyToken, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Workflow not found' });
     logAudit({ userId: uid(req), company_id: cid(req), action: 'update', module: 'Commissioning', recordId: rows[0].id, recordType: 'commissioning_workflow', newData: { customer_sign_name }, req });
+
+    // voc.routes.js documents an auto-trigger "after commissioning / service
+    // visit / AMC visit / project closure" but nothing anywhere ever called
+    // POST /voc/responses — voc_responses had zero rows regardless of how
+    // many commissioning sign-offs happened, same "config exists, nothing
+    // executes it" shape as slaEscalation.cron.js's own header note. Wires
+    // the one instrument this route already collects (customer_rating 1-5,
+    // same scale voc_responses.rating and csat_responses.rating use)
+    // into voc_responses via commissioning_id, the FK that table already
+    // has for exactly this. Best-effort: sign-off must not fail on this.
+    if (customer_rating) {
+      try {
+        await pool.query(
+          `INSERT INTO voc_responses
+             (company_id, trigger_event, trigger_ref_id, customer_name, project_id,
+              commissioning_id, rating, suggestions, submitted_at)
+           VALUES ($1,'commissioning',$2,$3,$4,$5,$6,$7,NOW())`,
+          [cid(req), rows[0].id, rows[0].customer_name || customer_sign_name,
+           rows[0].project_id, rows[0].id, customer_rating, customer_feedback || null]
+        );
+      } catch (e) {
+        console.error('[commissioning/:id/signoff] voc_responses mirror failed:', e.message);
+      }
+    }
+
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

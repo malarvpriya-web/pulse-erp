@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Camera, Shield, AlertTriangle, Check, Save, Eye, EyeOff,
-  RefreshCw, Lock, Sliders, Info, Cpu, UserCheck, UserX,
-  Trash2, Bell, ChevronDown, Filter,
+  Camera, Shield, AlertTriangle, Check, Save, Eye, EyeOff, RefreshCw,
+  Lock, Sliders, Info, Cpu, UserCheck, UserX, Trash2, Bell,
+  ChevronDown, Filter, CalendarClock,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -54,7 +55,7 @@ function Toggle({ checked, onChange, disabled }) {
 
 function ThresholdSlider({ label, desc, value, onChange }) {
   const pct   = Math.round((value ?? 0) * 100);
-  const color = pct >= 80 ? '#10b981' : pct >= 60 ? '#f59e0b' : '#ef4444';
+  const color = pct >= 80 ? '#10b981' : pct >= 60 ? '#7c5cf0' : '#ef4444';
   return (
     <div style={{ marginBottom: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
@@ -96,7 +97,7 @@ function StatCard({ label, value, color, icon: Icon, sub }) {
 }
 
 const ACTION_LABELS = {
-  face_failed: { label: 'Low Confidence',   bg: '#fff7ed', fg: '#c2410c' },
+  face_failed: { label: 'Low Confidence',   bg: '#fff7ed', fg: '#5b21b6' },
   face_spoof:  { label: 'Spoof Detected',   bg: '#fef2f2', fg: '#dc2626' },
   face_locked: { label: 'Account Locked',   bg: '#f0f9ff', fg: '#0369a1' },
 };
@@ -185,7 +186,14 @@ export default function FaceAttendance() {
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title="Face Attendance"
+        subtitle="Biometric face recognition — configuration, enrollment & security audit"
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDeleteFaceData}
@@ -198,43 +206,22 @@ export default function FaceAttendance() {
       />
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Face Attendance</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-            Biometric face recognition — configuration, enrollment &amp; security audit
-          </p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ fontSize: 12, color: '#9ca3af' }}>{today}</div>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '8px 14px', borderRadius: 10,
-            background: settings.enabled ? '#f0fdf4' : '#f3f4f6',
-            border: `1px solid ${settings.enabled ? '#86efac' : '#e5e7eb'}`,
-          }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: settings.enabled ? '#10b981' : '#9ca3af' }} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: settings.enabled ? '#15803d' : '#6b7280' }}>
-              {settings.enabled ? 'Face Attendance ON' : 'Face Attendance OFF'}
-            </span>
-          </div>
-        </div>
-      </div>
+
 
       {/* Hardware readiness banner */}
       <div style={{
         display: 'flex', gap: 12, alignItems: 'flex-start',
-        background: '#fffbeb', border: '1px solid #fde68a',
+        background: '#f5f3ff', border: '1px solid #ddd6fe',
         borderRadius: 10, padding: '14px 16px', marginBottom: 20,
       }}>
-        <Cpu size={18} color="#d97706" style={{ flexShrink: 0, marginTop: 1 }} />
+        <Cpu size={18} color="#6d28d9" style={{ flexShrink: 0, marginTop: 1 }} />
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e', marginBottom: 3 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#5b21b6', marginBottom: 3 }}>
             Hardware Integration Required
           </div>
-          <div style={{ fontSize: 12, color: '#92400e', lineHeight: 1.6 }}>
+          <div style={{ fontSize: 12, color: '#5b21b6', lineHeight: 1.6 }}>
             Face capture runs on registered biometric devices (ZKTeco, eSSL, Suprema, etc.).
-            Devices POST punches to <code style={{ background: '#fef3c7', padding: '1px 5px', borderRadius: 4 }}>
+            Devices POST punches to <code style={{ background: '#ede9fe', padding: '1px 5px', borderRadius: 4 }}>
               POST /api/v1/attendance/face-validate
             </code> after local matching.
             Register devices at <strong>Attendance → Devices</strong>.
@@ -247,7 +234,7 @@ export default function FaceAttendance() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 24 }}>
         <StatCard label="Successful Today"  value={stats.successful_today} color="#10b981" icon={Check}
           sub="Face punches above confidence threshold" />
-        <StatCard label="Failed Today"      value={stats.failed_today}     color="#f59e0b" icon={EyeOff}
+        <StatCard label="Failed Today"      value={stats.failed_today}     color="#7c5cf0" icon={EyeOff}
           sub="Includes spoof attempts" />
         <StatCard label="Spoof Attempts"    value={stats.spoof_attempts}   color="#ef4444" icon={AlertTriangle}
           sub="Liveness check failures" />
@@ -454,11 +441,11 @@ export default function FaceAttendance() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14 }}>
             {[
               { label: 'Enrolled Employees',   value: enrollment?.enrolled    ?? '—', color: '#10b981', icon: UserCheck },
-              { label: 'Unenrolled Employees',  value: enrollment?.unenrolled  ?? '—', color: '#f59e0b', icon: UserX },
+              { label: 'Unenrolled Employees',  value: enrollment?.unenrolled  ?? '—', color: '#7c5cf0', icon: UserX },
               {
                 label: 'Enrollment Coverage',
                 value: enrollment ? `${enrollment.enrollment_pct}%` : '—',
-                color: (enrollment?.enrollment_pct ?? 0) >= 80 ? '#10b981' : '#f59e0b',
+                color: (enrollment?.enrollment_pct ?? 0) >= 80 ? '#10b981' : '#7c5cf0',
                 icon: Shield,
               },
             ].map(k => (
@@ -611,7 +598,7 @@ export default function FaceAttendance() {
                 { title: 'Selfie Audit Trail',       active: settings.selfie_required,        color: '#0369a1', desc: 'Stores selfie at each mobile punch' },
                 { title: 'Capture Photo on Punch',   active: settings.capture_photo_on_punch, color: '#0369a1', desc: 'Saves snapshot for dispute resolution' },
                 { title: 'Allow Glasses',            active: settings.allow_glasses,          color: '#10b981', desc: 'Accepts punches with eyeglasses' },
-                { title: 'Allow Mask',               active: settings.allow_mask,             color: '#f59e0b', desc: 'Accepts punches with face mask' },
+                { title: 'Allow Mask',               active: settings.allow_mask,             color: '#7c5cf0', desc: 'Accepts punches with face mask' },
                 { title: 'Account Lockout',          active: settings.max_attempts > 0,       color: '#10b981', desc: `After ${settings.max_attempts} failures → ${settings.lock_duration_minutes}min lock` },
                 { title: 'Duplicate Punch Block',    active: true,                            color: '#10b981', desc: 'Prevents identical punch within 2 minutes' },
                 { title: 'Company-Scoped Isolation', active: true,                            color: '#10b981', desc: 'All data isolated per company' },
@@ -778,7 +765,7 @@ export default function FaceAttendance() {
                           <td style={{ padding: '10px', fontWeight: 600, color: conf === '—' ? '#9ca3af' : '#ef4444' }}>
                             {conf}
                           </td>
-                          <td style={{ padding: '10px', fontWeight: 600, color: live === '—' ? '#9ca3af' : '#f59e0b' }}>
+                          <td style={{ padding: '10px', fontWeight: 600, color: live === '—' ? '#9ca3af' : '#7c5cf0' }}>
                             {live}
                           </td>
                           <td style={{ padding: '10px', color: '#6b7280', fontSize: 12 }}>{deviceId}</td>
@@ -796,6 +783,6 @@ export default function FaceAttendance() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

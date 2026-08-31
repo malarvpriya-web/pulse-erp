@@ -1,14 +1,15 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
-  Plus, Search, RefreshCw, X, ShoppingCart,
-  CheckCircle, XCircle, Trash2, ArrowRight,
+  Plus, Search, RefreshCw, X, ShoppingCart, CheckCircle, XCircle,
+  Trash2, ArrowRight, ClipboardList,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './PurchaseRequest.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   draft:             { bg: '#f3f4f6', color: '#6b7280', label: 'Draft'            },
-  pending_approval:  { bg: '#fef3c7', color: '#92400e', label: 'Pending Approval' },
+  pending_approval:  { bg: '#ede9fe', color: '#5b21b6', label: 'Pending Approval' },
   approved:          { bg: '#dcfce7', color: '#15803d', label: 'Approved'         },
   rejected:          { bg: '#fee2e2', color: '#dc2626', label: 'Rejected'         },
   converted_to_po:   { bg: '#dbeafe', color: '#1d4ed8', label: 'Ordered'          },
@@ -18,8 +19,8 @@ const sm = s => STATUS_META[(s || '').replace(/ /g, '_').toLowerCase()] || STATU
 
 const PRIORITY_META = {
   urgent: { bg: '#fee2e2', color: '#dc2626', label: 'Urgent'  },
-  high:   { bg: '#ffedd5', color: '#c2410c', label: 'High'    },
-  medium: { bg: '#fef3c7', color: '#92400e', label: 'Medium'  },
+  high:   { bg: '#ede9fe', color: '#5b21b6', label: 'High'    },
+  medium: { bg: '#ede9fe', color: '#5b21b6', label: 'Medium'  },
   low:    { bg: '#f3f4f6', color: '#6b7280', label: 'Low'     },
 };
 const pm = p => PRIORITY_META[(p || 'medium').toLowerCase()] || PRIORITY_META.medium;
@@ -164,17 +165,14 @@ export default function PurchaseRequest() {
   const lineTotal = form.items.reduce((s, i) => s + (parseFloat(i.quantity) || 0) * (parseFloat(i.expected_price) || 0), 0);
 
   return (
-    <div className="pr-root">
-      {toast && <div className={`pr-toast pr-toast-${toast.type}`}>{toast.msg}</div>}
-
-      <div className="pr-header">
-        <div>
-          <h2 className="pr-title">Purchase Requests</h2>
-          <p className="pr-sub">{displayed.length} request{displayed.length !== 1 ? 's' : ''}</p>
-        </div>
-        <div className="pr-header-r">
-          <button className="pr-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="pr-icon-btn" title="Export CSV"
+    <PageShell dock={
+      <PageHero
+        icon={ClipboardList}
+        eyebrow="Procurement"
+        title="Purchase Requests"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          <button className="plh-cta plh-cta--ghost" title="Export CSV"
             onClick={async () => {
               try {
                 const r = await api.get('/procurement/purchase-requests/export', { responseType: 'blob' });
@@ -188,11 +186,14 @@ export default function PurchaseRequest() {
             }}>
             ↓ Export
           </button>
-          <button className="pr-btn-primary" onClick={() => { setForm(emptyForm()); setDrawer(true); }}>
+          <button className="plh-cta" onClick={() => { setForm(emptyForm()); setDrawer(true); }}>
             <Plus size={14} /> New Request
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {toast && <div className={`pr-toast pr-toast-${toast.type}`}>{toast.msg}</div>}
+
 
       <div className="pr-filters">
         <div className="pr-search">
@@ -372,6 +373,6 @@ export default function PurchaseRequest() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

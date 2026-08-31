@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, ToggleLeft, ToggleRight, Settings, Search } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  Plus, X, ToggleLeft, ToggleRight, Settings, Search,
+  SlidersHorizontal,
+} from 'lucide-react';
 
 const TRIGGER_MODULES = ['Leave','Expense','Purchase Order','Invoice','Recruitment','Travel','Timesheet'];
 const TRIGGER_MODULE_MAP = { 'Leave':'leave', 'Expense':'expense', 'Purchase Order':'purchase_order', 'Invoice':'invoice', 'Recruitment':'recruitment', 'Travel':'travel', 'Timesheet':'timesheet' };
@@ -55,29 +59,28 @@ export default function WorkflowConfiguration({ setPage }) {
   );
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Workflow Configuration</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>{workflows.filter(w=>w.is_active).length} active workflows</p>
-        </div>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Operations"
+        title="Workflow Configuration"
+        actions={<>
           {setPage && (
             <>
-              <button onClick={() => setPage('ApproverSetup')} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 13px', background:'#f5f3ff', color:'#6B3FDB', border:'1px solid #ddd6fe', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+              <button className="plh-cta plh-cta--ghost" onClick={() => setPage('ApproverSetup')}>
                 Approver Setup →
               </button>
-              <button onClick={() => setPage('WorkflowBuilder')} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 13px', background:'#f5f3ff', color:'#6B3FDB', border:'1px solid #ddd6fe', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+              <button className="plh-cta plh-cta--ghost" onClick={() => setPage('WorkflowBuilder')}>
                 Workflow Builder →
               </button>
             </>
           )}
-          <button onClick={() => setShowForm(true)}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+          <button className="plh-cta" onClick={() => setShowForm(true)}>
             <Plus size={15}/> New Workflow
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       <div style={{ position:'relative', marginBottom:16, maxWidth:320 }}>
         <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
@@ -160,6 +163,6 @@ export default function WorkflowConfiguration({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

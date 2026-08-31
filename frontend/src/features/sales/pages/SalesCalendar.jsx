@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { ChevronLeft, ChevronRight, Plus, X, Calendar, Clock } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, X, Calendar, Clock, ShoppingCart } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -12,7 +13,7 @@ const TYPE_LABEL  = { follow_up:'Follow-up', demo:'Demo', meeting:'Meeting', cal
 const TYPE_COLOR  = {
   follow_up: '#6366f1',
   demo:      '#10b981',
-  meeting:   '#f59e0b',
+  meeting:   '#7c5cf0',
   call:      '#3b82f6',
   proposal:  '#ef4444',
 };
@@ -26,12 +27,32 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12:true });
 }
 
+// start_at is a TIMESTAMPTZ, so it reaches the browser as UTC: an event saved
+// for 5 Apr 00:00 IST arrives as "2027-04-04T18:30:00.000Z". Slicing that
+// string filed every all-day event — and anything before 05:30 IST — under the
+// PREVIOUS day's cell. The grid's day numbers are local, so the key must be too.
+function dayKey(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// An all-day event carries a midnight start it was never given; printing
+// "12:00 am" beside it states a time the user did not pick.
+function fmtWhen(ev) {
+  if (!ev) return '';
+  if (ev.all_day) return 'All day';
+  return fmtTime(ev.start_at) + (ev.end_at ? ` — ${fmtTime(ev.end_at)}` : '');
+}
+
 export default function SalesCalendar() {
   const toast  = useToast();
   const now    = new Date();
   const [year,    setYear]    = useState(now.getFullYear());
   const [month,   setMonth]   = useState(now.getMonth());
   const [view,    setView]    = useState('Month');
+  const [typeFilter, setTypeFilter] = useState('all');
   const [events,  setEvents]  = useState([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(null);   // { day, events }
@@ -55,9 +76,14 @@ export default function SalesCalendar() {
   const prev = () => { if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1); };
   const next = () => { if (month === 11) { setMonth(0); setYear(y => y + 1); } else setMonth(m => m + 1); };
 
+  // The month itself is the period filter (prev/next); this narrows by type.
+  const visibleEvents = typeFilter === 'all'
+    ? events
+    : events.filter(e => (e.type || 'meeting') === typeFilter);
+
   const eventsOnDay = day => {
     const d = `${year}-${String(month + 1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-    return events.filter(e => (e.start_at || '').slice(0, 10) === d);
+    return visibleEvents.filter(e => dayKey(e.start_at) === d);
   };
 
   async function handleSave(e) {
@@ -107,7 +133,29 @@ export default function SalesCalendar() {
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Sales Calendar"
+        // The month label was lost when this page moved to the hero kit, leaving
+        // prev/next arrows with nothing to say which month they were moving
+        // through. It is the one piece of state a calendar header must show.
+        subtitle={`${MONTHS[month]} ${year}`}
+        actions={<>
+          {VIEWS.map(v => (
+              <button className="plh-cta plh-cta--ghost" key={v} onClick={() => setView(v)}>
+                {v}
+              </button>
+            ))}
+          <button className="plh-cta plh-cta--ghost" onClick={prev}><ChevronLeft size={16}/></button>
+          <button className="plh-cta plh-cta--ghost" onClick={next}><ChevronRight size={16}/></button>
+          <button className="plh-cta" onClick={() => setShowAdd(true)}>
+            <Plus size={14}/> Add Event
+          </button>
+        </>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -119,38 +167,27 @@ export default function SalesCalendar() {
         onCancel={() => setPendingHandleDelete(null)}
       />
 
-      {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, flexWrap:'wrap', gap:12 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Sales Calendar</h1>
-        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          {/* View toggle */}
-          <div style={{ display:'flex', border:'1px solid #e5e7eb', borderRadius:8, overflow:'hidden' }}>
-            {VIEWS.map(v => (
-              <button key={v} onClick={() => setView(v)}
-                style={{ padding:'7px 14px', fontSize:12, fontWeight:600, border:'none', cursor:'pointer', background: view===v ? '#6B3FDB' : '#fff', color: view===v ? '#fff' : '#374151' }}>
-                {v}
-              </button>
-            ))}
-          </div>
-          {/* Month nav */}
-          <button onClick={prev} style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:8, padding:'7px 10px', cursor:'pointer', display:'flex', alignItems:'center' }}><ChevronLeft size={16}/></button>
-          <span style={{ fontSize:14, fontWeight:600, color:'#1f2937', minWidth:150, textAlign:'center' }}>{MONTHS[month]} {year}</span>
-          <button onClick={next} style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:8, padding:'7px 10px', cursor:'pointer', display:'flex', alignItems:'center' }}><ChevronRight size={16}/></button>
-          {/* Add Event */}
-          <button onClick={() => setShowAdd(true)}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 16px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
-            <Plus size={14}/> Add Event
-          </button>
-        </div>
-      </div>
 
-      {/* Legend */}
-      <div style={{ display:'flex', gap:14, marginBottom:14, flexWrap:'wrap' }}>
-        {EVENT_TYPES.map(t => (
-          <div key={t} style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:'#374151' }}>
-            <div style={{ width:10, height:10, borderRadius:2, background:TYPE_COLOR[t] }}/>{TYPE_LABEL[t]}
-          </div>
-        ))}
+      {/* Type filter — doubles as the colour legend */}
+      <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
+        {[{ key:'all', label:'All' }, ...EVENT_TYPES.map(t => ({ key:t, label:TYPE_LABEL[t] }))].map(({ key, label }) => {
+          const on    = typeFilter === key;
+          const count = key === 'all' ? events.length : events.filter(e => (e.type || 'meeting') === key).length;
+          return (
+            <button key={key} onClick={() => setTypeFilter(key)}
+              style={{
+                display:'inline-flex', alignItems:'center', gap:6, padding:'6px 13px',
+                border:'none', borderRadius:20, fontSize:12, fontWeight:600, cursor:'pointer',
+                background: on ? '#6B3FDB' : '#f3f4f6',
+                color:      on ? '#fff'    : '#374151',
+              }}>
+              {key !== 'all' && (
+                <span style={{ width:9, height:9, borderRadius:2, background:TYPE_COLOR[key], flexShrink:0 }}/>
+              )}
+              {label}<span style={{ fontWeight:700, opacity:0.75 }}>{count}</span>
+            </button>
+          );
+        })}
       </div>
 
       {loading ? (
@@ -192,15 +229,15 @@ export default function SalesCalendar() {
       ) : (
         /* Week / Day view — simplified event list */
         <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:24 }}>
-          <p style={{ color:'#6b7280', fontSize:13, margin:'0 0 16px' }}>{view} view — {events.length} events this month</p>
-          {events.length === 0 ? (
+          <p style={{ color:'#6b7280', fontSize:13, margin:'0 0 16px' }}>{view} view — {visibleEvents.length} events this month</p>
+          {visibleEvents.length === 0 ? (
             <div style={{ textAlign:'center', padding:40, color:'#9ca3af' }}>
               <Calendar size={36} color="#d1d5db" style={{ marginBottom:12 }}/>
               <p>No events for {MONTHS[month]} {year}. Click "+ Add Event" to create one.</p>
             </div>
           ) : (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {events.map(ev => {
+              {visibleEvents.map(ev => {
                 const c = TYPE_COLOR[ev.type] || '#6366f1';
                 return (
                   <div key={ev.id}
@@ -210,8 +247,7 @@ export default function SalesCalendar() {
                     <div style={{ flex:1, minWidth:0 }}>
                       <p style={{ fontSize:13, fontWeight:600, color:'#1f2937', margin:0 }}>{ev.title}</p>
                       <p style={{ fontSize:11, color:'#6b7280', margin:'2px 0 0' }}>
-                        <Clock size={10} style={{ marginRight:3 }}/>{fmtTime(ev.start_at)}
-                        {ev.end_at && ` — ${fmtTime(ev.end_at)}`}
+                        <Clock size={10} style={{ marginRight:3 }}/>{fmtWhen(ev)}
                       </p>
                     </div>
                     <span style={{ background: c + '20', color:c, padding:'2px 8px', borderRadius:20, fontSize:10, fontWeight:700 }}>{TYPE_LABEL[ev.type] || ev.type}</span>
@@ -242,7 +278,7 @@ export default function SalesCalendar() {
                     <p style={{ fontSize:13, fontWeight:600, color:'#1f2937', margin:0 }}>{ev.title}</p>
                     <span style={{ background: c + '20', color:c, padding:'2px 7px', borderRadius:20, fontSize:10, fontWeight:700 }}>{TYPE_LABEL[ev.type] || ev.type}</span>
                   </div>
-                  {ev.start_at && <p style={{ fontSize:11, color:'#9ca3af', margin:'3px 0 0' }}>{fmtTime(ev.start_at)}{ev.end_at ? ` — ${fmtTime(ev.end_at)}` : ''}</p>}
+                  {ev.start_at && <p style={{ fontSize:11, color:'#9ca3af', margin:'3px 0 0' }}>{fmtWhen(ev)}</p>}
                 </div>
               );
             })}
@@ -270,9 +306,11 @@ export default function SalesCalendar() {
                     <span style={{ background: c + '20', color:c, padding:'2px 8px', borderRadius:20, fontSize:11, fontWeight:700, marginLeft:'auto' }}>{TYPE_LABEL[detail.type] || detail.type}</span>
                   </div>
                   <p style={{ fontSize:12, color:'#6b7280', margin:'0 0 6px' }}>
-                    <strong>Start:</strong> {new Date(detail.start_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    <strong>{detail.all_day ? 'When:' : 'Start:'}</strong> {detail.all_day
+                      ? `${new Date(detail.start_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })} — All day`
+                      : new Date(detail.start_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
                   </p>
-                  {detail.end_at && <p style={{ fontSize:12, color:'#6b7280', margin:'0 0 6px' }}>
+                  {!detail.all_day && detail.end_at && <p style={{ fontSize:12, color:'#6b7280', margin:'0 0 6px' }}>
                     <strong>End:</strong> {new Date(detail.end_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
                   </p>}
                   {detail.notes && <p style={{ fontSize:12, color:'#374151', margin:'10px 0 0', padding:'10px', background:'#f9fafb', borderRadius:8 }}>{detail.notes}</p>}
@@ -353,6 +391,6 @@ export default function SalesCalendar() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

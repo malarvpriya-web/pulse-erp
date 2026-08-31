@@ -1,9 +1,11 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
-import { TrendingUp, RefreshCw, Activity } from 'lucide-react';
+import { TrendingUp, RefreshCw, Activity, LayoutDashboard } from 'lucide-react';
 import api from '@/services/api/client';
 import { getProjects } from '../services/projectsService';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import CostSensitivityTornado from '../components/CostSensitivityTornado';
 
 const fmt = (n) => {
   const v = parseFloat(n || 0);
@@ -12,7 +14,7 @@ const fmt = (n) => {
   return `₹${v.toLocaleString('en-IN')}`;
 };
 
-const cpiColor  = (cpi) => parseFloat(cpi || 0) >= 1 ? '#15803d' : parseFloat(cpi || 0) >= 0.8 ? '#ca8a04' : '#dc2626';
+const cpiColor  = (cpi) => parseFloat(cpi || 0) >= 1 ? '#15803d' : parseFloat(cpi || 0) >= 0.8 ? '#7c5cf0' : '#dc2626';
 const spiColor  = (spi) => parseFloat(spi || 0) >= 1 ? '#0369a1' : parseFloat(spi || 0) >= 0.8 ? '#6B3FDB' : '#dc2626';
 
 function GaugeDial({ value, label, minVal, maxVal, color }) {
@@ -77,12 +79,12 @@ function SCurveChart({ scurveData, maxHeight = 165 }) {
         </text>
       ))}
       <path d={planned} fill="none" stroke="#6366f1" strokeWidth={2} />
-      <path d={actual} fill="none" stroke="#f59e0b" strokeWidth={2} strokeDasharray="4 2" />
+      <path d={actual} fill="none" stroke="#7c5cf0" strokeWidth={2} strokeDasharray="4 2" />
       <g transform={`translate(${W - 120}, ${pad.t})`}>
         <line x1={0} x2={20} y1={6} y2={6} stroke="#6366f1" strokeWidth={2} />
         <text x={24} y={10} fontSize={9} fill="#6366f1">Planned</text>
-        <line x1={0} x2={20} y1={20} y2={20} stroke="#f59e0b" strokeWidth={2} strokeDasharray="4 2" />
-        <text x={24} y={24} fontSize={9} fill="#f59e0b">Actual</text>
+        <line x1={0} x2={20} y1={20} y2={20} stroke="#7c5cf0" strokeWidth={2} strokeDasharray="4 2" />
+        <text x={24} y={24} fontSize={9} fill="#7c5cf0">Actual</text>
       </g>
     </svg>
   );
@@ -135,31 +137,43 @@ export default function ProjectEVMDashboard({ setPage }) {
 
   const cpi = parseFloat(evm?.cost_performance_index || 0);
   const spi = parseFloat(evm?.schedule_performance_index || 0);
-  const bac = parseFloat(evm?.total_budget || 0);
+  // /costing returns project_cost_summary.* joined to the project's budget —
+  // there is no total_budget or actual_cost column on that table, so the old
+  // reads resolved to undefined and pinned BAC, AC, EAC and ETC to zero (which
+  // in turn made every Health Indicator read green: eac <= bac was 0 <= 0).
+  const bac = parseFloat(evm?.contract_value ?? evm?.budget_amount ?? evm?.total_budget ?? 0);
   const ev  = parseFloat(evm?.earned_value || 0);
-  const ac  = parseFloat(evm?.actual_cost || 0);
+  const ac  = parseFloat(evm?.actual_cost_evm ?? evm?.total_cost ?? evm?.actual_cost ?? 0);
   const pv  = parseFloat(evm?.planned_value || 0);
-  const eac = cpi > 0 ? bac / cpi : 0;
-  const etc = eac - ac;
+  // EAC is BAC/CPI, which is UNDEFINED at CPI 0 (nothing earned yet) — not zero.
+  // Substituting 0 made "eac <= bac" true and painted the Forecast indicator
+  // green on a project that has no earned value at all.
+  const eac = cpi > 0 ? bac / cpi : null;
+  const etc = eac == null ? null : eac - ac;
   const cv  = ev - ac;
   const sv  = ev - pv;
+  // TCPI is only meaningful while budget remains. Once AC >= BAC the old
+  // Math.max(bac - ac, 0.01) floor divided by a hundredth of a rupee and
+  // printed a six-figure index as if it were a real target.
+  const tcpi = bac > 0 && bac - ac > 0 ? ((bac - ev) / (bac - ac)).toFixed(2) : null;
 
   return (
-    <div style={{ padding: '16px 18px 20px', margin: '0 auto' }}>
-      {toast && <div style={{ position: 'fixed', top: 16, right: 16, padding: '10px 16px', borderRadius: 8, zIndex: 9999, background: toast.type === 'error' ? '#fef2f2' : '#f0fdf4', color: toast.type === 'error' ? '#dc2626' : '#15803d', border: `1px solid ${toast.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{toast.msg}</div>}
-
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>EVM Dashboard</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Earned Value Management — CPI, SPI, cost/schedule variance, S-Curve</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} disabled={!selId} style={{ padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', cursor: 'pointer' }}><RefreshCw size={14} /></button>
-          <button onClick={recalculate} disabled={!selId} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Projects"
+        title="EVM Dashboard"
+        subtitle="Earned Value Management — CPI, SPI, cost/schedule variance, S-Curve"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load} disabled={!selId}><RefreshCw size={14} /></button>
+          <button className="plh-cta" onClick={recalculate} disabled={!selId}>
             <Activity size={13} /> Recalculate EVM
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {toast && <div style={{ position: 'fixed', top: 16, right: 16, padding: '10px 16px', borderRadius: 8, zIndex: 9999, background: toast.type === 'error' ? '#fef2f2' : '#f0fdf4', color: toast.type === 'error' ? '#dc2626' : '#15803d', border: `1px solid ${toast.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{toast.msg}</div>}
+
 
       <div style={{ marginBottom: 20 }}>
         <select value={selId} onChange={e => setSelId(e.target.value)} style={{ width: 400, padding: '9px 12px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', color: 'var(--color-text-primary)', fontSize: 14 }}>
@@ -227,7 +241,7 @@ export default function ProjectEVMDashboard({ setPage }) {
               { label: 'PV (Planned Value)', value: fmt(pv), color: '#0369a1', bg: '#e0f2fe' },
               { label: 'EV (Earned Value)', value: fmt(ev), color: '#15803d', bg: '#f0fdf4' },
               { label: 'AC (Actual Cost)', value: fmt(ac), color: ac > ev ? '#dc2626' : '#15803d', bg: ac > ev ? '#fef2f2' : '#f0fdf4' },
-              { label: 'EAC (Estimate at Completion)', value: fmt(eac), color: eac > bac ? '#dc2626' : '#ca8a04', bg: '#fff7ed' },
+              { label: 'EAC (Estimate at Completion)', value: eac == null ? '—' : fmt(eac), color: eac != null && eac > bac ? '#dc2626' : '#7c5cf0', bg: '#fff7ed' },
             ].map(k => (
               <div key={k.label} style={{ background: k.bg, borderRadius: 8, padding: '12px 14px', border: `1px solid ${k.color}22` }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: k.color }}>{k.value}</div>
@@ -241,9 +255,9 @@ export default function ProjectEVMDashboard({ setPage }) {
             <div className="dk-anim" style={{ background: 'var(--color-background-secondary)', border: '1px solid var(--color-border-tertiary)', borderRadius: 10, padding: '13px 15px', '--dk-i': 2 }}>
               <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Forecast Summary</div>
               {[
-                { label: 'ETC (Estimate to Complete)', value: fmt(etc), color: '#6B3FDB' },
-                { label: 'TCPI (Performance needed)', value: bac > 0 ? ((bac - ev) / Math.max(bac - ac, 0.01)).toFixed(2) : '—', color: '#0369a1' },
-                { label: 'Variance at Completion', value: fmt(bac - eac), color: bac >= eac ? '#15803d' : '#dc2626' },
+                { label: 'ETC (Estimate to Complete)', value: etc == null ? '—' : fmt(etc), color: '#6B3FDB' },
+                { label: 'TCPI (Performance needed)', value: tcpi ?? (bac > 0 ? 'Unachievable — budget spent' : '—'), color: '#0369a1' },
+                { label: 'Variance at Completion', value: eac == null ? '—' : fmt(bac - eac), color: eac == null ? '#6b7280' : bac >= eac ? '#15803d' : '#dc2626' },
                 { label: 'Progress %', value: `${parseFloat(evm?.progress_percentage || 0).toFixed(1)}%`, color: '#6366f1' },
               ].map(k => (
                 <div key={k.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--color-border-tertiary)', fontSize: 13 }}>
@@ -272,20 +286,24 @@ export default function ProjectEVMDashboard({ setPage }) {
               {[
                 { label: 'Cost Health', ok: cpi >= 0.9, warn: cpi >= 0.75, msg: cpi >= 0.9 ? 'Within budget tolerance' : cpi >= 0.75 ? 'Monitor spending' : 'Cost overrun — action needed' },
                 { label: 'Schedule Health', ok: spi >= 0.9, warn: spi >= 0.75, msg: spi >= 0.9 ? 'On track' : spi >= 0.75 ? 'Minor delay — recoverable' : 'Significant delay — escalate' },
-                { label: 'Forecast', ok: eac <= bac, warn: eac <= bac * 1.1, msg: eac <= bac ? 'Within budget at completion' : eac <= bac * 1.1 ? 'Slight overrun forecast' : 'Significant overrun forecast' },
+                eac == null
+                  ? { label: 'Forecast', ok: false, warn: true, msg: 'Cannot forecast — no earned value recorded yet' }
+                  : { label: 'Forecast', ok: eac <= bac, warn: eac <= bac * 1.1, msg: eac <= bac ? 'Within budget at completion' : eac <= bac * 1.1 ? 'Slight overrun forecast' : 'Significant overrun forecast' },
               ].map(h => (
-                <div key={h.label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, background: h.ok ? '#f0fdf4' : h.warn ? '#fff7ed' : '#fef2f2', border: `1px solid ${h.ok ? '#bbf7d0' : h.warn ? '#fed7aa' : '#fecaca'}`, flex: 1, minWidth: 200 }}>
+                <div key={h.label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, background: h.ok ? '#f0fdf4' : h.warn ? '#fff7ed' : '#fef2f2', border: `1px solid ${h.ok ? '#bbf7d0' : h.warn ? '#ddd6fe' : '#fecaca'}`, flex: 1, minWidth: 200 }}>
                   <span style={{ fontSize: 18 }}>{h.ok ? '✅' : h.warn ? '⚠️' : '🔴'}</span>
                   <div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: h.ok ? '#15803d' : h.warn ? '#ca8a04' : '#dc2626' }}>{h.label}</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: h.ok ? '#15803d' : h.warn ? '#7c5cf0' : '#dc2626' }}>{h.label}</div>
                     <div style={{ fontSize: 11, color: '#6b7280' }}>{h.msg}</div>
                   </div>
                 </div>
               ))}
             </div>
           </div>
+
+          <CostSensitivityTornado projectId={selId} onRecalculate={recalculate} />
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

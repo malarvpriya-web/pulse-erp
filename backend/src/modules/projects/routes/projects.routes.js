@@ -12,10 +12,48 @@ import { recalculateProjectCost } from '../services/projectCostRollup.service.js
 import * as drive from '../../../services/googleDrive.service.js';
 import invoiceService from '../../finance/services/invoice.service.js';
 import { CLOSED_PROJECT_STATUSES } from '../projectStatus.js';
+import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
+import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? null;
 const uid = (req) => req.user?.userId ?? req.user?.id ?? null;
+
+/**
+ * project_risks.probability / .impact are VARCHAR(20) level labels, not numbers.
+ * Maps a level column to an ordinal so a probability x impact score is possible
+ * at all. Anything unrecognised scores 0 (NOT 1) so an unclassified risk cannot
+ * masquerade as a low one — unmeasured is not the same as low.
+ */
+const RISK_LEVEL_ORDINAL = (col) => `(CASE LOWER(COALESCE(${col}, ''))
+  WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 WHEN 'critical' THEN 4
+  ELSE 0 END)`;
+
+/** Surface a rejected allSettled leg instead of letting it read as "no rows". */
+function settledRows(result, label) {
+  if (result.status === 'fulfilled') return result.value.rows;
+  console.error(`[projects] ${label} query failed:`, result.reason?.code, result.reason?.message);
+  return [];
+}
+
+/**
+ * Translate the dashboard filter contract (?period / ?from / ?to / dimensions)
+ * into the repository's filter shape. Dimensions go through `dimension()` so the
+ * "all" sentinel and blanks resolve to "unfiltered" rather than matching a
+ * literal 'all' row.
+ */
+function projectListFilters(req) {
+  const range = resolveRange(req.query, { defaultPeriod: 'all' });
+  return {
+    ...req.query,
+    company_id: cid(req),
+    status: dimension(req.query, 'status'),
+    zone: dimension(req.query, 'zone'),
+    project_type: dimension(req.query, 'project_type'),
+    date_from: range.from,
+    date_to: range.to,
+  };
+}
 
 // projects.created_by / tasks.created_by FK to employees(id) — resolve the
 // acting user's employee id (uid() is a users.id, a different namespace).
@@ -67,7 +105,7 @@ router.get('/employees', requirePermission('projects', 'view'), async (req, res)
 // Mounted at /projects, so this handles GET /api/v1/projects (no sub-path).
 router.get('/', requirePermission('projects', 'view'), async (req, res) => {
   try {
-    const projects = await projectRepository.findAll({ ...req.query, company_id: cid(req) });
+    const projects = await projectRepository.findAll(projectListFilters(req));
     res.json(projects);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -75,7 +113,7 @@ router.get('/', requirePermission('projects', 'view'), async (req, res) => {
 // ── Projects CRUD ─────────────────────────────────────────────────────────────
 router.get('/projects', requirePermission('projects', 'view'), async (req, res) => {
   try {
-    const projects = await projectRepository.findAll({ ...req.query, company_id: cid(req) });
+    const projects = await projectRepository.findAll(projectListFilters(req));
     res.json(projects);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -91,6 +129,30 @@ router.get('/projects/next-code', async (req, res) => {
   try {
     const code = await projectRepository.getNextProjectCode();
     res.json({ code });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Dimension options for the dashboard filter bar. Must stay ABOVE
+// `/projects/:id` — Express matches in declaration order and the param route
+// would otherwise swallow "filter-options" as an id.
+// Distinct values are taken across ALL projects in scope, not the currently
+// filtered set, so picking a zone doesn't empty the zone dropdown.
+router.get('/projects/filter-options', requirePermission('projects', 'view'), async (req, res) => {
+  try {
+    const scope = `p.deleted_at IS NULL AND ($1::int IS NULL OR p.company_id=$1)`;
+    const distinct = (col) => pool
+      .query(`SELECT DISTINCT ${col} AS v FROM projects p
+               WHERE ${scope} AND ${col} IS NOT NULL AND TRIM(${col}) <> ''
+               ORDER BY v`, [cid(req)])
+      .catch(() => ({ rows: [] }));
+    const [statuses, zones, types] = await Promise.all([
+      distinct('p.status'), distinct('p.zone'), distinct('p.project_type'),
+    ]);
+    res.json({
+      statuses: statuses.rows.map(r => r.v),
+      zones: zones.rows.map(r => r.v),
+      project_types: types.rows.map(r => r.v),
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -184,11 +246,39 @@ router.put('/projects/:id', requirePermission('projects', 'edit'), async (req, r
     // (or gone). This previously fell through to an unscoped update — the write
     // landed on the other tenant's row. Fail closed, and scope the update too.
     if (!oldProject) return res.status(404).json({ error: 'Project not found' });
+    if (oldProject.status !== 'completed' && req.body.status === 'completed' && !req.body.force_complete) {
+      const blockers = await getProjectClosureBlockers(req.params.id);
+      if (blockers.length) {
+        const parts = blockers.map(b => `${b.count} ${b.type.replace(/_/g, ' ')}`);
+        return res.status(400).json({
+          error: `Project is not ready to close: ${parts.join(', ')}.`,
+          code: 'CLOSURE_NOT_READY',
+          blockers,
+        });
+      }
+    }
     const project = await projectRepository.update(req.params.id, req.body, cid(req));
     if (oldProject?.status !== 'completed' && project?.status === 'completed') {
       await recalculateProjectCost(req.params.id).catch(e =>
         console.error('[projects] cost rollup failed:', e.message)
       );
+      // Last of voc.routes.js's three documented trigger events to actually
+      // fire ('commissioning' and 'service_visit'/'amc_visit' wired
+      // separately). Only mirrors when the caller actually included a
+      // rating on this same closing request — projects has no other form
+      // that collects one, so this is opt-in, not a second required step.
+      // project.customer_name has no real parties FK (free-text, same as
+      // client_name) — voc_responses.customer_name is free-text too, so no
+      // resolution is needed here.
+      if (req.body.customer_rating) {
+        pool.query(
+          `INSERT INTO voc_responses
+             (company_id, trigger_event, trigger_ref_id, customer_name, project_id, rating, suggestions, submitted_at)
+           VALUES ($1,'project_closure',$2,$3,$2,$4,$5,NOW())`,
+          [cid(req), req.params.id, project.customer_name || project.client_name || null,
+           req.body.customer_rating, req.body.customer_feedback || null]
+        ).catch(e => console.error('[projects/:id] voc_responses mirror failed:', e.message));
+      }
     }
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'project', action: 'update', oldData: oldProject, newData: project, req });
     const ruleAlerts = (await evaluateRules('projects', project).catch(() => [])).filter(r => r.triggered);
@@ -282,6 +372,42 @@ async function findClosedProjectStatus(projectId) {
   return CLOSED_PROJECT_STATUSES.includes(rows[0]?.status) ? rows[0].status : null;
 }
 
+// A project could be marked 'completed' with open tasks, unbilled milestones,
+// or timesheets still awaiting approval — the write-guard above only stops
+// activity AFTER closure, nothing checked readiness BEFORE it. Only gates the
+// 'completed' transition, not 'cancelled' (cancelling is exactly for projects
+// that will never finish their open items, so blocking on the same grounds
+// would be backwards). Pass force_complete:true to close anyway.
+async function getProjectClosureBlockers(projectId) {
+  const [openTasks, unbilledMilestones, pendingTimesheets] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM tasks WHERE project_id=$1 AND deleted_at IS NULL AND status != 'done'`,
+      [projectId]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM project_milestones
+       WHERE project_id=$1 AND billing_milestone=TRUE AND COALESCE(invoice_created,false)=FALSE`,
+      [projectId]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM timesheet_entries
+       WHERE project_id=$1 AND deleted_at IS NULL AND status IN ('draft','submitted')`,
+      [projectId]
+    ),
+  ]);
+  const blockers = [];
+  if (openTasks.rows[0].n > 0) {
+    blockers.push({ type: 'open_tasks', count: openTasks.rows[0].n });
+  }
+  if (unbilledMilestones.rows[0].n > 0) {
+    blockers.push({ type: 'unbilled_milestones', count: unbilledMilestones.rows[0].n });
+  }
+  if (pendingTimesheets.rows[0].n > 0) {
+    blockers.push({ type: 'pending_timesheets', count: pendingTimesheets.rows[0].n });
+  }
+  return blockers;
+}
+
 router.post('/tasks', requirePermission('projects', 'add'), async (req, res) => {
   try {
     const closedStatus = await findClosedProjectStatus(req.body.project_id);
@@ -324,6 +450,111 @@ router.get('/projects/:id/costing', requirePermission('projects', 'view'), async
   try {
     const costs = await projectCostRepository.findByProject(req.params.id);
     res.json(costs || { labour_cost: 0, material_cost: 0, expense_cost: 0, total_cost: 0 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * Cost-sensitivity drivers (tornado diagram basis).
+ *
+ * The nine categories recalculateProjectCost() actually rolls up from source
+ * tables — deliberately NOT project_cost_summary.expense_cost (a legacy
+ * travel+manufacturing duplicate) or subcontractor_cost (never written by the
+ * rollup), which would double-count.
+ *
+ * low_pct/high_pct are DEFAULT estimating ranges, not measurements. They are
+ * shipped to the client, shown on the chart and editable there: a tornado is
+ * only honest when the assumed range is visible next to the bar it produced.
+ */
+const SENSITIVITY_DRIVERS = [
+  { key: 'material_cost',        label: 'Material',           low_pct: -8,  high_pct: 15 },
+  { key: 'labour_cost',          label: 'Labour',             low_pct: -5,  high_pct: 20 },
+  { key: 'manufacturing_cost',   label: 'Manufacturing',      low_pct: -5,  high_pct: 15 },
+  { key: 'procurement_overhead', label: 'Procurement',        low_pct: -10, high_pct: 12 },
+  { key: 'installation_cost',    label: 'Installation',       low_pct: -10, high_pct: 25 },
+  { key: 'commissioning_cost',   label: 'Commissioning',      low_pct: -10, high_pct: 25 },
+  { key: 'quality_cost',         label: 'Quality / rework',   low_pct: -10, high_pct: 30 },
+  { key: 'service_cost',         label: 'Service / warranty', low_pct: -15, high_pct: 30 },
+  { key: 'travel_cost',          label: 'Travel',             low_pct: -10, high_pct: 25 },
+];
+
+router.get('/projects/:id/cost-sensitivity', requirePermission('projects', 'view'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT p.id, p.project_code, p.project_name,
+              COALESCE(p.budget_amount, p.budget, 0) AS budget_amount,
+              pcs.project_id AS has_summary,
+              COALESCE(pcs.total_revenue, pcs.revenue, 0) AS total_revenue,
+              COALESCE(pcs.revenue, 0)     AS invoice_revenue,
+              COALESCE(pcs.amc_revenue, 0) AS amc_revenue,
+              COALESCE(pcs.total_cost, 0)  AS total_cost_stored,
+              pcs.last_calculated_at,
+              ${SENSITIVITY_DRIVERS.map(d => `COALESCE(pcs.${d.key}, 0) AS ${d.key}`).join(',\n              ')}
+       FROM projects p
+       LEFT JOIN project_cost_summary pcs ON pcs.project_id = p.id
+       WHERE p.id = $1 AND ($2::int IS NULL OR p.company_id = $2)`,
+      [req.params.id, cid(req)]
+    );
+
+    const row = rows[0];
+    if (!row) return res.status(404).json({ error: 'Project not found' });
+
+    const drivers = SENSITIVITY_DRIVERS.map(d => {
+      const amount = parseFloat(row[d.key] || 0);
+      return {
+        key: d.key,
+        label: d.label,
+        amount,
+        // A zero here means "no cost has been booked against this category",
+        // which is not the same as "this category costs nothing". The client
+        // lists these separately instead of drawing a zero-swing bar.
+        measured: amount > 0,
+        default_low_pct: d.low_pct,
+        default_high_pct: d.high_pct,
+      };
+    });
+
+    const driverSum    = drivers.reduce((s, d) => s + d.amount, 0);
+    const totalRevenue = parseFloat(row.total_revenue || 0);
+    const storedCost   = parseFloat(row.total_cost_stored || 0);
+
+    // Integrity gate. The rollup writes total_cost as exactly the sum of these
+    // nine drivers, so a mismatch means the row did NOT come from the rollup —
+    // seeded or hand-written values would otherwise render as a confident chart.
+    let integrity = { state: 'ok', message: null };
+    if (!row.has_summary) {
+      integrity = {
+        state: 'never_calculated',
+        message: 'No cost rollup has been run for this project yet. Run Recalculate EVM to build one.',
+      };
+    } else if (Math.abs(driverSum - storedCost) > Math.max(1, storedCost * 0.005)) {
+      integrity = {
+        state: 'inconsistent',
+        message: `Stored total cost (${storedCost.toFixed(2)}) does not equal the sum of its cost drivers (${driverSum.toFixed(2)}). This row was not written by the cost rollup — run Recalculate EVM before trusting a sensitivity read.`,
+      };
+    }
+
+    res.json({
+      project: {
+        id: row.id,
+        project_code: row.project_code,
+        project_name: row.project_name,
+        budget_amount: parseFloat(row.budget_amount || 0),
+      },
+      basis: {
+        total_revenue:     totalRevenue,
+        invoice_revenue:   parseFloat(row.invoice_revenue || 0),
+        amc_revenue:       parseFloat(row.amc_revenue || 0),
+        driver_sum:        driverSum,
+        total_cost_stored: storedCost,
+        net_margin:        totalRevenue - driverSum,
+        // Guard the zero denominator explicitly: a 0-revenue project has an
+        // UNDEFINED margin %, not a 0.0% one.
+        net_margin_pct:    totalRevenue > 0 ? ((totalRevenue - driverSum) / totalRevenue) * 100 : null,
+        last_calculated_at: row.last_calculated_at,
+      },
+      integrity,
+      drivers,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -455,6 +686,15 @@ router.post('/projects/:id/resources', requirePermission('projects', 'edit'), as
     );
 
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'project_member', action: 'create', newData: rows[0], req });
+
+    const projectRow = await pool.query(`SELECT project_name FROM projects WHERE id=$1`, [req.params.id]);
+    notifyWorkflowEvent('member_assigned', {
+      module: 'Projects',
+      recordId: req.params.id,
+      recipientIds: [employee_id],
+      context: { projectName: projectRow.rows[0]?.project_name, role: rows[0].role_in_project },
+    });
+
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -542,6 +782,30 @@ router.put('/projects/milestones/:id/complete', requirePermission('projects', 'e
 
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'milestone', action: 'complete', newData: milestone, req });
 
+    // Fetched once, unconditionally — needed for the completion notification
+    // below regardless of billing_milestone, and reused by the invoice block
+    // (previously fetched a second time, only inside that block).
+    const projectRes = await pool.query(
+      // Neither a clients table nor projects.client_id exists, so the previous
+      // LEFT JOIN threw and this lookup failed outright. The project already
+      // carries the customer as denormalised text.
+      `SELECT p.*, COALESCE(p.customer_name, p.client_name) AS customer_name_alt
+         FROM projects p
+        WHERE p.id=$1`,
+      [milestone.project_id]
+    );
+    const project = projectRes.rows[0];
+
+    const notifyRecipients = [...new Set([project?.project_manager_id, milestone.owner_id].filter(Boolean))];
+    if (notifyRecipients.length) {
+      notifyWorkflowEvent('milestone_completed', {
+        module: 'Projects',
+        recordId: milestone.id,
+        recipientIds: notifyRecipients,
+        context: { milestoneTitle: milestone.title, projectName: project?.project_name },
+      });
+    }
+
     let invoice_created = false;
     let invoice = null;
 
@@ -553,13 +817,6 @@ router.put('/projects/milestones/:id/complete', requirePermission('projects', 'e
     // a posted journal entry, same as every other invoice in the system.
     if (milestone.billing_milestone && parseFloat(milestone.amount) > 0) {
       try {
-        const projectRes = await pool.query(
-          `SELECT p.*, c.client_name AS customer_name_alt FROM projects p
-           LEFT JOIN clients c ON c.id=p.client_id
-           WHERE p.id=$1`,
-          [milestone.project_id]
-        );
-        const project = projectRes.rows[0];
         const customerName = project?.customer_name || project?.client_name || project?.customer_name_alt || 'Customer';
 
         // Best-effort match to a real Finance party by name — projects only
@@ -1328,14 +1585,45 @@ router.get('/projects/:id/status-report', requirePermission('projects', 'view'),
   try {
     const [projRes, mileRes, riskRes, costRes] = await Promise.allSettled([
       pool.query(`SELECT * FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`, [req.params.id, cid(req)]),
-      pool.query(`SELECT name, status, due_date FROM project_milestones WHERE project_id=$1 ORDER BY due_date DESC LIMIT 5`, [req.params.id]).catch(() => ({ rows: [] })),
-      pool.query(`SELECT risk_code, description, status, probability*impact AS score FROM project_risks WHERE project_id=$1 AND status='open' ORDER BY probability*impact DESC LIMIT 5`, [req.params.id]).catch(() => ({ rows: [] })),
-      pool.query(`SELECT total_budget, actual_cost, labour_cost, material_cost, revenue, profit, margin_pct, planned_value, earned_value, cost_performance_index, schedule_performance_index FROM project_cost_summary WHERE project_id=$1`, [req.params.id]).catch(() => ({ rows: [] })),
+      pool.query(`SELECT name, status, due_date FROM project_milestones WHERE project_id=$1 ORDER BY due_date DESC LIMIT 5`, [req.params.id]),
+      // project_risks.probability/impact are VARCHAR level labels ('low'/'medium'/
+      // 'high'), never numbers — the previous `probability*impact` threw 42883 on
+      // every call and the .catch() served it as an empty risk list. Score comes
+      // from the real risk_score column, falling back to a level-ordinal product.
+      pool.query(
+        `SELECT pr.risk_code, pr.title, pr.description, pr.status,
+                COALESCE(
+                  NULLIF(pr.risk_score, 0),
+                  ${RISK_LEVEL_ORDINAL('pr.probability')} * ${RISK_LEVEL_ORDINAL('pr.impact')}
+                ) AS score
+         FROM project_risks pr
+         WHERE pr.project_id = $1
+           AND LOWER(COALESCE(pr.status, 'open')) NOT IN ('closed', 'resolved', 'mitigated', 'accepted')
+         ORDER BY score DESC NULLS LAST
+         LIMIT 5`,
+        [req.params.id]
+      ),
+      // project_cost_summary has no total_budget/actual_cost columns (42703 on
+      // every call, swallowed the same way). Budget lives on projects; the
+      // rolled-up actual is total_cost. Output names kept for the response shape.
+      pool.query(
+        `SELECT COALESCE(p.budget_amount, p.budget, 0) AS total_budget,
+                pcs.total_cost      AS actual_cost,
+                pcs.labour_cost, pcs.material_cost,
+                pcs.revenue, pcs.total_revenue, pcs.profit, pcs.margin_pct,
+                pcs.planned_value, pcs.earned_value, pcs.actual_cost_evm,
+                pcs.cost_performance_index, pcs.schedule_performance_index,
+                pcs.last_calculated_at
+         FROM project_cost_summary pcs
+         JOIN projects p ON p.id = pcs.project_id
+         WHERE pcs.project_id = $1`,
+        [req.params.id]
+      ),
     ]);
-    const project  = projRes.status === 'fulfilled'  ? projRes.value.rows[0]  : null;
-    const recent_milestones = mileRes.status === 'fulfilled' ? mileRes.value.rows : [];
-    const risks    = riskRes.status === 'fulfilled'  ? riskRes.value.rows   : [];
-    const costing  = costRes.status === 'fulfilled'  ? costRes.value.rows[0] : null;
+    const project  = settledRows(projRes, 'status-report/project')[0] || null;
+    const recent_milestones = settledRows(mileRes, 'status-report/milestones');
+    const risks    = settledRows(riskRes, 'status-report/risks');
+    const costing  = settledRows(costRes, 'status-report/costing')[0] || null;
 
     if (!project) return res.status(404).json({ error: 'Project not found' });
 

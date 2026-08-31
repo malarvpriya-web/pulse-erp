@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  ArrowLeft, User, Mail, Phone, Tag, AlertTriangle, Clock,
-  CheckCircle, MessageSquare, ChevronDown, Send
+  ArrowLeft, User, Mail, Phone, Tag, AlertTriangle, Clock, CheckCircle,
+  MessageSquare, ChevronDown, Send, LifeBuoy,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { sm, VALID_TRANSITIONS } from './complaintsConstants';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmtDate = d => d ? new Date(d).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'2-digit', hour:'2-digit', minute:'2-digit' }) : '—';
 
@@ -21,7 +22,7 @@ function TimelineIcon({ from, to }) {
   if (!from)                         return <div style={{ width:32, height:32, borderRadius:'50%', background:'#dbeafe', color:'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}><MessageSquare size={14} /></div>;
   if (to==='resolved'||to==='closed')return <div style={{ width:32, height:32, borderRadius:'50%', background:'#dcfce7', color:'#15803d', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}><CheckCircle size={14} /></div>;
   if (to==='escalated')              return <div style={{ width:32, height:32, borderRadius:'50%', background:'#fdf4ff', color:'#7e22ce', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}><AlertTriangle size={14} /></div>;
-  if (to==='assigned'||to==='in_progress') return <div style={{ width:32, height:32, borderRadius:'50%', background:'#fef3c7', color:'#92400e', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}><User size={14} /></div>;
+  if (to==='assigned'||to==='in_progress') return <div style={{ width:32, height:32, borderRadius:'50%', background:'#ede9fe', color:'#5b21b6', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}><User size={14} /></div>;
   return <div style={{ width:32, height:32, borderRadius:'50%', background:'#f3f4f6', color:'#6b7280', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}><Clock size={14} /></div>;
 }
 
@@ -107,36 +108,18 @@ export default function ComplaintDetail({ setPage, urlParams }) {
   const isOverdue = c.sla_due && new Date(c.sla_due) < new Date();
 
   return (
-    <div style={{ padding:24 }}>
-
-      {toast && (
-        <div style={{ position:'fixed', top:20, right:20, zIndex:9999, background: toast.type==='error'?'#fee2e2':'#dcfce7', color: toast.type==='error'?'#991b1b':'#166534', padding:'12px 20px', borderRadius:10, fontSize:13, fontWeight:600, boxShadow:'0 4px 12px rgba(0,0,0,0.15)' }}>
-          {toast.msg}
-        </div>
-      )}
-
-      {/* Header */}
-      <div style={{ marginBottom:20 }}>
-        <button onClick={() => setPage && setPage('CustomerComplaintsIPCS')}
-          style={{ display:'flex', alignItems:'center', gap:6, color:'#6b7280', background:'none', border:'none', cursor:'pointer', fontSize:13, marginBottom:12, padding:0 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Complaints"
+        title={c.title}
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('CustomerComplaintsIPCS')}>
           <ArrowLeft size={14} /> Back to Complaints
         </button>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:12 }}>
-          <div>
-            <span style={{ fontSize:12, color:'#9ca3af', fontFamily:'monospace' }}>{c.complaint_number}</span>
-            <h2 style={{ fontSize:20, fontWeight:800, color:'#111827', margin:'4px 0 8px' }}>{c.title}</h2>
-            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-              <span style={{ background:s.bg, color:s.color, padding:'3px 12px', borderRadius:20, fontSize:12, fontWeight:700 }}>{s.label}</span>
-              <span style={{ background: c.priority==='High'?'#fee2e2':c.priority==='Critical'?'#fdf4ff':'#fef3c7', color: c.priority==='High'?'#dc2626':c.priority==='Critical'?'#7e22ce':'#92400e', padding:'3px 10px', borderRadius:5, fontSize:12, fontWeight:600 }}>{c.priority}</span>
-              <span style={{ background:'#f3f4f6', color:'#374151', padding:'3px 10px', borderRadius:5, fontSize:12, fontWeight:600 }}>{c.category}</span>
-            </div>
-          </div>
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            {/* Status change dropdown */}
-            {allowed.length > 0 && (
+          {allowed.length> 0 && (
               <div style={{ position:'relative' }}>
-                <button onClick={() => setStatusDd(!statusDd)}
-                  style={{ padding:'8px 14px', borderRadius:8, border:'1px solid #6366f1', background:'#fff', color:'#6366f1', cursor:'pointer', fontSize:13, fontWeight:600, display:'flex', alignItems:'center', gap:6 }}>
+                <button className="plh-cta" onClick={() => setStatusDd(!statusDd)}>
                   Change Status <ChevronDown size={13} />
                 </button>
                 {statusDd && (
@@ -144,8 +127,8 @@ export default function ComplaintDetail({ setPage, urlParams }) {
                     {allowed.map(ns => {
                       const ns_m = sm(ns);
                       return (
-                        <button key={ns} onClick={() => changeStatus(ns)}
-                          style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', border:'none', background:'none', cursor:'pointer', fontSize:13, color:'#111827' }}
+                        <button className="plh-cta" key={ns} onClick={() => changeStatus(ns)}
+                          
                           onMouseEnter={e => e.currentTarget.style.background='#f5f3ff'}
                           onMouseLeave={e => e.currentTarget.style.background='none'}>
                           <span style={{ display:'inline-block', width:8, height:8, borderRadius:'50%', background:ns_m.color, marginRight:8 }} />
@@ -157,9 +140,16 @@ export default function ComplaintDetail({ setPage, urlParams }) {
                 )}
               </div>
             )}
-          </div>
+        </>}
+      />
+    }>
+
+      {toast && (
+        <div style={{ position:'fixed', top:20, right:20, zIndex:9999, background: toast.type==='error'?'#fee2e2':'#dcfce7', color: toast.type==='error'?'#991b1b':'#166534', padding:'12px 20px', borderRadius:10, fontSize:13, fontWeight:600, boxShadow:'0 4px 12px rgba(0,0,0,0.15)' }}>
+          {toast.msg}
         </div>
-      </div>
+      )}
+
 
       {/* Two-column layout */}
       <div style={{ display:'grid', gridTemplateColumns:'1.6fr 1fr', gap:20, alignItems:'start' }}>
@@ -247,6 +237,6 @@ export default function ComplaintDetail({ setPage, urlParams }) {
           </div>
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

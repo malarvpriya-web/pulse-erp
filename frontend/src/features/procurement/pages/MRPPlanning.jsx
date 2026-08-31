@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { RefreshCw, AlertTriangle, TrendingUp, ShoppingCart, Calculator, ChevronRight, Plus } from 'lucide-react';
+import {
+  RefreshCw, AlertTriangle, TrendingUp, ShoppingCart, Calculator,
+  ChevronRight, Plus, Factory,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = n => `₹${parseFloat(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
@@ -42,7 +46,7 @@ export default function MRPPlanning() {
     try {
       const [alertsR, suggestionsR, itemsR] = await Promise.allSettled([
         api.get('/inventory/reorder-alerts'),
-        api.get('/inventory/purchase-suggestions'),
+        api.get('/inventory/advanced/purchase-suggestions'),
         api.get('/inventory/items'),
       ]);
       if (!isMounted.current) return;
@@ -56,7 +60,7 @@ export default function MRPPlanning() {
   const convertToPR = async (id) => {
     setConverting(id);
     try {
-      await api.post(`/inventory/purchase-suggestions/${id}/convert`);
+      await api.post(`/inventory/advanced/purchase-suggestions/${id}/convert`);
       if (!isMounted.current) return;
       showToast('Purchase Request created from suggestion');
       load();
@@ -81,7 +85,7 @@ export default function MRPPlanning() {
 
   const ackAlert = async (id) => {
     try {
-      await api.post(`/inventory/alerts/${id}/acknowledge`);
+      await api.post(`/inventory/advanced/alerts/${id}/acknowledge`);
       if (!isMounted.current) return;
       setAlerts(a => a.filter(x => x.id !== id));
     } catch { showToast('Failed to acknowledge', 'error'); }
@@ -90,8 +94,8 @@ export default function MRPPlanning() {
   const sev = a => {
     const pct = a.reorder_level > 0 ? (a.current_stock / a.reorder_level) * 100 : 100;
     if (pct === 0) return { label: 'Out of Stock', color: '#dc2626', bg: '#fee2e2' };
-    if (pct < 25)  return { label: 'Critical',     color: '#c2410c', bg: '#ffedd5' };
-    if (pct < 75)  return { label: 'Low',          color: '#92400e', bg: '#fef3c7' };
+    if (pct < 25)  return { label: 'Critical',     color: '#5b21b6', bg: '#ede9fe' };
+    if (pct < 75)  return { label: 'Low',          color: '#5b21b6', bg: '#ede9fe' };
     return                 { label: 'Watch',        color: '#1d4ed8', bg: '#dbeafe' };
   };
 
@@ -103,27 +107,27 @@ export default function MRPPlanning() {
   });
 
   return (
-    <div style={{ padding: '24px 28px', margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Procurement"
+        title="MRP & Planning"
+        subtitle="Reorder alerts, purchase suggestions, and EOQ calculator"
+        actions={<button className="plh-cta" onClick={load}>
+          <RefreshCw size={14} /> Refresh
+        </button>}
+      />
+    }>
       {toast && (
         <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, padding: '10px 20px', borderRadius: 8, background: toast.type === 'error' ? '#fee2e2' : '#dcfce7', color: toast.type === 'error' ? '#991b1b' : '#166534', fontWeight: 600, fontSize: 14 }}>
           {toast.msg}
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: '#111' }}>MRP &amp; Planning</h1>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 14 }}>Reorder alerts, purchase suggestions, and EOQ calculator</p>
-        </div>
-        <button onClick={load} style={{ background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-          <RefreshCw size={14} /> Refresh
-        </button>
-      </div>
 
       {/* KPIs */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
-        <KPI icon={AlertTriangle} label="Reorder Alerts" value={alerts.length} color="#c2410c" bg="#ffedd5" />
+        <KPI icon={AlertTriangle} label="Reorder Alerts" value={alerts.length} color="#5b21b6" bg="#ede9fe" />
         <KPI icon={TrendingUp} label="Purchase Suggestions" value={suggestions.filter(s => s.status === 'pending').length} color="#1d4ed8" bg="#dbeafe" />
         <KPI icon={ShoppingCart} label="Out of Stock" value={alerts.filter(a => (a.current_stock || 0) === 0).length} color="#dc2626" bg="#fee2e2" />
         <KPI icon={Calculator} label="Items Tracked" value={items.length} color="#6B3FDB" bg="#f5f3ff" />
@@ -165,7 +169,7 @@ export default function MRPPlanning() {
                       <td style={{ padding: '10px 14px', color: '#6b7280', fontFamily: 'monospace' }}>{a.item_code || '—'}</td>
                       <td style={{ padding: '10px 14px', fontWeight: 700, color: (a.current_stock || 0) === 0 ? '#dc2626' : '#111' }}>{a.current_stock || 0} {a.unit_of_measure || ''}</td>
                       <td style={{ padding: '10px 14px', color: '#6b7280' }}>{a.reorder_level || 0}</td>
-                      <td style={{ padding: '10px 14px', fontWeight: 600, color: '#c2410c' }}>{shortage} {a.unit_of_measure || ''}</td>
+                      <td style={{ padding: '10px 14px', fontWeight: 600, color: '#5b21b6' }}>{shortage} {a.unit_of_measure || ''}</td>
                       <td style={{ padding: '10px 14px' }}>
                         <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700, color: s.color, background: s.bg }}>{s.label}</span>
                       </td>
@@ -213,8 +217,8 @@ export default function MRPPlanning() {
                     <td style={{ padding: '10px 14px' }}>{s.estimated_cost ? fmt(s.estimated_cost) : '—'}</td>
                     <td style={{ padding: '10px 14px' }}>
                       <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700,
-                        color: s.status === 'converted' ? '#166534' : '#92400e',
-                        background: s.status === 'converted' ? '#dcfce7' : '#fef3c7' }}>
+                        color: s.status === 'converted' ? '#166534' : '#5b21b6',
+                        background: s.status === 'converted' ? '#dcfce7' : '#ede9fe' }}>
                         {s.status || 'pending'}
                       </span>
                     </td>
@@ -296,6 +300,6 @@ export default function MRPPlanning() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

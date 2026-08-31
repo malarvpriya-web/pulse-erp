@@ -12958,8 +12958,10 @@ is not an error in any of them. §113's own verification recipe — assert `page
 converted by codemod must be re-rendered, not re-compiled.** Same class of miss as §116.3's
 silent page deletion, and the reason §116.5 exists.
 
-⚠ `HRBenchmarkingDashboard` has the identical shape — `.hrb-root` scoped sheet, `<PageShell>`
-root with no `className`. **Not fixed here** (outside the owner's ask); logged below.
+⚠ `HRBenchmarkingDashboard` has the same *shape* — `.hrb-root` scoped sheet, `<PageShell>` root
+with no `className` — but **NOT the same outcome**: measured in §126.2, that page renders fine,
+because its sheet is unreachable for two other reasons anyway (never imported, and the JSX emits
+none of its classes). Do not read this line as a second confirmed victim.
 
 ### What it is now
 
@@ -13057,9 +13059,11 @@ a pass**, so a stale selector here is a silently vacuous test — the same failu
 
 ### Open
 
-- **`HRBenchmarkingDashboard` is orphaned the same way** — `.hrb-root`-scoped sheet,
-  `<PageShell>` with no `className`. Almost certainly rendering unstyled right now. One-line fix
-  plus a fit re-verify; not in this ask.
+- ~~**`HRBenchmarkingDashboard` is orphaned the same way** — almost certainly rendering
+  unstyled right now.~~ **WRONG — corrected in §126.2.** Measured: the page renders correctly.
+  Its sheet is unreachable for two *other* reasons (never imported; the JSX emits none of its
+  classes, styling everything inline), so the missing root class changed nothing there. The real
+  defect on that page was a false failure banner — see §126.2.
 - **`fmt()`'s negative-number blind spot is module-wide.** Every finance page that can render a
   negative shows the unabbreviated figure. Fixed only on this page.
 - The `dashboard-validation` drill-down check scores 2/3 because these cards navigate via
@@ -13513,6 +13517,43 @@ Harmless while the only selectable window was FY-to-date — which is exactly wh
 moment a filter can select an empty window, a `||` numeric-zero fallback is a confidently wrong
 number. Now `??`. Worth grepping for on the other 27 wired dashboards.
 
+### Two more label defects the filter exposed (added after the first pass)
+
+The custom range `2026-04-01 → 2026-06-30` holds **one posted journal entry and no ledger
+revenue**. That combination is unreachable with a fixed FY-to-date window, and it put two
+contradictions on screen at once:
+
+1. **"Not posted" vs "posted ledger", about the same books.** `ratiosData` labelled a null margin
+   `'Not posted'` unconditionally, while the KPI card beside it read
+   `₹0 · 0.0% margin · posted ledger`. A GL margin is null for **two** different reasons —
+   *no entries at all*, or *entries with no revenue to divide by* — and `glPosted` already
+   distinguishes them. Now `'Not posted'` vs `'No revenue'`, with the KPI sub reading
+   `posted ledger · no revenue to margin against`. Neither ever takes a status colour (§111).
+
+2. **An accrual numerator over a cash denominator.** The P&L Bridge computed
+   `pct(ebitda, acct.glRevenue || revenue)` — another `||` numeric-zero fallback. With no ledger
+   revenue it silently substituted the **cash-basis** figure (₹2.42 L) and printed a confident
+   `0.0%` built from two incompatible bases. Now an em dash when `glRevenue` is not > 0.
+
+That is the **third** `||`-on-a-numeric-zero defect in this one page (after `kpis.revenue`), all
+invisible until the filter could select a window that legitimately yields zero. Treat
+`a || b` where `a` is a money figure as a defect on sight.
+
+⚠ **`eslint --rule no-undef` does not model the temporal dead zone.** Hoisting the new
+`marginUnavailable` const *below* the `ratiosData` array that consumes it lint-clean and
+esbuild-clean, then threw `ReferenceError: Cannot access 'marginUnavailable' before
+initialization` at runtime and the whole page fell to the ErrorBoundary. Caught only by loading
+the page — the same lesson as §126's orphaned stylesheet, one layer down. The Vite dev log
+(`_tmp_tco/vite5173.log`) carries the componentStack; grep it for `ReferenceError` when a page
+renders blank.
+
+Re-verified after both fixes: Net Margin and EBITDA Margin tiles read `No revenue`, the KPI sub
+reads `no revenue to margin against`, the bridge shows `—`, the custom range reaches the server as
+`period=custom&from=2026-04-01&to=2026-06-30`, 0 console errors. Fit re-swept: 0 scroll / 0
+clipped / 0 errors at 1920×1080, 1600×900, 1440×900, 1366×768; relaxes at 1280×720.
+`analytics-contract` 27/27, `analytics-browser --grep CFO` **5/5, no flakes** once a single clean
+Vite and one backend were running, `vitest` 298/298.
+
 ### Verified
 
 Playwright, `superadmin@manifest.in`, live data, 16 behavioural checks: the bar renders and the
@@ -13533,14 +13574,28 @@ Suites: `analytics-contract` **27/27** (including 4 new dual-vocabulary tests);
 `period=Q2`. Neither exists now, so it was rewritten to drive the select and assert
 `period=last90`, plus a new test that the page labels its cards from `period_label`.
 
-### ⚠ Environment note — not a page defect
+### ⚠ Environment note — not a page defect. RESOLVED 2026-08-31.
 
-The CFO browser tests report **1 flaky per run, on a DIFFERENT test each time**, always
-`net::ERR_CONNECTION_REFUSED`. Cause: **five orphaned `node server.js` processes** from earlier
-sessions are contending for port 5000 (plus two `_tmpserver.js`), so whichever holds the port
-changes mid-run. Confirmed across three runs. Not the 300-req/60s rate limit that caused the
-previous flake in this suite — check which before assuming. Consolidating to one backend on 5000
-would settle it.
+The CFO browser tests reported **1 flaky per run, on a DIFFERENT test each time**, always
+`net::ERR_CONNECTION_REFUSED`. Cause: a pile of orphaned backends contending for port 5000, so
+whichever held the port changed mid-run. Not the 300-req/60s rate limit that caused the previous
+flake in this suite — **check which before assuming**; the two look nothing alike in the error
+(`ERR_CONNECTION_REFUSED` vs a 429 body).
+
+**Cleaned 2026-08-31: 14 stale processes stopped** — seven `node server.js`, two `_tmpserver.js`,
+one `_audit_pgspy.mjs` (10 days old), one detached `nohup node server.js`, one detached nodemon +
+child, and a stray `vite --config vite.probe.config.js` squatting :5175. Afterwards
+`analytics-browser --grep CFO --repeat-each=2` ran **9/9 with zero flakes**, against the same
+command that had never once come back clean.
+
+⚠ Two traps when clearing these:
+1. **Some belong to LIVE sessions.** Walk the parent chain before killing: a chain ending in
+   `claude.exe`/`Code.exe` is someone's active work; a chain ending in a dead `bash.exe` is a true
+   orphan. Killing the former interrupts a running task.
+2. **The port owner is not always the process you expect.** A detached `nohup node server.js` was
+   squatting :5000 while nodemon crash-looped a child that could never bind — so every backend
+   source edit was served stale. Killing the *supervisor* first took the backend down entirely;
+   kill the squatter and let the supervisor rebind.
 
 ### Open
 
@@ -13548,3 +13603,1251 @@ would settle it.
   filter could select an empty window. Worth a sweep.
 - The legacy `?period=YTD|Q1..Q4` vocabulary is now reachable only by the audit scripts and the
   contract tests — no UI sends it. It can be retired once those move.
+
+---
+
+## §130 — The Supplier Performance Index existed, was unreachable, crashed on render, and was measured on two incompatible scales at once
+
+**Ask:** "make sure we have supplier performance index etc."
+
+We had one. Every part of it: a pure 8-dimension scoring engine
+(`procurement/engines/vendorHealthEngine.js`, weights Quality .25 / Delivery .20
+/ Cost .15 / Support .10 / Compliance .10 / Financial .10 / Dependency .05 /
+Risk .05), a service that feeds it live GRN, PO, NCR, CAPA and document data
+(`services/vendorHealth.service.js`), seven mounted endpoints under
+`/api/v1/vendor-health`, per-vendor widgets inside Vendor 360, a quarterly
+manual scorecard (`vendor_scorecards`, six dimensions), and a full cross-vendor
+dashboard page. None of it added up to a usable index.
+
+### 1. The cross-vendor page had never rendered, in any environment
+
+`VendorRiskHeatmap.jsx` is a complete, self-contained page — its own
+`PageShell` + `PageHero`, no required props, four live endpoints — and it was
+**unreachable**. `autoRouter.js` excludes any page whose filename matches
+`/(Panel|Widget|Heatmap|Trend)$/` as an embedded sub-component, which is right
+for the widgets that rule was written for and wrong here; and no parent imported
+it either. So `/vendor-health/dashboard`, `/heatmap`, `/early-warnings` and
+`/ceo-command-center` had **no consumer at all** — the index could only be seen
+one supplier at a time, inside Vendor 360.
+
+Because it had never rendered, it also carried an unnoticed crash:
+
+```
+TypeError: score?.toFixed is not a function   at ScorePill
+```
+
+`health_score` is `NUMERIC`, which **pg returns as a string** (`'37.50'`). Every
+other numeric read on the page already went through `parseFloat`; `ScorePill`
+and one recharts `Tooltip` formatter did not. The ErrorBoundary swallowed the
+whole page.
+
+⚠⚠ **A dead page rots.** 750 backend tests, 298 frontend tests and eslint were
+all green over a page that threw on its first line of data. Only a browser
+catches this.
+
+Renamed to `SupplierPerformanceIndex.jsx` (the name is now what the page is, and
+it escapes the suffix rule), registered in `routes.jsx`, and given a nav entry
+**Procurement → Supplier Performance** next to Vendor Center.
+
+### 2. `vendor_scorecards` was scored on 1–5 and 0–100 simultaneously
+
+The table declares `NUMERIC(5,2) DEFAULT 0` and no range constraint, and its
+readers had quietly split:
+
+| Scale | Who |
+|---|---|
+| **0–100** | `VendorScorecard.jsx` (sliders `min=0 max=100`, label "Evaluation Scores (0–100)"), `vendor-portal.routes.js` POST (risk bands 80/60), `vendorHealth.service.js` (`Math.min(100, support_score)`) |
+| **1–5** | `ceo-intelligence.routes.js` and `ceo360.routes.js` (`overall >= 4 ? 'Preferred' : >= 3 ? 'Approved' : >= 2 ? 'Watchlist'`), `CEOIntelligenceDashboard.jsx` (rendered `x/5`) |
+
+Every row in the table was **seeded placeholder data on the 1–5 scale** (all six
+dimensions identical, 3.50–4.30, `risk_rating` = `'SEED risk rating 4'`, one row
+with `period_quarter = 5`). So the 1–5 readers looked plausible, and the 0–100
+readers showed "3.9 / 100" in red with a 3.9%-wide bar.
+
+⚠⚠ **The seed data was picking the winner.** A previous pass looked at the same
+column, inferred the scale from the rows rather than from the write path, and
+left a comment in `CEOIntelligenceDashboard.jsx` saying *"Scale is 0–5 here, not
+the 0–100 CeoDashboard assumed."* — codifying the wrong answer. **Infer a
+column's contract from the code that WRITES it, never from what happens to be
+in it.**
+
+Two live consequences:
+
+- The health engine took `scorecard.support_score` as a 0–100 support score. A
+  3.90 became **3.9/100**, dragging every scored supplier's index down ~9.6
+  points at the 0.10 weight.
+- Latent in the other direction: the first real scorecard saved through the UI
+  (say 85) would have labelled that supplier **"Preferred"** on the CEO's board
+  on the strength of `85 >= 4`.
+
+**0–100 is canonical.** New `backend/src/shared/vendorScore.js` holds the one
+banding (`classifyVendorScore`, `vendorScoreColor`, `scorecardRisk`), matching
+`classifyHealth` so a typed scorecard and a computed index bucket a supplier
+identically. Migration `20260826000003` rescales the legacy rows ×20, folds
+`period_quarter` back into 1–4 (dropping the collision first — there is a UNIQUE
+on `(vendor_id, year, quarter)`), rewrites `risk_rating` to Low/Medium/High, and
+adds the CHECK constraints that stop the column drifting again.
+
+### 3. Nothing ever recalculated the index
+
+`POST /vendor-health/recalculate-all` was the only writer. The table held
+whatever the last person to press the button left behind: **3 of 6 suppliers
+scored, all stamped 2026-08-10** — 16 days stale. A GRN received yesterday moved
+nobody's on-time delivery, and an unrecalculated supplier was simply *absent*
+from the heatmap, the distribution and the CEO roll-up.
+
+The customer half of the same engine has had `customerHealthRecalc.cron.js`
+(daily 09:05) since the Automation audit. New `vendorHealthRecalc.cron.js` is
+its missing twin — daily **09:10**, all companies, per-vendor try/catch so one
+unscoreable supplier doesn't cost the rest their refresh.
+
+### 4. UNMEASURED IS NOT ZERO — and it is not 75% either
+
+Once the cron scored every supplier, the engine's "no data" defaults became
+visible, and they are **not neutral**:
+
+- `scoreDelivery` defaults `otdPct` to **75** when `totalGRNs === 0` — and 75
+  falls through `>= 95 / >= 90 / >= 80` to **`base = 0`**.
+- `scoreQuality` defaults `passRate` to **75** — which lands on **`base = 20`**.
+
+So a supplier nobody had ever ordered from scored ~37 and was branded
+**"Critical"**, indistinguishable from one that had genuinely failed. Worse, the
+75 leaked outward as a *specific, actionable-looking figure*:
+
+- `vendor_early_warnings` carried `LOW_OTD — "On-Time Delivery 75.0% is below
+  85% threshold"` for **4 of 6 suppliers**, about deliveries that never happened.
+- `vendor_health_scores.otd_pct` stored `75.00`, and this task's first draft
+  published it onward to `vendors.on_time_pct`.
+
+Fixed at the source: `scoreQuality`/`scoreDelivery` now return
+`passRateMeasured` / `otdMeasured` / `capaMeasured` alongside the numbers;
+`detectEarlyWarnings` will not raise `LOW_OTD` or `CAPA_OVERDUE` off a prior;
+`otd_pct`, `pass_rate_pct` and `capa_closure_pct` store **NULL** when unmeasured;
+and `classifyHealth(score, hasEvidence)` returns a new **`Unrated`** status when
+a supplier has no PO, receipt, inspection or NCR at all. `Unrated` is counted on
+its own card and **excluded from every average** — an index of 0 is a claim
+about performance that no data supports.
+
+Renderers had to follow: `|| 0` turned each NULL into a red **0.0%**, which
+reads as the *worst* record on the page rather than as no record. Guarded in
+`SupplierPerformanceIndex.jsx` (two places) and `VendorHealthWidget.jsx`.
+
+### 5. A cleared early warning never stood down
+
+```js
+if (warnings.length > 0) {        // ← the whole block, including the stand-down
+  await q(`UPDATE vendor_early_warnings SET is_active = FALSE ...`);
+  for (const w of warnings) { INSERT ... }
+}
+```
+
+⚠ **The recalculation that proved a problem was fixed was exactly the run that
+skipped the cleanup.** A supplier whose last warning cleared kept it active
+forever. The stand-down is now unconditional. Caught only because the phantom
+`LOW_OTD` on vendor 6 survived a recalculation that should have retired it —
+5 warnings → 2, both now backed by real receipts.
+
+### Also written back
+
+`vendors.on_time_pct` and `vendors.defect_rate` are read by VendorManagement's
+composite (on-time 20%, defect 10%) and by the vendor list, but **nothing ever
+wrote them** — every supplier carried `0.0`, so the master grid scored every one
+of them 30 points below its own scorecard. `computeAndSave` is the only place
+that derives them from GRN data, so it now publishes them — gated on evidence,
+NULL otherwise.
+
+### Verified
+
+`recalculate-all` **6/6**, all seven `/vendor-health` endpoints 200, scorecards
+back on 0–100 (86.00 → `Low` risk), backend **750/750**, frontend **298/298**,
+eslint 0 errors, and a Playwright render of the new page: **0 console errors, 0
+4xx/5xx, 6 suppliers listed, OTD "—" where unmeasured.**
+
+### Open — needs a product call
+
+**Partial evidence still distorts the composite.** `hasEvidence` is all-or-
+nothing, so a supplier with one NCR but zero receipts is "rated" — and still
+takes `delivery_score = 0` from the no-data prior, which is **20% of the index**.
+Four of the six suppliers here are Critical largely on that. The fix is to
+normalize the weights across only the dimensions that have evidence, but that
+changes every score and the meaning of the Preferred/Approved cut-offs, and each
+dimension needs its own "is this measured?" rule (does "0 late deliveries" count
+as measured for a supplier with no POs?). Deliberately not done unilaterally.
+
+---
+
+## §128.1 — The three things §128 left open, closed: the direct-PO path, an
+## award audit trail, and a test suite that could not be trusted (2026-08-26)
+
+§128 shipped total cost of ownership for the two surfaces that rank competing
+quotes, and named three open items. All three are now closed.
+
+`backend/src/modules/procurement/routes/procurement.routes.js`,
+`backend/src/config/db.js`, `backend/vitest.config.js`,
+`backend/scripts/check-sql-references.mjs`,
+`frontend/src/features/procurement/pages/PurchaseOrders.jsx`,
+migration `20260826000003_procurement_award_decisions.js`,
+tests `backend/src/__tests__/integration.tcoAward.test.js` (6) and two more
+browser tests in `tests/suites/tco-comparison.spec.ts` (`--project=tco`, now 9).
+
+### 1. A direct PO had no competition to rank, so it was never costed
+
+An RFQ has competing quotes. A PO typed straight into the form has **one
+vendor and nothing to compare it with**, which is precisely why that path
+stayed on rate alone after §128.
+
+New `POST /procurement/tco/advisory` takes `{ vendor_id, lines[] }` and scores
+the chosen vendor against every OTHER vendor known to supply the same
+components — the same four-source fold and the same observed-beats-master-data
+rule as `/items/:id/sourcing`, reduced to what the engine needs
+(`alternativesForItem()`). The create-PO drawer calls it on a 450 ms debounce
+and renders the order's TCO beside its invoice total.
+
+⚠ The chosen vendor is costed at **the rate actually typed on the PO**, not at
+whatever the price book remembers — that is the commitment being made.
+Alternatives are costed at their own best known price.
+
+⚠ Advisory, never blocking, and `advisory` is **null** when nothing better was
+found. An advisory that always says something gets dismissed, and then it says
+nothing.
+
+⚠ The debounce needs a request sequence guard (`adviceReq`): the buyer edits
+quantity faster than the round-trip, and a superseded response landing last
+would overwrite a newer one with stale figures.
+
+### 2. An award recorded no reasoning, so it could never be re-justified
+
+A TCO is only reproducible while the rates behind it stay put, and
+`procurement_settings` is one edit away from changing. New table
+`procurement_award_decisions`: one row per award holding what won, what else
+was on the table, `tco_saving_forgone`, and **the breakdown and basis frozen
+as jsonb**.
+
+⚠ Frozen, not recomputed. Recomputing a past award under today's rates answers
+a different question than the one the buyer answered.
+
+⚠ `followed_recommendation = false` is **not an error flag**. Awarding against
+the lowest TCO is often right — a strategic second source, a qualification
+constraint, a customer-mandated vendor. The point is that it becomes a
+recorded, explainable decision instead of an invisible one.
+`GET /procurement/award-decisions?overridden=true` is the review query, and it
+totals what those decisions cost.
+
+⚠ NOT unique on `rfq_id`: a re-award (winner withdraws, quote revised) is
+history, which is what the table is for. Reads take the latest row per RFQ.
+
+⚠ `decided_by_user_id` is named for its id space deliberately. `purchase_orders
+.created_by` and `purchase_requests.approved_by` both FK **employees(id)**
+while the JWT carries a **users.id** — four recorded instances of that trap. A
+column whose name states which id it holds cannot be got wrong by the next
+writer.
+
+⚠ The decision write is `.catch()`-wrapped and logged: a failed audit write
+must not undo a completed award. It is reported, not swallowed.
+
+### 3. The test suite failed at random, and the SQL gate was red while correct
+
+Two separate defects were hiding behind "3 pre-existing failures".
+
+**A gate that went red for being right.** `check-sql-references.mjs` whitelisted
+PostgreSQL system catalogs by enumeration — `pg_class`, `pg_namespace`,
+`pg_stat_user_tables`, `pg_constraint`. §127 added a `pg_inherits` read, which
+is a catalog like the others and can never appear in
+`information_schema.tables`, so the gate reported a phantom table and CI went
+red on correct code. Replaced with `isSystemCatalog()`: `pg_` is a prefix
+PostgreSQL reserves, so no application table can claim it.
+
+**A connection budget nobody was keeping.** Every vitest worker imports
+`src/config/db.js` and builds its OWN pool. `max: 30` on an 8-core box is
+`8 x 30 = 240` connections against a stock `max_connections = 100`. Workers
+starved, waited out `connectionTimeoutMillis: 15000`, and whichever test held
+the short straw died with a bare **"Test timed out in 5000ms"** naming the test
+rather than the cause. That is the whole reason the real-DB suites passed in
+isolation and failed at random in a full run — and why the failure looked like
+a flaky CRM test for months.
+
+The fix is two numbers that have to be read together:
+
+```
+  src/config/db.js     max: 6 under test (30 otherwise)
+  vitest.config.js     maxThreads: 4
+
+    4 workers x 6              = 24
+  + a dev server pool at ramp  = 30
+  + headroom for psql/migrations ~10
+  ------------------------------------
+                                 64  of 100
+```
+
+⚠ Raising `maxThreads` without lowering `pool.max` reintroduces the flake. The
+arithmetic is written out in `vitest.config.js` for that reason.
+
+⚠ `connectionTimeoutMillis` drops to 4000 under test — **below** vitest's 5 s
+test timeout — so genuine starvation surfaces as a pool error naming the pool,
+instead of as a mystery timeout naming an innocent test.
+
+⚠ A developer running `npm run dev` beside `npm test` is the normal case, so
+the dev server's 30-connection pool is inside the budget, not an exception to
+it. It really does sit at 31 idle connections.
+
+Result: **31 files / 750 tests green, four consecutive full runs**, and ~38%
+faster than the starved version.
+
+### Found while verifying: the PO line picker listed blank options
+
+`/inventory/items` returns `item_name` and has **no bare `name` property at
+all**, but `PurchaseOrders.jsx` rendered `{it.name}` — so every option in the
+component dropdown was blank, and a chosen line stored
+`item_name: undefined`. Silently correct code (a missing key is not an error),
+which is why it survived. Now `itemLabel()`, which shows `item_code — item_name`
+because two components routinely share a name and a buyer has to tell them
+apart before committing to an order.
+
+⚠ The browser test that found it first failed pointing at the wrong thing:
+`page.locator('select').first()` picked the **status filter on the page behind
+the overlay**, not the drawer's Supplier field, so `supplier_id` stayed empty
+and the advisory never fired. A drawer test must scope its selectors to the
+drawer. The test now captures the `/tco/advisory` response and asserts on its
+body, so the next failure says why rather than only that a panel is missing.
+
+⚠ **Still open:** the RFQ-modal browser test skips unless the dataset holds an
+RFQ in `sent` / `responses_received` / `closed` — a `draft` RFQ shows only
+"Send to Vendors". Verified by flipping `rfqs.id=5` and restoring it. Nothing
+is committed; the last commit is still 11 Aug.
+
+## §126.2 — HRBenchmarkingDashboard was NOT orphaned the way §126 predicted, and
+## the real defect was a false failure banner on two pages (2026-08-26)
+
+Follow-up on the open item §126 and §126.1 both logged: *"`HRBenchmarkingDashboard` is orphaned
+the same way — almost certainly rendering unstyled right now."*
+
+### ⚠ That prediction was wrong. Correcting it.
+
+It was an inference from the codemod pattern, not a measurement. Measured:
+
+| | CFO (§126) | HRBenchmarking |
+|---|---|---|
+| root class on `PageShell` | missing | missing |
+| stylesheet scoped to that class | yes, 280 lines | yes, 140 lines |
+| **stylesheet imported by the page** | **yes** | **NO** |
+| **JSX renders any scoped class** | **yes (all of them)** | **NO — none** |
+| rendered result | unstyled, 1920px scroll, zero cards | **styled correctly, 0 console errors** |
+
+`HRBenchmarkingDashboard.jsx` was rewritten at some point to style everything inline — **47
+`style={{…}}` blocks**, and the only classes it emits are `dk-anim` and `plh-cta`. It does not
+`import './HRBenchmarkingDashboard.css'` at all. So the missing root class changed nothing: the
+sheet was already unreachable by two independent routes.
+
+**The lesson is about the diagnosis, not the page.** "Same root cause" was a plausible inference
+from a real shared history, and it was wrong. A dead stylesheet has three independent failure
+modes — no import, no matching class, wrong scope — and only rendering the page tells you which
+(or whether any of them matters). Do not carry a predicted defect into a report as a found one;
+§126's own lesson was that only a render can see this class of problem, and that applies to
+confirming its absence too.
+
+`HRBenchmarkingDashboard.css` is now **140 lines of unreachable code** — no importer, no consumer.
+It also encodes §110's single-viewport fit contract, which the inline rewrite abandoned (the page
+scrolls 361–708px). Left in place: deleting it discards a signed-off design intent, and restoring
+the fit lock is a redesign, not a cleanup. Flagged below rather than actioned.
+
+### The real defect: axios never throws `AbortError`
+
+The page rendered a full set of correct benchmarks with **"Failed to load benchmarking data"**
+sitting above them.
+
+```js
+catch (e) { if (e.name !== 'AbortError') setError('Failed to load benchmarking data'); }
+```
+
+Axios rejects a cancelled request with its own **`CanceledError`** (code `ERR_CANCELED`). It never
+throws a DOM `AbortError`. So the guard matched nothing and **every abort was reported as a load
+failure**. Under StrictMode the effect runs mount → cleanup → mount; the cleanup aborts request
+#1, request #2 succeeds — data and a false error banner, both on screen.
+
+⚠ **Not dev-only.** `load()` aborts the previous in-flight request by design, so double-clicking
+Refresh reproduced it in a production build. Verified fixed against exactly that gesture.
+
+A sweep for `AbortError` handled *without* a companion `CanceledError`/`ERR_CANCELED` check found
+**exactly two files**, both the same shape:
+
+- `features/hr/pages/HRBenchmarkingDashboard.jsx:154`
+- `features/hr/pages/EmployeeAssets.jsx:70` — same bug, same banner (`Failed to load asset data`)
+
+Twenty other call sites across the app already test for `CanceledError` / `ERR_CANCELED`; these
+two were the outliers. Both now test both names, and both got a stale-response guard in `finally`:
+
+```js
+if (abortRef.current === ctrl) setLoading(false);   // a superseded request must not
+                                                    // clear the live request's spinner
+```
+
+### Verified
+
+Playwright, `superadmin@manifest.in`, live data, both pages: no failure banner, real content
+rendered, **0 console errors**, and no banner after a deliberate double-click on Refresh (the
+production reproduction). `/analytics/hr-benchmarks` confirmed returning 200 with the exact
+figures the page paints — the banner was always false, never a symptom.
+
+`vitest run` 298/298. ⚠ One run showed `smoke.HR.test.jsx > HRDashboard renders without crashing`
+failing at 5567ms; it passes 28/28 in isolation, re-runs green in the full suite, and imports
+neither changed file — a load-related timeout flake, not a regression.
+
+### Open
+
+- **`HRBenchmarkingDashboard.css` is 140 lines of unreachable code.** Either delete it or re-adopt
+  it; leaving it is what made this page look broken from the outside. Re-adopting also means
+  deciding whether §110's fit lock should come back — the page scrolls now.
+- The inline-style rewrite (47 `style={{}}` blocks) means this page is off the hero language's
+  card vocabulary even though it uses `PageHero`. Not a defect, but it is the drift §116 exists to
+  remove.
+
+## §131 — The Sales Calendar could never save an event: three uuid columns over
+## three integer-keyed tables, plus a UTC day-shift that filed all-day events
+## under the wrong date (2026-08-27)
+
+Reported from the UI, not from a test: the **New Event** modal — Title `test`,
+Type `Meeting`, Date `05-04-2027`, **All day** checked, Notes `rewaf` — answered
+Save Event with a red *"Failed to save event"*.
+
+### Defect 1 — `owner_id uuid` over `users.id integer` (every POST was a 500)
+
+`sales_events` was created by a boot-time `CREATE TABLE IF NOT EXISTS` inside
+`backend/src/modules/sales/routes/sales.routes.js` and declared three uuid
+columns. Every table they name is integer-keyed:
+
+| column | declared | referent | actual |
+|---|---|---|---|
+| `owner_id` | `uuid` | `users.id` | `integer` |
+| `account_id` | `uuid` | `accounts.id` | `integer` |
+| `opportunity_id` | `uuid` | `opportunities.id` | `integer` |
+
+`POST /api/sales/calendar/events` stamps `owner_id` from `req.user.userId`,
+which `makeToken()` sets to `user.id` — an integer. So **the insert failed on
+every request the page has ever made**:
+
+```
+invalid input syntax for type uuid: "1"      -- SQLSTATE 22P02
+```
+
+`catch (e) { res.status(500).json({ error: e.message }) }` turned that into a
+500, and the modal's `err.response?.data?.error || 'Failed to save event'`
+turned it into a sentence with no information in it.
+
+⚠ **The empty-table tell was inverted here.** `sales_events` was *not* empty —
+it held five `SEED Sales Events N` rows from the 20 Aug population pass, so
+every "is this table wired?" sweep saw data and moved on. The five rows carry
+fabricated uuids in all fifteen link columns; no uuid can address an
+integer-keyed row, so not one of them pointed at anything. A seeded table can
+hide a write path that has never once succeeded — [§129]'s rule ("an empty table
+proves nothing") has a mirror image: **a populated table proves nothing either,
+unless the rows came from the application.**
+
+Fixed by `20260827000001_sales_events_actor_ids_to_integer.js`, following the
+precedent of `20260820000001_payment_invoice_id_to_integer`: retype all three to
+`integer`, add the FKs they always implied (`ON DELETE SET NULL`), index them,
+and index `(company_id, start_at)` — the month grid's only access path. The
+seeded uuids drop to NULL rather than being guarded against, because unlike the
+payments case there is nothing a re-key could recover. The bootstrap DDL in the
+route file is corrected too, so a fresh database is not recreated wrong.
+
+### Defect 2 — a TIMESTAMPTZ read as a string put every all-day event on the day before
+
+`start_at` is `TIMESTAMPTZ`. `pg` returns it as a JS `Date`, `res.json` serialises
+it as UTC, and the month grid keyed off the raw string:
+
+```js
+events.filter(e => (e.start_at || '').slice(0, 10) === d)   // was
+```
+
+An all-day event is saved at local midnight. In `Asia/Calcutta` that is
+`18:30Z the previous day`, so `05-04-2027` arrived as `2027-04-04T18:30:00.000Z`
+and `slice(0,10)` filed it under **4 April**. Every all-day event, and every
+timed event before 05:30 IST, landed one cell early. Now `dayKey()` builds the
+key from the local `Date` — the same basis the grid's own day numbers use.
+
+⚠ This defect was **invisible while defect 1 stood**: the only rows in the table
+were seeded at `10:00Z` (15:30 IST, same date either way). Fixing the save is
+what would have exposed it, one bug report later.
+
+### Also: an all-day event was printing a time it was never given
+
+`fmtTime()` rendered the synthetic midnight as `12:00 am` in the month chips, the
+day popover and the detail modal. `fmtWhen(ev)` now returns `All day` when
+`ev.all_day` is set, and the detail modal reads `When: 27 Aug 26 — All day`
+instead of a `Start:` with a fabricated clock time.
+
+### Verified
+
+- The exact form payload over HTTP: `POST /api/sales/calendar/events` → **201**,
+  `owner_id: 848` (a real integer user id). `GET ?month=4&year=2027` returns it.
+- Playwright, `superadmin@manifest.in`, live data: an all-day event whose wire
+  value is `2026-08-26T18:30:00.000Z` renders in the **27** cell; the timed
+  event beside it reads `02:30 pm — 03:30 pm`, the all-day one reads `All day`;
+  detail modal `When: 27 Aug 26 — All day`. **0 page errors.**
+- `DELETE` on all three probe events → 200; the table is back to its five seeded
+  rows. `npx eslint src/features/sales/pages/SalesCalendar.jsx` clean.
+
+### Open
+
+- **The five `SEED Sales Events N` rows now have no owner, no account and no
+  opportunity**, and their `type` values (`Standard`, `Routine`, `Primary`,
+  `General`) are not in `EVENT_TYPES`, so they render in the fallback colour with
+  a raw label. They are seeder debris that only ever proved the table existed;
+  either re-seed them through the API now that it works, or delete them.
+- `PATCH /calendar/events/:id` is reachable but nothing calls it — the detail
+  modal offers Close and Delete only. The Add modal is create-only, so an event
+  saved to the wrong day cannot be corrected, only deleted and retyped.
+- Still nothing committed; the last commit is 11 Aug.
+
+## §132 — Sales Intelligence › Conversion Analytics: a funnel that printed a
+## 450% conversion, a win rate of "0 won of 0" beside "6 orders won", and a
+## Monthly Trends tab that had never once run its SQL (2026-08-27)
+
+Reported from the UI: *Sales Intelligence → Conversion Analytics*, stuck on
+"Loading conversion analytics…". The load itself was fine — ~1s, all six
+requests 200 — but every number the page then drew was wrong, and three of its
+six panels were reporting confident zeros over SQL that threw on every request.
+
+`backend/src/modules/sales/routes/sales-funnel.routes.js` ended **every** query
+with `.catch(() => ({ rows: [] }))`. That is the §111/§112 defect class again,
+in a file the SQL-reference gate cannot see into.
+
+### Defect 1 — `/monthly` appended a second WHERE (Monthly Trends: empty since it shipped)
+
+```js
+FROM leads WHERE created_at >= NOW()-INTERVAL '12 months'
+${cond ? cond.replace('AND','WHERE') : ''}      // -> "... WHERE ... WHERE ..."
+```
+
+`cond` is `AND (company_id=$1 OR company_id IS NULL)`; five of the six series
+already carried a `WHERE`, so `.replace('AND','WHERE')` produced
+
+```
+syntax error at or near "WHERE"
+```
+
+on **all six** subqueries. The endpoint returned `[]`, and the tab rendered its
+"No monthly data yet — pipeline activity will appear here" empty state. It has
+never shown a month of data. Rewritten as one query over a
+`generate_series` month spine, so a quiet month is a zero row rather than a
+missing x-axis tick.
+
+### Defect 2 — `/won-lost-analysis` read two columns that do not exist
+
+```sql
+COUNT(CASE WHEN stage='won' OR status='Won' THEN 1 END)  AS won
+SUM (CASE WHEN stage='won' OR status='Won' THEN value END) AS won_value
+```
+
+`opportunities` has **no `status` column and no `value` column** — they are
+`stage` and `expected_value`. Both the summary and the lost-reasons query threw
+(`column "status" does not exist`, `column "value" does not exist`) and the
+`.catch` substituted a hand-written zero row. The Funnel Overview KPI strip
+therefore read **"WIN RATE 0.0% — 0 won of 0"** in the same row as **"ORDERS
+WON 6"**, and Win/Loss Analysis showed ₹0 won, ₹0 lost, no lost reasons. Live
+values are 2 won / 1 lost / 5 open, ₹5.20 Cr won, lost reason *Budget
+Constraints*.
+
+⚠ `stage='won'` also matches nothing — the live vocabulary is `'Won'`/`'Lost'`
+(capitalised) alongside lowercase `'proposal'`/`'negotiation'`. All stage and
+order-status predicates now come from `shared/statusSets.js`.
+
+### Defect 3 — the funnel counted five unrelated populations and called it a funnel
+
+`Qualified Leads` was `status IN ('Qualified','Hot')` — a two-value literal list
+against a live vocabulary of New / Contacted / Qualified / Negotiation / Won /
+Lost / converted. It matched **2 leads** while 9 opportunities sat downstream,
+so the page drew
+
+```
+2  Qualified Leads
+   ↓ 450.0% conversion
+9  Opportunities
+```
+
+A funnel stage has to be **cumulative** — a lead at Negotiation obviously
+cleared qualification. New in `statusSets.js`:
+
+```js
+LEAD_UNWORKED     = ['new','open','raw','untouched','not_contacted'];
+LEAD_DISQUALIFIED = ['unqualified','disqualified','junk','spam'];
+sqlLeadQualified  = col => `(${col} IS NOT NULL AND ${notIn(col,LEAD_UNWORKED)}
+                                              AND ${notIn(col,LEAD_DISQUALIFIED)})`;
+```
+
+Expressed as an **exclusion**, like the receivable predicates: a status nobody
+anticipated counts as worked rather than silently vanishing from the numerator.
+A plain `'lost'` lead stays in the stage (it qualified, then was lost); only
+`unqualified`/`disqualified`/`junk` are removed.
+
+### Defect 4 — two scoping conventions on one page
+
+`sales-funnel` used `(company_id=$1 OR company_id IS NULL)`; the
+`sales-command-center` endpoints powering the Customer and Product tabs **on the
+same page** used the canonical `($1::int IS NULL OR company_id=$1)`. The first
+pulls super-admin-authored NULL-company rows into a scoped user's totals, so the
+page counted 17 enquiries and 9 quotations where its own neighbouring tabs
+counted 16 and 6. Aligned to `companyOf()`'s documented predicate. Soft-deleted
+rows are now excluded everywhere too — a deleted lead was inflating the funnel,
+and **a deleted opportunity was the only row in "Win Rate by Salesperson"**.
+
+### Defect 5 — `salesperson-performance` multiplied achieved revenue by quote count
+
+`sales_targets LEFT JOIN sales_orders LEFT JOIN quotations`, all on the same
+owner, is an orders × quotations cartesian per person: `COUNT(so.id)` counted
+each order once per quotation and `SUM(so.total_amount)` — the Achieved column
+and its achievement % — was multiplied by that owner's quotation count. Both
+sides are now separate CTEs. Invisible on today's data because every figure was
+0; it would have shipped as soon as one salesperson had both an order and a
+quote.
+
+### Defect 6 — Customer Analytics returned the same customer twice
+
+`sales-command-center.routes.js` grouped Top Customers by
+`p.id, p.name, p.city, p.party_type, so.customer_name`. `customer_name` is
+denormalised onto the order and is NULL on some rows, so **one party split into
+two rows** — live data returned *TechCorp Ltd* twice under the same uuid, with
+4 orders and 2. The opportunities join fanned each order out once per
+opportunity on top of that. Orders now aggregate in their own CTE and the
+opportunity counts attach afterwards: one row, 6 orders, ₹1.78 L — which
+reconciles with the funnel's "Orders Won 6" for the first time.
+
+### What the page now says instead
+
+`/conversion-ratios` returns **two readings and names them**:
+
+- `ratios` — stage **volume**. A step *can* exceed 100%, and that is a finding:
+  the stage holds records the previous one never saw. The UI prints
+  `↕ N more than <prev stage> — entered here` in amber, never "↓ 450% conversion".
+- `linked` — conversion traced along the real FKs (`opportunities.lead_id` →
+  `quotations.opportunity_id` → `sales_orders.quotation_id`), bounded 0-100% by
+  construction, shipped **with its `coverage`** so the reader can tell a
+  conversion rate from an artefact of sparse linkage.
+
+Volume stays the headline: publishing only the linked number would report a
+near-empty funnel for a company that is demonstrably winning orders. The live
+coverage is the actual business finding — **only 16.7% of quotations carry an
+opportunity id**, so the funnel is a volume funnel whether anyone says so or not.
+
+Also:
+
+- **KEY INSIGHT named the wrong step by construction.** It compared exactly two
+  of the five ratios (`quotation_to_order < opportunity_to_quotation`) and
+  advised on the loser, ignoring the other three. It now takes the true minimum
+  over the four step ratios (excluding any above 100%, which are not drop-offs)
+  and appends the linkage caveat.
+- **Empty denominators return `null`, not `0`.** `pct()` gives null when
+  `d === 0`; `PctBar` and the KPI cards render `—`. "0.0% win rate" over a
+  pipeline with nothing closed reads as losing every deal.
+- **`Unattributed` is now a visible row.** ₹1.78 L of booked FY26 revenue across
+  6 orders belongs to no salesperson, because the order creator has no
+  `employees` row (admin and service accounts don't). It never reached a target
+  line, so the table said "Achieved ₹0" for everyone on a page whose funnel said
+  six orders were won. The money is now its own amber row.
+- **Six fetches, six named failures.** `Promise.allSettled` left a rejected
+  panel's state null and the tab drew its "no data yet" empty state —
+  indistinguishable from an empty pipeline. Rejections now render a banner
+  naming the tab and the error.
+- **`/team-targets` summed `target` and `achieved`**, columns that have never
+  existed (`target_amount`/`achieved_amount`). Same file, same swallow. Fixed,
+  though nothing calls it.
+
+### One hero, not two
+
+`SalesConversionAnalytics`, `SalesFunnel` and `SalesForecasts` each rendered
+their own `PageShell` + `PageHero` while `SalesIntelligence` — the hub that
+mounts all three as tabs — rendered one too. The Conversion tab put *"Sales
+Target & Conversion Analytics"* directly beneath the page's own title, with a
+second tab strip under that. All three now take `embedded`; the standalone
+`/SalesConversionAnalytics` route (registered but not in NAV_ITEMS) keeps its
+own shell.
+
+### Verified
+
+- **Live HTTP, `superadmin@manifest.in`, company 1.** `/conversion-ratios`
+  16 → 13 → 8 → 6 → 6 with steps **81.3 / 61.5 / 75.0 / 100.0%** — no step above
+  100%. `/won-lost-analysis` 2 won, 1 lost, 5 open, 66.7%, ₹5.20 Cr won.
+  `/monthly` 12 rows (was `[]`). `/customer-analytics` one TechCorp row, 6
+  orders, ₹1.78 L.
+- **Playwright, all six tabs, live data**: `.plh-hero` count **1** (was 2);
+  KEY INSIGHT reads *"The weakest step is Lead → Opportunity at 61.5%. Only 17%
+  of quotations are linked to an opportunity, so the step rates above are stage
+  volumes, not traced conversions."*; **0 console errors, 0 page errors, no 4xx/5xx**.
+- `npm run check:schema` PASS (both gates, including the new lead sets against
+  live values). `npx vitest run analytics.dataIntegrity analytics.schemaGuards`
+  → 33 passed. `npx eslint --rule no-undef` on all four pages → 0 errors.
+
+### Open
+
+- **`opportunities.assigned_to` has no foreign key and holds both id spaces.**
+  `sales-command-center.routes.js` reads it as an `employees.id`; the one live
+  value is a `users.id` (848, on the soft-deleted row). `/won-lost-analysis` now
+  resolves FK-first (`held_by` → employees, then `assigned_to` via
+  users→employees, then as an employees.id, then the user's name/email), but the
+  column itself should get a FK and one convention.
+- **Every live opportunity is unassigned** (`assigned_to` and `held_by` both
+  NULL on all 8), so "Win Rate by Salesperson" is a single *Unassigned* row.
+  That is now truthful rather than a ghost row from a deleted record, but the
+  panel is only as useful as opportunity ownership.
+- ~~`opportunities.margin_amount` is NULL throughout, so Customer Analytics'
+  Margin % is a real 0.0% and not a bug~~ — **wrong, corrected in [§132.1]**.
+  The column is `0.00` on all nine rows, not NULL, and the 0.0% on screen came
+  from somewhere else entirely: the order→quotation→opportunity chain resolves
+  for **zero** of the six booked orders, so the SUM was NULL and a `COALESCE`
+  published it as a measured zero. It was a reporting defect, not a data gap.
+- Still nothing committed; the last commit is 11 Aug.
+
+## §133 — Sales module filter sweep: three pages had no filter at all, and the one FY selector that existed governed only 3 of its 9 calls
+
+Reported as "in the sales module, some pages have no filters". The sweep covered
+all 16 pages in the `Sales` nav group plus the six children behind the two tab
+hubs, and separated three different failures that all present as "I can't narrow
+this list".
+
+### What the sweep found
+
+| Page | Before | After |
+|---|---|---|
+| **FulfilmentTracking** | **zero filter controls** — three tables, no search, no status, and all four endpoints accept no query params | search + status chips on Delivery Orders and on Credit Control |
+| **CommissionManagement** | Plans (card grid), Payouts (table) and Leaderboard had no control of any kind; only Statements had a rep picker | search + status chips on Plans and Payouts; FY selector on Leaderboard |
+| **Subscriptions** | status chips only, no way to find a customer | + search over customer / plan / cycle |
+| **SalesCalendar** | month/year/view nav; the type legend was decorative | the legend **is** the type filter (colour key kept, counts added) |
+| **SalesCommandCenter** | one FY selector that reached 3 of 9 calls | FY now reaches Customers, Products and Lost Deals too, and the header says what it governs |
+| Quotations, SalesOrders, SalesTargets, SalesPlaybooks, SalesDocuments, SalesPartners, Territories, Competitors, PricingEngine, SalesForecasts, SalesFunnel, SalesConversionAnalytics | already filtered | untouched |
+| SalesIntelligence, SalesMarket | tab-hub shells | correctly excluded — filters belong on the children ([[project_dashboard_filter_contract]]) |
+
+`SalesSettings` is a settings form and needs no filter.
+
+### ⚠⚠ A filter that exists but reaches only part of the page is worse than none
+
+`SalesCommandCenter`'s FY dropdown was passed to `/summary`,
+`/salesperson-scorecard` and `/team-targets`. `/customer-analytics`,
+`/product-analytics`, `/lost-deal-analysis`, `/traceability` and `/alerts` were
+called with no params at all. Selecting **FY 2020** left the Customers, Products
+and Lost Deals tabs showing the same all-time figures under a header that read
+"FY 2020-21". Nothing looked broken — the numbers were plausible, just answering
+a different question from the one the header asked. Same defect class as
+[[project_ceo_intelligence_growth_window_and_tabstrip]]: **a wrong window
+produces a confident number, not a visible error.**
+
+The fix follows the activity/backlog split from §107:
+
+- **Follows the window** — orders and revenue (`sales_orders.order_date`),
+  quotations (`quotations.quotation_date`), won/lost opportunities
+  (`COALESCE(closed_date, updated_at)`, the same expression the Top Lost Deals
+  query already reports as `lost_at`), the repeat-business ratio.
+- **Deliberately does not** — `pipeline_weighted` on the Products tab (open
+  opportunities are a point-in-time backlog), `/alerts`, `/upcoming-closures`
+  and `/traceability`. Verified: `?fy_year=2020` returns
+  `won:0 lost:0 revenue:0 quotations:0` while `pipeline_weighted` holds at
+  1 538 000.
+
+A new `fyWindow(req)` helper at the top of `sales-command-center.routes.js`
+resolves the window once so all four endpoints read the same FY as `/summary`,
+and each response now ships `fy_year` back. The page header carries the caption
+*"FY 2026-27 scopes Executive, Scorecards, Customers, Products and Lost Deals.
+Traceability and Alerts are live queues and always show the current position."*
+so the split is stated rather than inferred.
+
+### ⚠⚠ Two of the three Products-tab queries had been failing on every request
+
+Wiring the filter surfaced a defect that had nothing to do with filtering:
+
+```
+column "product_line" does not exist
+```
+
+`/product-analytics` grouped `sales_orders` and `quotations` by `product_line`
+and summed `sales_orders.margin_amount`. **Neither table has either column** —
+both live on the `opportunities` row behind the quotation, which is exactly how
+`/summary` already reads margin. Both queries were wrapped in
+`.catch(() => ({ rows: [] }))`, so the failure never surfaced: the Products tab
+merged an empty result and had been reporting **0 orders, ₹0 revenue, ₹0 margin
+and 0 quotations for every product line since it was written**, beside
+opportunity columns that populated normally. A half-empty row reads as thin
+data, not as a broken query.
+
+Both now reach the field through `sales_orders → quotations → opportunities`.
+Live, company 1, FY 2026-27: 6 orders / ₹1.77 L revenue and 6 quotations /
+₹7.07 L quoted, where the endpoint previously returned zeros. Same swallowed-SQL
+shape as [[project_analyse_ai_forensic_audit_pass3]] — `sql-failure-probe.mjs`
+is the gate that catches this class; a static reference check cannot.
+
+### `/commissions/leaderboard` was on the calendar year
+
+It hardcoded `EXTRACT(YEAR FROM earned_date) = EXTRACT(YEAR FROM CURRENT_DATE)`
+while `/commissions/stats` on the same page uses the Indian FY — so the KPI strip
+and the leaderboard below it measured different periods. It now takes
+`?fy_year=` (FY start year, defaulting to the current FY) and returns
+`fy_year` + `period_label`. `earned_date` is a live `DATE`, but the upper bound
+is written `< ($3::date + INTERVAL '1 day')` so it stays correct if the column
+is ever widened to a timestamp — the §107 rule.
+
+### Client-side vs server-side
+
+The new list filters are client-side, matching `SalesOrders`: every endpoint
+involved returns its full unpaginated set, so a round trip per keystroke would
+buy nothing. Status on `Subscriptions` stays server-side because it already was.
+Chip counts are computed **after** the search is applied, so a chip never
+promises rows the search has already removed, and the empty state distinguishes
+"nothing here" from "nothing matches" — the two must never share a message.
+
+### Verification
+
+- `npx eslint` on all five changed pages → **0 errors** (3 pre-existing
+  `no-unused-vars` warnings in SalesCommandCenter, untouched).
+- `npx vite build` → **built in 4.49s**, exit 0.
+- `npx vitest run` (frontend) → **17 files, 298 tests, all passed**.
+- `npx vitest run smoke.sales integration.salesPartners` (backend) → **33 passed**.
+- **Live HTTP** against a clean server: `/product-analytics?fy_year=2026` →
+  orders 6, revenue 177 523.45, quotations 6, quoted 707 154.90 (was all zeros);
+  `?fy_year=2020` → activity zeroed, pipeline held. `/lost-deal-analysis`
+  2026 → 1 lost deal, 2020 → empty. `/commissions/leaderboard?fy_year=2019` → `[]`.
+- **Playwright, real browser, all five pages**: every control renders, a
+  nonsense search empties the table and clearing it restores the original row
+  count, every SalesCommandCenter tab clicks through — **6 passed, 0 console
+  errors, 0 page errors**.
+
+### Open
+
+- **`/customer-analytics` top customers can list the same customer twice.**
+  `GROUP BY p.id, p.name, p.city, p.party_type, so.customer_name` splits one
+  party across two rows when `sales_orders.customer_name` differs between orders
+  (live: TechCorp Ltd appears as 4 orders / ₹1.54 L and 2 orders / ₹23 600).
+  The free-text column is in the GROUP BY on purpose — it is the fallback for
+  orders with no `parties` row — so collapsing it needs a decision, not a
+  one-liner. Pre-existing; not touched by this pass.
+- **`SalesIntelligence` and `SalesMarket` compute `const on = active === id`
+  and never use it**, so neither tab hub shows which tab is active.
+- **`backend/src/modules/sales/fulfilment.routes.js` is never mounted.** Its
+  `/deliveries` and `/credit` routes are dead; the live endpoints are the
+  `/fulfilment/*` block inside `sales.routes.js`.
+- Still nothing committed; the last commit is 11 Aug plus `ebd0168`.
+
+---
+
+## §134 — A tornado diagram for Projects, and the five swallowed failures that stood between it and any real number
+
+**Asked:** should the Projects module carry a tornado (sensitivity) diagram?
+
+**Answer: yes, but only the cost-driver kind.** The risk-register kind is
+impossible on this schema and would have had to invent its own inputs.
+
+### Why not a risk tornado
+
+`project_risks.probability` and `.impact` are `character varying(20)` level
+labels. There is no rupee or day impact column anywhere on the table. A tornado
+drawn from it would have had fabricated bar lengths.
+
+The one place in the codebase that already treated them as numbers —
+`projects.routes.js`, `GET /projects/:id/status-report` — was executing
+`probability*impact`, which throws **42883 `operator does not exist: character
+varying * character varying`** on every single call. It was wrapped in
+`.catch(() => ({ rows: [] }))`, so the endpoint had always returned an empty
+risk list rather than an error. Its sibling costing query selected
+`total_budget, actual_cost` from `project_cost_summary`, where neither column
+exists — **42703**, swallowed identically. Both legs of that endpoint had never
+returned a row.
+
+### What was actually built
+
+`GET /api/projects/projects/:id/cost-sensitivity` → the nine cost categories
+`recalculateProjectCost()` genuinely rolls up (material, labour, manufacturing,
+procurement overhead, installation, commissioning, quality, service, travel),
+each with its booked amount, a `measured` flag, and DEFAULT +/-% estimating
+ranges. Deliberately excludes `expense_cost` (a legacy travel+manufacturing
+duplicate) and `subcontractor_cost` (never written by the rollup) — either would
+double-count.
+
+`frontend/src/features/projects/components/CostSensitivityTornado.jsx`, mounted
+at the bottom of `ProjectEVMDashboard`. Bars diverge from base-case net margin;
+sorted by swing. The ranges are client-side, printed on every bar and editable
+under the chart — **a tornado whose assumed range is invisible reads as a
+measured result, which it is not.** Drivers with no cost booked are listed as
+"not measured" instead of drawn as zero-swing bars.
+
+### The integrity gate is the load-bearing part
+
+`recalculateProjectCost()` writes `total_cost` as exactly the sum of those nine
+drivers. So the endpoint recomputes the sum and compares. A mismatch means the
+row did **not** come from the rollup, and the client refuses to draw a chart at
+all, showing a Recalculate prompt instead.
+
+This fired immediately on all four existing rows. `project_cost_summary` was
+**populated but entirely fabricated**: every driver equal to `total_cost`,
+`cost_performance_index` = 89.000 on every row, `installation_cost` = 13.08 /
+13.10 / 13.09 / 13.11. `project_risks.probability` read `"SEED probability 1"`.
+⚠⚠ Another instance of the §131 rule — **a populated table proves nothing; only
+rows the application wrote count.**
+
+### Why no application had ever written one
+
+`recalculateProjectCost()` **died with 42703 on every invocation.**
+`getLabourCost()` probed `columnExists('timesheet_entries','hourly_rate')` into
+`hasHR`, then referenced `te.hourly_rate` unconditionally on the `hasBR` branch,
+ignoring its own probe. The live schema has `project_members.billing_rate` and
+no `timesheet_entries.hourly_rate`, so that branch was always taken and always
+failed. **The Recalculate EVM button had never once worked.** The rate is now
+composed only from columns that exist.
+
+### Three false-greens on ProjectEVMDashboard, all from the same root
+
+The page read `evm.total_budget` and `evm.actual_cost` from `/costing`, which
+returns `project_cost_summary.*` — neither column is on that table, so **BAC and
+AC were `undefined` -> 0** on every project ever viewed. Downstream:
+
+- `eac = cpi > 0 ? bac/cpi : 0` -> `0 <= 0` -> Forecast indicator painted
+  **green "Within budget at completion"** on every project. EAC is *undefined*
+  at CPI 0, not zero; it now renders `—` and the indicator says "Cannot
+  forecast — no earned value recorded yet".
+- TCPI divided by `Math.max(bac - ac, 0.01)`, so once AC exceeded BAC it printed
+  a six-figure index as a target. Now "Unachievable — budget spent".
+- `updateEVMMetrics()` never passed `actual_cost_evm` into `upsert()`, so
+  `upsert()`'s `actual_cost_evm > 0` guard was never satisfied and **CPI was
+  hard-written as 1.000 on every recalculation** — the cost gauge could not
+  report an overrun. It now reads back the rolled-up actual.
+
+### Verified
+
+Live DB + a second backend on :5099, superadmin, browser render at 1440x900:
+
+- Both status-report legs return rows for the first time (2 risks scored 80/60;
+  costing with a real `total_budget` 50000 / `actual_cost` 125000).
+- `POST /projects/2/costs/recalculate` → **200** (was 500 `column te.hourly_rate
+  does not exist`), writing material 24007.50 + commissioning 250000 from source
+  tables; integrity flips `inconsistent` → `ok`; 7 drivers correctly `measured:
+  false`.
+- Rendered: tornado card present, 4 bar rects (2 drivers x 2 edges), 4 editable
+  range inputs, "Not measured" note, BAC ₹20,000, AC ₹2.74L, EAC `—`,
+  TCPI "Unachievable — budget spent", base margin −₹2.54L.
+- `npx eslint` clean (3 pre-existing warnings), `vite build` clean.
+
+### Open
+
+- **Only project 2 was recalculated.** Projects 1, 14 and 1697 still hold seeded
+  rows and will show the integrity banner until Recalculate is run on each.
+- `DEFAULT_HOURLY_RATE = 500` in `projectCostRollup.service.js` invents a labour
+  rate for any timesheet line with no member billing rate. Named and documented
+  now, but it still means `labour_cost` can be non-zero on measurement alone.
+  Moot today: **all 680 `timesheet_entries` rows have a NULL `project_id`**, so
+  labour rolls up to 0 for every project regardless.
+- The `/costing` endpoint does not return `progress_percentage`, so the EVM
+  page's "Progress %" is always 0.0%.
+- The tornado's assumed ranges are per-session; nothing persists them.
+- Still nothing committed; the last commit is 11 Aug.
+
+## §132.1 — The three things §132 left open, closed: one id space for
+## `assigned_to` with a foreign key behind it, and margins that stop claiming
+## to be zero when nothing was measured (2026-08-27)
+
+### 1 — `assigned_to` now has one id space, enforced
+
+§132 left `opportunities.assigned_to` carrying values from **both** id spaces
+with no foreign key. Reading the code settled the question — every consumer
+already agrees it is an `employees.id`:
+
+| file | usage |
+|---|---|
+| `crm/repositories/opportunities.repository.js` | `LEFT JOIN employees e ON e.id = o.assigned_to` (×3) |
+| `crm/repositories/leads.repository.js` | `LEFT JOIN employees e ON l.assigned_to = e.id` (×3) |
+| `crm/services/leadAssignment.service.js` | `WHERE l.assigned_to = e.id` / `o.assigned_to = e.id` |
+| `sales/routes/sales-command-center.routes.js` | `LEFT JOIN employees e_opp ON e_opp.id = opp.assigned_to` |
+| `sales/routes/sales.routes.js` | `LEFT JOIN opportunities o ON o.assigned_to = e.id` |
+
+and every writer resolves one — `crm.routes.js:1551` even says so in a comment:
+*"assigned_to FKs employees, not users — see the same fix in POST /leads."*
+**The comment was true. The constraint was missing.**
+
+`20260827000002_crm_assignee_employee_fk.js` adds it to all three tables that
+carry the column (`leads`, `opportunities`, `accounts` — none of them had one),
+after repairing what was there:
+
+- **re-key** any value that is a `users.id` whose user has an `employee_id`,
+- **NULL** whatever still points at no employee.
+
+Exactly one row needed repair: `opportunities.assigned_to = 848`, a `users.id`
+(`superadmin@manifest.in`). It could not be re-keyed — that account has no
+`employees` row at all, so there was no person to hand the deal to. It was the
+lone raw `848` §132 found rendered as a name in "Win Rate by Salesperson".
+`leads`' six assignments were already valid employee ids and survived untouched.
+`accounts.assigned_to` is empty; the FK there is purely preventive, since
+`resolveCustomer()` writes it from the same `finalAssignedTo` variable.
+
+Verified by making the constraint bite: `UPDATE opportunities SET assigned_to =
+999999` → **23503 `opportunities_assigned_to_fkey`**. Orphan count across all
+three tables: **0**.
+
+⚠ `crm.routes.js` also named the variable it passes to `notifyWorkflowEvent`
+`assignedUserId` — while `WorkflowNotificationService` resolves `recipientIds`
+through its own `resolveEmployeeUserId()`, i.e. expects **employee** ids. The
+behaviour was right and the name was the trap that produced this whole class of
+bug; it is now `assignedEmployeeId`.
+
+⚠ **Not fixed, deliberately**: `opportunities.held_by` already FKs `employees`
+and means the same thing as `assigned_to`. Two columns for one concept is real
+drift, but collapsing them is a data-model decision, not a constraint fix.
+
+### 2 — Margin was never measured; it stops reporting 0.0%
+
+**§132 got this wrong and the correction is the interesting part.** The open
+item read *"`opportunities.margin_amount` is NULL throughout, so Margin % 0.0%
+is real data, not a bug"*. `COUNT(margin_amount)` returns 9 of 9 — the column is
+`0.00` everywhere, **not NULL**. So the 0.0% on screen was not the column at
+all. It came from the join:
+
+```sql
+SUM((SELECT o2.margin_amount FROM quotations q2
+      JOIN opportunities o2 ON o2.id = q2.opportunity_id
+     WHERE q2.id = so.quotation_id))
+```
+
+Margin lives on the **opportunity behind the quotation behind the order**, and
+that chain resolves for **zero of the six booked orders** — the same 16.7%
+quotation→opportunity linkage §132 measured. `SUM(...)` is therefore NULL, and
+`COALESCE(..., 0)` turned "we could not trace a single order to a margin" into
+"the margin is zero." Five endpoints did it: `/summary`, `/product-analytics`,
+`/customer-analytics`, `/salesperson-scorecard` and (already NULL-safe)
+`/traceability`.
+
+NULL now travels end to end. `orNull()` replaces `fmtNum()` on every margin
+field, the SQL `CASE` drops its `ELSE 0`, and each endpoint ships a
+`margin_traceable_orders` count so a null is distinguishable from a missing
+feature. On the frontend, `fmtINR`/`fmtCr`/`fmtPct` in
+`SalesConversionAnalytics.jsx` and `SalesCommandCenter.jsx` return an **em dash**
+for null/undefined/`''` — a real, measured `0` still renders `₹0` / `0.0%`.
+
+The same rule caught one more column while it was being applied: a customer's
+**Win Rate** used the module's local `pct()`, which returns `0` on an empty
+denominator, so TechCorp Ltd — which has never closed an opportunity either way
+— was reported as winning 0.0% of its deals.
+
+Top Customers now reads `TechCorp Ltd — ₹1.78 L — Margin % — — 6 orders —
+Win Rate —` where it previously claimed two measured zeros.
+
+### 3 — "Every opportunity is unassigned" is data, and stays data
+
+All eight live opportunities have `assigned_to` **and** `held_by` NULL, so
+"Win Rate by Salesperson" is a single *Unassigned* row. That is not a bug to
+fix in code: `finalAssignedTo = … || req.user.employee_id`, and every one of
+these rows was created by seed or by `superadmin@manifest.in`, whose account has
+no employee record. Attributing them to the creator would be fabricating
+ownership. The FK now guarantees that when ownership *is* recorded it points at
+a real employee, which is the part that was actually broken.
+
+### Verified
+
+- Migration applied (`schema_migrations` id 347, 45 ms). Orphaned `assigned_to`
+  across `leads`/`opportunities`/`accounts`: **0**. FK rejects a bad id with
+  23503.
+- Live HTTP: `/summary` `achieved_margin: null, margin_traceable_orders: 0`;
+  `/customer-analytics` `total_margin: null, margin_pct: null, win_rate: null`;
+  `/product-analytics` `margin: null, margin_pct: null`. Revenue, order counts
+  and win rates that *are* measured are unchanged (₹1.78 L / 6 / 66.7%).
+- Playwright, live data: Customer Analytics renders `—` in both Margin % and
+  Win Rate; Sales Command Center Executive tab unchanged. **0 page errors, no 4xx/5xx.**
+- `npm run check:schema` and `check:sql-refs` PASS. `vitest` on
+  `integration.crmCustomerIntegrity`, `smoke.crm.pipeline`, `smoke.sales`,
+  `analytics.dataIntegrity`, `analytics.schemaGuards` → **75 passed**.
+  esbuild + `eslint --rule no-undef` clean on both pages.
+
+### Open
+
+- Nothing committed; the last commit is still 11 Aug. Everything from §128
+  onward is uncommitted working-tree state.
+
+## §135 — Whole-app live endpoint audit and its repair, re-documented; plus the
+## three items it had left open, now closed (2026-08-31)
+
+⚠ **Housekeeping first.** This audit ran on 26 Aug and its section was appended to this manual
+then. That entry is **no longer in the file** — the manual has since been rewritten by later work
+(§126 is now the CFO Dashboard, not this). The *code* changes all survive and were re-verified live
+today; only the write-up was lost. Everything below is restored from the run's own evidence.
+
+### The audit
+
+Audited against the **running server and the live database**, not against the audit markdown in the
+repo. Every unique GET path the frontend calls was actually requested with a real `super_admin`
+token; write verbs were confirmed by reading route sources rather than executed.
+
+| | before | after (verified live today) |
+|---|---|---|
+| unique GET paths answering `200` | 890 | **902** |
+| genuinely dead GET routes | 13 | **0** |
+| ESLint `no-undef` violations | 16 | **0** |
+| routes `500`-ing for every input | 3 | **0** |
+| endpoints answering `503` | 1 | **0** |
+
+Two paths are still reported by the differ and both are false positives:
+`/ai/predict/device-failure/1` answers `{"error":"device not found"}` (the route exists; device 1
+does not), and `/endpoint` is a literal inside `scripts/addFYFilter.js`, a code generator.
+
+### ⚠⚠ Two traps that make this audit lie
+
+- **The global rate limiter silently poisons the run.** `GLOBAL_RL_MAX` defaults to 300/min, so
+  **679 of the first 980 probes came back `429`** and were scored as "reachable". Probe a throwaway
+  instance started with `GLOBAL_RL_MAX=100000`, and assert the status histogram contains **no
+  `429`** before believing any result.
+- **`OPTIONS` cannot test whether a route exists.** The CORS middleware answers every `OPTIONS`
+  with `204` regardless, including `/api/zzz-does-not-exist`. Express 5 also removed a layer's
+  mount path (`layer.regexp` is gone, `layer.path` is `undefined`), so recovering the route table
+  by walking `app._router` needs the Router **prototype** patched at import time — and
+  `import { Router } from 'express'` (53 files here) bypasses a patch applied to `express.Router`.
+
+⚠ A third, discovered the hard way today: **every server instance opens its own pool of 30 against
+`max_connections=100`**, so three or four overlapping audit instances exhaust Postgres and the
+extra servers die mid-run with `sorry, too many clients already` — which reads as a mystery
+connection failure, not as a resource limit. Run **one** instance at a time.
+
+### The largest defect class: a router mounted at its own name
+
+A router mounted at `/x` whose internal paths also start `/x` resolves to `/x/x/...`, and half the
+callers had never been updated:
+
+| Router | Mounted at | Real path | Callers used |
+|---|---|---|---|
+| `timesheets.routes.js` | `/timesheets` | `/timesheets/timesheets/*` | `/timesheets/*` — **whole module dead** |
+| `projects.routes.js` | `/projects` | `/projects/projects/*` | `/projects/milestones/:id`, `/projects/risks/:id` |
+
+⚠ **Do not "fix" this by stripping the prefix from the router.** `timesheetRoutes` is deliberately
+mounted a second time at `/projects` to serve `/projects/timesheets`. Removing the internal
+`/timesheets` segment would resolve that alias to `/projects/*` and collide with the real projects
+router. **The callers were corrected instead** — which is what
+`services/modules/timesheetService.js` already documented and did. The stale
+`services/timesheetService.js`, which returned five hardcoded sample rows whenever its dead
+endpoint 404'd, was deleted.
+
+### Endpoints the UI called that were never built
+
+Added: `POST /admin/users/bulk`, `POST /admin/roles/bulk` (Setup Wizard's Users and Roles steps),
+`POST /finance/accounts/import` (the Chart of Accounts Import button),
+`PUT /finance/invoices/:id` (the Invoices edit drawer, guarded by `pickUpdatable()` and refusing
+paid/cancelled invoices whose totals the GL already references),
+`GET /accounting/journal-entries/:id` (the General Ledger drill-down),
+`PUT`/`DELETE /inventory/warehouses/:id`.
+
+Repointed: `GET /hr/document-templates` → `/documents/templates`, `GET /status/counts` →
+`/system-health/db-tables`, `/inventory/purchase-suggestions*` → the `/inventory/advanced` mount,
+`/attendance/on-leave-today` → `/leaves/on-leave-today`.
+
+⚠ **`setupSwagger(app)` existed, generated a real OpenAPI spec, and was never called** — so
+`/api/docs` and `/api/docs/json` 404'd and the API Documentation page had nothing to download. It
+must be registered **before** `v1Router`, whose `/` catch-all would otherwise swallow it.
+
+### ⚠ Leave attachments were being discarded silently
+
+`ApplyLeave.jsx` posted to `/documents/upload`, which does not exist; the `catch` then stored
+`form.attachment_file.name` and let the application submit. **A medical certificate looked attached
+while nothing had been uploaded.** Now targets `/document-master/upload` and a failure **aborts the
+submission**. Treat any `catch` that substitutes a plausible value for a failed write as this bug.
+
+### Three SQL defects that had never once returned a row
+
+| Endpoint | Error | Cause |
+|---|---|---|
+| `GET /travel/customer-360/:id` | `column "total_amount" does not exist` | `travel_cost_transactions` has `amount` + `gst_amount`. The SELECT also used `visit_reports`' column names (`discussion_summary`, `next_followup`) against `customer_visits`, which has `discussion_notes`, `next_followup_date` — **two more wrong columns hiding behind the first error**. |
+| `GET /travel/project-360/:id` | `column reference "company_id" is ambiguous` | An unqualified `AND company_id=<id>` string-interpolated into queries that join `employees`, which has that column too. Every alias is now named and the value bound. |
+| `GET /vendor-approval/vendors/:id/traceability` | `operator does not exist: integer = text` | `purchase_orders.supplier_id` is `integer`; the query cast the parameter to `text`. |
+
+⚠ The same handler fed an integer vendor id to `bills.supplier_id`, which is a **uuid pointing at
+`parties`**. The bridge is `vendors.party_id`. Same `parties.id = uuid` vs `*.party_id = integer`
+drift as the Tally-parity work.
+
+### A JSX codemod put a dialog in the wrong component — 4 pages white-screened
+
+`OKRManagement`, `AssessmentCenter`, `CertificationManagement` and `CompetencyFramework` each had a
+`<ConfirmDialog>` inserted after the **first `<div>` in the file** rather than inside the page
+component, landing it in a module-scope helper (`Modal`, `ProgressBar`) with no access to page
+state → `ReferenceError` on render. `ProgressBar` renders per row, so OKR Management crashed on
+load; the others crashed whenever a modal opened.
+
+⚠⚠ **esbuild compiles all four without complaint** — these are runtime reference errors, not syntax
+errors. The detector is `npx eslint src --rule '{"no-undef":"error"}'`, which found all 16
+violations across 6 files (also `roles` never destructured in `UserSetup`, `toast` missing in
+`ContractLabour`/`GSTModule`). **Run it after any bulk JSX edit.**
+
+`CompetencyFramework` had a second bug the crash was hiding: its delete button called
+`deleteComp(c.id)`, but that function takes no argument and reads `pendingDeleteComp` — always
+`null` at that moment — so **the button did nothing at all**.
+
+### Stores could be created once and never corrected
+
+`warehouses` had only `GET` and `POST`, and the sole create screen was the Inventory Setup Wizard,
+while ten pages read the list to fill store pickers. Added `PUT`/`DELETE
+/inventory/warehouses/:id` and a **Stores** tab (now first) on `WarehouseManagement.jsx`.
+
+⚠ The delete is **soft** and refuses a store still holding stock (`409`). 17 tables carry a
+`warehouse_id` FK, so a hard delete would either fail the constraint or orphan stock history, and
+retiring a store with stock would hide that stock from every summary while the ledger kept pointing
+at it. ⚠ Testing that guard soft-deleted two live stores; they were restored (`deleted_at` NULL,
+status active). **Check reversibility before probing a delete against real data.**
+
+---
+
+## §135.1 — The three things the audit left open, closed (2026-08-31)
+
+### `POST /meetings` — built, because a visibly-broken button is not a design
+
+Manager Dashboard's Schedule Meeting drawer was fully wired on the frontend and posted to a route
+that had never existed. New migration `20260826000001_meetings.js` creates `meetings` +
+`meeting_attendees`; new `src/modules/manager/meetings.routes.js` mounted at `/meetings`.
+
+- `attendee_ids` are **employee** ids (that is what the picker lists), not user ids. The
+  notification fan-out maps employee → login through `users.employee_id` and **skips anyone
+  without one** rather than failing the write.
+- Attendee ids that are not real employees of this company are collected into
+  `skipped_attendees` rather than allowed to abort the meeting on the FK.
+- Cancel, not delete: invitees have already been notified, so the row must survive to explain why
+  it left their list. Cancelled meetings drop out of the default list; `?status=cancelled` finds them.
+- ⚠ `CONCAT(e.first_name,' ',e.last_name)` is `' '`, **not NULL**, when both halves are null — a
+  meeting booked by a login with no employee record rendered a single space where the organiser
+  should be. Wrapped in `NULLIF(TRIM(...), '')`.
+- The drawer now also **reads its own meetings back**. Without that it is a write-only form and
+  there is no way to tell a booking landed — which is barely better than the dead button.
+
+Verified live: create with attendees `[1, 6, 999999]` → 201, two attendees attached, `999999`
+reported in `skipped_attendees`, **two `meeting_invite` notifications delivered** to the attendees'
+logins; cancel → 200 + two `meeting_cancelled` notifications; unknown id → 404. All test rows and
+notifications were deleted afterwards.
+
+⚠ See **§129** — a later pass found an IDOR in this route (`?scope=all` returned the whole company
+and `GET /:id` leaked to outsiders) and that `skipped_attendees` was being discarded by the POST's
+own re-read. Read §129 before touching this file.
+
+### Shipment tracking — degrades instead of erroring
+
+`GET /logistics/shipments/:id/track` answered **`503 SHIPROCKET_TOKEN is not configured`**, throwing
+away tracking information the app already holds. It now returns `200` with the dispatch / expected /
+delivered milestones recorded in Pulse, tagged `source: 'local'`,
+`live_tracking_available: false`, and a plain-language `note`. The same fallback covers a courier
+timeout and a non-2xx courier response, so the panel degrades rather than failing.
+
+`SHIPROCKET_TOKEN` is now documented in `.env` and `.env.example` as optional, saying exactly what
+is lost without it. The UI maps `checkpoints` onto the same event shape the live feed uses, so one
+timeline renders either way.
+
+### `traceability_score` — it now measures something
+
+The old expression was
+`[vendor, spend, ncrs.length === 0 || true, scorecard, risk].every(Boolean) ? 'PASS' : '…'`.
+`ncrs.length === 0 || true` is **always true**, `spend` is always a row object, and `vendor` is
+guaranteed by the 404 above it — so only `scorecard` and `risk` could ever be falsy and the verdict
+was very nearly a constant. It told a CEO nothing.
+
+Replaced with six named checks — approval recorded, classified, risk assessed, performance scored,
+**linked to finance** (`vendors.party_id`, without which no bill can be traced), and no open
+NCRs/CAPAs — returning a `traceability` object with per-check pass/fail and detail. Three verdicts,
+not two: `PASS`, `INCOMPLETE` (record gaps) and `OPEN QUALITY ISSUES` (non-conformances), because
+lumping those together as one red badge is part of what made the old score useless. The UI shows
+which checks failed and why.
+
+Live across all six vendors: five report `INCOMPLETE (4/6)`, vendor 4 reports `INCOMPLETE (3/6)` —
+it also lacks a scorecard. The two links every vendor is missing, **"Approval recorded"** and
+**"Linked to finance"**, are real data gaps: no vendor has `approved_by`/`approved_at` set even
+where `classification` is 'Approved', and `vendors.party_id` is unpopulated for all six. That is
+exactly what this score should have been surfacing all along.
+
+### Open
+
+- The data gaps the new score exposes are real and need a **backfill, not code**: vendor approval
+  metadata, and `vendors.party_id` for all six vendors.
+- Nothing is committed; the working tree is still ahead of the last commit.

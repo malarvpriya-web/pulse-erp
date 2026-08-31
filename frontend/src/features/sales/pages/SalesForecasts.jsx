@@ -4,7 +4,8 @@ import { useToast } from '@/context/ToastContext';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { TrendingUp } from 'lucide-react';
+import { TrendingUp, IndianRupee } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -26,7 +27,9 @@ function periodLabel(type, year, value) {
   return `${MONTHS[value - 1]} ${year}`;
 }
 
-export default function SalesForecasts() {
+/** `embedded` — rendered as a tab inside SalesIntelligence, which already owns
+ *  the shell and hero. See the note in SalesIntelligence.jsx. */
+export default function SalesForecasts({ embedded = false }) {
   const toast = useToast();
   const now = new Date();
   const [periodType,  setPeriodType]  = useState('monthly');
@@ -69,7 +72,7 @@ export default function SalesForecasts() {
   const pctColor = pct == null
     ? '#6b7280'
     : pct >= 100 ? '#059669'
-    : pct >= 70  ? '#d97706'
+    : pct >= 70  ? '#6d28d9'
     : '#dc2626';
 
   const chartData = monthData.map((r) => ({
@@ -95,16 +98,9 @@ export default function SalesForecasts() {
   const btnBase = { padding: '7px 16px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, fontWeight: 600, cursor: 'pointer' };
   const selBase = { padding: '7px 12px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, color: '#374151', background: '#fff', cursor: 'pointer' };
 
-  return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+  const body = (
+    <>
 
-      {/* Header */}
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Sales Forecasts</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-          Auto-computed from pipeline opportunities · {periodLabel(periodType, periodYear, pval)}
-        </p>
-      </div>
 
       {/* Period Filter */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -138,7 +134,7 @@ export default function SalesForecasts() {
         {[
           { label: 'Total Forecasted', value: fmtL(summary?.forecasted), color: '#6366f1' },
           { label: 'Total Achieved',   value: fmtL(summary?.achieved),   color: '#10b981' },
-          { label: 'Target',           value: fmtL(summary?.target),     color: '#f59e0b' },
+          { label: 'Target',           value: fmtL(summary?.target),     color: '#7c5cf0' },
           { label: 'Achievement %',    value: fmtPct(pct),               color: pctColor  },
         ].map((k) => (
           <div key={k.label} style={{ background: '#fff', borderRadius: 12, padding: 20, border: '1px solid #f0f0f4' }}>
@@ -217,7 +213,7 @@ export default function SalesForecasts() {
                           <td style={{ padding: '9px 14px', textAlign: 'right', color: '#10b981', fontWeight: 600 }}>{fmtL(r.achieved)}</td>
                           <td style={{ padding: '9px 14px', textAlign: 'right', color: '#6b7280' }}>{fmtL(r.target)}</td>
                           <td style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700,
-                            color: ap == null ? '#9ca3af' : ap >= 100 ? '#059669' : ap >= 70 ? '#d97706' : '#dc2626' }}>
+                            color: ap == null ? '#9ca3af' : ap >= 100 ? '#059669' : ap >= 70 ? '#6d28d9' : '#dc2626' }}>
                             {fmtPct(ap)}
                           </td>
                         </tr>
@@ -251,7 +247,7 @@ export default function SalesForecasts() {
                         <td style={{ padding: '9px 14px', textAlign: 'right', color: '#6b7280' }}>{p.deal_count}</td>
                         <td style={{ padding: '9px 14px', textAlign: 'right', color: '#6b7280' }}>{fmtL(p.gross_value)}</td>
                         <td style={{ padding: '9px 14px', textAlign: 'right', color: '#6366f1', fontWeight: 600 }}>{fmtL(p.weighted_value)}</td>
-                        <td style={{ padding: '9px 14px', textAlign: 'right', color: '#f59e0b', fontWeight: 600 }}>
+                        <td style={{ padding: '9px 14px', textAlign: 'right', color: '#7c5cf0', fontWeight: 600 }}>
                           {p.avg_probability != null ? `${Number(p.avg_probability).toFixed(0)}%` : '—'}
                         </td>
                       </tr>
@@ -264,6 +260,20 @@ export default function SalesForecasts() {
           </div>
         </>
       )}
-    </div>
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Sales"
+        title="Sales Forecasts"
+      />
+    }>
+      {body}
+    </PageShell>
   );
 }

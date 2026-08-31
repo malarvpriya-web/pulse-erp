@@ -4,9 +4,11 @@
 //   run regenerative MRP → review planned orders + exceptions → convert to
 //   PRs / production orders. Plus MPS, forecast, and item-planning maintenance.
 import { useState, useEffect, useCallback, Fragment } from 'react';
+import { Factory } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB', HEAD = '#4c1d95', INK = '#374151', MUT = '#6b7280';
 const card = { background: '#fff', border: '1px solid #ede9fe', borderRadius: 12, padding: 16 };
@@ -15,7 +17,7 @@ const td = { padding: '8px 10px', fontSize: 13, color: INK, borderBottom: '1px s
 const btnP = { background: PURPLE, color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontWeight: 700, fontSize: 13 };
 const btnS = { background: '#ede9fe', color: PURPLE, border: 'none', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', fontWeight: 600, fontSize: 12 };
 const chip = (bg, fg) => ({ background: bg, color: fg, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700, display: 'inline-block' });
-const SEV = { critical: chip('#fee2e2', '#dc2626'), warning: chip('#fef3c7', '#d97706'), info: chip('#dbeafe', '#2563eb') };
+const SEV = { critical: chip('#fee2e2', '#dc2626'), warning: chip('#ede9fe', '#6d28d9'), info: chip('#dbeafe', '#2563eb') };
 
 function KPI({ label, value, tint = PURPLE }) {
   return (
@@ -160,7 +162,7 @@ export default function MRPWorkbench() {
   const orderChip = (t) => t === 'make' ? chip('#ede9fe', PURPLE) : chip('#e0f2fe', '#0369a1');
   const statusChip = (s) => ({
     planned: chip('#f3f4f6', INK), converted: chip('#dcfce7', '#16a34a'),
-    firmed: chip('#fef3c7', '#d97706'), ignored: chip('#f3f4f6', '#9ca3af'),
+    firmed: chip('#ede9fe', '#6d28d9'), ignored: chip('#f3f4f6', '#9ca3af'),
   }[s] || chip('#f3f4f6', INK));
 
   const Tab = ({ id, label, n }) => (
@@ -171,12 +173,19 @@ export default function MRPWorkbench() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="🧮 MRP Workbench"
+        subtitle="Regenerative material requirements planning — demand → net requirements → planned orders"
+      />
+    }>
       {/* Header + run controls */}
       <div style={{ marginBottom: 18, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ margin: '0 0 4px', color: HEAD, fontSize: 22 }}>🧮 MRP Workbench</h2>
-          <p style={{ margin: 0, color: MUT, fontSize: 13 }}>Regenerative material requirements planning — demand → net requirements → planned orders</p>
+
+
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <label style={{ fontSize: 12, color: MUT }}>Horizon (days)
@@ -489,7 +498,7 @@ export default function MRPWorkbench() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

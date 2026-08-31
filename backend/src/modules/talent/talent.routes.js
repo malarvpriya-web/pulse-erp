@@ -3,6 +3,7 @@ import multer from 'multer';
 import pool from '../shared/db.js';
 import { companyOf } from '../../shared/scope.js';
 import recruitmentRepository from '../recruitment/repositories/recruitment.repository.js';
+import { getOfferValidityDays } from '../recruitment/offerValidity.js';
 import {
   ensureFolder,
   uploadFile as driveUpload,
@@ -373,7 +374,7 @@ router.get('/agencies/:id/candidates', async (req, res) => {
       SELECT c.id, c.first_name, c.last_name, c.email, c.phone,
              c.candidate_role, c.stage, c.current_company, c.experience_years,
              c.created_at,
-             jo.title AS applied_position
+             jo.job_title AS applied_position
       FROM candidates c
       LEFT JOIN job_openings jo ON jo.id = c.opening_id
       WHERE c.source_agency_id = $1
@@ -761,13 +762,12 @@ router.get('/recruiter-dashboard', async (req, res) => {
     const params    = companyId ? [companyId] : [];
 
     // ── Core KPI counts ────────────────────────────────────────────────────
-    const [openings, candidates, interviews, offers] = await Promise.all([
-      pool.query(`SELECT COUNT(*)::int AS count FROM job_openings   WHERE status='open'${cFilter}`, params),
-      pool.query(`SELECT COUNT(*)::int AS count FROM candidates      WHERE deleted_at IS NULL${cFilter}`, params),
-      pool.query(`SELECT COUNT(*)::int AS count FROM interview_schedules
-                  WHERE interview_date >= CURRENT_DATE AND status != 'cancelled'${cFilter}`, params),
-      pool.query(`SELECT COUNT(*)::int AS count FROM offer_letters   WHERE offer_status='sent'${cFilter}`, params),
-    ]);
+    // Delegated to recruitmentRepository.getRecruitmentKpis() — the canonical
+    // source shared with /recruitment/dashboard-summary. These were four
+    // independent queries here, two of which (open_positions, pending_offers)
+    // omitted `deleted_at IS NULL` and so disagreed with the exec Dashboard's
+    // same-named KPIs whenever a row had been soft-deleted.
+    const kpis = await recruitmentRepository.getRecruitmentKpis(companyId);
 
     // ── Candidate pipeline by stage ────────────────────────────────────────
     // Shared with /recruitment/pipeline-summary and /recruitment/pipeline/:id
@@ -779,24 +779,30 @@ router.get('/recruiter-dashboard', async (req, res) => {
     } catch (_) { /* non-fatal */ }
 
     // ── Today's interviews ─────────────────────────────────────────────────
+    // Previously selected no candidate/job columns at all and hardcoded
+    // candidate_name to the literal string 'See candidate pipeline' and
+    // job_title to null on every row — every dashboard load showed that
+    // placeholder instead of who the interview was actually with. Fixed
+    // 2026-08-12 by actually joining candidates/job_openings, same pattern
+    // recruitment.repository.js's findInterviews() already uses.
     let today_interviews = [];
     try {
       const ti = await pool.query(
-        `SELECT iv.id, iv.interview_time, iv.interview_mode, iv.meeting_link,
-                e.name AS interviewer_name
+        `SELECT iv.id, iv.candidate_id, iv.interview_time, iv.interview_mode, iv.meeting_link,
+                e.name AS interviewer_name,
+                COALESCE(c.full_name, CONCAT(c.first_name, ' ', c.last_name)) AS candidate_name,
+                jo.job_title
          FROM interview_schedules iv
          LEFT JOIN employees e ON e.id = iv.interviewer_id
+         LEFT JOIN candidates c ON c.id = iv.candidate_id
+         LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
          WHERE iv.interview_date = CURRENT_DATE
            AND iv.status != 'cancelled'
            ${companyId ? 'AND iv.company_id=$1' : ''}
          ORDER BY iv.interview_time`,
         params
       );
-      today_interviews = ti.rows.map(r => ({
-        ...r,
-        candidate_name: 'See candidate pipeline',
-        job_title:      null,
-      }));
+      today_interviews = ti.rows;
     } catch (_) { /* interview_schedules schema may differ */ }
 
     // ── Recent applications (last 7 days) ─────────────────────────────────
@@ -819,21 +825,48 @@ router.get('/recruiter-dashboard', async (req, res) => {
       recent_applications = ra.rows;
     } catch (_) { /* non-fatal */ }
 
-    // ── Expiring offers (next 7 days) ──────────────────────────────────────
+    // ── Expiring offers ────────────────────────────────────────────────────
+    // Previously selected ol.offer_expiry_date and ol.position — neither
+    // column exists on offer_letters (see its CREATE TABLE in
+    // recruitment.routes.js: candidate_id, job_opening_id, offered_salary,
+    // joining_date, offer_status, offer_sent_date, response_date, notes,
+    // company_id — no expiry/position columns at all) — so this query threw
+    // on every single call, silently swallowed by the catch below, and
+    // "Expiring Offers" showed 0 unconditionally.
+    //
+    // Expiry is now a STORED column (offer_letters.offer_expiry_date, migration
+    // 20260813000001) stamped when the offer is sent, rather than derived on every
+    // read. That is what lets a recruiter extend one candidate's deadline without
+    // moving everybody else's — and it stops a change to the company default from
+    // retroactively rewriting the expiry of offers already sent.
+    //
+    // The COALESCE fallback to offer_sent_date + configured validity covers rows
+    // the migration's backfill couldn't reach (any offer sent with no sent date)
+    // and keeps this panel correct if a future write path forgets to stamp it.
     let expiring_offers  = [];
     let expiring_count   = 0;
     try {
+      const validityDays = await getOfferValidityDays(companyId ?? null);
+
       const eo = await pool.query(
-        `SELECT ol.id, ol.offer_expiry_date, ol.position
+        `SELECT ol.id, ol.candidate_id, ol.offer_sent_date,
+                COALESCE(ol.offer_expiry_date,
+                         (ol.offer_sent_date + $${params.length + 1}::int)::date) AS offer_expiry_date,
+                COALESCE(c.full_name, CONCAT(c.first_name, ' ', c.last_name)) AS candidate_name,
+                jo.job_title AS position
          FROM offer_letters ol
+         LEFT JOIN candidates c ON c.id = ol.candidate_id
+         LEFT JOIN job_openings jo ON jo.id = ol.job_opening_id
          WHERE ol.offer_status = 'sent'
-           AND ol.offer_expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
            AND ol.deleted_at IS NULL
+           AND COALESCE(ol.offer_expiry_date,
+                        (ol.offer_sent_date + $${params.length + 1}::int)::date)
+                 BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
            ${companyId ? 'AND ol.company_id=$1' : ''}
-         ORDER BY ol.offer_expiry_date`,
-        params
+         ORDER BY offer_expiry_date`,
+        [...params, validityDays]
       );
-      expiring_offers = eo.rows.map(r => ({ ...r, candidate_name: '—' }));
+      expiring_offers = eo.rows;
       expiring_count  = eo.rows.length;
     } catch (_) { /* offer_letters schema may differ */ }
 
@@ -858,26 +891,17 @@ router.get('/recruiter-dashboard', async (req, res) => {
       action_items = ai.rows;
     } catch (_) { /* non-fatal */ }
 
-    // ── Average time to hire ───────────────────────────────────────────────
-    let avg_time_to_hire = null;
-    try {
-      const att = await pool.query(
-        `SELECT ROUND(AVG(DATE_PART('day', hired_at - created_at)))::int AS avg_days
-         FROM candidates WHERE hired_at IS NOT NULL AND deleted_at IS NULL${cFilter}`,
-        params
-      );
-      avg_time_to_hire = att.rows[0]?.avg_days ?? null;
-    } catch (_) { /* hired_at column may not exist */ }
-
     res.json({
       data: {
         stats: {
-          open_positions:        openings.rows[0]?.count   ?? 0,
-          total_candidates:      candidates.rows[0]?.count ?? 0,
-          upcoming_interviews:   interviews.rows[0]?.count ?? 0,
-          pending_offers:        offers.rows[0]?.count     ?? 0,
+          open_positions:        kpis.open_positions,
+          open_headcount:        kpis.open_headcount,
+          total_candidates:      kpis.total_candidates,
+          active_candidates:     kpis.active_candidates,
+          upcoming_interviews:   kpis.upcoming_interviews,
+          pending_offers:        kpis.pending_offers,
           expiring_offers_count: expiring_count,
-          avg_time_to_hire,
+          avg_time_to_hire:      kpis.avg_time_to_hire,
         },
         pipeline,
         today_interviews,
@@ -1054,7 +1078,11 @@ router.post('/resumes', upload.single('resume'), async (req, res) => {
     }
 
     res.status(201).json({ data: candidate });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    // createCandidate() raises a 409 for an already-known email — surface it as
+    // such rather than a 500, so the uploader is told it's a duplicate.
+    res.status(e.statusCode || 500).json({ error: e.message, existing_candidate_id: e.existingCandidateId });
+  }
 });
 
 // PUT /api/talent/resumes/:id — update candidate profile from Resume Database

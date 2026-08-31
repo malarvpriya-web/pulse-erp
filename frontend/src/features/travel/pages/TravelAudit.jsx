@@ -5,6 +5,7 @@ import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import { ShieldCheck, Download, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /**
  * Travel Audit — reconciles travel spend against Finance rather than restating
@@ -61,7 +62,7 @@ const Kpi = ({ label, value, tone = 'default', sub }) => {
   const colors = {
     default: { color:'#1f2937', bg:'#fff' },
     good:    { color:'#065f46', bg:'#fff' },
-    warn:    { color:'#92400e', bg:'#fff' },
+    warn:    { color:'#5b21b6', bg:'#fff' },
     bad:     { color:'#991b1b', bg:'#fff' },
   }[tone];
   return (
@@ -134,15 +135,18 @@ export default function TravelAudit() {
   };
 
   return (
-    <div style={{ padding:24, background:'var(--color-bg-page)', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Travel"
+        title="Travel Audit"
+        subtitle="Travel spend reconciled against Finance — claims, journal entries and the travel cost ledger."
+      />
+    }>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, gap:16, flexWrap:'wrap' }}>
         <div>
-          <h1 style={{ display:'flex', alignItems:'center', gap:8, fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>
-            <ShieldCheck size={20} color="#6B3FDB"/> Travel Audit
-          </h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
-            Travel spend reconciled against Finance — claims, journal entries and the travel cost ledger.
-          </p>
+
+
         </div>
         <div style={{ display:'flex', gap:12, alignItems:'flex-end' }}>
           <div style={{ minWidth:130 }}>
@@ -232,7 +236,7 @@ export default function TravelAudit() {
                         <td key={label} style={{
                           ...td,
                           fontWeight: kind === 'money' ? 600 : 400,
-                          color: key === 'outstanding' || key === 'gst_amount' ? '#92400e' : td.color,
+                          color: key === 'outstanding' || key === 'gst_amount' ? '#5b21b6' : td.color,
                         }}>
                           {render(r, key, kind)}
                         </td>
@@ -245,12 +249,12 @@ export default function TravelAudit() {
             {rows.length > 0 && (
               <div style={{ padding:'12px 14px', borderTop:'1px solid #f0f0f4', fontSize:13, color:'#6b7280' }}>
                 Showing 1 to {rows.length} of {rows.length} entries
-                {rows.length >= 200 && <span style={{ color:'#92400e' }}> · capped at 200 — narrow the year filter to see the rest</span>}
+                {rows.length >= 200 && <span style={{ color:'#5b21b6' }}> · capped at 200 — narrow the year filter to see the rest</span>}
               </div>
             )}
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

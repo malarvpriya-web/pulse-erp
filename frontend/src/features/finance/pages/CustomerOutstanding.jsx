@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
+import { Contact } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useFY } from '@/context/FYContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = (n) =>
   `₹${(+n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
@@ -11,8 +13,8 @@ const fmtDate = (d) =>
 
 const BUCKET_STYLES = {
   current:  { bg: '#dcfce7', color: '#16a34a', label: 'Current' },
-  '1-30':   { bg: '#fef9c3', color: '#a16207', label: '1–30 d' },
-  '31-60':  { bg: '#fed7aa', color: '#c2410c', label: '31–60 d' },
+  '1-30':   { bg: '#ede9fe', color: '#6d28d9', label: '1–30 d' },
+  '31-60':  { bg: '#ddd6fe', color: '#5b21b6', label: '31–60 d' },
   '61-90':  { bg: '#fecaca', color: '#dc2626', label: '61–90 d' },
   '90+':    { bg: '#f3e8ff', color: '#6B3FDB', label: '90+ d' },
 };
@@ -29,16 +31,16 @@ function AgeingBadge({ bucket }) {
 function getAgeingStyle(days) {
   const d = parseInt(days) || 0;
   if (d <= 0)  return { color: '#16a34a' };
-  if (d <= 30) return { color: '#a16207' };
-  if (d <= 60) return { color: '#c2410c' };
+  if (d <= 30) return { color: '#6d28d9' };
+  if (d <= 60) return { color: '#5b21b6' };
   return { color: '#dc2626', fontWeight: 600 };
 }
 
 const SUMMARY_CARDS = [
   { key: 'total',      label: 'Total Outstanding',  color: '#3b82f6', bg: '#eff6ff', bucket: 'all' },
   { key: 'current',    label: 'Current (Not Due)',   color: '#16a34a', bg: '#f0fdf4', bucket: 'current' },
-  { key: 'days_1_30',  label: '1–30 Days',           color: '#a16207', bg: '#fefce8', bucket: '1-30' },
-  { key: 'days_31_60', label: '31–60 Days',           color: '#c2410c', bg: '#fff7ed', bucket: '31-60' },
+  { key: 'days_1_30',  label: '1–30 Days',           color: '#6d28d9', bg: '#f5f3ff', bucket: '1-30' },
+  { key: 'days_31_60', label: '31–60 Days',           color: '#5b21b6', bg: '#fff7ed', bucket: '31-60' },
   { key: 'days_61_90', label: '61–90 Days',           color: '#dc2626', bg: '#fef2f2', bucket: '61-90' },
   { key: 'days_90plus',label: '90+ Days',             color: '#6B3FDB', bg: '#f5f3ff', bucket: '90+' },
 ];
@@ -189,13 +191,20 @@ export default function CustomerOutstanding() {
   }), { current: 0, days_1_30: 0, days_31_60: 0, days_61_90: 0, days_90plus: 0, total: 0 });
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="Finance"
+        title="AR Ageing Report"
+        subtitle="Accounts Receivable — Customer Outstanding"
+      />
+    }>
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>AR Ageing Report</h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>Accounts Receivable — Customer Outstanding</p>
+
+
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 13, color: '#6b7280' }}>As of</span>
@@ -396,8 +405,8 @@ export default function CustomerOutstanding() {
                     <td style={{ padding: '9px 14px', fontWeight: 500 }}>{c.customer_name}</td>
                     <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.invoice_count}</td>
                     <td style={{ padding: '9px 14px', textAlign: 'right', color: '#16a34a' }}>{c.current > 0 ? fmt(c.current) : <span style={{ color: '#d1d5db' }}>—</span>}</td>
-                    <td style={{ padding: '9px 14px', textAlign: 'right', color: '#a16207' }}>{c.days_1_30 > 0 ? fmt(c.days_1_30) : <span style={{ color: '#d1d5db' }}>—</span>}</td>
-                    <td style={{ padding: '9px 14px', textAlign: 'right', color: '#c2410c' }}>{c.days_31_60 > 0 ? fmt(c.days_31_60) : <span style={{ color: '#d1d5db' }}>—</span>}</td>
+                    <td style={{ padding: '9px 14px', textAlign: 'right', color: '#6d28d9' }}>{c.days_1_30 > 0 ? fmt(c.days_1_30) : <span style={{ color: '#d1d5db' }}>—</span>}</td>
+                    <td style={{ padding: '9px 14px', textAlign: 'right', color: '#5b21b6' }}>{c.days_31_60 > 0 ? fmt(c.days_31_60) : <span style={{ color: '#d1d5db' }}>—</span>}</td>
                     <td style={{ padding: '9px 14px', textAlign: 'right', color: '#dc2626' }}>{c.days_61_90 > 0 ? fmt(c.days_61_90) : <span style={{ color: '#d1d5db' }}>—</span>}</td>
                     <td style={{ padding: '9px 14px', textAlign: 'right', color: '#6B3FDB', fontWeight: c.days_90plus > 0 ? 600 : 400 }}>{c.days_90plus > 0 ? fmt(c.days_90plus) : <span style={{ color: '#d1d5db' }}>—</span>}</td>
                     <td style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700 }}>{fmt(c.total)}</td>
@@ -411,8 +420,8 @@ export default function CustomerOutstanding() {
                       TOTAL — {customerSummary.length} customer{customerSummary.length !== 1 ? 's' : ''}
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#16a34a' }}>{fmt(csumTotals.current)}</td>
-                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#a16207' }}>{fmt(csumTotals.days_1_30)}</td>
-                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#c2410c' }}>{fmt(csumTotals.days_31_60)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#6d28d9' }}>{fmt(csumTotals.days_1_30)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#5b21b6' }}>{fmt(csumTotals.days_31_60)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#dc2626' }}>{fmt(csumTotals.days_61_90)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#6B3FDB' }}>{fmt(csumTotals.days_90plus)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#dc2626' }}>{fmt(csumTotals.total)}</td>
@@ -505,6 +514,6 @@ export default function CustomerOutstanding() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

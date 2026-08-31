@@ -226,13 +226,22 @@ router.post('/initiate', requireHRWrite, async (req, res) => {
       [employee_id, separation_type, last_working_date, notice_period, reason]
     );
 
-    // Update employee status to match separation type
-    const newStatus = separation_type === 'termination' ? 'terminated'
-                    : separation_type === 'retirement'  ? 'left'
-                    : 'resigned';
+    // Move employee into notice period — NOT straight to the terminal status
+    // (resigned/terminated/left). Those are set by exitStatusSync.cron.js once
+    // last_working_date actually arrives. 'notice' is already recognized as
+    // "still working" by payroll (payroll.service.js ACTIVE_STATUSES) and
+    // attendance (attendance.repository.js), so pay/attendance continue
+    // uninterrupted through the notice period instead of being cut the moment
+    // HR clicks "initiate". Immediate login revocation (for terminations that
+    // need it) is a separate, already-independent action — see the Exit
+    // Clearance Engine's access_revoked toggle further down this file.
+    // Capitalized to match the live employees.status convention ('Active'/
+    // 'Probation' written at creation — see employee.service.js addEmployee)
+    // and the frontend's STATUS_STYLE.Notice badge, which is keyed on the
+    // exact string 'Notice'.
     await client.query(
-      `UPDATE employees SET status=$1 WHERE id=$2`,
-      [newStatus, employee_id]
+      `UPDATE employees SET status='Notice' WHERE id=$1`,
+      [employee_id]
     );
 
     await client.query('COMMIT');

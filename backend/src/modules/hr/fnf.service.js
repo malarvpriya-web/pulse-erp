@@ -43,17 +43,10 @@ export async function computeFnf(db, employeeId) {
       [employeeId]
     );
     leaveBalance = parseFloat(lbRes.rows[0]?.bal || 0);
-    // If no earned leave row, fall back to the hr_attendance_summary if available
-    if (leaveBalance === 0) {
-      const attRes = await db.query(
-        `SELECT COALESCE(earned_leave_balance, 0) AS bal
-         FROM hr_attendance_summary
-         WHERE employee_id = $1
-         ORDER BY created_at DESC LIMIT 1`,
-        [employeeId]
-      );
-      leaveBalance = parseFloat(attRes.rows[0]?.bal || 0);
-    }
+    // A second lookup used to fall back to hr_attendance_summary.earned_leave_balance.
+    // That table has never existed, and no table in this schema carries an
+    // earned-leave balance at all, so the fallback could only ever yield 0.
+    // Removed: `leave_balances` is the single source for encashable leave.
   } catch (_) { leaveBalance = 0; }
   const leaveEncashment = parseFloat((leaveBalance * dailyBasic).toFixed(2));
 

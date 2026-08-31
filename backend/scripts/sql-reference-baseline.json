@@ -1,0 +1,5 @@
+{
+  "note": "Known-broken SQL references, carried so the repo-wide gate can fail on NEW ones. This list may only shrink.",
+  "generated": "2026-08-20",
+  "known": []
+}

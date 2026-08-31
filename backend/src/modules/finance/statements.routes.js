@@ -49,7 +49,7 @@ router.get('/income-statement', requirePermission('finance', 'view'), async (req
       // Operating expenses (bills + expenses) — excludes COGS-type entries
       q1(`SELECT
             COALESCE((SELECT SUM(total_amount) FROM bills    WHERE DATE(bill_date)   BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS bills_total,
-            COALESCE((SELECT SUM(amount)       FROM expenses WHERE DATE(created_at)  BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS expense_total
+            COALESCE((SELECT SUM(amount)       FROM expense_claims WHERE DATE(created_at)  BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS expense_total
           `, [fyStart, fyEnd, cid]),
 
       // COGS from GL — debit movements on accounts with sub_type = 'cogs' (account 5001)
@@ -137,7 +137,7 @@ router.get('/balance-sheet', requirePermission('finance', 'view'), async (req, r
 
     const [arRow, apRow, cashRow, fixedRow, invRow, gstItcRow, gstPayRow, tdsPayRow, salaryPayRow] = await Promise.all([
       // Accounts Receivable
-      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid,0)),0) AS ar
+      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0) AS ar
           FROM invoices WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
 
       // Accounts Payable
@@ -290,7 +290,7 @@ router.get('/cash-flow', requirePermission('finance', 'view'), async (req, res) 
     const [receiptsRow, paymentsRow, expRow, assetRow] = await Promise.all([
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM receipts  WHERE DATE(receipt_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM payments  WHERE DATE(payment_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
-      q1(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses  WHERE DATE(created_at)   BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
+      q1(`SELECT COALESCE(SUM(amount),0) AS total FROM expense_claims  WHERE DATE(created_at)   BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(cost),0)   AS total FROM fixed_assets WHERE DATE(purchase_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
     ]);
 
@@ -464,7 +464,7 @@ router.get('/breakeven-analysis', requirePermission('finance', 'view'), async (r
           FROM invoices WHERE DATE(invoice_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT
             COALESCE(SUM(amount),0) AS total_exp
-          FROM expenses
+          FROM expense_claims
           WHERE DATE(created_at) BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
     ]);
 
@@ -522,12 +522,12 @@ router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => 
     const cid = companyOf(req);
 
     const [arRow, apRow, cashRow, fixedRow, revRow, expRow] = await Promise.all([
-      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid,0)),0) AS ar FROM invoices WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
+      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0) AS ar FROM invoices WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS ap FROM bills WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
       q1(`SELECT COALESCE(SUM(current_balance),0) AS cash FROM bank_accounts WHERE company_id = $1`, [cid]),
       q1(`SELECT COALESCE(SUM(cost - COALESCE(accumulated_depreciation,0)),0) AS net FROM fixed_assets WHERE status != 'disposed' AND company_id = $1`, [cid]),
       q1(`SELECT COALESCE(SUM(CASE WHEN status NOT IN ('draft','cancelled') THEN total_amount ELSE 0 END),0) AS revenue FROM invoices WHERE DATE(invoice_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
-      q1(`SELECT COALESCE(SUM(amount),0) AS expenses FROM expenses WHERE DATE(created_at) BETWEEN $1 AND $2 AND status='approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
+      q1(`SELECT COALESCE(SUM(amount),0) AS expenses FROM expense_claims WHERE DATE(created_at) BETWEEN $1 AND $2 AND status='approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
     ]);
 
     const ar       = n(arRow.ar);
@@ -690,7 +690,7 @@ router.get('/export/income-statement', requirePermission('finance', 'view'), asy
                  COALESCE(SUM(CASE WHEN status IN ('paid','partially_paid') THEN total_amount ELSE 0 END),0) AS collected
           FROM invoices WHERE DATE(invoice_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE((SELECT SUM(total_amount) FROM bills    WHERE DATE(bill_date)  BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS bills_total,
-                 COALESCE((SELECT SUM(amount)       FROM expenses WHERE DATE(created_at) BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS expense_total
+                 COALESCE((SELECT SUM(amount)       FROM expense_claims WHERE DATE(created_at) BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS expense_total
           `, [fyStart, fyEnd, cid]),
     ]);
     const revenue  = n(revRow.revenue);
@@ -716,7 +716,7 @@ router.get('/export/balance-sheet', requirePermission('finance', 'view'), async 
     const { fyEnd } = fyRange(req.query);
     const cid = companyOf(req);
     const [arRow, apRow, cashRow, fixedRow] = await Promise.all([
-      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(amount_paid,0)),0) AS ar FROM invoices WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
+      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0) AS ar FROM invoices WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS ap FROM bills WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
       q1(`SELECT COALESCE(SUM(current_balance),0) AS cash FROM bank_accounts WHERE company_id = $1`, [cid]),
       q1(`SELECT COALESCE(SUM(cost),0) AS gross, COALESCE(SUM(accumulated_depreciation),0) AS dep FROM fixed_assets WHERE status != 'disposed' AND company_id = $1`, [cid]),
@@ -746,7 +746,7 @@ router.get('/export/cash-flow', requirePermission('finance', 'view'), async (req
     const [receiptsRow, paymentsRow, expRow, assetRow] = await Promise.all([
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM receipts  WHERE DATE(receipt_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM payments  WHERE DATE(payment_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
-      q1(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses  WHERE DATE(created_at)   BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
+      q1(`SELECT COALESCE(SUM(amount),0) AS total FROM expense_claims  WHERE DATE(created_at)   BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(cost),0)   AS total FROM fixed_assets WHERE DATE(purchase_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
     ]);
     const inflow  = n(receiptsRow.total);
@@ -778,7 +778,7 @@ router.get('/sales-register', requirePermission('finance', 'view'), async (req, 
         p.name               AS customer_name,
         p.gstin              AS customer_gstin,
         i.place_of_supply,
-        i.taxable_amount,
+        i.subtotal,
         COALESCE(i.cgst, 0)  AS cgst,
         COALESCE(i.sgst, 0)  AS sgst,
         COALESCE(i.igst, 0)  AS igst,
@@ -821,7 +821,7 @@ router.get('/purchase-register', requirePermission('finance', 'view'), async (re
         DATE(b.bill_date)    AS bill_date,
         p.name               AS supplier_name,
         p.gstin              AS supplier_gstin,
-        b.taxable_amount,
+        b.subtotal,
         COALESCE(b.cgst, 0)  AS cgst,
         COALESCE(b.sgst, 0)  AS sgst,
         COALESCE(b.igst, 0)  AS igst,
@@ -864,16 +864,16 @@ router.get('/customer-outstanding', requirePermission('finance', 'view'), async 
         p.phone,
         COUNT(i.id) AS invoice_count,
         COALESCE(SUM(i.total_amount), 0)                                  AS total_billed,
-        COALESCE(SUM(COALESCE(i.amount_paid, 0)), 0)                      AS total_paid,
-        COALESCE(SUM(i.total_amount - COALESCE(i.amount_paid, 0)), 0)     AS outstanding,
-        COALESCE(SUM(CASE WHEN i.due_date < CURRENT_DATE THEN i.total_amount - COALESCE(i.amount_paid,0) ELSE 0 END), 0) AS overdue,
+        COALESCE(SUM(COALESCE(i.paid_amount, 0)), 0)                      AS total_paid,
+        COALESCE(SUM(i.total_amount - COALESCE(i.paid_amount, 0)), 0)     AS outstanding,
+        COALESCE(SUM(CASE WHEN i.due_date < CURRENT_DATE THEN i.total_amount - COALESCE(i.paid_amount,0) ELSE 0 END), 0) AS overdue,
         MIN(i.due_date)                                                    AS oldest_due
       FROM invoices i
       JOIN parties p ON p.id = i.customer_id
       WHERE LOWER(i.status) NOT IN ('paid','cancelled','draft')
         AND i.company_id = $1
       GROUP BY p.id, p.name, p.gstin, p.phone
-      HAVING SUM(i.total_amount - COALESCE(i.amount_paid, 0)) > 0
+      HAVING SUM(i.total_amount - COALESCE(i.paid_amount, 0)) > 0
       ORDER BY outstanding DESC
     `, [cid]);
 

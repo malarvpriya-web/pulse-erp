@@ -374,7 +374,7 @@ router.get('/esi-challan', verifyToken, allowRoles(...HR_ROLES), async (req, res
         pr.employer_esi,
         e.first_name, e.last_name,
         e.office_id         AS employee_code,
-        COALESCE(e.esic_ip_number, '') AS ip_number
+        COALESCE(e.esic_number, '') AS ip_number
       FROM payroll_runs pr
       JOIN employees e ON e.id = pr.employee_id
       WHERE pr.month = $1 AND pr.year = $2

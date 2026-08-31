@@ -3,6 +3,7 @@ import api from '@/services/api/client';
 import { Plus, Target, X, TrendingUp, CheckCircle, AlertTriangle, Clock, Zap, Edit2, Trash2 } from 'lucide-react';
 import './Goals.css';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY_FORM = {
   goal_title: '', goal_description: '', target_value: '', achieved_value: '0',
@@ -27,7 +28,7 @@ function pct(g) {
 }
 
 function ringColor(p) {
-  return p >= 100 ? '#10b981' : p >= 70 ? '#4338ca' : p >= 30 ? '#f59e0b' : '#ef4444';
+  return p >= 100 ? '#10b981' : p >= 70 ? '#4338ca' : p >= 30 ? '#7c5cf0' : '#ef4444';
 }
 
 function GoalCard({ goal, onCheckin, onEdit, onDelete }) {
@@ -203,21 +204,18 @@ export default function Goals() {
   const filtered = tab === 'all' ? goals : goals.filter(g => g.status === tab);
 
   return (
-    <div className="gl-root">
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Performance"
+        title="Goals & KPIs"
+        actions={<button className="plh-cta" onClick={openCreate}>
+          <Plus size={15} /> Add Goal
+        </button>}
+      />
+    }>
       {toast && <div className={`gl-toast gl-toast-${toast.type}`}>{toast.msg}</div>}
 
-      <div className="gl-header">
-        <div className="gl-header-left">
-          <div className="gl-header-icon"><Target size={20} /></div>
-          <div>
-            <h1 className="gl-title">Goals & KPIs</h1>
-            <p className="gl-sub">{goals.length} goals tracked this period</p>
-          </div>
-        </div>
-        <button className="gl-add-btn" onClick={openCreate}>
-          <Plus size={15} /> Add Goal
-        </button>
-      </div>
 
       <div className="gl-body">
         {/* KPIs */}
@@ -225,7 +223,7 @@ export default function Goals() {
           {[
             { icon: <Target size={16} />,        val: counts.all,      label: 'Total Goals',  bg: '#eef2ff', color: '#4338ca' },
             { icon: <TrendingUp size={16} />,     val: counts.active,   label: 'On Track',     bg: '#dbeafe', color: '#1d4ed8' },
-            { icon: <AlertTriangle size={16} />,  val: counts.at_risk,  label: 'At Risk',      bg: '#fef3c7', color: '#d97706' },
+            { icon: <AlertTriangle size={16} />,  val: counts.at_risk,  label: 'At Risk',      bg: '#ede9fe', color: '#6d28d9' },
             { icon: <CheckCircle size={16} />,    val: counts.achieved, label: 'Achieved',     bg: '#dcfce7', color: '#15803d' },
             { icon: <Clock size={16} />,          val: counts.overdue,  label: 'Overdue',      bg: '#fee2e2', color: '#dc2626' },
           ].map(k => (
@@ -407,6 +405,6 @@ export default function Goals() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Shield, RefreshCw, Plus, Trash2, Search, X, Star,
-  ChevronLeft, ChevronRight, ChevronUp, ChevronDown,
+  Shield, RefreshCw, Plus, Trash2, Search, X, Star, ChevronLeft,
+  ChevronRight, ChevronUp, ChevronDown, ShieldCheck,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PAGE_SIZES = [10, 25, 50, 100];
 
@@ -15,8 +16,8 @@ const ROLE_COLORS = {
   hr_manager:      { color: '#0369a1', bg: '#e0f2fe' },
   finance:         { color: '#16a34a', bg: '#dcfce7' },
   finance_manager: { color: '#16a34a', bg: '#dcfce7' },
-  manager:         { color: '#d97706', bg: '#fef3c7' },
-  department_head: { color: '#d97706', bg: '#fef3c7' },
+  manager:         { color: '#6d28d9', bg: '#ede9fe' },
+  department_head: { color: '#6d28d9', bg: '#ede9fe' },
   employee:        { color: '#6b7280', bg: '#f3f4f6' },
 };
 const DEFAULT_ROLE_COLOR = { color: '#4b5563', bg: '#eef2f7' };
@@ -161,7 +162,13 @@ export default function RolesSetup() {
     setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   return (
-    <div className="pulse-page" style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Administration"
+        title="Roles Setup"
+      />
+    }>
 
       <ConfirmDialog
         open={!!confirm}
@@ -173,21 +180,6 @@ export default function RolesSetup() {
         onCancel={() => setConfirm(null)}
       />
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 10, background: '#ede9fe', color: '#6B3FDB', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Shield size={20} />
-          </div>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: '#111827' }}>Roles Setup</h1>
-            <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
-              One row per role assignment — a member can hold several. All changes are audit-logged.
-              {total > 0 && <span style={{ marginLeft: 8, fontWeight: 600, color: '#374151' }}>{total} assignments.</span>}
-            </p>
-          </div>
-        </div>
-      </div>
 
       {msg && (
         <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: msg.type === 'ok' ? '#dcfce7' : '#fee2e2', color: msg.type === 'ok' ? '#16a34a' : '#dc2626' }}>
@@ -316,8 +308,8 @@ export default function RolesSetup() {
                           </span>
                           {r.is_primary && (
                             <span title="Primary role — drives users.role and legacy single-role checks"
-                              style={{ display: 'inline-flex', color: '#d97706' }}>
-                              <Star size={12} fill="#d97706" />
+                              style={{ display: 'inline-flex', color: '#6d28d9' }}>
+                              <Star size={12} fill="#6d28d9" />
                             </span>
                           )}
                         </span>
@@ -334,7 +326,7 @@ export default function RolesSetup() {
                           {!r.is_primary && (
                             <button onClick={() => makePrimary(r.assignment_id)} disabled={busy}
                               title="Make this the member's primary role"
-                              style={{ padding: '4px 9px', background: '#fffbeb', color: '#d97706', border: '1px solid #fef3c7', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                              style={{ padding: '4px 9px', background: '#f5f3ff', color: '#6d28d9', border: '1px solid #ede9fe', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
                               Set primary
                             </button>
                           )}
@@ -396,7 +388,7 @@ export default function RolesSetup() {
           }}
         />
       )}
-    </div>
+    </PageShell>
   );
 }
 

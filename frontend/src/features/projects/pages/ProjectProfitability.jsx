@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import { TrendingUp, TrendingDown, IndianRupee, Layers, Search, BarChart2, Plus, X } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  TrendingUp, TrendingDown, IndianRupee, Layers, Search, BarChart2,
+  Plus, X, FolderKanban,
+} from 'lucide-react';
 
 const fmtL = v => {
   const n = Number(v||0);
@@ -10,8 +14,8 @@ const fmtL = v => {
   return `₹${n.toLocaleString('en-IN')}`;
 };
 
-const pctColor = v => Number(v) >= 20 ? '#10b981' : Number(v) >= 10 ? '#f59e0b' : '#ef4444';
-const pctBg   = v => Number(v) >= 20 ? '#f0fdf4' : Number(v) >= 10 ? '#fffbeb' : '#fef2f2';
+const pctColor = v => Number(v) >= 20 ? '#10b981' : Number(v) >= 10 ? '#7c5cf0' : '#ef4444';
+const pctBg   = v => Number(v) >= 20 ? '#f0fdf4' : Number(v) >= 10 ? '#f5f3ff' : '#fef2f2';
 
 const COST_TYPES = [
   'Sales Travel','Application Engineering','Design','Procurement','Material',
@@ -89,23 +93,23 @@ export default function ProjectProfitability() {
   const labelStyle = { display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:5 };
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Project Profitability</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Revenue, cost breakdown and margin analysis per project</p>
-        </div>
-        <button onClick={() => setShowCostForm(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Projects"
+        title="Project Profitability"
+        subtitle="Revenue, cost breakdown and margin analysis per project"
+        actions={<button className="plh-cta" onClick={() => setShowCostForm(true)}>
           <Plus size={15}/> Add Cost Line
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Summary cards */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20 }}>
         {[
           { label:'Total Revenue', value: fmtL(totals.revenue), icon: IndianRupee, color:'#10b981' },
-          { label:'Total Cost', value: fmtL(totals.cost), icon: Layers, color:'#f59e0b' },
+          { label:'Total Cost', value: fmtL(totals.cost), icon: Layers, color:'#7c5cf0' },
           { label:'Gross Profit', value: fmtL(totals.profit), icon: totals.profit >= 0 ? TrendingUp : TrendingDown, color: totals.profit >= 0 ? '#10b981' : '#ef4444' },
         ].map(k => (
           <div key={k.label} style={{ background:'#fff', borderRadius:12, padding:20, border:'1px solid #f0f0f4' }}>
@@ -330,6 +334,6 @@ export default function ProjectProfitability() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
-  TrendingUp, TrendingDown, Minus, Plus, Search, RefreshCw,
-  X, BarChart2, ChevronDown, Tag, ArrowUp, ArrowDown, Save,
+  TrendingUp, TrendingDown, Minus, Plus, Search, RefreshCw, X,
+  BarChart2, ChevronDown, Tag, ArrowUp, ArrowDown, Save, ScrollText,
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -9,12 +9,13 @@ import {
 } from 'recharts';
 import api from '@/services/api/client';
 import './PriceHistory.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const INR = n => n == null ? '—' : `₹${parseFloat(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDate = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 const fmtShort = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '';
 
-const VENDOR_COLORS = ['#10b981','#6366f1','#f59e0b','#ef4444','#8b5cf6','#0ea5e9','#f97316','#14b8a6'];
+const VENDOR_COLORS = ['#10b981','#6366f1','#7c5cf0','#ef4444','#8b5cf6','#0ea5e9','#7c5cf0','#14b8a6'];
 
 const EMPTY_FORM = { vendor_name_text: '', unit_price: '', quantity: '', price_date: new Date().toISOString().slice(0,10), price_type: 'purchase', reference_number: '', notes: '' };
 
@@ -218,27 +219,26 @@ export default function PriceHistory() {
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   return (
-    <div className="ph-root">
-      {toast && <div className={`ph-toast ph-toast-${toast.type}`}>{toast.msg}</div>}
-
-      {/* Header */}
-      <div className="ph-header">
-        <div className="ph-header-left">
-          <div className="ph-header-icon"><TrendingUp size={20} /></div>
-          <div>
-            <h1 className="ph-title">Price History</h1>
-            <p className="ph-sub">Track, compare and analyse purchase price trends by item and vendor</p>
-          </div>
-        </div>
-        <div className="ph-header-right">
-          <button className="ph-icon-btn" onClick={loadHistory} title="Refresh"><RefreshCw size={14} /></button>
+    <PageShell dock={
+      <PageHero
+        icon={ScrollText}
+        eyebrow="Procurement"
+        title="Price History"
+        subtitle="Track, compare and analyse purchase price trends by item and vendor"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={loadHistory} title="Refresh"><RefreshCw size={14} /></button>
           {selectedItem && (
-            <button className="ph-btn-add" onClick={() => { setForm(EMPTY_FORM); setShowForm(true); }}>
+            <button className="plh-cta" onClick={() => { setForm(EMPTY_FORM); setShowForm(true); }}>
               <Plus size={14} /> Add Price
             </button>
           )}
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {toast && <div className={`ph-toast ph-toast-${toast.type}`}>{toast.msg}</div>}
+
+      {/* Header */}
+
 
       <div className="ph-body">
         {/* Item selector + date filters */}
@@ -556,6 +556,6 @@ export default function PriceHistory() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

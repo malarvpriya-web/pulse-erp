@@ -3,6 +3,7 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { resolveRange } from '../../shared/dashboardFilters.js';
 import grnService from '../procurement/services/grn.service.js';
 
 const router = Router();
@@ -152,7 +153,8 @@ router.get('/inspect', canView, async (req, res) => {
       FROM inspection_reports r
       LEFT JOIN inspection_checklists c ON c.id = r.checklist_id
       LEFT JOIN goods_receipt_notes g ON g.id = r.grn_id
-      LEFT JOIN vendors v ON v.id = g.vendor_id
+      LEFT JOIN purchase_orders po ON po.id = g.po_id
+      LEFT JOIN vendors v ON v.id = po.supplier_id
       WHERE ($1::int IS NULL OR r.company_id = $1)`;
     if (status)              { params.push(status);              q += ` AND r.status=$${params.length}`; }
     if (type || stage)       { params.push(type || stage);       q += ` AND c.type=$${params.length}`; }
@@ -436,6 +438,20 @@ router.post('/ncr/:id/close', canManage, async (req, res) => {
       [disposition, root_cause, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Not found' });
+
+    // 'use-as-is' means Quality is accepting the nonconforming material into
+    // stock despite the failed test. grn.service.js's holdForIqc withheld this
+    // GRN's accepted quantity from inventory_items.current_stock at receipt,
+    // and rollupQualityStatus() only ever releases it when every test on the
+    // GRN passes — a GRN stuck at quality_status='failed' had no other path
+    // to release, so "use as is" material sat unusable forever even though
+    // the business decision was to accept it. releaseGrnStock() is idempotent
+    // (checks the stock_ledger's own grn reference), so this is safe to call
+    // regardless of the GRN's quality_status.
+    if (disposition === 'use-as-is' && rows[0].grn_id) {
+      await grnService.releaseGrnStock(rows[0].grn_id);
+    }
+
     logAudit({ userId: uid(req), module: 'quality', recordId: req.params.id, recordType: 'ncr_report', action: 'close', newData: { disposition }, req });
     res.json({ success: true, data: rows[0] });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
@@ -485,7 +501,7 @@ router.post('/capa', canCreate, async (req, res) => {
     );
     if (employee_id) {
       pool.query(
-        `INSERT INTO notifications (employee_id, type, title, message, module, link) VALUES ($1,'task','CAPA Assigned',$2,'quality','/quality/capa')`,
+        `INSERT INTO notifications (user_id, notification_type, title, message, module_name, link) VALUES ($1,'task','CAPA Assigned',$2,'quality','/quality/capa')`,
         [employee_id, `CAPA assigned: ${String(description).slice(0, 100)}`]
       ).catch(() => {});
     }
@@ -788,7 +804,15 @@ router.get('/supplier-quality/:vendorId', canView, async (req, res) => {
     const [vendorRes, ncrsRes, grnsRes] = await Promise.all([
       pool.query('SELECT * FROM vendors WHERE id=$1', [vendorId]),
       pool.query(`SELECT n.*, g.grn_number FROM ncr_reports n LEFT JOIN goods_receipt_notes g ON g.id=n.grn_id WHERE n.vendor_id=$1 AND ($2::int IS NULL OR n.company_id=$2) ORDER BY n.created_at DESC LIMIT 20`, [vendorId, companyId]),
-      pool.query(`SELECT g.*, ir.status as inspection_status FROM goods_receipt_notes g LEFT JOIN inspection_reports ir ON ir.grn_id=g.id WHERE g.vendor_id=$1 AND ($2::int IS NULL OR g.company_id=$2) ORDER BY g.created_at DESC LIMIT 20`, [vendorId, companyId]),
+      // A GRN carries no vendor_id; the vendor is on the purchase order it
+      // receives against, so supplier quality is reached through po.supplier_id.
+      pool.query(`SELECT g.*, ir.status as inspection_status
+                    FROM goods_receipt_notes g
+                    JOIN purchase_orders po ON po.id = g.po_id
+                    LEFT JOIN inspection_reports ir ON ir.grn_id = g.id
+                   WHERE po.supplier_id::text = $1::text
+                     AND ($2::int IS NULL OR g.company_id = $2)
+                   ORDER BY g.created_at DESC LIMIT 20`, [vendorId, companyId]),
     ]);
     if (!vendorRes.rows.length) return res.status(404).json({ success: false, error: 'Vendor not found' });
     res.json({ success: true, data: { vendor: vendorRes.rows[0], ncrs: ncrsRes.rows, grns: grnsRes.rows } });
@@ -832,23 +856,40 @@ router.put('/settings', canAdmin, async (req, res) => {
 router.get('/dashboard', canView, async (req, res) => {
   try {
     const companyId = cid(req);
-    const cp = [companyId];
+    // Period filter (?period=… / ?from=&to=). Was hardcoded to MTD for the pass
+    // rate and a fixed 90 days for defect categories, with no way to change it.
+    const range = resolveRange(req.query, { defaultPeriod: 'fytd' });
+    // $1 company, $2 range start, $3 range end (end is inclusive of the day).
+    const cp = [companyId, range.from, range.to];
+    // Activity counts respect the range; open-backlog and now-relative counts
+    // (overdue CAPAs, calibration due, open punch points) are point-in-time by
+    // definition and stay unfiltered.
+    const inRange = (col) => `($2::date IS NULL OR ${col}>=$2::date) AND ($3::date IS NULL OR ${col}<($3::date + INTERVAL '1 day'))`;
     const [pr, ncrs, capas, cats, insp, cal, punch, recent] = await Promise.allSettled([
-      pool.query(`SELECT COUNT(*) FILTER (WHERE status='pass') as passed,COUNT(*) as total FROM inspection_reports WHERE inspected_at>=date_trunc('month',NOW()) AND ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT severity,COUNT(*) as count FROM ncr_reports WHERE status!='closed' AND ($1::int IS NULL OR company_id=$1) GROUP BY severity`, cp),
-      pool.query(`SELECT COUNT(*) as count FROM capa_actions WHERE status NOT IN ('completed','verified') AND due_date<NOW() AND ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT COALESCE(type,'general') as category,COUNT(*) as count FROM ncr_reports WHERE created_at>=NOW()-INTERVAL '90 days' AND ($1::int IS NULL OR company_id=$1) GROUP BY type ORDER BY count DESC LIMIT 5`, cp),
-      pool.query(`SELECT COUNT(*) as total FROM inspection_reports WHERE ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT COUNT(*) as count FROM calibration_equipment WHERE calibration_status IN ('due','overdue','expired') AND deleted_at IS NULL AND ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT COUNT(*) as count FROM punch_points WHERE status NOT IN ('closed','waived') AND ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT n.ncr_number,n.title,n.severity,n.status,n.created_at,v.name as vendor_name FROM ncr_reports n LEFT JOIN vendors v ON v.id=n.vendor_id WHERE ($1::int IS NULL OR n.company_id=$1) ORDER BY n.created_at DESC LIMIT 5`, cp),
+      pool.query(`SELECT COUNT(*) FILTER (WHERE status='pass') as passed,COUNT(*) as total FROM inspection_reports WHERE ${inRange('inspected_at')} AND ($1::int IS NULL OR company_id=$1)`, cp),
+      pool.query(`SELECT severity,COUNT(*) as count FROM ncr_reports WHERE status!='closed' AND ${inRange('created_at')} AND ($1::int IS NULL OR company_id=$1) GROUP BY severity`, cp),
+      pool.query(`SELECT COUNT(*) as count FROM capa_actions WHERE status NOT IN ('completed','verified') AND due_date<NOW() AND ($1::int IS NULL OR company_id=$1)`, [companyId]),
+      pool.query(`SELECT COALESCE(type,'general') as category,COUNT(*) as count FROM ncr_reports WHERE ${inRange('created_at')} AND ($1::int IS NULL OR company_id=$1) GROUP BY type ORDER BY count DESC LIMIT 5`, cp),
+      // Lifetime total — the "Total Inspections" card is a cumulative figure,
+      // deliberately not narrowed by the period selector.
+      pool.query(`SELECT COUNT(*) as total FROM inspection_reports WHERE ($1::int IS NULL OR company_id=$1)`, [companyId]),
+      pool.query(`SELECT COUNT(*) as count FROM calibration_equipment WHERE calibration_status IN ('due','overdue','expired') AND deleted_at IS NULL AND ($1::int IS NULL OR company_id=$1)`, [companyId]),
+      pool.query(`SELECT COUNT(*) as count FROM punch_points WHERE status NOT IN ('closed','waived') AND ($1::int IS NULL OR company_id=$1)`, [companyId]),
+      pool.query(`SELECT n.ncr_number,n.title,n.severity,n.status,n.created_at,v.name as vendor_name FROM ncr_reports n LEFT JOIN vendors v ON v.id=n.vendor_id WHERE ${inRange('n.created_at')} AND ($1::int IS NULL OR n.company_id=$1) ORDER BY n.created_at DESC LIMIT 5`, cp),
     ]);
     const p = pr.status === 'fulfilled' ? pr.value.rows[0] : { passed: 0, total: 0 };
     const passRatePct = parseInt(p.total) > 0 ? Math.round(parseInt(p.passed) * 100 / parseInt(p.total)) : 0;
     const ncrBySeverity = { critical: 0, major: 0, minor: 0 };
     if (ncrs.status === 'fulfilled') ncrs.value.rows.forEach(r => { ncrBySeverity[r.severity] = parseInt(r.count); });
     res.json({
+      period: range.period,
+      period_label: range.label,
+      period_from: range.from,
+      period_to: range.to,
       pass_rate_pct: passRatePct,
+      inspections_in_period: parseInt(p.total),
+      // Retained for any caller still reading the old key; same number, which is
+      // now the selected period rather than always month-to-date.
       inspections_this_month: parseInt(p.total),
       open_ncrs_total: Object.values(ncrBySeverity).reduce((a, b) => a + b, 0),
       open_ncrs_by_severity: ncrBySeverity,
@@ -1113,13 +1154,28 @@ router.put('/tests/:id', canCreate, async (req, res) => {
         const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
         const ncrNum = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
         const source = updated.source_type === 'grn' ? 'procurement' : 'production';
-        const refType = updated.source_type === 'grn' ? 'grn' : 'production_operation';
+        // Must mirror holdProductionOrderOnQcFail's branching two lines above
+        // (production_order_id takes priority over operation_id) — hasOpenNcr()
+        // in execution.routes.js only ever matches ('production_order', <order
+        // id>) or ('production_operation', <a real production_operations.id>).
+        // This used to hardcode 'production_operation' with reference_id =
+        // source_id for every non-GRN failure, so an order-level test (no
+        // operation_id) raised an NCR tagged with the order's own id under the
+        // wrong reference_type — hasOpenNcr's subquery could never match it
+        // back to a production_operations row, so the stop-ship gate could
+        // never see it and the hold was trivially clearable.
+        const refType = updated.source_type === 'grn' ? 'grn'
+          : updated.production_order_id ? 'production_order'
+          : 'production_operation';
+        const refId = updated.source_type === 'grn' ? (updated.source_id || updated.operation_id)
+          : updated.production_order_id ? updated.production_order_id
+          : (updated.operation_id || updated.source_id);
         const nr = await pool.query(
           `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,'major',$8,$9) RETURNING *`,
           [`Quality test failed — ${updated.test_name}`,
            `Test "${updated.test_name}" failed. Reading: ${actual_value ?? ''} ${updated.unit || ''}. ${remarks || ''}`.trim(),
-           ncrNum, testedName, refType, updated.source_id || updated.operation_id, updated.grn_id || null, source, companyId]
+           ncrNum, testedName, refType, refId, updated.grn_id || null, source, companyId]
         ).catch(() => ({ rows: [] }));
         if (nr.rows[0]) {
           autoNcr = nr.rows[0];

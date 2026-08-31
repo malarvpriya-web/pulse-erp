@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Ticket, RefreshCw, X } from 'lucide-react';
+import { Plus, Ticket, RefreshCw, X, LifeBuoy } from 'lucide-react';
 import api from '@/services/api/client';
 import { priorityColor, statusColor } from './ticketUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 export default function MyTickets() {
   const [tickets,    setTickets]    = useState([]);
@@ -38,7 +39,21 @@ export default function MyTickets() {
   };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="My Tickets"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={14} />
+          </button>
+          <button className="plh-cta" onClick={() => setDrawer(true)}>
+            <Plus size={15} /> Raise Ticket
+          </button>
+        </>}
+      />
+    }>
 
       {toast && (
         <div style={{ position: 'fixed', top: 24, right: 24, zIndex: 9999, padding: '12px 20px',
@@ -48,20 +63,6 @@ export default function MyTickets() {
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <div>
-          <h2 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>My Tickets</h2>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '2px 0 0' }}>{tickets.length} ticket{tickets.length !== 1 ? 's' : ''} raised by you</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={load} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', color: '#6b7280' }}>
-            <RefreshCw size={14} />
-          </button>
-          <button onClick={() => setDrawer(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-            <Plus size={15} /> Raise Ticket
-          </button>
-        </div>
-      </div>
 
       {loading ? (
         <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200 }}>
@@ -163,6 +164,6 @@ export default function MyTickets() {
       )}
 
       <style>{`@keyframes mytkt-spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </PageShell>
   );
 }

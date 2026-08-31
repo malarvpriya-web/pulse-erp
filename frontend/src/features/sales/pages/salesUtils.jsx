@@ -12,7 +12,7 @@ const BADGE_COLORS = {
   purple: { bg: '#f5f3ff', text: '#6B3FDB', border: '#e9e4ff' },
   blue:   { bg: '#eff6ff', text: '#2563eb', border: '#bfdbfe' },
   green:  { bg: '#f0fdf4', text: '#16a34a', border: '#bbf7d0' },
-  amber:  { bg: '#fffbeb', text: '#d97706', border: '#fde68a' },
+  amber:  { bg: '#f5f3ff', text: '#6d28d9', border: '#ddd6fe' },
   red:    { bg: '#fef2f2', text: '#dc2626', border: '#fecaca' },
   grey:   { bg: '#f9fafb', text: '#6b7280', border: '#e5e7eb' },
 };

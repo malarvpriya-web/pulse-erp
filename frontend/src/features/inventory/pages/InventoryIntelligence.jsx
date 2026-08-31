@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
-import { AlertTriangle, ArrowRightLeft, TrendingDown, Receipt } from 'lucide-react';
+import { AlertTriangle, ArrowRightLeft, TrendingDown, Receipt, Package } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
-import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 
 const fmt = (n) => `₹${parseFloat(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
@@ -13,7 +13,7 @@ const cardStyle = { background: '#fff', border: '1px solid #f0f0f4', borderRadiu
 const thStyle = { padding: '10px 16px', textAlign: 'left', fontWeight: 600, fontSize: 12, color: '#6b7280', background: '#fafafa', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap' };
 const tdStyle = { padding: '10px 16px', fontSize: 13, color: '#111827', borderBottom: '1px solid #f8f8fc' };
 const CAT_COLORS = { A: '#6B3FDB', B: '#0891b2', C: '#059669' };
-const STATUS_COLORS = { draft: { bg: '#fef3c7', color: '#92400e' }, 'in-transit': { bg: '#dbeafe', color: '#1e40af' }, received: { bg: '#d1fae5', color: '#065f46' }, cancelled: { bg: '#fee2e2', color: '#991b1b' } };
+const STATUS_COLORS = { draft: { bg: '#ede9fe', color: '#5b21b6' }, 'in-transit': { bg: '#dbeafe', color: '#1e40af' }, received: { bg: '#d1fae5', color: '#065f46' }, cancelled: { bg: '#fee2e2', color: '#991b1b' } };
 
 export default function InventoryIntelligence() {
   const toast = useToast();
@@ -137,7 +137,7 @@ export default function InventoryIntelligence() {
     try {
       const [itemsRes, vendorsRes] = await Promise.allSettled([
         api.get('/inventory/items'),
-        api.get('/inventory/vendors-list').catch(() => api.get('/procurement/vendors')),
+        api.get('/procurement/vendors'),
       ]);
       const rawItems = itemsRes.status === 'fulfilled' ? (itemsRes.value.data?.items || itemsRes.value.data || []) : [];
       setRuleItems(rawItems.map(it => ({
@@ -178,11 +178,16 @@ export default function InventoryIntelligence() {
   const abcPieData = abcData?.stats ? Object.entries(abcData.stats).map(([cat, s]) => ({ name: `Category ${cat}`, value: s.value, count: s.count })) : [];
 
   return (
-    <PageLayout>
-      <PageHeader
-        description="Reorder alerts, transfers, ABC analysis & landed costs"
-        filters={
-          <div style={{ display: 'flex', gap: 6 }}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Inventory Intelligence"
+          subtitle="Reorder alerts, transfers, ABC analysis & landed costs"
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display: 'flex', gap: 6 }}>
             {['Reorder Alerts', 'Warehouse Transfers', 'ABC Analysis', 'Landed Costs'].map((t, i) => (
               <button
                 key={i}
@@ -193,9 +198,11 @@ export default function InventoryIntelligence() {
                 {t}
               </button>
             ))}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
 
       {tab === 0 && (
         <div>
@@ -226,7 +233,7 @@ export default function InventoryIntelligence() {
                     </div>
                     <div style={{ display: 'flex', gap: 4 }}>
                       {selected.includes(a.id) && <span style={{ padding: '2px 8px', background: '#6B3FDB', color: '#fff', borderRadius: 4, fontSize: 11 }}>Selected</span>}
-                      <span style={{ padding: '2px 8px', background: '#fef3c7', color: '#92400e', borderRadius: 4, fontSize: 11 }}>{a.lead_time_days}d lead</span>
+                      <span style={{ padding: '2px 8px', background: '#ede9fe', color: '#5b21b6', borderRadius: 4, fontSize: 11 }}>{a.lead_time_days}d lead</span>
                     </div>
                   </div>
 
@@ -247,7 +254,7 @@ export default function InventoryIntelligence() {
 
                   <div style={{ marginTop: 10 }}>
                     <div style={{ height: 6, background: '#fee2e2', borderRadius: 4 }}>
-                      <div style={{ width: `${Math.min(stockPct, 100)}%`, height: '100%', background: stockPct < 30 ? '#dc2626' : '#f59e0b', borderRadius: 4 }} />
+                      <div style={{ width: `${Math.min(stockPct, 100)}%`, height: '100%', background: stockPct < 30 ? '#dc2626' : '#7c5cf0', borderRadius: 4 }} />
                     </div>
                     <div style={{ fontSize: 11, color: '#6b7280', marginTop: 3 }}>{stockPct.toFixed(0)}% of reorder point</div>
                   </div>
@@ -417,11 +424,11 @@ export default function InventoryIntelligence() {
 
           {abcSubTab === 1 && (
             <div>
-              <div style={{ ...cardStyle, padding: '16px 20px', background: '#fef3c7', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ ...cardStyle, padding: '16px 20px', background: '#ede9fe', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 18 }}>⚠️</span>
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: 14, color: '#92400e' }}>Slow Moving Inventory</div>
-                  <div style={{ fontSize: 12, color: '#b45309' }}>Items with no movement in last 90 days — {fmt(slowMovers.reduce((s, i) => s + parseFloat(i.stock_value || 0), 0))} at risk</div>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: '#5b21b6' }}>Slow Moving Inventory</div>
+                  <div style={{ fontSize: 12, color: '#6d28d9' }}>Items with no movement in last 90 days — {fmt(slowMovers.reduce((s, i) => s + parseFloat(i.stock_value || 0), 0))} at risk</div>
                 </div>
               </div>
               <TableContainer
@@ -513,7 +520,7 @@ export default function InventoryIntelligence() {
                     <td style={tdStyle}>{fmt(lc.other_charges)}</td>
                     <td style={{ ...tdStyle, fontWeight: 700, color: '#6B3FDB' }}>{fmt(lc.total_landed_cost)}</td>
                     <td style={tdStyle}>{lc.allocation_method}</td>
-                    <td style={tdStyle}><span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: lc.status === 'allocated' ? '#d1fae5' : '#fef3c7', color: lc.status === 'allocated' ? '#065f46' : '#92400e' }}>{lc.status}</span></td>
+                    <td style={tdStyle}><span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: lc.status === 'allocated' ? '#d1fae5' : '#ede9fe', color: lc.status === 'allocated' ? '#065f46' : '#5b21b6' }}>{lc.status}</span></td>
                     <td style={tdStyle}>
                       {lc.status !== 'allocated' && (
                         <button onClick={() => allocateLanded(lc.id)} style={{ padding: '4px 10px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Allocate</button>
@@ -590,6 +597,6 @@ export default function InventoryIntelligence() {
           </div>
         </div>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

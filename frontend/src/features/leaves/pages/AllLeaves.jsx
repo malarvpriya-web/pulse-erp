@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Calendar, Plus, X, CheckCircle, XCircle, Clock,
-  ChevronRight, Search, Filter, AlertCircle, Users,
-  Umbrella, RefreshCw, Lock
+  Calendar, Plus, X, CheckCircle, XCircle, Clock, ChevronRight, Search,
+  Filter, AlertCircle, Users, Umbrella, RefreshCw, Lock, CalendarDays,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import WorkflowBadge from '@/features/_shared/WorkflowBadge';
 import './AllLeaves.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,9 +109,9 @@ function ValidationErrors({ errors }) {
 // Palette cycles for types we don't have a specific colour for
 const PALETTE = [
   { color: '#6366f1', bg: '#eef2ff' }, { color: '#ef4444', bg: '#fef2f2' },
-  { color: '#10b981', bg: '#ecfdf5' }, { color: '#f59e0b', bg: '#fffbeb' },
+  { color: '#10b981', bg: '#ecfdf5' }, { color: '#7c5cf0', bg: '#f5f3ff' },
   { color: '#8b5cf6', bg: '#f5f3ff' }, { color: '#0891b2', bg: '#e0f2fe' },
-  { color: '#d97706', bg: '#fefce8' }, { color: '#dc2626', bg: '#fef2f2' },
+  { color: '#6d28d9', bg: '#f5f3ff' }, { color: '#dc2626', bg: '#fef2f2' },
 ];
 
 function BalanceCard({ leaveType, index }) {
@@ -132,7 +132,7 @@ function BalanceCard({ leaveType, index }) {
           {leaveType.leave_name}
         </span>
       </div>
-      <div className="al-bal-used">{used}{pending > 0 ? <span style={{ color: '#f59e0b', fontSize: 11 }}> +{pending}p</span> : null} <span className="al-bal-total">/ {total} days</span></div>
+      <div className="al-bal-used">{used}{pending > 0 ? <span style={{ color: '#7c5cf0', fontSize: 11 }}> +{pending}p</span> : null} <span className="al-bal-total">/ {total} days</span></div>
       <div className="al-bal-bar-wrap">
         <div className="al-bal-bar" style={{ width: `${pct}%`, background: color }} />
       </div>
@@ -303,7 +303,7 @@ function ApplyDrawer({ open, onClose, onSuccess }) {
 const APPROVAL_STATUS_CFG = {
   approved: { bg: '#dcfce7', color: '#15803d' },
   rejected: { bg: '#fee2e2', color: '#b91c1c' },
-  pending:  { bg: '#fef3c7', color: '#92400e' },
+  pending:  { bg: '#ede9fe', color: '#5b21b6' },
 };
 function LeaveApprovalBadge({ leave }) {
   const steps = [
@@ -488,28 +488,31 @@ export default function AllLeaves() {
 
   // --------------------------------------------------------------------------
   return (
-    <div className="al-root">
-      <Toast toast={toast} onDismiss={() => setToast(null)} />
-
-      {/* Page header */}
-      <div className="al-header">
-        <h1 className="al-title">Leave Management</h1>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button className="al-icon-btn" onClick={fetchData} title="Refresh">
+    <PageShell dock={
+      <PageHero
+        icon={CalendarDays}
+        eyebrow="Leave"
+        title="Leave Management"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={fetchData} title="Refresh">
             <RefreshCw size={15} />
           </button>
           {canAdd ? (
-            <button className="al-btn-add" onClick={() => setDrawer(true)}>
+            <button className="plh-cta" onClick={() => setDrawer(true)}>
               <Plus size={15} /> Apply Leave
             </button>
           ) : (
-            <button className="al-btn-add" disabled title="You don't have permission to apply for leave"
-              style={{ opacity: 0.45, cursor: 'not-allowed' }}>
+            <button className="plh-cta" disabled title="You don't have permission to apply for leave">
               <Lock size={13} /> Apply Leave
             </button>
           )}
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
+
+      {/* Page header */}
+
 
       {/* Leave balance cards — dynamically rendered from live API data */}
       <p className="al-section-title">Leave Balances</p>
@@ -716,6 +719,6 @@ export default function AllLeaves() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

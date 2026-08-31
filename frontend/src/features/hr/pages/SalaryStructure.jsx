@@ -1,6 +1,8 @@
 // frontend/src/features/hr/pages/SalaryStructure.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { Wallet } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ─── helpers ─────────────────────────────────────────────────── */
 function fmtINR(n) {
@@ -316,11 +318,15 @@ export default function SalaryStructure() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Salary Structure Manager</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Define pay components, assign structures, manage loans &amp; advances</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Wallet}
+        eyebrow="Human Resources"
+        title="Salary Structure Manager"
+        subtitle="Define pay components, assign structures, manage loans & advances"
+      />
+    }>
+
 
       {msg.text && (
         <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontWeight: 500, fontSize: 14,
@@ -527,7 +533,7 @@ export default function SalaryStructure() {
             <div style={{ marginBottom: 14, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
               <div style={{ display: 'flex', gap: 8, flex: 1, flexWrap: 'wrap' }}>
                 <button onClick={() => { setShowArrears(a => !a); setArrearsRows([]); }}
-                  style={{ background: showArrears ? '#fef3c7' : '#ede9fe', color: showArrears ? '#92400e' : '#6B3FDB',
+                  style={{ background: showArrears ? '#ede9fe' : '#ede9fe', color: showArrears ? '#5b21b6' : '#6B3FDB',
                     border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
                   {showArrears ? '✕ Close Arrears Calc' : '⊕ Arrears Calculator'}
                 </button>
@@ -547,32 +553,32 @@ export default function SalaryStructure() {
 
             {/* Arrears Calculator panel */}
             {showArrears && (
-              <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-                <h4 style={{ margin: '0 0 14px', color: '#92400e' }}>Backdated Arrears Calculator</h4>
+              <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                <h4 style={{ margin: '0 0 14px', color: '#5b21b6' }}>Backdated Arrears Calculator</h4>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 12, marginBottom: 12 }}>
                   <div>
-                    <label style={{ ...lbl, color: '#92400e' }}>Employee</label>
+                    <label style={{ ...lbl, color: '#5b21b6' }}>Employee</label>
                     <select value={arrearsForm.employee_id} onChange={e => setArrearsForm(f => ({ ...f, employee_id: e.target.value }))}
-                      style={{ ...inp, borderColor: '#fde68a' }}>
+                      style={{ ...inp, borderColor: '#ddd6fe' }}>
                       <option value="">— Select —</option>
                       {assignments.map(a => <option key={a.employee_id} value={a.employee_id}>{a.employee_name}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={{ ...lbl, color: '#92400e' }}>Old Basic (₹)</label>
-                    <input type="number" value={arrearsForm.old_basic} onChange={e => setArrearsForm(f => ({ ...f, old_basic: e.target.value }))} style={{ ...inp, borderColor: '#fde68a' }} />
+                    <label style={{ ...lbl, color: '#5b21b6' }}>Old Basic (₹)</label>
+                    <input type="number" value={arrearsForm.old_basic} onChange={e => setArrearsForm(f => ({ ...f, old_basic: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} />
                   </div>
                   <div>
-                    <label style={{ ...lbl, color: '#92400e' }}>New Basic (₹)</label>
-                    <input type="number" value={arrearsForm.new_basic} onChange={e => setArrearsForm(f => ({ ...f, new_basic: e.target.value }))} style={{ ...inp, borderColor: '#fde68a' }} />
+                    <label style={{ ...lbl, color: '#5b21b6' }}>New Basic (₹)</label>
+                    <input type="number" value={arrearsForm.new_basic} onChange={e => setArrearsForm(f => ({ ...f, new_basic: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} />
                   </div>
                   <div>
-                    <label style={{ ...lbl, color: '#92400e' }}>Arrears From</label>
-                    <input type="date" value={arrearsForm.from_date} onChange={e => setArrearsForm(f => ({ ...f, from_date: e.target.value }))} style={{ ...inp, borderColor: '#fde68a' }} />
+                    <label style={{ ...lbl, color: '#5b21b6' }}>Arrears From</label>
+                    <input type="date" value={arrearsForm.from_date} onChange={e => setArrearsForm(f => ({ ...f, from_date: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} />
                   </div>
                   <div>
-                    <label style={{ ...lbl, color: '#92400e' }}>Arrears To</label>
-                    <input type="date" value={arrearsForm.to_date} onChange={e => setArrearsForm(f => ({ ...f, to_date: e.target.value }))} style={{ ...inp, borderColor: '#fde68a' }} />
+                    <label style={{ ...lbl, color: '#5b21b6' }}>Arrears To</label>
+                    <input type="date" value={arrearsForm.to_date} onChange={e => setArrearsForm(f => ({ ...f, to_date: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} />
                   </div>
                 </div>
                 <button onClick={() => {
@@ -580,7 +586,7 @@ export default function SalaryStructure() {
                     flash('"From" date must be before "To" date', 'error'); return;
                   }
                   setArrearsRows(computeArrears(arrearsForm.old_basic, arrearsForm.new_basic, arrearsForm.from_date, arrearsForm.to_date));
-                }} style={{ background: '#d97706', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: 'pointer', fontWeight: 600 }}>
+                }} style={{ background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: 'pointer', fontWeight: 600 }}>
                   Compute Arrears
                 </button>
 
@@ -588,15 +594,15 @@ export default function SalaryStructure() {
                   <div style={{ marginTop: 14, overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                       <thead>
-                        <tr style={{ background: '#fef3c7' }}>
+                        <tr style={{ background: '#ede9fe' }}>
                           {['Month','Old Basic','New Basic','Arrears'].map(h => (
-                            <th key={h} style={{ padding: '7px 12px', textAlign: 'left', color: '#92400e', fontWeight: 600 }}>{h}</th>
+                            <th key={h} style={{ padding: '7px 12px', textAlign: 'left', color: '#5b21b6', fontWeight: 600 }}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
                         {arrearsRows.map((r, i) => (
-                          <tr key={i} style={{ borderBottom: '1px solid #fde68a' }}>
+                          <tr key={i} style={{ borderBottom: '1px solid #ddd6fe' }}>
                             <td style={{ padding: '7px 12px' }}>{r.month}</td>
                             <td style={{ padding: '7px 12px' }}>{fmtINR(r.old_basic)}</td>
                             <td style={{ padding: '7px 12px' }}>{fmtINR(r.new_basic)}</td>
@@ -607,8 +613,8 @@ export default function SalaryStructure() {
                         ))}
                       </tbody>
                       <tfoot>
-                        <tr style={{ background: '#fef3c7', fontWeight: 700 }}>
-                          <td colSpan={3} style={{ padding: '7px 12px', color: '#92400e' }}>
+                        <tr style={{ background: '#ede9fe', fontWeight: 700 }}>
+                          <td colSpan={3} style={{ padding: '7px 12px', color: '#5b21b6' }}>
                             Total Arrears ({arrearsRows.length} month{arrearsRows.length !== 1 ? 's' : ''})
                           </td>
                           <td style={{ padding: '7px 12px', color: '#16a34a', fontSize: 15 }}>
@@ -646,8 +652,8 @@ export default function SalaryStructure() {
                       <td style={{ padding: '9px 12px', color: '#16a34a', fontWeight: 600 }}>{fmtINR(a.gross)}</td>
                       <td style={{ padding: '9px 12px' }}>
                         <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
-                          background: a.last_payslip_status === 'generated' ? '#d1fae5' : '#fef3c7',
-                          color:      a.last_payslip_status === 'generated' ? '#16a34a' : '#d97706' }}>
+                          background: a.last_payslip_status === 'generated' ? '#d1fae5' : '#ede9fe',
+                          color:      a.last_payslip_status === 'generated' ? '#16a34a' : '#6d28d9' }}>
                           {a.last_payslip_status || 'pending'}
                         </span>
                       </td>
@@ -930,8 +936,8 @@ export default function SalaryStructure() {
                         <td style={{ padding: '9px 12px', fontWeight: 600 }}>{l.employee_name}</td>
                         <td style={{ padding: '9px 12px' }}>
                           <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
-                            background: l.loan_type === 'advance' ? '#fef3c7' : '#ede9fe',
-                            color:      l.loan_type === 'advance' ? '#d97706'  : '#6B3FDB' }}>
+                            background: l.loan_type === 'advance' ? '#ede9fe' : '#ede9fe',
+                            color:      l.loan_type === 'advance' ? '#6d28d9'  : '#6B3FDB' }}>
                             {l.loan_type}
                           </span>
                         </td>
@@ -965,6 +971,6 @@ export default function SalaryStructure() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -2,6 +2,7 @@ import express from 'express';
 import performanceRepository from '../repositories/performance.repository.js';
 import pool from '../../shared/db.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { dimension, idDimension } from '../../../shared/dashboardFilters.js';
 
 const router = express.Router();
 
@@ -213,7 +214,7 @@ router.get('/team/members', async (req, res) => {
     if (department){ params.push(department); where += ` AND e.department = $${params.length}`; }
     const q = `
       SELECT
-        e.id, e.name, e.department, e.designation, e.profile_picture,
+        e.id, e.name, e.department, e.designation, e.photo_url AS profile_picture,
         COUNT(DISTINCT pg.id) FILTER (WHERE pg.deleted_at IS NULL)                               AS total_goals,
         COUNT(DISTINCT pg.id) FILTER (WHERE pg.status='achieved' AND pg.deleted_at IS NULL)       AS achieved_goals,
         ROUND(AVG(pg.progress_pct) FILTER (WHERE pg.deleted_at IS NULL), 1)                       AS avg_goal_pct,
@@ -231,7 +232,7 @@ router.get('/team/members', async (req, res) => {
         ORDER BY created_at DESC LIMIT 1
       ) pr ON TRUE
       ${where}
-      GROUP BY e.id, e.name, e.department, e.designation, e.profile_picture,
+      GROUP BY e.id, e.name, e.department, e.designation, e.photo_url,
                pr.status, pr.self_rating, pr.manager_rating, pr.final_rating,
                pr.review_period, pr.id
       ORDER BY e.name`;
@@ -433,10 +434,16 @@ router.put('/reviews/:id', async (req, res) => {
 });
 
 /* ── Analytics ── */
+// Dashboard filter bar values, shared by the three analytics endpoints below.
+const perfFilters = (req) => ({
+  cycle_id:   idDimension(req.query, 'cycle_id'),
+  department: dimension(req.query, 'department'),
+});
+
 router.get('/analytics/top-performers', async (req, res) => {
   if (!isManagerPlus(req)) return forbidden(res);
   try {
-    const performers = await performanceRepository.getTopPerformers(req.query.limit || 10, cid(req));
+    const performers = await performanceRepository.getTopPerformers(req.query.limit || 10, cid(req), perfFilters(req));
     res.json(performers);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -446,7 +453,7 @@ router.get('/analytics/top-performers', async (req, res) => {
 router.get('/analytics/department-performance', async (req, res) => {
   if (!isManagerPlus(req)) return forbidden(res);
   try {
-    const data = await performanceRepository.getDepartmentPerformance(cid(req));
+    const data = await performanceRepository.getDepartmentPerformance(cid(req), perfFilters(req));
     res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -456,7 +463,7 @@ router.get('/analytics/department-performance', async (req, res) => {
 router.get('/analytics/goal-completion', async (req, res) => {
   if (!isManagerPlus(req)) return forbidden(res);
   try {
-    const data = await performanceRepository.getGoalCompletionRate(cid(req));
+    const data = await performanceRepository.getGoalCompletionRate(cid(req), perfFilters(req));
     res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -498,8 +505,35 @@ router.get('/analytics/dashboard', async (req, res) => {
   if (!isManagerPlus(req)) return forbidden(res);
   try {
     const companyId = cid(req);
-    const params = [];
-    const cWhere = companyId ? `AND company_id=$${(params.push(companyId), params.length)}` : '';
+    // Dashboard filter bar: ?cycle_id / ?department. Reviews are organised by
+    // cycle rather than by date, so this endpoint takes no period.
+    const cycleId = idDimension(req.query, 'cycle_id');
+    const department = dimension(req.query, 'department');
+
+    // Each query builds its own param list — a shared fixed-position array
+    // breaks any query that doesn't reference every placeholder.
+    const reviewScope = () => {
+      const params = [];
+      let sql = 'WHERE deleted_at IS NULL';
+      if (companyId)  { params.push(companyId);  sql += ` AND company_id=$${params.length}`; }
+      if (cycleId)    { params.push(cycleId);    sql += ` AND review_cycle_id=$${params.length}`; }
+      // performance_reviews carries no department — match through employees.
+      if (department) { params.push(department); sql += ` AND employee_id IN (SELECT id FROM employees WHERE department=$${params.length})`; }
+      return { sql, params };
+    };
+    // performance_goals names the column `cycle_id`, not `review_cycle_id`.
+    const goalScope = () => {
+      const params = [];
+      let sql = 'WHERE deleted_at IS NULL';
+      if (companyId)  { params.push(companyId);  sql += ` AND company_id=$${params.length}`; }
+      if (cycleId)    { params.push(cycleId);    sql += ` AND cycle_id=$${params.length}`; }
+      if (department) { params.push(department); sql += ` AND employee_id IN (SELECT id FROM employees WHERE department=$${params.length})`; }
+      return { sql, params };
+    };
+
+    const rev = reviewScope();
+    const goal = goalScope();
+    const pend = reviewScope();
 
     const [totals, goalStats, topPerf, pending] = await Promise.allSettled([
       pool.query(`
@@ -510,7 +544,7 @@ router.get('/analytics/dashboard', async (req, res) => {
           COUNT(*)::int AS total,
           ROUND(AVG(COALESCE(calibrated_rating, final_rating)),2) AS avg_rating
         FROM performance_reviews
-        WHERE deleted_at IS NULL ${cWhere}`, params),
+        ${rev.sql}`, rev.params),
       pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE status='achieved')::int AS achieved,
@@ -519,13 +553,13 @@ router.get('/analytics/dashboard', async (req, res) => {
           COUNT(*) FILTER (WHERE status='active')::int  AS active,
           COUNT(*)::int AS total
         FROM performance_goals
-        WHERE deleted_at IS NULL ${cWhere}`, params),
+        ${goal.sql}`, goal.params),
       performanceRepository.getTopPerformers(5, companyId),
       pool.query(`
         SELECT COUNT(*)::int AS pending_self,
                COUNT(*) FILTER (WHERE status='self_submitted')::int AS pending_manager
         FROM performance_reviews
-        WHERE status IN ('draft','self_submitted') AND deleted_at IS NULL ${cWhere}`, params),
+        ${pend.sql} AND status IN ('draft','self_submitted')`, pend.params),
     ]);
 
     res.json({
@@ -533,6 +567,8 @@ router.get('/analytics/dashboard', async (req, res) => {
       goals:       goalStats.value?.rows[0] || {},
       top_performers: topPerf.value        || [],
       pending:     pending.value?.rows[0]  || {},
+      cycle_id:    cycleId,
+      department,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

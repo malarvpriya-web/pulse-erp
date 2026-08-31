@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit2, Trash2, Check, X, Users, RefreshCw } from 'lucide-react';
+import { Plus, Edit2, Trash2, Check, X, Users, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import './MasterSetup.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const S = {
   input: {
@@ -58,15 +59,30 @@ function SimpleListTab({ endpoint, label }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Rows the backend synthesised from employee records: they exist as free text
+  // on employees but have no master row, hence no id.
+  const unmanagedCount = items.filter(i => i.id == null).length;
+
   const handleAdd = async () => {
     const name = newName.trim();
     if (!name) { showToast(`Enter a ${label.toLowerCase()} name first`, 'error'); return; }
     try {
-      const res = await api.post(endpoint, { name });
-      const created = res.data?.id ? res.data : { id: Date.now(), name };
-      setItems(prev => [...prev, created]);
+      await api.post(endpoint, { name });
       setNewName('');
+      await load();
       showToast(`${label} added`);
+    } catch (err) {
+      showToast(err.response?.data?.error || err?.message || `Failed to add ${label.toLowerCase()}`, 'error');
+    }
+  };
+
+  // Promote a value that only exists on employee records into the master list,
+  // which is what gives it an id and makes it renameable/deletable.
+  const handleAdopt = async (name) => {
+    try {
+      await api.post(endpoint, { name });
+      await load();
+      showToast(`${label} added to the list`);
     } catch (err) {
       showToast(err.response?.data?.error || err?.message || `Failed to add ${label.toLowerCase()}`, 'error');
     }
@@ -75,6 +91,7 @@ function SimpleListTab({ endpoint, label }) {
   const handleSave = async (id) => {
     const name = editVal.trim();
     if (!name) { showToast('Name cannot be empty', 'error'); return; }
+    if (id == null) { setEditId(null); return; }
     try {
       await api.put(`${endpoint}/${id}`, { name });
       setItems(prev => prev.map(i => i.id === id ? { ...i, name } : i));
@@ -89,6 +106,7 @@ function SimpleListTab({ endpoint, label }) {
     if (!pendingDelete) return;
     const id = pendingDelete;
     setPendingDelete(null);
+    if (id == null) return;
     try {
       await api.delete(`${endpoint}/${id}`);
       setItems(prev => prev.filter(i => i.id !== id));
@@ -128,6 +146,14 @@ function SimpleListTab({ endpoint, label }) {
           </button>
         </div>
 
+        {unmanagedCount > 0 && (
+          <div className="ms-note">
+            {unmanagedCount} value{unmanagedCount === 1 ? ' is' : 's are'} in use on employee
+            records but not in this list. Add {unmanagedCount === 1 ? 'it' : 'them'} to make
+            {unmanagedCount === 1 ? ' it' : ' them'} renameable.
+          </div>
+        )}
+
         {loading ? (
           <div className="ms-empty">Loading…</div>
         ) : loadErr ? (
@@ -139,8 +165,8 @@ function SimpleListTab({ endpoint, label }) {
         ) : (
           <ul className="ms-list">
             {items.map(item => (
-              <li key={item.id} className="ms-item">
-                {editId === item.id ? (
+              <li key={item.id ?? `unmanaged:${item.name}`} className="ms-item">
+                {editId !== null && editId === item.id ? (
                   <>
                     <input
                       className="ms-input ms-input-inline"
@@ -157,6 +183,16 @@ function SimpleListTab({ endpoint, label }) {
                     </button>
                     <button className="ms-btn-cancel" onClick={() => setEditId(null)}>
                       <X size={12} style={{ marginRight: 3 }} />Cancel
+                    </button>
+                  </>
+                ) : item.id == null ? (
+                  <>
+                    <span className="ms-item-name">
+                      {item.name}
+                      <span className="ms-badge-unmanaged">not in list</span>
+                    </span>
+                    <button className="ms-btn-edit" onClick={() => handleAdopt(item.name)} title={`Add "${item.name}" to the master list`}>
+                      <Plus size={11} style={{ marginRight: 3 }} />Add to list
                     </button>
                   </>
                 ) : (
@@ -410,11 +446,14 @@ export default function MasterSetup() {
   const tab = TABS.find(t => t.key === activeTab);
 
   return (
-    <div className="ms-wrap">
-      <div className="ms-header">
-        <h1 className="ms-title">Master Data Setup</h1>
-        <p className="ms-subtitle">Manage departments, zones, designations, grades, bands and leave type policies</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title="Master Data Setup"
+        subtitle="Manage departments, zones, designations, grades, bands and leave type policies"
+      />
+    }>
 
       <div style={{ maxWidth: activeTab === 'leaveTypes' ? 920 : 700, margin: '32px auto', padding: '0 16px' }}>
         <div className="ms-tabs" style={{ marginBottom: 16 }}>
@@ -431,6 +470,6 @@ export default function MasterSetup() {
           <SimpleListTab endpoint={tab.endpoint} label={tab.label.slice(0, -1)} />
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

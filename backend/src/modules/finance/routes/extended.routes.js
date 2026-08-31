@@ -14,6 +14,7 @@ import {
   closePeriod,
   reopenPeriod,
   getCFODashboard,
+  getPeriodSummary,
 } from '../finance.controller.js';
 
 const router = express.Router();
@@ -396,7 +397,15 @@ router.post('/payment-batches/:id/process', requirePermission('finance', 'approv
 router.get('/payment-batches/:id/bank-file', async (req, res) => {
   try {
     const { format = 'generic' } = req.query;
-    const { batch, items } = await paymentBatchService.getBankFileData(req.params.id);
+    let batch, items;
+    try {
+      ({ batch, items } = await paymentBatchService.getBankFileData(req.params.id));
+    } catch (e) {
+      // The service throws a plain Error for an unknown id — that is a 404,
+      // not the 500 the outer catch was turning it into.
+      if (/not found/i.test(e.message)) return res.status(404).json({ error: e.message });
+      throw e;
+    }
 
     // Check for missing bank details
     const missing = items.filter(it => !it.account_number || !it.ifsc_code);
@@ -759,15 +768,21 @@ router.get('/analytics/without-bill', async (req, res) => {
 router.get('/analytics/gst-claimable', async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
+    // `is_gst_claimable` has never existed; the claimable flag is expense_claims
+    // .gst_verified. gst_amount also lives on the claim, not the item — joining
+    // expense_claim_items multiplied every claim's GST by its line count.
     const result = await pool.query(
-      `SELECT 
-        SUM(CASE WHEN is_gst_claimable = true THEN gst_amount ELSE 0 END) as claimable_gst,
-        SUM(CASE WHEN is_gst_claimable = false THEN gst_amount ELSE 0 END) as non_claimable_gst,
-        SUM(gst_amount) as total_gst
-       FROM expense_claim_items eci
-       JOIN expense_claims ecl ON eci.expense_claim_id = ecl.id
-       WHERE ecl.claim_date BETWEEN $1 AND $2`,
-      [start_date, end_date]
+      `SELECT
+        COALESCE(SUM(CASE WHEN ecl.gst_verified THEN ecl.gst_amount ELSE 0 END), 0)        AS claimable_gst,
+        COALESCE(SUM(CASE WHEN NOT COALESCE(ecl.gst_verified, false)
+                          THEN ecl.gst_amount ELSE 0 END), 0)                              AS non_claimable_gst,
+        COALESCE(SUM(ecl.gst_amount), 0)                                                   AS total_gst
+       FROM expense_claims ecl
+       WHERE ecl.deleted_at IS NULL
+         AND ($3::int IS NULL OR ecl.company_id = $3)
+         AND ($1::date IS NULL OR ecl.claim_date >= $1::date)
+         AND ($2::date IS NULL OR ecl.claim_date <= $2::date)`,
+      [start_date || null, end_date || null, getCompanyId(req)]
     );
     res.json(result.rows[0]);
   } catch (error) {
@@ -790,8 +805,14 @@ router.get('/ratios', async (req, res) => {
 
 router.get('/ratios/comparative', async (req, res) => {
   try {
-    const { current_date, previous_date } = req.query;
-    const comparison = await financialRatiosService.getComparativeRatios(current_date, previous_date);
+    // Undefined dates reached the service as `undefined` and blew up with
+    // "Invalid time value". Default the same way GET /ratios does.
+    const today = new Date();
+    const priorYear = new Date(today);
+    priorYear.setFullYear(priorYear.getFullYear() - 1);
+    const currentDate  = req.query.current_date  || today.toISOString().split('T')[0];
+    const previousDate = req.query.previous_date || priorYear.toISOString().split('T')[0];
+    const comparison = await financialRatiosService.getComparativeRatios(currentDate, previousDate);
     res.json(comparison);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -919,6 +940,9 @@ router.post('/journal-entries', createJournalEntry);
 router.get('/periods',              getPeriods);
 router.post('/periods/:id/close',   requirePermission('finance', 'approve'), closePeriod);
 router.post('/periods/:id/reopen',  requirePermission('finance', 'approve'), reopenPeriod);
+// Real figures for the close decision, replacing PeriodClosing.jsx's hardcoded
+// CURRENT_SUMMARY. Read-only, so it takes finance:view like the listing above.
+router.get('/periods/:id/summary',  requirePermission('finance', 'view'), getPeriodSummary);
 
 // ── CFO dashboard (migrated from financeNewRoutes) ────────────────────────────
 router.get('/cfo-dashboard', getCFODashboard);

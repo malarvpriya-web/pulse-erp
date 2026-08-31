@@ -8,6 +8,7 @@ import multer from 'multer';
 import pool from '../../../config/db.js';
 import { verifyToken, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { dimension } from '../../../shared/dashboardFilters.js';
 import VendorService from '../services/vendor.service.js';
 import { uploadFile } from '../../../services/StorageService.js';
 import { companyOf } from '../../../shared/scope.js';
@@ -551,28 +552,108 @@ router.get('/vendors/:vendorId/traceability', async (req, res) => {
       { rows: projects },
       { rows: payments },
     ] = await Promise.all([
-      pool.query(`SELECT id, vendor_name, vendor_code, classification, risk_rating, approved_by, approved_at FROM vendors WHERE id=$1`, [vendorId]),
-      pool.query(`SELECT COALESCE(SUM(total_amount),0) AS total_spend, COUNT(*) AS po_count FROM purchase_orders WHERE supplier_id=$1::text`, [vendorId]),
+      pool.query(`SELECT id, vendor_name, vendor_code, classification, risk_rating, approved_by, approved_at, party_id FROM vendors WHERE id=$1`, [vendorId]),
+      // purchase_orders.supplier_id is an integer FK to vendors.id. The old
+      // `$1::text` cast made Postgres compare integer = text and threw
+      // `operator does not exist`, so this endpoint had never returned once.
+      pool.query(`SELECT COALESCE(SUM(total_amount),0) AS total_spend, COUNT(*) AS po_count FROM purchase_orders WHERE supplier_id=$1`, [vendorId]),
       pool.query(`SELECT * FROM vendor_ncr WHERE vendor_id=$1 ORDER BY ncr_date DESC`, [vendorId]),
       pool.query(`SELECT * FROM vendor_capa WHERE vendor_id=$1 ORDER BY issue_date DESC`, [vendorId]),
       pool.query(`SELECT * FROM vendor_scorecards WHERE vendor_id=$1 ORDER BY period_year DESC, period_quarter DESC LIMIT 1`, [vendorId]),
       pool.query(`SELECT * FROM vendor_risk_assessments WHERE vendor_id=$1 ORDER BY assessment_date DESC LIMIT 1`, [vendorId]),
-      pool.query(`SELECT DISTINCT p.id, p.project_number, p.project_name FROM projects p JOIN purchase_orders po ON po.project_id::text=p.id::text WHERE po.supplier_id=$1::text LIMIT 20`, [vendorId]).catch(() => ({ rows: [] })),
-      pool.query(`SELECT COUNT(*) FILTER (WHERE status='Paid') AS paid_count, COUNT(*) FILTER (WHERE status='Pending') AS outstanding_count, COALESCE(SUM(CASE WHEN status='Pending' THEN amount ELSE 0 END),0) AS outstanding_amount FROM vendor_payments WHERE vendor_id=$1`, [vendorId]).catch(() => ({ rows: [{ paid_count: 0, outstanding_count: 0, outstanding_amount: 0 }] })),
+      pool.query(`SELECT DISTINCT p.id, p.project_number, p.project_name FROM projects p JOIN purchase_orders po ON po.project_id=p.id WHERE po.supplier_id=$1 LIMIT 20`, [vendorId]).catch(() => ({ rows: [] })),
+      // vendor_payments never existed. What a vendor is actually paid against is
+      // their bills: `bills` carries supplier_id, status and balance, so paid vs
+      // outstanding comes straight off that rather than a phantom table.
+      //
+      // bills.supplier_id is a uuid pointing at `parties`, while vendors.id is an
+      // integer — passing the vendor id straight in threw on every call. The
+      // bridge is vendors.party_id, so the lookup goes through that. A vendor with
+      // no party link simply has no bills, which is a zero row, not an error.
+      pool.query(`SELECT COUNT(*) FILTER (WHERE LOWER(b.status)='paid') AS paid_count,
+                         COUNT(*) FILTER (WHERE LOWER(b.status) <> 'paid') AS outstanding_count,
+                         COALESCE(SUM(CASE WHEN LOWER(b.status) <> 'paid' THEN b.balance ELSE 0 END),0) AS outstanding_amount
+                    FROM bills b
+                    JOIN vendors v ON v.party_id = b.supplier_id
+                   WHERE v.id = $1 AND b.deleted_at IS NULL`, [vendorId]),
     ]);
 
     if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
 
+    const openNcrs  = ncrs.filter(n => n.status === 'Open').length;
+    const openCapas = capas.filter(c => c.status === 'Open').length;
+
+    // What "traceable" means here: every link in the vendor's chain can actually
+    // be followed, and nothing quality-related is still open.
+    //
+    // The previous expression was `[vendor, spend, ncrs.length === 0 || true,
+    // scorecard, risk].every(Boolean)` — `ncrs.length === 0 || true` is always
+    // true, `spend` is always a row object, and `vendor` is guaranteed by the
+    // 404 above. Only `scorecard` and `risk` could ever be falsy, so the verdict
+    // was very nearly a constant and told a CEO nothing.
+    //
+    // Each check names the link it asserts, so a failure says which one is
+    // missing instead of just turning the badge red.
+    const checks = [
+      {
+        key: 'approved', label: 'Approval recorded',
+        pass: !!(vendor.approved_by && vendor.approved_at),
+        detail: 'Who approved this vendor, and when',
+      },
+      {
+        key: 'classified', label: 'Classified',
+        pass: !!vendor.classification,
+        detail: 'Approved / Conditional / Blacklisted',
+      },
+      {
+        key: 'risk_assessed', label: 'Risk assessed',
+        pass: !!(risk || vendor.risk_rating),
+        detail: 'A risk assessment or at least a standing risk rating',
+      },
+      {
+        key: 'performance_rated', label: 'Performance scored',
+        pass: !!scorecard,
+        detail: 'At least one quarterly scorecard',
+      },
+      {
+        key: 'finance_linked', label: 'Linked to finance',
+        pass: !!vendor.party_id,
+        detail: 'vendors.party_id — without it no bill or payment can be traced to this vendor',
+      },
+      {
+        key: 'quality_clear', label: 'No open quality issues',
+        pass: openNcrs === 0 && openCapas === 0,
+        detail: openNcrs || openCapas
+          ? `${openNcrs} open NCR(s), ${openCapas} open CAPA(s)`
+          : 'All NCRs and CAPAs closed',
+      },
+    ];
+    const failed = checks.filter(c => !c.pass);
+
+    // Three states, not two. An unfinished record is not the same as a vendor
+    // with open non-conformances, and lumping them together as one red badge is
+    // what made the old verdict useless.
+    const verdict = failed.length === 0
+      ? 'PASS'
+      : (failed.length === 1 && failed[0].key === 'quality_clear' ? 'OPEN QUALITY ISSUES' : 'INCOMPLETE');
+
     res.json({
       vendor,
       spend: { total: Number(spend?.total_spend || 0), po_count: Number(spend?.po_count || 0) },
-      ncr: { count: ncrs.length, open: ncrs.filter(n => n.status === 'Open').length, records: ncrs },
-      capa: { count: capas.length, open: capas.filter(c => c.status === 'Open').length, records: capas },
+      ncr: { count: ncrs.length, open: openNcrs, records: ncrs },
+      capa: { count: capas.length, open: openCapas, records: capas },
       scorecard: scorecard || null,
       risk: risk || null,
       projects,
       payments: payments[0] || {},
-      traceability_score: [vendor, spend, ncrs.length === 0 || true, scorecard, risk].every(Boolean) ? 'PASS' : 'VENDOR TRACEABILITY FAILURE',
+      traceability: {
+        verdict,
+        passed: checks.length - failed.length,
+        total: checks.length,
+        checks,
+        failed: failed.map(f => f.label),
+      },
+      traceability_score: verdict,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -587,6 +668,19 @@ router.get('/dashboard/stats', async (req, res) => {
     const cf = companyId ? `WHERE (company_id=$1 OR company_id IS NULL)` : '';
     const params = companyId ? [companyId] : [];
 
+    // Dashboard filter bar: ?vendor_type / ?risk_rating. No period — the vendor
+    // master is a population, not activity. Those columns live only on
+    // `vendors`, so the dimensions narrow the vendor-population KPIs; the
+    // approval queue and open-NCR count are work queues and stay whole.
+    const vendorType = dimension(req.query, 'vendor_type');
+    const riskRating = dimension(req.query, 'risk_rating');
+    const vParams = [...params];
+    let vFilter = '';
+    if (vendorType) { vParams.push(vendorType); vFilter += ` AND vendor_type = $${vParams.length}`; }
+    if (riskRating) { vParams.push(riskRating); vFilter += ` AND risk_rating = $${vParams.length}`; }
+    // `cf` already opens with WHERE when scoped; without it, start one.
+    const vWhere = cf ? `${cf}${vFilter}` : (vFilter ? `WHERE TRUE${vFilter}` : '');
+
     const [{ rows: [vs] }, { rows: [rs] }, { rows: ncrs }] = await Promise.all([
       pool.query(`
         SELECT
@@ -595,8 +689,8 @@ router.get('/dashboard/stats', async (req, res) => {
           COUNT(*) FILTER (WHERE classification='Blocked' OR status='Blocked') AS blocked,
           COUNT(*) FILTER (WHERE risk_rating IN ('High','Critical')) AS high_risk,
           COUNT(*) FILTER (WHERE status='Active') AS active
-        FROM vendors ${cf}
-      `, params),
+        FROM vendors ${vWhere}
+      `, vParams),
       pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE status IN ('Submitted','Pending SCM Review','Pending Quality Review','Pending Finance Review','Pending Management Review')) AS pending_approvals,
@@ -618,23 +712,46 @@ router.get('/dashboard/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Dimension values for the vendor dashboard filter bar. Not narrowed by the
+// active selection, so picking one doesn't empty the other dropdown.
+router.get('/dashboard/filter-options', async (req, res) => {
+  const companyId = cid(req);
+  const distinct = (col) => pool
+    .query(`SELECT DISTINCT ${col} AS v FROM vendors
+             WHERE ($1::int IS NULL OR company_id = $1 OR company_id IS NULL)
+               AND ${col} IS NOT NULL AND TRIM(${col}) <> ''
+             ORDER BY v`, [companyId])
+    .catch(() => ({ rows: [] }));
+  const [types, risks] = await Promise.all([distinct('vendor_type'), distinct('risk_rating')]);
+  res.json({ vendor_types: types.rows.map(r => r.v), risk_ratings: risks.rows.map(r => r.v) });
+});
+
 router.get('/dashboard/charts', async (req, res) => {
   try {
     const companyId = cid(req);
     const cf = companyId ? `(company_id=$1 OR company_id IS NULL)` : 'TRUE';
     const params = companyId ? [companyId] : [];
 
+    // Same dimensions as /dashboard/stats. The two vendor-population charts
+    // honour them; the scorecard chart joins vendor_scorecards and is left as-is.
+    const vendorType = dimension(req.query, 'vendor_type');
+    const riskRating = dimension(req.query, 'risk_rating');
+    const vParams = [...params];
+    let vFilter = '';
+    if (vendorType) { vParams.push(vendorType); vFilter += ` AND vendor_type = $${vParams.length}`; }
+    if (riskRating) { vParams.push(riskRating); vFilter += ` AND risk_rating = $${vParams.length}`; }
+
     const [{ rows: dist }, { rows: riskDist }, { rows: qualPerf }] = await Promise.all([
       pool.query(`
         SELECT vendor_type AS category, COUNT(*) AS count
-        FROM vendors WHERE ${cf}
+        FROM vendors WHERE ${cf}${vFilter}
         GROUP BY vendor_type ORDER BY count DESC LIMIT 15
-      `, params),
+      `, vParams),
       pool.query(`
         SELECT risk_rating, COUNT(*) AS count
-        FROM vendors WHERE ${cf}
+        FROM vendors WHERE ${cf}${vFilter}
         GROUP BY risk_rating
-      `, params),
+      `, vParams),
       pool.query(`
         SELECT v.vendor_name,
                AVG(vs.quality_score) AS quality,
@@ -642,7 +759,7 @@ router.get('/dashboard/charts', async (req, res) => {
                AVG(vs.overall_score) AS overall
         FROM vendor_scorecards vs
         JOIN vendors v ON v.id=vs.vendor_id
-        WHERE ${cf.replace('company_id', 'vs.company_id').replace('company_id', 'vs.company_id')}
+        WHERE ${cf.replaceAll('company_id', 'vs.company_id')}
         GROUP BY v.vendor_name
         ORDER BY overall DESC LIMIT 10
       `, params),

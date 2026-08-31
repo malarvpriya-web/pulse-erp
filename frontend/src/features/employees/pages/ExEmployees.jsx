@@ -1,7 +1,11 @@
 // PATH: frontend/src/features/employees/pages/ExEmployees.jsx
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Search, X, Download, Eye, RefreshCw, UserCheck, ChevronUp, ChevronDown, Calendar, Edit2 } from 'lucide-react';
+import {
+  Search, X, Download, Eye, RefreshCw, UserCheck, ChevronUp,
+  ChevronDown, Calendar, Edit2, Users,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P      = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -10,7 +14,7 @@ const BORDER = '#e9e4ff';
 const PAGE_SIZE = 20;
 
 const EXIT_REASON_MAP = {
-  resignation:  { label: 'Resignation',  bg: '#fef3c7', color: '#b45309' },
+  resignation:  { label: 'Resignation',  bg: '#ede9fe', color: '#6d28d9' },
   termination:  { label: 'Termination',  bg: '#fee2e2', color: '#b91c1c' },
   retirement:   { label: 'Retirement',   bg: '#dbeafe', color: '#1d4ed8' },
   contract_end: { label: 'Contract End', bg: '#f3f4f6', color: '#374151' },
@@ -39,14 +43,14 @@ function exitReasonDisplay(emp) {
 function interviewBadge(emp) {
   if (emp.interview_done || emp.clearance_interview_done)
     return { label: 'Done',    bg: '#dcfce7', color: '#166534' };
-  return { label: 'Pending', bg: '#fef9c3', color: '#92400e' };
+  return { label: 'Pending', bg: '#ede9fe', color: '#5b21b6' };
 }
 
 function fnfBadge(fnf_status) {
   if (fnf_status === 'paid')     return { label: 'Cleared',  bg: '#dcfce7', color: '#166534' };
   if (fnf_status === 'approved') return { label: 'Approved', bg: '#dbeafe', color: '#1d4ed8' };
-  if (fnf_status === 'draft')    return { label: 'Draft',    bg: '#fef3c7', color: '#b45309' };
-  return { label: 'Pending', bg: '#fef9c3', color: '#92400e' };
+  if (fnf_status === 'draft')    return { label: 'Draft',    bg: '#ede9fe', color: '#6d28d9' };
+  return { label: 'Pending', bg: '#ede9fe', color: '#5b21b6' };
 }
 
 function canRehire(emp) {
@@ -333,7 +337,21 @@ export default function ExEmployees({ setPage, setSelectedEmployee }) {
   const hasFilters = search || dept !== 'All' || reasonFilter !== 'All' || dateFrom || dateTo;
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Employees"
+        title="Ex-Employees"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={14} />
+          </button>
+          <button className="plh-cta" onClick={() => exportCSV(filtered)}>
+            <Download size={13} /> Export CSV
+          </button>
+        </>}
+      />
+    }>
 
       {/* Modals */}
       {editEmp   && <EditExitModal emp={editEmp}   onClose={() => setEditEmp(null)}   onSaved={() => { load(); showToast('Exit details updated'); }} />}
@@ -354,30 +372,6 @@ export default function ExEmployees({ setPage, setSelectedEmployee }) {
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>Ex-Employees</h1>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>
-            {filtered.length} alumni record{filtered.length !== 1 ? 's' : ''}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{
-            padding: '7px 10px', background: '#fff', border: `1px solid ${BORDER}`,
-            borderRadius: 8, cursor: 'pointer', color: '#6b7280',
-          }}>
-            <RefreshCw size={14} />
-          </button>
-          <button onClick={() => exportCSV(filtered)} style={{
-            padding: '7px 12px', background: '#fff', color: P, border: `1px solid ${BORDER}`,
-            borderRadius: 8, cursor: 'pointer', fontSize: 12,
-            display: 'flex', alignItems: 'center', gap: 5,
-          }}>
-            <Download size={13} /> Export CSV
-          </button>
-        </div>
-      </div>
 
       {/* KPI summary chips */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -387,7 +381,7 @@ export default function ExEmployees({ setPage, setSelectedEmployee }) {
         </div>
         <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, padding: '10px 18px' }}>
           <div style={{ fontSize: 11, color: '#9ca3af' }}>This Year</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: '#f59e0b' }}>{summary.thisYear}</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: '#7c5cf0' }}>{summary.thisYear}</div>
         </div>
         {summary.topReasons.map(r => (
           <div key={r.key} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, padding: '10px 18px' }}>
@@ -595,6 +589,6 @@ export default function ExEmployees({ setPage, setSelectedEmployee }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

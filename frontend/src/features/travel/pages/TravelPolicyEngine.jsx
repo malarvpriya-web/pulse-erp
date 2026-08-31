@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
-import { Plus, X, Settings, CheckCircle, AlertCircle } from 'lucide-react';
+import { Plus, X, Settings, CheckCircle, AlertCircle, SlidersHorizontal } from 'lucide-react';
 import { fmt } from './travelUtils';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const RULE_TYPES = ['grade', 'role', 'department'];
 const GRADES = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6'];
@@ -123,7 +124,19 @@ export default function TravelPolicyEngine() {
   const filtered = rules.filter(r => tab === 'All' || r.rule_type === tab);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Travel"
+        title="Travel Policy Engine"
+        subtitle="Configure expense limits per Grade, Role, and Department"
+        actions={isAdmin && (
+          <button className="plh-cta" onClick={openAdd}>
+            <Plus size={15} /> Add Policy Rule
+          </button>
+        )}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -134,21 +147,6 @@ export default function TravelPolicyEngine() {
         onConfirm={handleDelete}
         onCancel={() => setPendingHandleDelete(null)}
       />
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Travel Policy Engine</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            Configure expense limits per Grade, Role, and Department
-          </p>
-        </div>
-        {isAdmin && (
-          <button onClick={openAdd}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            <Plus size={15} /> Add Policy Rule
-          </button>
-        )}
-      </div>
 
       {/* KPI summary */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginBottom: 20 }}>
@@ -273,10 +271,10 @@ export default function TravelPolicyEngine() {
       </div>
 
       {/* Info block */}
-      <div style={{ marginTop: 20, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 12, padding: 16 }}>
+      <div style={{ marginTop: 20, background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 12, padding: 16 }}>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-          <AlertCircle size={16} color="#d97706" style={{ flexShrink: 0, marginTop: 2 }} />
-          <div style={{ fontSize: 12, color: '#92400e' }}>
+          <AlertCircle size={16} color="#6d28d9" style={{ flexShrink: 0, marginTop: 2 }} />
+          <div style={{ fontSize: 12, color: '#5b21b6' }}>
             <strong>Policy Priority:</strong> Grade rules apply first, then Role, then Department.
             When an expense exceeds the policy limit, it is flagged as &quot;Over Policy&quot; and requires additional justification during submission.
             Directors and above with 0 limits have no restriction.
@@ -389,6 +387,6 @@ export default function TravelPolicyEngine() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

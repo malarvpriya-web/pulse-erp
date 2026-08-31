@@ -1,7 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, ChevronRight, RefreshCw, PauseCircle, PlayCircle, CheckCircle, AlertCircle } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  Plus, X, ChevronRight, RefreshCw, PauseCircle, PlayCircle,
+  CheckCircle, AlertCircle, Network,
+} from 'lucide-react';
 
 const STAGES = ['order', 'design', 'procurement', 'production', 'testing', 'dispatch', 'installation', 'commissioning', 'sat', 'service', 'amc'];
 const STAGE_LABELS = {
@@ -13,7 +17,7 @@ const STAGE_LABELS = {
 const STATUS_COLOR = {
   active:    { bg: '#d1fae5', color: '#065f46' },
   completed: { bg: '#dbeafe', color: '#1e40af' },
-  on_hold:   { bg: '#fef3c7', color: '#92400e' },
+  on_hold:   { bg: '#ede9fe', color: '#5b21b6' },
   cancelled: { bg: '#fee2e2', color: '#991b1b' },
 };
 
@@ -153,13 +157,20 @@ export default function LifecycleTracker() {
   const isOnHold = detail?.status === 'on_hold';
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 56px)', background: '#f9fafb', overflow: 'hidden' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Network}
+        eyebrow="Operations"
+        title="Lifecycle Tracker"
+        subtitle="Loading..."
+      />
+    }>
       {/* Left panel */}
       <div style={{ width: 380, borderRight: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '16px 16px 12px', borderBottom: '1px solid #f0f0f4' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <div>
-              <h1 style={{ fontSize: 17, fontWeight: 700, color: '#1f2937', margin: 0 }}>Lifecycle Tracker</h1>
+
               <p style={{ fontSize: 12, color: '#6b7280', margin: '2px 0 0' }}>{instances.length} instances</p>
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
@@ -190,7 +201,7 @@ export default function LifecycleTracker() {
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {loading ? (
-            <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>Loading...</div>
+            <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>Loading lifecycles…</div>
           ) : (instances?.length ?? 0) === 0 ? (
             <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>No lifecycle instances found</div>
           ) : instances?.map(inst => {
@@ -237,7 +248,7 @@ export default function LifecycleTracker() {
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 {!isCompleted && !isOnHold && (
-                  <button onClick={() => holdResume('hold')} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '7px 14px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#92400e' }}>
+                  <button onClick={() => holdResume('hold')} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '7px 14px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#5b21b6' }}>
                     <PauseCircle size={13} /> Hold
                   </button>
                 )}
@@ -346,6 +357,6 @@ export default function LifecycleTracker() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

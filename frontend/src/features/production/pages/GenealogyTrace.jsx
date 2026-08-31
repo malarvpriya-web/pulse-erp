@@ -4,8 +4,10 @@
 // batch, then render its two-directional trace: UPSTREAM (where the material
 // came from) and DOWNSTREAM (where the finished product went). Drives /genealogy.
 import { useState, useCallback } from 'react';
+import { ScrollText } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB', HEAD = '#4c1d95', INK = '#374151', MUT = '#6b7280';
 const card = { background: '#fff', border: '1px solid #ede9fe', borderRadius: 12, padding: 16 };
@@ -14,7 +16,7 @@ const btnP = { background: PURPLE, color: '#fff', border: 'none', borderRadius: 
 
 const KIND = {
   production_order: ['🏭', '#ede9fe', PURPLE], serial: ['🔖', '#e0f2fe', '#0369a1'], serials: ['🔖', '#e0f2fe', '#0369a1'],
-  batch: ['📦', '#fef3c7', '#d97706'], component: ['🧩', '#f5f3ff', PURPLE], source: ['🚚', '#dcfce7', '#16a34a'],
+  batch: ['📦', '#ede9fe', '#6d28d9'], component: ['🧩', '#f5f3ff', PURPLE], source: ['🚚', '#dcfce7', '#16a34a'],
   sales_order: ['🧾', '#dbeafe', '#2563eb'], dispatch: ['📤', '#dbeafe', '#2563eb'], dispatches: ['📤', '#dbeafe', '#2563eb'],
   lifecycle: ['📜', '#f3f4f6', INK], event: ['•', '#f3f4f6', INK],
 };
@@ -61,14 +63,17 @@ export default function GenealogyTrace() {
     finally { setLoading(false); }
   };
 
-  const typeChip = (t) => ({ production_order: ['🏭 Order', PURPLE], serial: ['🔖 Serial', '#0369a1'], batch: ['📦 Batch', '#d97706'] }[t] || [t, INK]);
+  const typeChip = (t) => ({ production_order: ['🏭 Order', PURPLE], serial: ['🔖 Serial', '#0369a1'], batch: ['📦 Batch', '#6d28d9'] }[t] || [t, INK]);
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 18 }}>
-        <h2 style={{ margin: '0 0 4px', color: HEAD, fontSize: 22 }}>🧬 Batch Genealogy & Traceability</h2>
-        <p style={{ margin: 0, color: MUT, fontSize: 13 }}>Trace any production order, serial, or batch — upstream to source, downstream to customer</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={ScrollText}
+        eyebrow="Production"
+        title="🧬 Batch Genealogy & Traceability"
+        subtitle="Trace any production order, serial, or batch — upstream to source, downstream to customer"
+      />
+    }>
 
       <div style={{ ...card, marginBottom: 16, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()}
@@ -120,6 +125,6 @@ export default function GenealogyTrace() {
       {!trace && results.length === 0 && !loading && (
         <div style={{ ...card, color: MUT, fontSize: 13 }}>Enter a production order number, serial number, or batch number to begin a trace.</div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -61,6 +61,73 @@ jobs:
       - name: Seed test fixtures
         run: node scripts/seed-test-fixtures.mjs
 
+      # ── Analytics schema-contract gates ──────────────────────────────────
+      # These exist because of a defect class that shipped to production and was
+      # invisible to every other check in this file: SQL that references a table
+      # or column which does not exist, or filters a status value the app never
+      # writes. Neither throws in a way anyone sees — the queries are wrapped in
+      # try/catch or `.catch(() => [])`, so the feature just reports "no data"
+      # forever, which is indistinguishable from a genuinely quiet dataset.
+      #
+      # Four such references were live when the Analytics module was audited
+      # (2026-08-18): `po_items` and three `payroll_runs` columns that had never
+      # existed, meaning four of five anomaly detectors had never once fired.
+      # Unit tests were green throughout. See MODULE_FEATURE_CONNECTION_MANUAL.md
+      # §111.7 and ANALYTICS_AI_REMEDIATION_REPORT.md.
+      #
+      # Runs BEFORE the unit tests deliberately: it is a fast static check, so a
+      # bad column reference should be the first thing that goes red rather than
+      # something to dig out from under a wall of downstream failures.
+      #
+      # Both connect through src/config/db.js, so they use DATABASE_URL here
+      # exactly as the server does — no .env needed.
+      - name: Schema contract — SQL references exist
+        run: |
+          set -o pipefail
+          npm run check:sql-refs 2>&1 | tee sql-refs.log
+      - name: Annotate missing references
+        if: failure()
+        run: |
+          grep -E "MISSING (TABLE|COLUMN)" sql-refs.log | head -30 | while IFS= read -r l; do
+            echo "::error::${l}"
+          done
+
+      # Data-dependent: it can only fail on a status value the seeded database
+      # actually contains, so on a near-empty CI database it is a weak signal
+      # locally-strong check. Kept as a hard gate anyway — a failure here is
+      # never a false positive, it means some query is silently skipping rows.
+      - name: Schema contract — status vocabulary covers the data
+        run: |
+          set -o pipefail
+          npm run check:statuses 2>&1 | tee status-vocab.log
+      - name: Annotate status drift
+        if: failure()
+        run: |
+          grep -E "DRIFT|FAIL" status-vocab.log | head -30 | while IFS= read -r l; do
+            echo "::error::${l}"
+          done
+
+      # RUNTIME gate. The two static checks above validate identifiers; their own
+      # source states the limit — SELECT-side unqualified columns are unchecked.
+      # Nineteen statements were failing at EXECUTION on every request while both
+      # of them passed: a missing unqualified column, a GROUP BY name that bound
+      # to an input column, a company fragment pasted after a bare FROM, a
+      # bound-but-unreferenced parameter, and an integer/uuid comparison. None of
+      # those is expressible in a reference checker. This boots the real server,
+      # calls every Analytics & AI GET route, and fails on any query Postgres
+      # rejected — whatever the handler did with it afterwards.
+      - name: Runtime contract — no analytics query rejects
+        run: |
+          set -o pipefail
+          node scripts/audit/sql-failure-probe.mjs 2>&1 | tee sql-failures.log
+        working-directory: backend
+      - name: Annotate swallowed query failures
+        if: failure()
+        run: |
+          grep -E '^>>> |^ +\[[0-9A-Z]{5}\]' backend/sql-failures.log | head -40 | while IFS= read -r l; do
+            echo "::error::${l}"
+          done
+
       # tee + annotate: job logs need auth to download, but ::error
       # annotations are readable via the public checks API — without this,
       # diagnosing a CI-only failure from a machine with no gh/docker is blind.
@@ -160,6 +227,72 @@ jobs:
         run: |
           curl -fsS http://localhost:5000/api/health
           curl -fsS -o /dev/null http://localhost:8080/
+
+      # ── Analytics & AI end-to-end gates ─────────────────────────────────
+      # Three suites, three failure classes nothing else in this file catches:
+      #
+      #   analytics-contract  — KPI reconciliation and honesty contracts. Two
+      #     surfaces reporting different numbers for the same named KPI is a
+      #     200-with-wrong-data defect; no unit test compares across endpoints.
+      #
+      #   tenant-isolation    — seeds a SECOND company and checks neither
+      #     tenant's data reaches the other. With one company in the database
+      #     every isolation claim is unfalsifiable, which is how nine unscoped
+      #     queries survived a code-reading audit that filed them as "latent".
+      #     They were live: /dashboard/finance carried one company's invoice
+      #     into the other's receivable.
+      #
+      #   analytics-browser   — the eight Analytics & AI pages in a real
+      #     browser: render, console/exception cleanliness, deep link, reload,
+      #     tabs, filters. Every earlier check was API-level and could not see
+      #     a page that throws on mount.
+      #
+      # These run in the docker job because it is the only one with a booted
+      # stack. Until 2026-08-18 the whole suite lived OUTSIDE this repository
+      # and was untracked, so none of it had ever run in CI; it now lives in
+      # tests/ and is checked out with everything else.
+      #
+      # Blocking on purpose. If one of these is flaky, fix the flake —
+      # `continue-on-error` restores exactly the blind spot they were written
+      # to close.
+      # The docker job had no Node runtime — it only ever shelled out to
+      # `docker compose`. The e2e steps below need one.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install E2E dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Analytics & AI — contract, tenant isolation, browser
+        env:
+          PULSE_API: http://localhost:5000/api/v1
+          PULSE_API_BASE: http://localhost:5000
+          PULSE_FRONT_BASE: http://localhost:8080
+        run: |
+          set -o pipefail
+          npm run test:analytics -- --reporter=list 2>&1 | tee e2e.log
+
+      - name: Annotate E2E failures
+        if: failure()
+        run: |
+          grep -E "Error:|expect|failed|✘" e2e.log | head -40 | while IFS= read -r l; do
+            echo "::error::${l}"
+          done
+
+      - name: Upload E2E artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analytics-e2e-artifacts
+          path: |
+            test-results/
+            e2e.log
+          retention-days: 7
 
       - name: Logs on failure
         if: failure()

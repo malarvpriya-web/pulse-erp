@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { Clock, TrendingUp, Users } from 'lucide-react';
+import { Clock, TrendingUp, Users, BarChart3 } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const barColor = pct => pct >= 80 ? '#10b981' : pct >= 60 ? '#f59e0b' : '#ef4444';
+const barColor = pct => pct >= 80 ? '#10b981' : pct >= 60 ? '#7c5cf0' : '#ef4444';
 
 export default function UtilizationReport() {
   const [data,    setData]    = useState([]);
@@ -40,11 +41,18 @@ export default function UtilizationReport() {
     : barColor(avg);
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Timesheets"
+        title="Utilization Report"
+        subtitle="Billable hours vs capacity by employee"
+      />
+    }>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
         <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Utilization Report</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Billable hours vs capacity by employee</p>
+
+
         </div>
         <select value={period} onChange={e => setPeriod(e.target.value)}
           style={{ padding:'8px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none' }}>
@@ -120,7 +128,7 @@ export default function UtilizationReport() {
                         </div>
                       </td>
                       <td style={{ padding:'10px 16px' }}>
-                        <span style={{ background:pct>=80?'#d1fae5':pct>=60?'#fef3c7':'#fee2e2', color:pct>=80?'#065f46':pct>=60?'#92400e':'#991b1b', padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600 }}>
+                        <span style={{ background:pct>=80?'#d1fae5':pct>=60?'#ede9fe':'#fee2e2', color:pct>=80?'#065f46':pct>=60?'#5b21b6':'#991b1b', padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600 }}>
                           {pct>=80?'On Track':pct>=60?'Moderate':'Under-utilized'}
                         </span>
                       </td>
@@ -132,6 +140,6 @@ export default function UtilizationReport() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

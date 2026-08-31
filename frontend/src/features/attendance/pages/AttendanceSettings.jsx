@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Settings, Shield, Clock, MapPin, Cpu, Camera } from 'lucide-react';
+import { Settings, Shield, Clock, MapPin, Cpu, Camera, SlidersHorizontal } from 'lucide-react';
 
 import GeneralSettings from './settings/GeneralSettings';
 import PolicyEngine from './AttendancePolicies';
@@ -8,6 +8,7 @@ import ShiftManagement from './ShiftManagement';
 import GeoFencing from './GeoFencing';
 import DeviceManagement from './DeviceManagement';
 import FaceAttendance from './FaceAttendance';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const VALID_TABS = ['general', 'policies', 'shifts', 'geo-fencing', 'devices', 'face'];
 
@@ -39,11 +40,15 @@ export default function AttendanceSettings() {
   };
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Attendance Settings</h1>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Configure policies, shifts, geo-fencing, devices, and face attendance</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Attendance"
+        title="Attendance Settings"
+        subtitle="Configure policies, shifts, geo-fencing, devices, and face attendance"
+      />
+    }>
+
 
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #f0f0f4', marginBottom: 24 }}>
@@ -85,6 +90,6 @@ export default function AttendanceSettings() {
         {activeTab === 'devices'     && <DeviceManagement />}
         {activeTab === 'face'        && <FaceAttendance />}
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -1,7 +1,13 @@
 // frontend/src/features/quality/pages/NCRManagement.jsx
 import { useState, useEffect, useCallback } from 'react';
+import {
+  ShieldAlert, FileWarning, Search, CheckCircle2, AlertOctagon,
+  Clock, Plus, Download,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import DraftAssistButton from '@/components/ai/DraftAssistButton';
+import { PageHero, PageShell, StatBand, Stat } from '@/components/pulse-ui';
 
 const SEVERITIES = ['critical','major','minor'];
 const SOURCES    = ['quality','procurement','production','service'];
@@ -12,8 +18,8 @@ function Badge({ label, map }) {
   return <span style={{ background: bg, color, padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 700, textTransform: 'capitalize' }}>{label}</span>;
 }
 
-const SEV_MAP = { critical:['#fee2e2','#dc2626'], major:['#fef3c7','#d97706'], minor:['#d1fae5','#16a34a'] };
-const ST_MAP  = { open:['#fee2e2','#dc2626'], 'under-review':['#fef3c7','#d97706'], closed:['#d1fae5','#16a34a'] };
+const SEV_MAP = { critical:['#fee2e2','#dc2626'], major:['#ede9fe','#6d28d9'], minor:['#d1fae5','#16a34a'] };
+const ST_MAP  = { open:['#fee2e2','#dc2626'], 'under-review':['#ede9fe','#6d28d9'], closed:['#d1fae5','#16a34a'] };
 
 function NCRDrawer({ ncr, onClose, onRefresh }) {
   const toast = useToast();
@@ -131,7 +137,17 @@ function NewNCRForm({ onClose, onCreated }) {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div><label style={lbl}>Title *</label><input style={inp} value={form.title} onChange={e => f('title', e.target.value)} required /></div>
-          <div><label style={lbl}>Description</label><textarea rows={3} style={inp} value={form.description} onChange={e => f('description', e.target.value)} /></div>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <label style={lbl}>Description</label>
+              <DraftAssistButton
+                disabled={!form.title}
+                prompt={`Draft a factual, professional non-conformance description (2-3 sentences) for a quality NCR titled "${form.title}", severity ${form.severity}, detected in ${form.source}. Do not invent specific measurements, quantities, or dates that weren't given.`}
+                onDraft={(text) => f('description', text)}
+              />
+            </div>
+            <textarea rows={3} style={inp} value={form.description} onChange={e => f('description', e.target.value)} />
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div><label style={lbl}>Severity</label>
               <select style={inp} value={form.severity} onChange={e => f('severity', e.target.value)}>
@@ -181,12 +197,54 @@ export default function NCRManagement() {
 
   const sel = { padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, background: '#fff', cursor: 'pointer' };
 
+  // Hero/stat-band figures — derived from the rows already on screen so they
+  // always agree with the table under them (no second round-trip).
+  const openCount     = ncrs.filter(n => n.status === 'open').length;
+  const reviewCount   = ncrs.filter(n => n.status === 'under-review').length;
+  const closedCount   = ncrs.filter(n => n.status === 'closed').length;
+  const criticalCount = ncrs.filter(n => n.severity === 'critical').length;
+  const avgDaysOpen   = ncrs.length
+    ? Math.round(ncrs.reduce((s, n) => s + (Number(n.days_open) || 0), 0) / ncrs.length)
+    : 0;
+  const closureRate = ncrs.length ? Math.round((closedCount / ncrs.length) * 100) : 0;
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>NCR Management</h2>
-        <button onClick={() => setShowNew(true)} style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 20px', cursor: 'pointer', fontWeight: 600 }}>+ Raise NCR</button>
-      </div>
+    <PageShell dock={
+        <PageHero
+          icon={ShieldAlert}
+          eyebrow="Quality"
+          title="NCR Management"
+          subtitle="Non-conformance reports raised across quality, procurement, production & service"
+          meta={[
+            { value: ncrs.length, label: 'in view' },
+            { value: criticalCount, label: 'critical', tone: criticalCount ? 'bad' : 'good' },
+            { value: `${avgDaysOpen}d`, label: 'avg age', tone: avgDaysOpen > 14 ? 'warn' : 'good' },
+          ]}
+          actions={
+            <>
+              <a
+                className="plh-cta plh-cta--ghost"
+                href="/api/v1/quality/ncr?export=csv"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Download size={14} /> Export CSV
+              </a>
+              <button className="plh-cta" onClick={() => setShowNew(true)}>
+                <Plus size={14} /> Raise NCR
+              </button>
+            </>
+          }
+        />
+    }>
+
+      <StatBand cols={5}>
+        <Stat index={0} icon={FileWarning}  tone="danger"  label="Open"         value={openCount}     sub="awaiting root cause" />
+        <Stat index={1} icon={Search}       tone="warning" label="Under Review" value={reviewCount}   sub="disposition pending" />
+        <Stat index={2} icon={CheckCircle2} tone="success" label="Closed"       value={closedCount}   sub={`${closureRate}% closure rate`} />
+        <Stat index={3} icon={AlertOctagon} tone="danger"  label="Critical"     value={criticalCount} sub="highest severity" />
+        <Stat index={4} icon={Clock}        tone="info"    label="Avg Days Open" value={avgDaysOpen}  sub="across NCRs in view" />
+      </StatBand>
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -202,7 +260,6 @@ export default function NCRManagement() {
           <option value="">All Sources</option>
           {SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        <a href="/api/v1/quality/ncr?export=csv" target="_blank" style={{ padding: '8px 14px', background: '#f3f4f6', borderRadius: 6, fontSize: 13, textDecoration: 'none', color: '#374151', display: 'flex', alignItems: 'center' }}>⬇ CSV</a>
       </div>
 
       {/* Table */}
@@ -240,6 +297,6 @@ export default function NCRManagement() {
 
       {selected && <NCRDrawer ncr={selected} onClose={() => setSelected(null)} onRefresh={load} />}
       {showNew && <NewNCRForm onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); load(); }} />}
-    </div>
+    </PageShell>
   );
 }

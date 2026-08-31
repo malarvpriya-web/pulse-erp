@@ -1,8 +1,10 @@
 // frontend/src/features/hr/pages/EmployeeSelfService.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import FaceClockModal, { getLocationString } from '@/components/attendance/FaceClockModal';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ─── helpers ─────────────────────────────────────────────────── */
 function fmtINR(n) {
@@ -21,7 +23,7 @@ const LIMIT_80C = 150000;
 
 const DOC_TYPES = ['Aadhaar Card','PAN Card','Passport','Offer Letter','Degree Certificate','Experience Letter','Bank Passbook','Salary Certificate','Other'];
 const CLAIM_TYPES = ['medical','fuel','internet','mobile','travel','other'];
-const STATUS_COLORS = { draft:'#6b7280', submitted:'#d97706', approved:'#16a34a', rejected:'#dc2626', paid:'#6B3FDB' };
+const STATUS_COLORS = { draft:'#6b7280', submitted:'#6d28d9', approved:'#16a34a', rejected:'#dc2626', paid:'#6B3FDB' };
 const EMPTY_DASHBOARD = {
   leave_balance: 0,
   pending_reimbursements: 0,
@@ -237,11 +239,15 @@ export default function EmployeeSelfService() {
   const pendingTasks = todayTasks.filter(t => t.status !== 'done' && t.status !== 'completed').length;
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>🧑‍💼 Employee Self-Service</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Manage your declarations, documents, claims and personal information</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="🧑‍💼 Employee Self-Service"
+        subtitle="Manage your declarations, documents, claims and personal information"
+      />
+    }>
+
 
       {msg.text && <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontWeight: 500, fontSize: 14, background: msg.type === 'error' ? '#fef2f2' : '#f0fdf4', color: msg.type === 'error' ? '#dc2626' : '#16a34a', border: `1px solid ${msg.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{msg.text}</div>}
 
@@ -287,7 +293,7 @@ export default function EmployeeSelfService() {
             </div>
 
             {/* clock-in / clock-out banner */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderRadius: 10, border: '1px solid #e9e4ff', background: clockedOut ? '#f0fdf4' : clockedIn ? '#eff6ff' : '#fef9c3', marginBottom: 20, flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderRadius: 10, border: '1px solid #e9e4ff', background: clockedOut ? '#f0fdf4' : clockedIn ? '#eff6ff' : '#ede9fe', marginBottom: 20, flexWrap: 'wrap', gap: 10 }}>
               <div>
                 <div style={{ fontWeight: 600, color: '#1f2937', fontSize: 13 }}>
                   {clockedOut
@@ -322,7 +328,7 @@ export default function EmployeeSelfService() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 12, marginBottom: 24 }}>
               {[
                 { label:'Leave Balance',   value:`${dashboard.leave_balance} days`,            icon:'🏖️', color:'#2563eb', tab:'dashboard' },
-                { label:'Pending Claims',  value:`${dashboard.pending_reimbursements}`,        icon:'📋', color:'#d97706', tab:'reimb' },
+                { label:'Pending Claims',  value:`${dashboard.pending_reimbursements}`,        icon:'📋', color:'#6d28d9', tab:'reimb' },
                 { label:'YTD Tax Paid',    value:fmtINR(dashboard.ytd_tax_deducted),           icon:'🏛️', color:'#dc2626', tab:'it_decl' },
                 { label:'Documents',       value:`${dashboard.document_count}`,                icon:'📄', color:'#6B3FDB', tab:'documents' },
                 { label:'Pending Tasks',   value:`${pendingTasks}`,                            icon:'✅', color:'#16a34a', tab:'dashboard' },
@@ -341,7 +347,7 @@ export default function EmployeeSelfService() {
             <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
               {[
                 { label:'Apply Leave',      icon:'🏖️', color:'#2563eb', action: () => setTab('leaves') },
-                { label:'Submit Expense',   icon:'💸', color:'#d97706', action: () => setTab('reimb') },
+                { label:'Submit Expense',   icon:'💸', color:'#6d28d9', action: () => setTab('reimb') },
                 { label:'IT Declaration',   icon:'📝', color:'#dc2626', action: () => setTab('it_decl') },
                 { label:'Upload Document',  icon:'📄', color:'#6B3FDB', action: () => setTab('documents') },
                 { label:'Update Profile',   icon:'✏️', color:'#16a34a', action: () => setTab('profile') },
@@ -380,7 +386,7 @@ export default function EmployeeSelfService() {
                     <div style={{ color: '#9ca3af', fontSize: 13, padding: '8px 0' }}>No tasks due today</div>
                   ) : todayTasks.slice(0, 5).map((task, i) => {
                     const done = task.status === 'done' || task.status === 'completed';
-                    const pColor = task.priority === 'high' ? '#ef4444' : task.priority === 'low' ? '#6b7280' : '#f59e0b';
+                    const pColor = task.priority === 'high' ? '#ef4444' : task.priority === 'low' ? '#6b7280' : '#7c5cf0';
                     return (
                       <div key={task.id || i} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 12px', borderRadius: 8, border: '1px solid #e9e4ff', background: '#f5f3ff' }}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: pColor, flexShrink: 0 }} />
@@ -406,13 +412,13 @@ export default function EmployeeSelfService() {
               ) : upcomingHolidays.map((h, i) => {
                 const daysLeft = Math.ceil((new Date(h.date) - new Date()) / 86400000);
                 return (
-                  <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '10px 14px', borderRadius: 8, border: '1px solid #d9770630', background: '#d9770610' }}>
+                  <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '10px 14px', borderRadius: 8, border: '1px solid #6d28d930', background: '#6d28d910' }}>
                     <span style={{ fontSize: 20 }}>🏖️</span>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 600, color: '#1f2937', fontSize: 13 }}>{h.name}</div>
                       <div style={{ fontSize: 12, color: '#6b7280' }}>{h.date}{h.day ? ` · ${h.day}` : ''}</div>
                     </div>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: '#d97706' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#6d28d9' }}>
                       {daysLeft === 0 ? 'Today' : `In ${daysLeft} days`}
                     </span>
                   </div>
@@ -443,7 +449,7 @@ export default function EmployeeSelfService() {
                 <div style={{ height: '100%', width: `${Math.min(100, (total80C / LIMIT_80C) * 100)}%`, background: total80C >= LIMIT_80C ? '#16a34a' : '#6B3FDB', borderRadius: 5, transition: 'width 0.5s' }} />
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12 }}>
-                <span style={{ color: '#6b7280' }}>Remaining: <strong style={{ color: remaining80C > 0 ? '#d97706' : '#16a34a' }}>{fmtINR(remaining80C)}</strong></span>
+                <span style={{ color: '#6b7280' }}>Remaining: <strong style={{ color: remaining80C > 0 ? '#6d28d9' : '#16a34a' }}>{fmtINR(remaining80C)}</strong></span>
                 <span style={{ color: '#6b7280' }}>Est. tax saving: <strong style={{ color: '#16a34a' }}>{fmtINR(Math.min(total80C, LIMIT_80C) * 0.3)}</strong></span>
               </div>
             </div>
@@ -559,20 +565,20 @@ export default function EmployeeSelfService() {
                   : null;
                 const isExpired  = daysToExpiry !== null && daysToExpiry < 0;
                 const isExpiring = daysToExpiry !== null && daysToExpiry >= 0 && daysToExpiry <= 30;
-                const borderColor = isExpired ? '#fecaca' : isExpiring ? '#fed7aa' : doc.verified ? '#bbf7d0' : '#e9e4ff';
+                const borderColor = isExpired ? '#fecaca' : isExpiring ? '#ddd6fe' : doc.verified ? '#bbf7d0' : '#e9e4ff';
                 return (
                 <div key={doc.id} style={{ background: '#f5f3ff', border: `1px solid ${borderColor}`, borderRadius: 12, padding: 16 }}>
                   <div style={{ fontSize: 28, marginBottom: 8 }}>📄</div>
                   <div style={{ fontWeight: 700, fontSize: 13, color: '#1f2937', marginBottom: 4 }}>{doc.document_type}</div>
                   <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.document_name}</div>
                   {doc.expiry_date && (
-                    <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6, color: isExpired ? '#dc2626' : isExpiring ? '#d97706' : '#6b7280' }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6, color: isExpired ? '#dc2626' : isExpiring ? '#6d28d9' : '#6b7280' }}>
                       {isExpired ? `⚠ Expired ${Math.abs(daysToExpiry)}d ago` : isExpiring ? `⚠ Expires in ${daysToExpiry}d` : `Expires: ${doc.expiry_date}`}
                     </div>
                   )}
                   <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10 }}>Uploaded: {doc.uploaded_at?.split('T')[0]}</div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: doc.verified ? '#d1fae5' : '#fef3c7', color: doc.verified ? '#16a34a' : '#d97706' }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: doc.verified ? '#d1fae5' : '#ede9fe', color: doc.verified ? '#16a34a' : '#6d28d9' }}>
                       {doc.verified ? '✓ Verified' : '⏳ Pending'}
                     </span>
                     <div style={{ display: 'flex', gap: 6 }}>
@@ -642,7 +648,7 @@ export default function EmployeeSelfService() {
                     <div style={{ fontWeight: 700, color: '#1f2937', fontSize: 14 }}>{c.claim_type.charAt(0).toUpperCase() + c.claim_type.slice(1)} Reimbursement</div>
                     <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{c.description} · {c.claim_date}</div>
                     {c.status === 'approved' && c.approved_amount !== c.amount && (
-                      <div style={{ fontSize: 12, color: '#d97706', marginTop: 4 }}>Approved amount: {fmtINR(c.approved_amount)} (claimed: {fmtINR(c.amount)})</div>
+                      <div style={{ fontSize: 12, color: '#6d28d9', marginTop: 4 }}>Approved amount: {fmtINR(c.approved_amount)} (claimed: {fmtINR(c.amount)})</div>
                     )}
                   </div>
                   <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
@@ -732,18 +738,18 @@ export default function EmployeeSelfService() {
             {bankConfirmModal && (
               <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 360, maxWidth: '95vw' }}>
-                  <h3 style={{ color: '#d97706', margin: '0 0 12px' }}>⚠️ Confirm Profile Update</h3>
+                  <h3 style={{ color: '#6d28d9', margin: '0 0 12px' }}>⚠️ Confirm Profile Update</h3>
                   <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px' }}>
                     You are about to update your bank details. Changes will take effect from the next payroll cycle. Please verify the information is correct.
                   </p>
-                  <div style={{ background: '#fef3c7', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
+                  <div style={{ background: '#ede9fe', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
                     <div><strong>Bank:</strong> {tempProfile.bank_name}</div>
                     <div><strong>IFSC:</strong> {tempProfile.ifsc_code}</div>
                     <div><strong>Account:</strong> XXXX{String(tempProfile.bank_account || '').slice(-4)}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 10 }}>
                     <button onClick={saveProfile} disabled={loading}
-                      style={{ flex: 1, background: '#d97706', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 0', cursor: 'pointer', fontWeight: 600 }}>
+                      style={{ flex: 1, background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 0', cursor: 'pointer', fontWeight: 600 }}>
                       {loading ? 'Saving…' : 'Confirm & Save'}
                     </button>
                     <button onClick={() => setBankConfirm(false)}
@@ -757,6 +763,6 @@ export default function EmployeeSelfService() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

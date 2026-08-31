@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Plus, Search, Filter, Download, Eye, Send, CheckCircle,
-  AlertTriangle, Clock, X, ChevronDown, FileText, Printer, Paperclip
+  AlertTriangle, Clock, X, ChevronDown, FileText, Printer, Paperclip,
+  ReceiptIndianRupee,
 } from 'lucide-react';
 import { getInvoices, createInvoice, updateInvoice, getParties } from '../services/financeService';
 import { fmt, fmtFull, statusColor, GST_RATES, emptyItem, calcItem } from '../financeUtils';
@@ -11,6 +12,7 @@ import FYSelector from '@/components/core/FYSelector';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import api from '@/services/api/client';
 import './Invoices.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const _fy = currentFY();
 
@@ -216,7 +218,19 @@ export default function Invoices() {
   const totals = calcTotals();
 
   return (
-    <div className="inv-root">
+    <PageShell dock={
+      <PageHero
+        icon={ReceiptIndianRupee}
+        eyebrow="Finance"
+        title="Invoices"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={exportCSV}><Download size={14}/> Export</button>
+          <button className="plh-cta" onClick={()=>setDrawer('create')}>
+            <Plus size={15}/> New Invoice
+          </button>
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingMarkPaid}
         title="Mark Invoice as Paid"
@@ -236,19 +250,7 @@ export default function Invoices() {
       )}
 
       {/* Header */}
-      <div className="inv-header">
-        <div>
-          <h2 className="inv-title">Invoices</h2>
-          <p className="inv-sub">{invoices.length} invoice{invoices.length !== 1 ? 's' : ''} · {dateFrom && dateTo ? `${dateFrom} – ${dateTo}` : 'All time'}</p>
-        </div>
-        <div className="inv-header-r">
-          <FYSelector />
-          <button className="inv-btn-outline" onClick={exportCSV}><Download size={14}/> Export</button>
-          <button className="inv-btn-primary" onClick={()=>setDrawer('create')}>
-            <Plus size={15}/> New Invoice
-          </button>
-        </div>
-      </div>
+
 
       {/* Stats */}
       <div className="inv-stats">
@@ -623,6 +625,6 @@ export default function Invoices() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

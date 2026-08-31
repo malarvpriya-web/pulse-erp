@@ -1,11 +1,13 @@
 // frontend/src/features/inventory/pages/WarehouseManagement.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { Package } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import QualityTestsPanel from '@/features/quality/components/QualityTestsPanel';
-import { PageLayout, PageHeader, ContentCard } from '@/components/pulse-ui';
+import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageLayout, PageHeader, ContentCard, PageHero, PageShell } from '@/components/pulse-ui';
 
 
 /* ── TAB 1: Bin Locations ── */
@@ -321,7 +323,7 @@ function PickPackTab() {
     );
   };
 
-  const lineStatusColor = (s) => s === 'completed' ? ['#d1fae5', '#16a34a'] : s === 'partial' ? ['#fef3c7', '#d97706'] : ['#f3f4f6', '#6b7280'];
+  const lineStatusColor = (s) => s === 'completed' ? ['#d1fae5', '#16a34a'] : s === 'partial' ? ['#ede9fe', '#6d28d9'] : ['#f3f4f6', '#6b7280'];
 
   return (
     <div>
@@ -537,7 +539,7 @@ function InwardQCTab() {
                 {gr.supplier} · {gr.date ? new Date(gr.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
               </div>
             </div>
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 10, background: '#fef3c7', color: '#d97706' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9' }}>
               Pending QC
             </span>
           </div>
@@ -825,8 +827,8 @@ function CycleCountTab() {
               </div>
               <span style={{
                 fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 10,
-                background: cc.status === 'completed' ? '#d1fae5' : '#fef3c7',
-                color:      cc.status === 'completed' ? '#16a34a' : '#d97706',
+                background: cc.status === 'completed' ? '#d1fae5' : '#ede9fe',
+                color:      cc.status === 'completed' ? '#16a34a' : '#6d28d9',
               }}>
                 {cc.status}
               </span>
@@ -844,19 +846,214 @@ function CycleCountTab() {
   );
 }
 
+/* ── TAB 0: Stores ──
+   The warehouse master itself. Until this existed a store could only be created
+   in the Inventory Setup Wizard and could never be renamed or retired, so ten
+   pages read a list nothing could correct. */
+const EMPTY_STORE = { warehouse_name: '', warehouse_code: '', warehouse_type: '', location: '', department: '', capacity: '' };
+
+function StoresTab() {
+  const toast = useToast();
+  const { readOnly } = usePageAccess();
+  const [stores, setStores]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [drawer, setDrawer]   = useState(null);   // null | { id? } — open form
+  const [form, setForm]       = useState(EMPTY_STORE);
+  const [saving, setSaving]   = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/inventory/warehouses');
+      setStores(Array.isArray(res.data) ? res.data : (res.data?.warehouses ?? []));
+    } catch (e) {
+      toast.error(e?.response?.data?.error || 'Could not load stores');
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const openNew  = () => { setForm(EMPTY_STORE); setDrawer({}); };
+  const openEdit = (s) => {
+    setForm({
+      warehouse_name: s.warehouse_name || s.name || '',
+      warehouse_code: s.warehouse_code || '',
+      warehouse_type: s.warehouse_type || '',
+      location:       s.location || '',
+      department:     s.department || '',
+      capacity:       s.capacity ?? '',
+    });
+    setDrawer({ id: s.id });
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (!form.warehouse_name.trim()) return toast.error('Store name is required');
+    setSaving(true);
+    try {
+      if (drawer.id) await api.put(`/inventory/warehouses/${drawer.id}`, form);
+      else           await api.post('/inventory/warehouses', form);
+      toast.success(drawer.id ? 'Store updated' : 'Store created');
+      setDrawer(null);
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not save the store');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doDelete = async () => {
+    const id = pendingDelete;
+    setPendingDelete(null);
+    try {
+      await api.delete(`/inventory/warehouses/${id}`);
+      toast.success('Store retired');
+      load();
+    } catch (err) {
+      // A 409 here means the store still holds stock — say so, don't just fail.
+      toast.error(err?.response?.data?.error || 'Could not retire the store');
+    }
+  };
+
+  const cell = { padding: '9px 12px', borderBottom: '1px solid #f0f0f4', fontSize: 13 };
+  const input = { width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, color: '#6b7280' }}>
+          {loading ? 'Loading…' : `${stores.length} store${stores.length === 1 ? '' : 's'}`}
+        </div>
+        {!readOnly && (
+          <button type="button" onClick={openNew}
+            style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+            Add Store
+          </button>
+        )}
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ background: '#faf9fc', textAlign: 'left' }}>
+              <th style={{ ...cell, fontWeight: 600, color: '#6b7280' }}>Name</th>
+              <th style={{ ...cell, fontWeight: 600, color: '#6b7280' }}>Code</th>
+              <th style={{ ...cell, fontWeight: 600, color: '#6b7280' }}>Type</th>
+              <th style={{ ...cell, fontWeight: 600, color: '#6b7280' }}>Location</th>
+              <th style={{ ...cell, fontWeight: 600, color: '#6b7280' }}>Department</th>
+              <th style={{ ...cell, fontWeight: 600, color: '#6b7280', textAlign: 'right' }}>Capacity</th>
+              {!readOnly && <th style={{ ...cell, fontWeight: 600, color: '#6b7280', width: 120 }}>Actions</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {stores.map(s => (
+              <tr key={s.id}>
+                <td style={{ ...cell, fontWeight: 600 }}>{s.warehouse_name || s.name}</td>
+                <td style={cell}>{s.warehouse_code || '—'}</td>
+                <td style={cell}>{s.warehouse_type || '—'}</td>
+                <td style={cell}>{s.location || '—'}</td>
+                <td style={cell}>{s.department || '—'}</td>
+                <td style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{s.capacity ?? '—'}</td>
+                {!readOnly && (
+                  <td style={cell}>
+                    <button type="button" onClick={() => openEdit(s)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B3FDB', fontWeight: 600, fontSize: 12, padding: 0, marginRight: 12 }}>
+                      Edit
+                    </button>
+                    <button type="button" onClick={() => setPendingDelete(s.id)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontWeight: 600, fontSize: 12, padding: 0 }}>
+                      Retire
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+            {!loading && stores.length === 0 && (
+              <tr><td colSpan={7} style={{ padding: '32px 16px', textAlign: 'center', color: '#9ca3af' }}>No stores yet</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {drawer && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <form onSubmit={save} style={{ background: '#fff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' }}>
+            <h3 style={{ margin: '0 0 16px', color: '#4c1d95', fontSize: 16 }}>{drawer.id ? 'Edit Store' : 'Add Store'}</h3>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                Name *
+                <input value={form.warehouse_name} onChange={e => setForm(f => ({ ...f, warehouse_name: e.target.value }))} style={input} required />
+              </label>
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                Code
+                <input value={form.warehouse_code} onChange={e => setForm(f => ({ ...f, warehouse_code: e.target.value }))} style={input} />
+              </label>
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                Type
+                <input value={form.warehouse_type} onChange={e => setForm(f => ({ ...f, warehouse_type: e.target.value }))} style={input} placeholder="Main / Transit / Scrap" />
+              </label>
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                Location
+                <input value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} style={input} />
+              </label>
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                Department
+                <input value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} style={input} />
+              </label>
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                Capacity
+                <input type="number" value={form.capacity} onChange={e => setForm(f => ({ ...f, capacity: e.target.value }))} style={input} />
+              </label>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+              <button type="submit" disabled={saving}
+                style={{ flex: 1, background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 0', cursor: 'pointer', fontWeight: 600 }}>
+                {saving ? 'Saving…' : drawer.id ? 'Update' : 'Create'}
+              </button>
+              <button type="button" onClick={() => setDrawer(null)}
+                style={{ flex: 1, background: '#e9e4ff', color: '#6B3FDB', border: 'none', borderRadius: 8, padding: '9px 0', cursor: 'pointer', fontWeight: 600 }}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="Retire Store"
+        message="Retire this store? It stays on historical stock records but disappears from every picker."
+        confirmLabel="Retire"
+        variant="danger"
+        onConfirm={doDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
+    </div>
+  );
+}
+
 /* ── MAIN ── */
-const TABS = ['Bin Locations', 'Pick-Pack-Ship', 'Inward QC', 'Cycle Count'];
+const TABS = ['Stores', 'Bin Locations', 'Pick-Pack-Ship', 'Inward QC', 'Cycle Count'];
 
 export default function WarehouseManagement() {
   const { readOnly } = usePageAccess();
-  const [tab, setTab] = useState('Bin Locations');
+  const [tab, setTab] = useState('Stores');
 
   return (
-    <PageLayout>
-      <PageHeader
-        description="Bin locations, pick-pack-ship, inward QC, and cycle counting"
-        filters={
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Warehouse Management"
+          subtitle="Bin locations, pick-pack-ship, inward QC, and cycle counting"
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {TABS.map(t => (
               <button
                 key={t}
@@ -867,16 +1064,19 @@ export default function WarehouseManagement() {
                 {t}
               </button>
             ))}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
       {readOnly && <ReadOnlyBanner />}
       <ContentCard>
+        {tab === 'Stores'         && <StoresTab />}
         {tab === 'Bin Locations'  && <BinsTab />}
         {tab === 'Pick-Pack-Ship' && <PickPackTab />}
         {tab === 'Inward QC'      && <InwardQCTab />}
         {tab === 'Cycle Count'    && <CycleCountTab />}
       </ContentCard>
-    </PageLayout>
+    </PageShell>
   );
 }

@@ -1,18 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import DOMPurify from 'dompurify';
 import {
-  Mail, Plus, Search, Edit2, Trash2, Copy, Eye, EyeOff,
-  X, Check, ChevronDown, ToggleLeft, ToggleRight, RefreshCw,
+  Mail, Plus, Search, Edit2, Trash2, Copy, Eye, EyeOff, X, Check,
+  ChevronDown, ToggleLeft, ToggleRight, RefreshCw, ArrowLeft,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast as useGlobalToast } from '@/context/ToastContext';
 import { matchesSearch } from '../shared/search';
+import { PageHero } from '@/components/pulse-ui';
 
 // ── Type config ───────────────────────────────────────────────────────────────
 const TYPE_CFG = {
   application_received: { label: 'Application Received', color: '#6366f1', bg: '#eef2ff' },
   interview_scheduled:  { label: 'Interview Scheduled',  color: '#0891b2', bg: '#ecfeff' },
-  interview_reminder:   { label: 'Interview Reminder',   color: '#d97706', bg: '#fffbeb' },
+  interview_reminder:   { label: 'Interview Reminder',   color: '#6d28d9', bg: '#f5f3ff' },
   rejection:            { label: 'Rejection',             color: '#dc2626', bg: '#fef2f2' },
   offer_letter:         { label: 'Offer Letter',          color: '#16a34a', bg: '#f0fdf4' },
   joining_instructions: { label: 'Joining Instructions',  color: '#6B3FDB', bg: '#faf5ff' },
@@ -538,36 +539,29 @@ export default function EmailTemplates({ setPage }) {
       <div style={{ padding: '28px 32px', margin: '0 auto' }}>
 
         {/* ── Page header ── */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28, flexWrap: 'wrap', gap: 16 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-              <button
-                onClick={() => setPage('RecruitmentDashboard')}
-                style={{ background: '#f3f4f6', border: 'none', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 500 }}
-              >
-                ← Back
+        <PageHero
+          icon={Mail}
+          eyebrow="Recruitment"
+          title="Email Templates"
+          subtitle="Recruitment email templates used across offers, interviews and rejections"
+          meta={[
+            { value: activeCount, label: 'active', tone: 'good' },
+            ...(inactiveCount > 0 ? [{ value: inactiveCount, label: 'inactive' }] : []),
+          ]}
+          actions={
+            <>
+              <button className="plh-cta plh-cta--ghost" onClick={() => setPage('RecruitmentDashboard')}>
+                <ArrowLeft size={14} /> Back
               </button>
-            </div>
-            <h1 style={{ fontSize: 26, fontWeight: 800, color: '#111827', margin: 0 }}>Email Templates</h1>
-            <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 14 }}>
-              Manage recruitment email templates · {activeCount} active{inactiveCount > 0 ? `, ${inactiveCount} inactive` : ''}
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button
-              onClick={load}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', background: '#f3f4f6', border: 'none', borderRadius: 9, cursor: 'pointer', color: '#374151', fontSize: 13 }}
-            >
-              <RefreshCw size={14} /> Refresh
-            </button>
-            <button
-              onClick={openCreate}
-              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 20px', background: '#4B2DCE', color: '#fff', border: 'none', borderRadius: 9, cursor: 'pointer', fontWeight: 700, fontSize: 14 }}
-            >
-              <Plus size={15} /> New Template
-            </button>
-          </div>
-        </div>
+              <button className="plh-cta plh-cta--ghost plh-cta--icon" onClick={load} title="Refresh">
+                <RefreshCw size={14} />
+              </button>
+              <button className="plh-cta" onClick={openCreate}>
+                <Plus size={15} /> New Template
+              </button>
+            </>
+          }
+        />
 
         {/* ── Stats row ── */}
         <div style={{ display: 'flex', gap: 14, marginBottom: 24, flexWrap: 'wrap' }}>

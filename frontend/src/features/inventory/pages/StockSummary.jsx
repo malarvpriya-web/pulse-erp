@@ -5,7 +5,7 @@ import {
   ChevronUp, ChevronDown, ChevronsUpDown,
 } from 'lucide-react';
 import api from '@/services/api/client';
-import { PageLayout, PageHeader, KPICardGrid, KPICard, ContentCard, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, KPICardGrid, KPICard, ContentCard, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 import './StockSummary.css';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ const pct = (a, b) => (b ? Math.min(100, Math.round((parseFloat(a) / parseFloat(
 const TYPE_CFG = {
   raw_material:   { label: 'Raw Material',   color: '#6366f1', bg: '#eef2ff' },
   finished_goods: { label: 'Finished Goods', color: '#0891b2', bg: '#ecfeff' },
-  consumable:     { label: 'Consumable',     color: '#d97706', bg: '#fffbeb' },
+  consumable:     { label: 'Consumable',     color: '#6d28d9', bg: '#f5f3ff' },
   spare:          { label: 'Spare',          color: '#6B3FDB', bg: '#faf5ff' },
 };
 
@@ -29,8 +29,8 @@ const STOCK_STATUS = (bal, reorder) => {
   const b = parseFloat(bal) || 0;
   const r = parseFloat(reorder) || 0;
   if (b <= 0)       return { key: 'out',      label: 'Out of Stock', color: '#dc2626', bg: '#fef2f2' };
-  if (b <= r)       return { key: 'low',      label: 'Low Stock',    color: '#d97706', bg: '#fffbeb' };
-  if (b <= r * 1.5) return { key: 'warning',  label: 'Watch',        color: '#ca8a04', bg: '#fefce8' };
+  if (b <= r)       return { key: 'low',      label: 'Low Stock',    color: '#6d28d9', bg: '#f5f3ff' };
+  if (b <= r * 1.5) return { key: 'warning',  label: 'Watch',        color: '#7c5cf0', bg: '#f5f3ff' };
   return              { key: 'ok',       label: 'In Stock',     color: '#16a34a', bg: '#f0fdf4' };
 };
 
@@ -178,22 +178,29 @@ export default function StockSummary() {
   const hasFilters   = search || whFilter || typeFilter || tab !== 'all';
 
   return (
-    <PageLayout>
-      <PageHeader
-        description={loading ? 'Loading…' : `${stock.length.toLocaleString()} items across ${warehouses.length} warehouses`}
-        actions={
-          <>
-            <button className="pl-icon-btn" onClick={load} disabled={loading}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Stock Summary"
+          subtitle={loading ? 'Loading…' : `${stock.length.toLocaleString()} items across ${warehouses.length} warehouses`}
+          actions={<>
+            <button className="plh-cta plh-cta--ghost" onClick={load} disabled={loading}>
               <RefreshCw size={14} className={loading ? 'ss-spin' : ''} /> Refresh
             </button>
-            <button className="pl-icon-btn" onClick={() => exportCsv(rows)} disabled={!rows.length}>
+            <button className="plh-cta" onClick={() => exportCsv(rows)} disabled={!rows.length}>
               <Download size={14} /> Export CSV
             </button>
-          </>
-        }
-        search={{ value: search, onChange: v => { setSearch(v); setPage(1); }, placeholder: 'Search item, code, warehouse…' }}
-        filters={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          </>}
+        />
+        <div className="plh-toolbar">
+          <label className="plh-search">
+            <Search size={13} aria-hidden="true" />
+            <input value={search} onChange={e => (v => { setSearch(v); setPage(1); })(e.target.value)}
+              placeholder={'Search item, code, warehouse…'} aria-label={'Search item, code, warehouse…'} />
+          </label>
+          {<div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <div className="ss-tabs">
               {[
                 { key: 'all', label: 'All Stock',   count: stock.length },
@@ -219,9 +226,11 @@ export default function StockSummary() {
                 <X size={12} /> Clear
               </button>
             )}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
 
       {/* ── KPI row ── */}
       <KPICardGrid>
@@ -360,6 +369,6 @@ export default function StockSummary() {
           </div>
         </div>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

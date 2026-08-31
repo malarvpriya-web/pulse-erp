@@ -2,7 +2,7 @@ import { ShieldAlert, ShieldCheck } from 'lucide-react';
 
 const PRIORITY = {
   high:   { bg:'#fef2f2', border:'#fecaca', dot:'#dc2626', label:'Expires ≤ 14d' },
-  medium: { bg:'#fffbeb', border:'#fde68a', dot:'#d97706', label:'Expires ≤ 30d' },
+  medium: { bg:'#f5f3ff', border:'#ddd6fe', dot:'#6d28d9', label:'Expires ≤ 30d' },
   low:    { bg:'#eff6ff', border:'#bfdbfe', dot:'#2563eb', label:'Expires ≤ 90d' },
 };
 

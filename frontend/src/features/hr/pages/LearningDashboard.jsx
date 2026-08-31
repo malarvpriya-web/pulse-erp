@@ -1,5 +1,6 @@
 // frontend/src/features/hr/pages/LearningDashboard.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import {
   BarChart, Bar, PieChart, Pie, Cell, LineChart, Line,
   XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid,
@@ -7,8 +8,9 @@ import {
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const PIE_COLORS  = ['#6B3FDB','#2563eb','#16a34a','#d97706','#dc2626','#0891b2'];
+const PIE_COLORS  = ['#6B3FDB','#2563eb','#16a34a','#6d28d9','#dc2626','#0891b2'];
 
 function KPICard({ label, value, icon, color, sub, index = 0 }) {
   return (
@@ -102,21 +104,25 @@ export default function LearningDashboard() {
   ].filter(d => d.value > 0);
 
   return (
-    <div style={{ padding:'16px 18px 20px', background:'#f5f3ff', minHeight:'100vh' }}>
-      <div style={{ marginBottom:14 }}>
-        <h2 style={{ margin:0, color:'#4c1d95', fontSize:20 }}>🎓 L&D Command Centre</h2>
-        <p style={{ margin:0, color:'#6b7280', fontSize:12.5 }}>Live learning & development intelligence across your organisation</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Human Resources"
+        title="🎓 L&D Command Centre"
+        subtitle="Live learning & development intelligence across your organisation"
+      />
+    }>
+
 
       {/* KPI Row */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:10, marginBottom:14 }}>
         <KPICard index={0} label="Active Programs"       value={kpis.active_programs || 0}         icon="📅" color="#6B3FDB" />
         <KPICard index={1} label="Completion Rate"       value={`${kpis.completion_rate_pct || 0}%`} icon="✅" color="#16a34a" />
         <KPICard index={2} label="Employees Trained"     value={kpis.employees_trained || 0}        icon="👥" color="#2563eb" />
-        <KPICard index={3} label="Training Cost"         value={fmtINR(kpis.total_training_cost)}   icon="💰" color="#d97706" />
+        <KPICard index={3} label="Training Cost"         value={fmtINR(kpis.total_training_cost)}   icon="💰" color="#6d28d9" />
         <KPICard index={4} label="Skill Gaps"            value={kpis.skill_gap_count || 0}          icon="⚠️" color="#dc2626" />
         <KPICard index={5} label="Mandatory Pending"     value={kpis.mandatory_pending || 0}        icon="🔴" color="#dc2626" sub="Non-compliant" />
-        <KPICard index={6} label="Certs Expiring 30d"    value={kpis.certs_expiring_30d || 0}       icon="📋" color="#f97316" />
+        <KPICard index={6} label="Certs Expiring 30d"    value={kpis.certs_expiring_30d || 0}       icon="📋" color="#7c5cf0" />
       </div>
 
       {/* Row 1: Completion rates + Cost trend */}
@@ -130,7 +136,7 @@ export default function LearningDashboard() {
                 <YAxis type="category" dataKey="title" tick={{ fontSize:10 }} width={120} />
                 <Tooltip formatter={v => [`${v}%`, 'Completion']} />
                 <Bar dataKey="completion_pct" radius={[0,4,4,0]}>
-                  {completionRates.map((r,i) => <Cell key={i} fill={r.completion_pct >= 80 ? '#16a34a' : r.completion_pct >= 50 ? '#d97706' : '#dc2626'} />)}
+                  {completionRates.map((r,i) => <Cell key={i} fill={r.completion_pct >= 80 ? '#16a34a' : r.completion_pct >= 50 ? '#6d28d9' : '#dc2626'} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -172,7 +178,7 @@ export default function LearningDashboard() {
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie data={certData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value">
-                  {certData.map((_,i) => <Cell key={i} fill={['#16a34a','#f97316','#d97706','#dc2626'][i]} />)}
+                  {certData.map((_,i) => <Cell key={i} fill={['#16a34a','#7c5cf0','#6d28d9','#dc2626'][i]} />)}
                 </Pie>
                 <Tooltip />
                 <Legend />
@@ -193,7 +199,7 @@ export default function LearningDashboard() {
                 <YAxis type="category" dataKey="skill_name" tick={{ fontSize:10 }} width={120} />
                 <Tooltip />
                 <Bar dataKey="avg_proficiency" name="Avg Proficiency" radius={[0,4,4,0]}>
-                  {skillGaps.map((g,i) => <Cell key={i} fill={g.avg_proficiency < 2 ? '#dc2626' : g.avg_proficiency < 3 ? '#f97316' : '#16a34a'} />)}
+                  {skillGaps.map((g,i) => <Cell key={i} fill={g.avg_proficiency < 2 ? '#dc2626' : g.avg_proficiency < 3 ? '#7c5cf0' : '#16a34a'} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -209,7 +215,7 @@ export default function LearningDashboard() {
                 <YAxis domain={[0,5]} tick={{ fontSize:10 }} />
                 <Tooltip formatter={(v,n) => [v, n]} />
                 <Bar dataKey="avg_rating" name="Avg Rating" radius={[4,4,0,0]}>
-                  {trainerEff.map((t,i) => <Cell key={i} fill={t.avg_rating >= 4 ? '#16a34a' : t.avg_rating >= 3 ? '#d97706' : '#dc2626'} />)}
+                  {trainerEff.map((t,i) => <Cell key={i} fill={t.avg_rating >= 4 ? '#16a34a' : t.avg_rating >= 3 ? '#6d28d9' : '#dc2626'} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -245,6 +251,6 @@ export default function LearningDashboard() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

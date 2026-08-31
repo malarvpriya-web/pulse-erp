@@ -6,3 +6,6 @@ export { default as TableContainer } from './TableContainer';
 export { default as FormCard, FormSection, SectionHeader } from './FormCard';
 export { default as EmptyState } from './EmptyState';
 export { default as LoadingState } from './LoadingState';
+export { default as DashboardFilterBar } from './DashboardFilterBar';
+export { default as PageHero, PageShell, StatBand, Stat, MeterCard, MeterGrid, SectionTitle } from './PageHero';
+export { MODULE_TONE, toneFor } from './heroTones';

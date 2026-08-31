@@ -4,6 +4,7 @@ import pool from '../../shared/db.js';
 import attendanceRepository from '../repositories/attendance.repository.js';
 import { clockRateLimit } from '../../../middlewares/attendanceRateLimit.js';
 import { hasRole } from '../../../middlewares/auth.middleware.js';
+import { dimension } from '../../../shared/dashboardFilters.js';
 import {
   requireAttendanceAdmin,
   requireAttendanceApprover,
@@ -37,6 +38,44 @@ async function getWeekendDays(companyId) {
 function dayIsWeekend(dateStr, weekendDays) {
   const dayName = DOW_NAMES[new Date(dateStr + 'T00:00:00').getDay()];
   return weekendDays.includes(dayName);
+}
+
+// Hours that count as a full day before OT starts accruing. Configurable per
+// company; 9 is the fallback for companies that never opened Attendance Settings.
+// Several capture paths (offline sync, biometric sync, the auto-checkout cron)
+// still hardcode 9 and should be moved onto this helper — see
+// ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §1b.
+async function getFullDayHours(companyId) {
+  try {
+    const { rows } = await pool.query(
+      'SELECT full_day_hours FROM attendance_general_settings WHERE company_id=$1 LIMIT 1',
+      [companyId]
+    );
+    const v = parseFloat(rows[0]?.full_day_hours);
+    return Number.isFinite(v) && v > 0 ? v : 9;
+  } catch {
+    return 9;
+  }
+}
+
+// True when the month containing dateStr has been frozen by a payroll sync.
+// Writing into a frozen month silently changes numbers payroll has already paid
+// on, so every capture path must check before upserting attendance_records.
+async function isPeriodFrozen(dateStr, companyId) {
+  try {
+    const d = new Date(dateStr);
+    const { rows } = await pool.query(`
+      SELECT 1 FROM attendance_records
+       WHERE EXTRACT(MONTH FROM attendance_date) = $1
+         AND EXTRACT(YEAR  FROM attendance_date) = $2
+         AND is_frozen = true AND deleted_at IS NULL
+         AND ($3::integer IS NULL OR company_id = $3)
+       LIMIT 1
+    `, [d.getMonth() + 1, d.getFullYear(), companyId]);
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 // Returns distance in metres between two GPS coords (Haversine)
@@ -265,7 +304,7 @@ router.get('/today', async (req, res) => {
 
     const empRow = await pool.query(`
       SELECT COUNT(*) AS total FROM employees
-       WHERE LOWER(status) IN ('active','probation')
+       WHERE LOWER(status) IN ('active','probation','notice')
          AND deleted_at IS NULL
          AND ($1::integer IS NULL OR company_id = $1)
     `, [companyId]);
@@ -293,6 +332,10 @@ router.get('/live-dashboard', async (req, res) => {
     const companyId = scopeCompanyId(req);
     const today     = new Date().toISOString().split('T')[0];
     const cidClause = companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '';
+    // Dashboard filter bar: ?department only. This is a LIVE view of today's
+    // presence — a date range would contradict what the page is, so it renders
+    // with showPeriod={false}.
+    const department = dimension(req.query, 'department');
 
     // Workforce presence — if scoped query returns 0 employees, fall back to unscoped
     // (handles fresh installs where employees don't yet have company_id assigned)
@@ -309,9 +352,10 @@ router.get('/live-dashboard', async (req, res) => {
         FROM employees e
         LEFT JOIN attendance_records ar
           ON ar.employee_id = e.id AND ar.attendance_date = $1 AND ar.deleted_at IS NULL
-        WHERE LOWER(e.status) IN ('active','probation') AND e.deleted_at IS NULL
+        WHERE LOWER(e.status) IN ('active','probation','notice') AND e.deleted_at IS NULL
+          AND ($2::text IS NULL OR e.department = $2)
           ${clause}
-      `, [today]);
+      `, [today, department]);
 
     let presenceResult = await presenceQuery(cidClause);
     if (parseInt(presenceResult.rows[0]?.total_employees || 0) === 0 && companyId != null) {
@@ -822,13 +866,13 @@ router.post('/clock', clockRateLimit, async (req, res) => {
           SELECT
             COALESCE(e.name, CONCAT(e.first_name,' ',COALESCE(e.last_name,''))) AS emp_name,
             e.reporting_manager,
-            m.user_id AS mgr_user_id
+            mu.id AS mgr_user_id
           FROM employees e
           LEFT JOIN employees m
             ON LOWER(TRIM(COALESCE(m.name, CONCAT(m.first_name,' ',COALESCE(m.last_name,'')))))
                = LOWER(TRIM(e.reporting_manager))
-            AND m.user_id IS NOT NULL
             AND (m.company_id = $2 OR $2::integer IS NULL)
+          LEFT JOIN users mu ON mu.employee_id = m.id AND mu.is_active = true
           WHERE e.id = $1
           LIMIT 1
         `, [employee_id, companyId])
@@ -2000,7 +2044,7 @@ router.get('/analytics/heatmap', async (req, res) => {
         AND ar.attendance_date BETWEEN $1 AND $2
         AND ar.deleted_at IS NULL
       WHERE e.deleted_at IS NULL
-        AND LOWER(e.status) IN ('active','probation')
+        AND LOWER(e.status) IN ('active','probation','notice')
         ${cidClause} ${deptClause}
       GROUP BY e.id, e.name, e.first_name, e.last_name, e.department
       ORDER BY e.department, e.name
@@ -2077,7 +2121,7 @@ router.get('/analytics/department-absenteeism', async (req, res) => {
           AND EXTRACT(YEAR  FROM ar.attendance_date) = $2
           AND ar.deleted_at IS NULL
         WHERE e.deleted_at IS NULL
-          AND LOWER(e.status) IN ('active','probation')
+          AND LOWER(e.status) IN ('active','probation','notice')
           AND ($3::integer IS NULL OR e.company_id = $3)
           AND ($6::text IS NULL OR e.department = $6)
         GROUP BY e.department
@@ -2096,7 +2140,7 @@ router.get('/analytics/department-absenteeism', async (req, res) => {
           AND EXTRACT(YEAR  FROM ar.attendance_date) = $5
           AND ar.deleted_at IS NULL
         WHERE e.deleted_at IS NULL
-          AND LOWER(e.status) IN ('active','probation')
+          AND LOWER(e.status) IN ('active','probation','notice')
           AND ($3::integer IS NULL OR e.company_id = $3)
           AND ($6::text IS NULL OR e.department = $6)
         GROUP BY e.department
@@ -2211,7 +2255,7 @@ router.get('/analytics/departments', async (req, res) => {
         FROM employees
        WHERE deleted_at IS NULL
          AND department IS NOT NULL AND department <> ''
-         AND LOWER(status) IN ('active','probation')
+         AND LOWER(status) IN ('active','probation','notice')
          AND ($1::integer IS NULL OR company_id = $1)
        ORDER BY department
     `, [companyId]);
@@ -2253,7 +2297,7 @@ router.get('/analytics/top-absentees', async (req, res) => {
         AND EXTRACT(YEAR  FROM ar.attendance_date) = $2
         AND ar.deleted_at IS NULL
       WHERE e.deleted_at IS NULL
-        AND LOWER(e.status) IN ('active','probation')
+        AND LOWER(e.status) IN ('active','probation','notice')
         AND ($3::integer IS NULL OR e.company_id = $3)
         ${deptClause}
       GROUP BY e.id, e.name, e.first_name, e.last_name, e.department, e.designation
@@ -2293,7 +2337,7 @@ router.get('/analytics/perfect-attendance', async (req, res) => {
         AND EXTRACT(YEAR  FROM ar.attendance_date) = $2
         AND ar.deleted_at IS NULL
       WHERE e.deleted_at IS NULL
-        AND LOWER(e.status) IN ('active','probation')
+        AND LOWER(e.status) IN ('active','probation','notice')
         AND ($3::integer IS NULL OR e.company_id = $3)
         ${deptClause}
       GROUP BY e.id, e.name, e.first_name, e.last_name, e.department, e.designation
@@ -2338,7 +2382,7 @@ router.get('/reports/leave-reconciliation', async (req, res) => {
           SELECT 1 FROM leave_applications la
            WHERE la.employee_id = ar.employee_id
              AND la.status = 'approved'
-             AND ar.attendance_date BETWEEN la.from_date AND la.to_date
+             AND ar.attendance_date BETWEEN la.start_date AND la.end_date
         )
       ORDER BY ar.attendance_date, e.department`,
       [companyId, m, y, department]
@@ -2353,13 +2397,14 @@ router.get('/reports/leave-reconciliation', async (req, res) => {
         ar.attendance_date,
         ar.status AS attendance_status,
         'present_despite_leave'                                  AS conflict_type,
-        la.leave_type
+        lt.leave_name AS leave_type
       FROM attendance_records ar
       JOIN employees e ON e.id = ar.employee_id
       JOIN leave_applications la
         ON la.employee_id = ar.employee_id
        AND la.status = 'approved'
-       AND ar.attendance_date BETWEEN la.from_date AND la.to_date
+       AND ar.attendance_date BETWEEN la.start_date AND la.end_date
+      LEFT JOIN leave_types lt ON lt.id = la.leave_type_id
       WHERE ar.status IN ('present','half_day','late')
         AND ($1::integer IS NULL OR ar.company_id = $1)
         AND EXTRACT(MONTH FROM ar.attendance_date) = $2
@@ -2400,11 +2445,11 @@ router.get('/reports/early-exit', async (req, res) => {
         COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
         e.department, e.designation,
         ar.attendance_date,
-        ar.check_out,
+        ar.check_out_time AS check_out,
         s.name             AS shift_name,
         s.end_time         AS shift_end_time,
         ROUND(
-          EXTRACT(EPOCH FROM (s.end_time::time - ar.check_out::time)) / 60
+          EXTRACT(EPOCH FROM (s.end_time::time - ar.check_out_time::time)) / 60
         )                  AS early_by_minutes
       FROM attendance_records ar
       JOIN employees e ON e.id = ar.employee_id
@@ -2414,7 +2459,7 @@ router.get('/reports/early-exit', async (req, res) => {
          ORDER BY esa.employee_id, esa.effective_from DESC
       ) best ON best.employee_id = ar.employee_id
       JOIN hr_shifts s ON s.id = best.shift_id
-      WHERE ar.check_out IS NOT NULL
+      WHERE ar.check_out_time IS NOT NULL
         AND s.end_time IS NOT NULL
         AND ($1::integer IS NULL OR ar.company_id = $1)
         AND EXTRACT(MONTH FROM ar.attendance_date) = $2
@@ -2422,8 +2467,8 @@ router.get('/reports/early-exit', async (req, res) => {
         AND ($4::text IS NULL OR e.department = $4)
         AND ar.deleted_at IS NULL
         AND NOT s.is_night_shift
-        AND ar.check_out::time < s.end_time::time
-        AND EXTRACT(EPOCH FROM (s.end_time::time - ar.check_out::time)) / 60 >= $5
+        AND ar.check_out_time::time < s.end_time::time
+        AND EXTRACT(EPOCH FROM (s.end_time::time - ar.check_out_time::time)) / 60 >= $5
       ORDER BY early_by_minutes DESC, ar.attendance_date`,
       [companyId, m, y, department, minEarlyMins]
     );
@@ -2584,7 +2629,7 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
         ON ar.employee_id = e.id
         AND ar.attendance_date BETWEEN $1 AND $2
         AND ar.deleted_at IS NULL
-      WHERE LOWER(e.status) IN ('active','probation')
+      WHERE LOWER(e.status) IN ('active','probation','notice')
         AND e.deleted_at IS NULL ${cidEmp}
         ${empFilter.replace(/AND employee_id/, 'AND e.id')}
       GROUP BY e.id
@@ -3053,14 +3098,15 @@ router.get('/work-centre/analytics', async (req, res) => {
       ),
       pool.query(
         `SELECT
-           COALESCE(shift_name,'Unassigned')                      AS shift_name,
-           ROUND(COALESCE(SUM(hours_worked),0)::numeric, 2)       AS total_hours,
-           COALESCE(SUM(units_produced),0)                        AS total_units,
-           COUNT(DISTINCT employee_id)                            AS unique_employees
-         FROM work_centre_attendance
-         WHERE ($1::integer IS NULL OR company_id = $1)
-           AND attendance_date BETWEEN $2 AND $3
-         GROUP BY shift_name
+           COALESCE(s.name,'Unassigned')                            AS shift_name,
+           ROUND(COALESCE(SUM(wca.hours_worked),0)::numeric, 2)     AS total_hours,
+           COALESCE(SUM(wca.units_produced),0)                      AS total_units,
+           COUNT(DISTINCT wca.employee_id)                          AS unique_employees
+         FROM work_centre_attendance wca
+         LEFT JOIN hr_shifts s ON s.id = wca.shift_id
+         WHERE ($1::integer IS NULL OR wca.company_id = $1)
+           AND wca.attendance_date BETWEEN $2 AND $3
+         GROUP BY s.name
          ORDER BY total_hours DESC NULLS LAST`,
         [companyId, fromDate, toDate]
       ),
@@ -3292,7 +3338,7 @@ router.get('/departments', async (req, res) => {
         FROM employees
        WHERE department IS NOT NULL
          AND deleted_at IS NULL
-         AND LOWER(status) IN ('active','probation')
+         AND LOWER(status) IN ('active','probation','notice')
          AND ($1::integer IS NULL OR company_id = $1)
        ORDER BY department
     `, [companyId]);
@@ -3453,7 +3499,7 @@ router.get('/monthly-report', async (req, res) => {
         AND ar.attendance_date BETWEEN $1 AND $2
         AND ar.deleted_at IS NULL
       WHERE e.deleted_at IS NULL
-        AND LOWER(e.status) IN ('active','probation')
+        AND LOWER(e.status) IN ('active','probation','notice')
         ${deptClause}${cidClause}
       GROUP BY e.id, e.name, e.first_name, e.last_name, e.department, e.designation, e.joining_date
       ORDER BY late_arrivals DESC, total_late_minutes DESC
@@ -3992,7 +4038,7 @@ router.get('/face-enrollment', async (req, res) => {
       SELECT
         e.id AS employee_id,
         COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
-        e.department, e.designation, e.email,
+        e.department, e.designation, e.company_email,
         ft.id AS template_id,
         ft.enrolled_at,
         COALESCE(eb.name, CONCAT(eb.first_name,' ',eb.last_name)) AS enrolled_by_name,
@@ -4002,7 +4048,7 @@ router.get('/face-enrollment', async (req, res) => {
         ON ft.employee_id = e.id AND ft.company_id = $1 AND ft.is_active = TRUE
       LEFT JOIN employees eb ON eb.id = ft.enrolled_by
       WHERE e.deleted_at IS NULL
-        AND LOWER(e.status) IN ('active','probation')
+        AND LOWER(e.status) IN ('active','probation','notice')
         AND ($2::integer IS NULL OR e.company_id = $2)
     `;
     const params = [cid, companyId];
@@ -4745,6 +4791,18 @@ router.post('/qr/scan', async (req, res) => {
       return res.status(400).json({ error: 'QR code is expired or not yet valid', status: 'expired' });
     }
 
+    // Refuse to write into a payroll-frozen month. /mark and /bulk-mark have
+    // always returned 423 here; this path did not, so a scan could silently
+    // alter attendance that payroll had already been paid on. Unlike the admin
+    // routes there is no override — a self-service punch is never a correction.
+    if (await isPeriodFrozen(new Date().toISOString().slice(0, 10), code.company_id)) {
+      return res.status(423).json({
+        error: 'attendance_frozen',
+        status: 'frozen',
+        message: 'Attendance for this period is frozen (synced to payroll). Ask HR to record this punch as a regularization.',
+      });
+    }
+
     // Prevent duplicate scans within 30 seconds
     const { rows: [recent] } = await pool.query(
       `SELECT id FROM qr_attendance_scans
@@ -4767,16 +4825,66 @@ router.post('/qr/scan', async (req, res) => {
        code.company_id]
     );
 
-    // Auto-mark attendance record
+    // Auto-mark attendance record.
+    //
+    // Three rules this path must share with the other capture paths (/clock,
+    // biometric sync, offline sync) — it previously honoured none of them:
+    //
+    //  1. Never overwrite a non-'absent' status. Approved leave, holidays,
+    //     half-days and WFH are set by leave_sync/holiday_sync; an unconditional
+    //     status='present' here silently converted an approved leave day into a
+    //     present day and dropped it from the monthly report and payroll LOP.
+    //     Matches the biometric/offline rule: promote 'absent' → 'present' only.
+    //  2. An 'out' scan must not populate check_in_time. The old VALUES list
+    //     always wrote check_in_time, so the first scan of the day being a
+    //     check-OUT recorded it as a check-IN.
+    //  3. LOCALTIME, not NOW(). check_in_time/check_out_time are
+    //     `time without time zone`; NOW() is timestamptz and relied on an
+    //     implicit assignment cast. LOCALTIME pairs correctly with the
+    //     CURRENT_DATE used for attendance_date.
+    const isOut = scan_type === 'out';
     await pool.query(
-      `INSERT INTO attendance_records (employee_id, attendance_date, check_in_time, status, company_id, source)
-       VALUES ($1, CURRENT_DATE, NOW(), 'present', $2, 'qr')
+      `INSERT INTO attendance_records
+         (employee_id, attendance_date, check_in_time, check_out_time, status, company_id, source)
+       VALUES ($1, CURRENT_DATE,
+               CASE WHEN $3::boolean THEN NULL ELSE LOCALTIME END,
+               CASE WHEN $3::boolean THEN LOCALTIME ELSE NULL END,
+               'present', $2, 'qr')
        ON CONFLICT (employee_id, attendance_date) DO UPDATE
-         SET check_in_time  = CASE WHEN $3 = 'in' AND attendance_records.check_in_time IS NULL THEN NOW() ELSE attendance_records.check_in_time END,
-             check_out_time = CASE WHEN $3 = 'out' THEN NOW() ELSE attendance_records.check_out_time END,
-             status = 'present'`,
-      [employeeId, code.company_id, scan_type]
+         SET check_in_time  = CASE WHEN NOT $3::boolean AND attendance_records.check_in_time IS NULL
+                                   THEN LOCALTIME ELSE attendance_records.check_in_time END,
+             check_out_time = CASE WHEN $3::boolean THEN LOCALTIME ELSE attendance_records.check_out_time END,
+             status         = CASE WHEN attendance_records.status = 'absent'
+                                   THEN 'present' ELSE attendance_records.status END,
+             updated_at     = NOW()`,
+      [employeeId, code.company_id, isOut]
     );
+
+    // On check-out, compute worked/OT hours. Without this a QR-only site produced
+    // attendance rows that read 0 hours in the monthly report and in payroll LOP.
+    // OT *records* (attendance_ot_records, with caps and multipliers) are still
+    // only created by /clock — see ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §1.
+    if (isOut) {
+      try {
+        const fullDayHours = await getFullDayHours(code.company_id);
+        await pool.query(`
+          UPDATE attendance_records
+             SET total_hours = ROUND(h.worked::numeric, 2),
+                 ot_hours    = ROUND(GREATEST(0::numeric, h.worked::numeric - $2::numeric), 2),
+                 updated_at  = NOW()
+            FROM (
+              SELECT CASE WHEN check_out_time >= check_in_time
+                          THEN EXTRACT(EPOCH FROM (check_out_time - check_in_time)) / 3600
+                          ELSE (86400 + EXTRACT(EPOCH FROM (check_out_time - check_in_time))) / 3600
+                     END AS worked
+                FROM attendance_records
+               WHERE employee_id = $1 AND attendance_date = CURRENT_DATE
+            ) h
+           WHERE employee_id = $1 AND attendance_date = CURRENT_DATE
+             AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL
+        `, [employeeId, fullDayHours]);
+      } catch { /* non-blocking — the punch itself is already recorded */ }
+    }
 
     res.json({ success: true, data: scan, message: `Attendance marked as ${scan_type}` });
   } catch (err) {

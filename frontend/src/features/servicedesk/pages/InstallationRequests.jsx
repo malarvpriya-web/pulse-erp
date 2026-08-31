@@ -3,14 +3,16 @@
 // Dispatch -> Installation Request -> Engineer Assignment -> Travel Planning
 // -> Installation -> Commissioning -> Customer Acceptance
 import { useState, useEffect, useCallback } from 'react';
+import { CheckSquare } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 
 const STATUS_META = {
   requested:         { bg: '#f3f4f6', color: '#374151', label: 'Requested' },
   engineer_assigned: { bg: '#dbeafe', color: '#1e40af', label: 'Engineer Assigned' },
-  travel_planned:    { bg: '#fef3c7', color: '#92400e', label: 'Travel Planned' },
+  travel_planned:    { bg: '#ede9fe', color: '#5b21b6', label: 'Travel Planned' },
   in_progress:       { bg: '#e0e7ff', color: '#4338ca', label: 'In Progress' },
   completed:         { bg: '#d1fae5', color: '#065f46', label: 'Completed' },
   cancelled:         { bg: '#fee2e2', color: '#991b1b', label: 'Cancelled' },
@@ -107,15 +109,18 @@ export default function InstallationRequests() {
   const counts = requests.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {});
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CheckSquare}
+        eyebrow="Service Desk"
+        title="Installation Requests"
+        subtitle="Dispatch → Installation Request → Engineer Assignment → Travel Planning → Installation → Commissioning → Customer Acceptance"
+      />
+    }>
       {msg && (
         <div style={{ position: 'fixed', top: 20, right: 24, background: msg.type === 'error' ? '#fee2e2' : '#d1fae5', color: msg.type === 'error' ? '#991b1b' : '#065f46', padding: '10px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 9999, boxShadow: '0 4px 12px rgba(0,0,0,.15)' }}>{msg.text}</div>
       )}
 
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#111827' }}>Installation Requests</h1>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Dispatch → Installation Request → Engineer Assignment → Travel Planning → Installation → Commissioning → Customer Acceptance</p>
-      </div>
 
       <div style={{ display: 'flex', gap: 14, marginBottom: 20, flexWrap: 'wrap' }}>
         {Object.entries(STATUS_META).filter(([k]) => k !== 'cancelled').map(([key, meta]) => (
@@ -172,7 +177,7 @@ export default function InstallationRequests() {
                         )}
                         {r.status === 'engineer_assigned' && (
                           <button onClick={() => setTravelModal(r)}
-                            style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #d97706', background: 'transparent', color: '#d97706', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Plan Travel</button>
+                            style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #6d28d9', background: 'transparent', color: '#6d28d9', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Plan Travel</button>
                         )}
                         {['engineer_assigned', 'travel_planned'].includes(r.status) && (
                           <button onClick={() => startInstallation(r.id)} disabled={saving}
@@ -250,7 +255,7 @@ export default function InstallationRequests() {
             </div>
             <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
               <button onClick={() => setTravelModal(null)} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600, color: '#374151' }}>Cancel</button>
-              <button onClick={planTravel} disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#d97706', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>{saving ? 'Saving…' : 'Create Travel Request'}</button>
+              <button onClick={planTravel} disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#6d28d9', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>{saving ? 'Saving…' : 'Create Travel Request'}</button>
             </div>
           </div>
         </div>
@@ -301,6 +306,6 @@ export default function InstallationRequests() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

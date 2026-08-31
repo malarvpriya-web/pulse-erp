@@ -1,9 +1,12 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Building2 } from 'lucide-react';
 import {
   BarChart, Bar, LineChart, Line, RadarChart, Radar, PolarGrid, PolarAngleAxis,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
 } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
 function formatINR(n) {
@@ -17,7 +20,9 @@ function formatINR(n) {
 }
 
 function stars(score) {
-  const s = Math.round(score ?? 0);
+  // clamped: '☆'.repeat(5 - s) throws RangeError if s > 5, which the ErrorBoundary
+  // turns into a blank page rather than one odd-looking cell.
+  const s = Math.min(5, Math.max(0, Math.round(Number(score) || 0)));
   return '★'.repeat(s) + '☆'.repeat(5 - s);
 }
 
@@ -25,9 +30,9 @@ function StarRating({ value }) {
   const full = Math.floor(+value || 0);
   const half = (+value || 0) - full >= 0.5;
   return (
-    <span style={{ color: '#f59e0b', fontSize: 14 }}>
+    <span style={{ color: '#7c5cf0', fontSize: 14 }}>
       {[1, 2, 3, 4, 5].map(i => (
-        <span key={i} style={{ color: i <= full ? '#f59e0b' : (i === full + 1 && half ? '#fbbf24' : '#d1d5db') }}>★</span>
+        <span key={i} style={{ color: i <= full ? '#7c5cf0' : (i === full + 1 && half ? '#8b5cf6' : '#d1d5db') }}>★</span>
       ))}
       <span style={{ color: '#6b7280', fontSize: 12, marginLeft: 4 }}>{Number(value || 0).toFixed(1)}</span>
     </span>
@@ -38,7 +43,7 @@ function StarPicker({ value, onChange }) {
   return (
     <span style={{ fontSize: 28, cursor: 'pointer', letterSpacing: 2 }}>
       {[1, 2, 3, 4, 5].map(i => (
-        <span key={i} onClick={() => onChange(i)} style={{ color: i <= value ? '#f59e0b' : '#d1d5db' }}>★</span>
+        <span key={i} onClick={() => onChange(i)} style={{ color: i <= value ? '#7c5cf0' : '#d1d5db' }}>★</span>
       ))}
     </span>
   );
@@ -81,7 +86,7 @@ function EmptyChart({ message }) {
   );
 }
 
-const CHART_COLORS = ['#6B3FDB', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+const CHART_COLORS = ['#6B3FDB', '#0ea5e9', '#10b981', '#7c5cf0', '#ef4444', '#8b5cf6'];
 const INR_TT = { formatter: (v, n) => [formatINR(v), n], contentStyle: { fontSize: 12, borderRadius: 8 } };
 
 function pivotItemPrices(rows, vendorNames) {
@@ -282,11 +287,11 @@ const EMPTY_RATING = { vendor_id: '', po_id: '', quality_score: 3, delivery_scor
 const MATCH_STATUS_MAP = {
   matched:     ['#166534', '#dcfce7', 'Matched'],
   discrepancy: ['#991b1b', '#fee2e2', 'Discrepancy'],
-  pending:     ['#92400e', '#fef3c7', 'Pending'],
+  pending:     ['#5b21b6', '#ede9fe', 'Pending'],
   approved:    ['#1d4ed8', '#dbeafe', 'Approved'],
 };
 const RFQ_STATUS_MAP = {
-  draft:               ['#92400e',  '#fef3c7'],
+  draft:               ['#5b21b6',  '#ede9fe'],
   sent:                ['#1d4ed8',  '#dbeafe'],
   responses_received:  ['#5b21b6',  '#ede9fe'],
   awarded:             ['#166534',  '#dcfce7'],
@@ -298,6 +303,7 @@ const RFQ_STATUS_MAP = {
    Main component
 ══════════════════════════════════════════════════════════════════════════════ */
 export default function VendorManagement() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState('vendors');
 
   const [vendors,       setVendors]       = useState([]);
@@ -612,11 +618,15 @@ export default function VendorManagement() {
      RENDER
   ════════════════════════════════════════════════════════════════════════ */
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', background: '#fafafa' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Vendor Management</h1>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Manifest Technologies — Procurement Portal</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Building2}
+        eyebrow="Procurement"
+        title="Vendor Management"
+        subtitle="Manifest Technologies — Procurement Portal"
+      />
+    }>
+
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
         {[['vendors', 'Vendors'], ['rfq', 'RFQ'], ['compare', 'Price Compare'], ['match', '3-Way Match'], ['scorecard', 'Scorecard']].map(([id, label]) => (
@@ -662,7 +672,19 @@ export default function VendorManagement() {
                       const o = +v.avg_overall  || ((q + d + p) / 3);
                       return (
                         <tr key={v.id}>
-                          <td style={{ ...TD, fontWeight: 600, color: '#6B3FDB' }}>{v.vendor_name}</td>
+                          {/* The name is the way into Vendor 360° — profile,
+                              scorecard, and the Purchases tab that lists every
+                              item bought from this vendor with date and rate. */}
+                          <td style={TD}>
+                            <button
+                              type="button"
+                              title="Open Vendor 360° — purchases, quality, finance"
+                              onClick={() => navigate(`/Vendor360?vendor=${v.id}`)}
+                              style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', fontWeight: 600, color: '#6B3FDB', cursor: 'pointer', textAlign: 'left' }}
+                            >
+                              {v.vendor_name}
+                            </button>
+                          </td>
                           <td style={TD}><span style={{ background: '#f5f3ff', color: '#6B3FDB', padding: '2px 8px', borderRadius: 8, fontSize: 12 }}>{v.category}</span></td>
                           <td style={{ ...TD, fontFamily: 'monospace', fontSize: 12 }}>{v.gstin}</td>
                           <td style={{ ...TD, fontFamily: 'monospace', fontSize: 12 }}>{v.pan}</td>
@@ -674,8 +696,8 @@ export default function VendorManagement() {
                           <td style={TD}>
                             <Badge
                               label={v.status === 'active' ? 'Active' : v.status === 'pending' ? 'Pending' : 'Inactive'}
-                              color={v.status === 'active' ? '#166534' : v.status === 'pending' ? '#92400e' : '#6b7280'}
-                              bg={v.status === 'active' ? '#dcfce7' : v.status === 'pending' ? '#fef3c7' : '#f3f4f6'}
+                              color={v.status === 'active' ? '#166534' : v.status === 'pending' ? '#5b21b6' : '#6b7280'}
+                              bg={v.status === 'active' ? '#dcfce7' : v.status === 'pending' ? '#ede9fe' : '#f3f4f6'}
                             />
                           </td>
                           <td style={TD}>
@@ -1078,7 +1100,7 @@ export default function VendorManagement() {
       {/* View Quotes / Award Winner */}
       {viewQuotesRfq && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: 820, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 28, width: 'min(1020px, 95vw)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#1f2937' }}>Quotes — {viewQuotesRfq.rfq_number}</h2>
               <button style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6b7280' }} onClick={() => setViewQuotesRfq(null)}>×</button>
@@ -1098,55 +1120,139 @@ export default function VendorManagement() {
             {(() => {
               const quotes = viewQuotesRfq.quotes || [];
               if (!quotes.length) return <div style={{ textAlign: 'center', padding: 24, color: '#9ca3af' }}>No quotes received yet.</div>;
-              const validPrices = quotes.map(q => +q.unit_price).filter(Boolean);
-              const minPrice = validPrices.length ? Math.min(...validPrices) : null;
-              const chartData = quotes.filter(q => q.unit_price).map(q => ({ vendor: q.vendor_name || String(q.vendor_id), price: +q.unit_price }));
+              const cmp = viewQuotesRfq.tco_comparison || null;
+              const rec = cmp?.recommendation || null;
+
+              // Rank by total cost of ownership. This modal used to rank by
+              // MIN(unit_price) and badge it "Lowest", which is how RFQs came
+              // to be awarded on sticker price alone — a quote is not a cost.
+              const ranked = [...quotes].sort((a, b) => {
+                const at = a.tco_per_unit, bt = b.tco_per_unit;
+                if (at == null && bt == null) return 0;
+                if (at == null) return 1;
+                if (bt == null) return -1;
+                return at - bt;
+              });
+
+              // Both bars, side by side: the gap between them IS the argument.
+              const chartData = ranked.filter(q => q.unit_price || q.tco_total).map(q => ({
+                vendor: q.vendor_name || String(q.vendor_id),
+                quoted: q.total_amount != null ? +q.total_amount
+                  : (q.unit_price != null && cmp?.quantity ? +q.unit_price * cmp.quantity : null),
+                tco: q.tco_total ?? null,
+              }));
+
               return (
                 <>
+                  {rec && (
+                    <div style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16, padding: '12px 15px',
+                      borderRadius: 10, fontSize: 13, lineHeight: 1.5,
+                      background: rec.differs ? '#fffbeb' : '#f0fdf4',
+                      border: `1px solid ${rec.differs ? '#fde68a' : '#bbf7d0'}`,
+                      color: rec.differs ? '#92400e' : '#166534',
+                    }}>
+                      <span style={{ fontSize: 15, lineHeight: 1 }}>{rec.differs ? '⚠' : '✓'}</span>
+                      <div>
+                        {rec.differs ? (
+                          <>
+                            <strong>Awarding on price would cost more.</strong>{' '}
+                            <strong>{rec.lowest_price_label}</strong> quoted lowest, but{' '}
+                            <strong>{rec.lowest_tco_label}</strong> has the lower total cost of ownership
+                            {rec.tco_saving > 0 && <> — a difference of <strong>{formatINR(rec.tco_saving)}</strong> on this RFQ</>}.
+                          </>
+                        ) : (
+                          <><strong>{rec.lowest_tco_label}</strong> is both the lowest quote and the lowest total cost of ownership.</>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {chartData.length > 0 && (
                     <div style={{ marginBottom: 20 }}>
-                      <ResponsiveContainer width="100%" height={140}>
-                        <BarChart data={chartData} barSize={40}>
+                      <ResponsiveContainer width="100%" height={170}>
+                        <BarChart data={chartData} barSize={22}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4" />
                           <XAxis dataKey="vendor" tick={{ fontSize: 11 }} />
                           <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${v}`} />
-                          <Tooltip formatter={v => [formatINR(v), 'Unit Price']} contentStyle={{ fontSize: 12 }} />
-                          <Bar dataKey="price" radius={[4, 4, 0, 0]}>
-                            {chartData.map((d, i) => <Cell key={i} fill={d.price === minPrice ? '#10b981' : '#6B3FDB'} />)}
+                          <Tooltip
+                            formatter={(v, name) => [formatINR(v), name === 'quoted' ? 'Quoted total' : 'Total cost of ownership']}
+                            contentStyle={{ fontSize: 12 }}
+                          />
+                          <Legend wrapperStyle={{ fontSize: 11 }}
+                            formatter={v => (v === 'quoted' ? 'Quoted total' : 'Total cost of ownership')} />
+                          <Bar dataKey="quoted" fill="#c4b5fd" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="tco" radius={[4, 4, 0, 0]}>
+                            {chartData.map((d, i) => (
+                              <Cell key={i} fill={d.tco != null && d.tco === Math.min(...chartData.map(x => x.tco ?? Infinity)) ? '#10b981' : '#6B3FDB'} />
+                            ))}
                           </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
                   )}
+
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ background: '#fafafa' }}>
-                        {['Vendor', 'Unit Price', 'Total', 'Delivery', 'Payment Terms', 'Notes', 'Action'].map(h => (
-                          <th key={h} style={TH}>{h}</th>
+                        {[
+                          ['Vendor', null],
+                          ['Unit Price', 'What the vendor charges per unit'],
+                          ['Quoted Total', 'The vendor invoice for this RFQ'],
+                          ['TCO', 'Total cost of ownership: quoted price plus freight, carrying, ordering, inspection and rejects, less credit terms, plus delivery risk'],
+                          ['vs Best TCO', 'How this total cost compares with the lowest-TCO quote'],
+                          ['Delivery', null],
+                          ['Payment Terms', null],
+                          ['Action', null],
+                        ].map(([h, title]) => (
+                          <th key={h} style={TH} title={title || undefined}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {quotes.map(q => (
-                        <tr key={q.id} style={{ background: minPrice && +q.unit_price === minPrice ? '#f0fdf4' : '#fff' }}>
+                      {ranked.map(q => (
+                        <tr key={q.id} style={{ background: q.is_lowest_tco ? '#f0fdf4' : '#fff' }}>
                           <td style={{ ...TD, fontWeight: 600 }}>{q.vendor_name || q.vendor_id}</td>
-                          <td style={TD}>{q.unit_price ? formatINR(q.unit_price) : '—'}</td>
-                          <td style={{ ...TD, fontWeight: 600, color: '#6B3FDB' }}>{q.total_amount ? formatINR(q.total_amount) : '—'}</td>
+                          <td style={TD}>
+                            {q.unit_price ? formatINR(q.unit_price) : '—'}
+                            {q.is_lowest_price && <div style={{ fontSize: 10, color: '#6b7280' }}>lowest quote</div>}
+                          </td>
+                          <td style={TD}>{q.total_amount ? formatINR(q.total_amount) : '—'}</td>
+                          <td style={{ ...TD, fontWeight: 700, color: q.is_lowest_tco ? '#16a34a' : '#6B3FDB' }}>
+                            {q.tco_total != null ? formatINR(q.tco_total) : '—'}
+                            {q.tco_premium_pct != null && (
+                              <div style={{ fontSize: 10, color: q.tco_premium_pct > 25 ? '#dc2626' : '#9ca3af', fontWeight: 600 }}>
+                                +{Number(q.tco_premium_pct).toFixed(1)}% over quote
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ ...TD, color: q.tco_vs_best_pct > 0 ? '#dc2626' : '#16a34a', fontWeight: 600 }}>
+                            {q.tco_vs_best_pct == null ? '—' : q.tco_vs_best_pct === 0 ? 'best' : `+${Number(q.tco_vs_best_pct).toFixed(1)}%`}
+                          </td>
                           <td style={TD}>{q.delivery_days ? `${q.delivery_days}d` : '—'}</td>
                           <td style={TD}>{q.payment_terms || '—'}</td>
-                          <td style={{ ...TD, maxWidth: 160, fontSize: 12, color: '#6b7280' }}>{q.notes || '—'}</td>
                           <td style={TD}>
                             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                               {viewQuotesRfq.status !== 'closed' && q.unit_price && (
                                 <button style={{ ...btn('primary'), fontSize: 11, padding: '4px 10px' }} onClick={() => awardVendor(viewQuotesRfq, q)}>Award</button>
                               )}
-                              {minPrice && +q.unit_price === minPrice && <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 700 }}>↓ Lowest</span>}
+                              {q.is_lowest_tco && <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 700 }}>↓ Lowest TCO</span>}
                             </div>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+
+                  {viewQuotesRfq.tco_basis && (
+                    <p style={{ margin: '10px 0 0', fontSize: 11.5, color: '#9ca3af', lineHeight: 1.5 }}>
+                      TCO costed for {viewQuotesRfq.tco_basis.quantity} units ({viewQuotesRfq.tco_basis.quantity_basis}) over a{' '}
+                      {viewQuotesRfq.tco_basis.horizon_months}-month horizon at {viewQuotesRfq.tco_basis.cost_of_capital_pct}% cost of capital
+                      and {viewQuotesRfq.tco_basis.inventory_carrying_pct}% carrying cost. {viewQuotesRfq.tco_basis.item_context}.
+                      {cmp?.confidence != null && <> Confidence {cmp.confidence}% — the share based on quoted or measured data.</>}
+                      {' '}Rates are set in Procurement Settings → Total Cost of Ownership.
+                    </p>
+                  )}
                 </>
               );
             })()}
@@ -1215,6 +1321,6 @@ export default function VendorManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

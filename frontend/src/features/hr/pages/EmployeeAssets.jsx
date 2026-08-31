@@ -1,17 +1,19 @@
 // frontend/src/features/hr/pages/EmployeeAssets.jsx
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 
 const STATUS_STYLE = {
   allocated:         { bg: '#dbeafe', color: '#1e40af' },
   returned:          { bg: '#d1fae5', color: '#065f46' },
-  under_maintenance: { bg: '#fef3c7', color: '#92400e' },
+  under_maintenance: { bg: '#ede9fe', color: '#5b21b6' },
   disposed:          { bg: '#e5e7eb', color: '#374151' },
   lost:              { bg: '#fee2e2', color: '#991b1b' },
-  damaged:           { bg: '#fef3c7', color: '#92400e' },
+  damaged:           { bg: '#ede9fe', color: '#5b21b6' },
 };
 function Badge({ status }) {
   const s = STATUS_STYLE[status?.toLowerCase()] || { bg: '#f3f4f6', color: '#6b7280' };
@@ -65,9 +67,19 @@ export default function EmployeeAssets() {
       setAssets(aRes.data || []);
       setEmployees(eRes.data?.employees || eRes.data?.data || eRes.data || []);
     } catch (e) {
-      if (e.name !== 'AbortError') setError('Failed to load asset data');
+      /* Axios rejects a cancelled request with `CanceledError` / `ERR_CANCELED`,
+       * never a DOM `AbortError` — so the old test matched nothing and reported
+       * every abort as a failure. Under StrictMode the mount → cleanup → mount
+       * cycle aborts the first request, which painted "Failed to load asset
+       * data" over the data the second request had just loaded. Same defect as
+       * HRBenchmarkingDashboard; these two were the only pages checking for the
+       * name axios does not throw. */
+      if (e?.name !== 'CanceledError' && e?.code !== 'ERR_CANCELED') {
+        setError('Failed to load asset data');
+      }
     } finally {
-      setLoading(false);
+      // A superseded request must not clear the spinner the live one turned on.
+      if (abortRef.current === ctrl) setLoading(false);
     }
   }, []);
 
@@ -195,7 +207,18 @@ export default function EmployeeAssets() {
   const inp = { width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Employee Assets"
+        subtitle="IT assets, tools and equipment allocated to employees"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>↻ Refresh</button>
+          <button className="plh-cta" onClick={() => { setShowForm(true); setForm(EMPTY_FORM); }}>+ Allocate Asset</button>
+        </>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -212,23 +235,14 @@ export default function EmployeeAssets() {
       )}
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#111827' }}>Employee Assets</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>IT assets, tools and equipment allocated to employees</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={load} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600, color: '#374151' }}>↻ Refresh</button>
-          <button onClick={() => { setShowForm(true); setForm(EMPTY_FORM); }} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: P, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>+ Allocate Asset</button>
-        </div>
-      </div>
+
 
       {/* KPI strip */}
       <div style={{ display: 'flex', gap: 14, marginBottom: 20, flexWrap: 'wrap' }}>
         {[
           { label: 'Total Assets', value: assets.length, accent: P },
           { label: 'Currently Allocated', value: totalAllocated, accent: '#2563eb' },
-          { label: 'Under Maintenance', value: totalMaint, accent: '#d97706' },
+          { label: 'Under Maintenance', value: totalMaint, accent: '#6d28d9' },
           { label: 'Returned', value: totalReturned, accent: '#059669' },
           { label: 'Disposed', value: totalDisposed, accent: '#6b7280' },
           { label: 'Lost / Damaged', value: totalLost, accent: '#dc2626' },
@@ -313,7 +327,7 @@ export default function EmployeeAssets() {
                                 <button onClick={() => setTransferModal(a)}
                                   style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #2563eb', background: 'transparent', color: '#2563eb', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Transfer</button>
                                 <button onClick={() => setMaintModal(a)}
-                                  style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #d97706', background: 'transparent', color: '#d97706', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Maintenance</button>
+                                  style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #6d28d9', background: 'transparent', color: '#6d28d9', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Maintenance</button>
                               </>
                             )}
                             {a.status === 'under_maintenance' && (
@@ -507,7 +521,7 @@ export default function EmployeeAssets() {
               </div>
               <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
                 <button type="button" onClick={() => setMaintModal(null)} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600, color: '#374151' }}>Cancel</button>
-                <button type="submit" disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#d97706', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>
+                <button type="submit" disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#6d28d9', color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>
                   {saving ? 'Saving…' : 'Send to Maintenance'}
                 </button>
               </div>
@@ -587,6 +601,6 @@ export default function EmployeeAssets() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

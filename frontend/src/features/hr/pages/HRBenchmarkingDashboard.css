@@ -1,0 +1,140 @@
+/* HR Benchmarking Dashboard — single-viewport cockpit.
+ *
+ * Fit contract (same shape as CeoDashboard's): the PAGE never scrolls.
+ * `.hrb-root` fills `.page-content` (a definite-height flex child, so
+ * height:100% resolves exactly) — never give it min-height:100vh.
+ * The three metric bands are auto-height; the distribution band absorbs
+ * whatever is left. Individual panels MAY scroll internally.
+ * Below the breakpoints the grid relaxes to natural flow so nothing is clipped
+ * on short or narrow screens.
+ *
+ * EVERY descendant rule is prefixed with `.hrb-root` on purpose:
+ * styles/global-overrides.css:86 sets `.page-content div/span/p { font-size:13px;
+ * line-height:1.6 }`, which outranks a bare single-class selector and inflates
+ * every text line to ~21px. Two classes beat it. Drop the prefix and the cards
+ * grow ~50% taller and the page stops fitting.
+ */
+
+.hrb-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  background: var(--color-bg-page, #f8f9fc);
+}
+
+/* ── header: title + filter bar + refresh on one line ────────────────── */
+.hrb-root .hrb-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.hrb-root .hrb-title { margin: 0; font-size: 17px; font-weight: 800; color: #111827; line-height: 1.2; }
+.hrb-root .hrb-sub   { margin: 2px 0 0; font-size: 11.5px; line-height: 1.3; color: #6b7280; }
+
+/* compact the shared filter bar for the cockpit band */
+.hrb-root .pl-filterbar { margin-bottom: 0; padding: 6px 11px; gap: 9px; }
+.hrb-root .pl-filterbar-label { font-size: 10px; line-height: 1.2; }
+.hrb-root .pl-filterbar-input { min-width: 112px; padding: 4px 8px; font-size: 12px; line-height: 1.3; }
+.hrb-root .pl-filterbar-reset { padding: 4px 10px; font-size: 11.5px; }
+.hrb-root .pl-filterbar-ico   { margin-bottom: 5px; }
+
+.hrb-root .hrb-error {
+  flex: 0 0 auto;
+  background: #fee2e2; border: 1px solid #fca5a5; border-radius: 8px;
+  padding: 6px 13px; color: #991b1b; font-size: 12px; line-height: 1.4;
+}
+
+/* ── body grid: 3 metric bands + chart band + legend ─────────────────── */
+.hrb-root .hrb-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  /* auto floor = a card is never clipped, whatever its text wraps to;
+     120px ceiling = metric rows stay compact on tall screens and the spare
+     height goes to the distribution band instead of stretching the cards. */
+  grid-template-rows: repeat(3, minmax(auto, 120px)) minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.hrb-root .hrb-band {
+  display: grid;
+  grid-template-columns: 128px repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  min-height: 0;
+}
+.hrb-root .hrb-band--charts { grid-template-columns: 128px 1.5fr 1fr 1fr; }
+
+/* ── section rail (replaces the old stacked section headers) ─────────── */
+.hrb-root .hrb-rail {
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  background: #fff; border: 1px solid #e5e7eb;
+  border-left: 3px solid var(--hrb-rail, #6B3FDB);
+  border-radius: 11px; padding: 8px 11px; min-width: 0;
+}
+.hrb-root .hrb-rail-ico   { font-size: 14px; line-height: 1.1; }
+.hrb-root .hrb-rail-title { font-size: 11.5px; font-weight: 800; color: #111827; line-height: 1.25; }
+.hrb-root .hrb-rail-note  { font-size: 9.5px; color: #9ca3af; line-height: 1.3; }
+
+/* ── metric card ─────────────────────────────────────────────────────── */
+.hrb-root .hrb-card {
+  position: relative; overflow: hidden; min-width: 0;
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 11px;
+  padding: 8px 10px 8px 12px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.hrb-root .hrb-card-accent { position: absolute; left: 0; top: 0; width: 3px; height: 100%; }
+.hrb-root .hrb-card-label  { font-size: 11px; font-weight: 600; color: #6b7280; line-height: 1.25; }
+.hrb-root .hrb-card-val {
+  font-size: 20px; font-weight: 800; line-height: 1.15;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hrb-root .hrb-card-skel { height: 23px; width: 84px; background: #f3f4f6; border-radius: 6px; }
+/* subs and benchmark notes stay on ONE line so card height is predictable —
+ * the full text is on the title attribute. */
+.hrb-root .hrb-card-sub {
+  font-size: 10px; color: #9ca3af; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hrb-root .hrb-card-bm {
+  margin-top: auto; display: flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden;
+}
+.hrb-root .hrb-card-bm span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.hrb-root .hrb-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── chart panels ────────────────────────────────────────────────────── */
+.hrb-root .hrb-panel {
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 12px;
+  padding: 10px 13px; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.hrb-root .hrb-panel-title { flex: 0 0 auto; font-size: 11.5px; font-weight: 700; color: #374151; line-height: 1.3; margin-bottom: 8px; }
+.hrb-root .hrb-panel-body  { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; justify-content: center; }
+
+.hrb-root .hrb-stack   { display: flex; height: 18px; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+.hrb-root .hrb-legends { display: flex; flex-wrap: wrap; gap: 4px 13px; }
+.hrb-root .hrb-legend-item { display: flex; align-items: center; gap: 5px; font-size: 10.5px; line-height: 1.35; color: #374151; }
+.hrb-root .hrb-swatch  { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+.hrb-root .hrb-muted   { color: #9ca3af; font-size: 11px; line-height: 1.4; }
+
+/* ── benchmark reference strip ───────────────────────────────────────── */
+.hrb-root .hrb-legend {
+  background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 9px;
+  padding: 6px 11px; font-size: 10px; line-height: 1.45; color: #166534;
+}
+.hrb-root .hrb-legend strong { font-size: 10px; }
+
+/* ── relax on short / narrow viewports so nothing gets clipped ───────── */
+@media (max-width: 1180px), (max-height: 680px) {
+  .hrb-root { height: auto; min-height: 100%; overflow: visible; }
+  .hrb-root .hrb-body { grid-template-rows: none; }
+  .hrb-root .hrb-band { grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); }
+  .hrb-root .hrb-band--charts { grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); }
+  .hrb-root .hrb-rail { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 8px; padding: 6px 11px; }
+  .hrb-root .hrb-panel { min-height: 148px; }
+}

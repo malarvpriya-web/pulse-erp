@@ -3,11 +3,12 @@ import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { Plus, X, Search, Plane, Train, Bus } from 'lucide-react';
 import { fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MODE_ICON = { Flight: Plane, Train, Bus, Car: Bus, Other: Plane };
 const BOOKING_STATUS = {
   Confirmed:       { bg:'#d1fae5', color:'#065f46' },
-  Pending:         { bg:'#fef3c7', color:'#92400e' },
+  Pending:         { bg:'#ede9fe', color:'#5b21b6' },
   pending_booking: { bg:'#ede9fe', color:'#5b21b6' },
   Cancelled:       { bg:'#fee2e2', color:'#991b1b' },
 };
@@ -50,17 +51,16 @@ export default function TravelBookings() {
   );
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Travel Bookings</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>{bookings.length} bookings</p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Plane}
+        eyebrow="Travel"
+        title="Travel Bookings"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15}/> New Booking
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       <div style={{ position:'relative', marginBottom:16, maxWidth:340 }}>
         <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
@@ -161,6 +161,6 @@ export default function TravelBookings() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

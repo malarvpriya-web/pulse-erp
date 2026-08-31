@@ -42,7 +42,7 @@ router.get('/events', async (req, res) => {
     // JOIN users (not employees) because security_events.user_id = users.id
     const { rows } = await pool.query(
       `SELECT se.id, se.event_type, se.severity, se.user_id, se.ip_address,
-              se.user_agent, se.path, se.detail, se.created_at,
+              se.path, se.details AS detail, se.created_at,
               u.name AS user_name
        FROM security_events se
        LEFT JOIN users u ON u.id = se.user_id
@@ -173,19 +173,38 @@ router.post('/revoke-session/:userId', async (req, res) => {
 /* ── POST /api/security/2fa/setup ─────────────────────────────────── */
 router.post('/2fa/setup', async (req, res) => {
   const userId = req.user?.userId ?? req.user?.id;
-  let secret, qrCodeUrl;
+  if (!userId) return res.status(401).json({ success:false, message:'Not signed in' });
   try {
-    let totp;
-    try { totp = await import('otplib'); } catch {
-      const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-      secret = Array.from(crypto.randomBytes(20)).map(b => base32chars[b % 32]).join('');
-      qrCodeUrl = `otpauth://totp/PulseERP:user_${userId}?secret=${secret}&issuer=PulseERP&algorithm=SHA1&digits=6&period=30`;
-      return res.json({ success:true, secret, qr_url:qrCodeUrl, manual_entry:secret, note:'Install otplib for full TOTP support' });
+    // No local fallback. The previous one minted a secret and returned it
+    // WITHOUT storing it — the user enrolled a QR the server had never seen, so
+    // /2fa/verify then answered "2FA not set up" forever. A second factor that
+    // cannot be enrolled must fail loudly, not hand out a working-looking QR.
+    let authenticator;
+    try {
+      ({ authenticator } = await import('otplib'));
+    } catch {
+      authenticator = null;
     }
-    const { authenticator } = totp;
-    secret    = authenticator.generateSecret();
-    qrCodeUrl = authenticator.keyuri(`user_${userId}`, 'Pulse ERP', secret);
-    await pool.query(`UPDATE users SET totp_secret=$1 WHERE id=$2`, [secret, userId]).catch(() => {});
+    if (!authenticator?.generateSecret) {
+      return res.status(503).json({
+        success: false,
+        message: 'Two-factor authentication is unavailable: the otplib dependency is missing or incompatible. Install otplib@^12.',
+      });
+    }
+
+    const secret    = authenticator.generateSecret();
+    const qrCodeUrl = authenticator.keyuri(`user_${userId}`, 'Pulse ERP', secret);
+
+    // Must NOT be .catch(()=>{}) — if the secret is not persisted the QR the
+    // user is about to scan is worthless, and reporting success would enrol
+    // them into a factor that can never verify.
+    const { rowCount } = await pool.query(
+      `UPDATE users SET totp_secret=$1 WHERE id=$2`, [secret, userId]
+    );
+    if (rowCount !== 1) {
+      return res.status(500).json({ success:false, message:'Could not store the 2FA secret; nothing was enrolled.' });
+    }
+
     res.json({ success:true, secret, qr_url:qrCodeUrl, manual_entry:secret });
   } catch (err) {
     res.status(500).json({ success:false, message:err.message });
@@ -197,11 +216,11 @@ router.get('/2fa/status', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT e.id AS employee_id, CONCAT(e.first_name,' ',e.last_name) AS name,
-             e.email, e.department,
+             e.company_email, e.department,
              COALESCE(u.two_fa_enabled, FALSE) AS totp_enabled,
              u.updated_at AS last_2fa_at
       FROM employees e
-      LEFT JOIN users u ON LOWER(u.email) = LOWER(e.email)
+      LEFT JOIN users u ON LOWER(u.email) = LOWER(e.company_email)
       WHERE LOWER(e.status) IN ('active','probation')
       ORDER BY e.first_name
     `);
@@ -220,15 +239,30 @@ router.post('/2fa/verify', async (req, res) => {
     const { rows } = await pool.query(`SELECT totp_secret FROM users WHERE id=$1`, [userId]).catch(()=>({rows:[]}));
     const secret = rows[0]?.totp_secret;
     if (!secret) return res.status(400).json({ success:false, message:'2FA not set up. Call /2fa/setup first.' });
-    let isValid = false;
+    // FAIL CLOSED. This used to fall back to `/^\d{6}$/.test(code)` when the
+    // otplib import threw — and otplib was not installed, so that WAS the live
+    // path: any six digits passed, and 000000 would have enabled 2FA. A second
+    // factor that cannot be checked must refuse, never wave the caller through.
+    let authenticator;
     try {
-      const { authenticator } = await import('otplib');
-      isValid = authenticator.verify({ token: code, secret });
+      ({ authenticator } = await import('otplib'));
     } catch {
-      isValid = /^\d{6}$/.test(code);
+      authenticator = null;
     }
-    if (!isValid) return res.status(400).json({ success:false, message:'Invalid or expired code' });
-    await pool.query(`UPDATE users SET two_fa_enabled=TRUE WHERE id=$1`, [userId]).catch(()=>{});
+    if (!authenticator?.verify) {
+      return res.status(503).json({
+        success: false,
+        message: 'Two-factor authentication is unavailable: the otplib dependency is missing or incompatible. Install otplib@^12.',
+      });
+    }
+    if (!authenticator.verify({ token: code, secret })) {
+      return res.status(400).json({ success:false, message:'Invalid or expired code' });
+    }
+
+    const { rowCount } = await pool.query(`UPDATE users SET two_fa_enabled=TRUE WHERE id=$1`, [userId]);
+    if (rowCount !== 1) {
+      return res.status(500).json({ success:false, message:'Code was valid but 2FA could not be enabled.' });
+    }
     res.json({ success:true, message:'Two-factor authentication enabled successfully' });
   } catch (err) {
     res.status(500).json({ success:false, message:err.message });
@@ -242,12 +276,12 @@ router.get('/gdpr/search', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT e.id AS employee_id, CONCAT(e.first_name,' ',e.last_name) AS name,
-             e.email, e.department,
-             TO_CHAR(e.join_date, 'YYYY-MM-DD') AS join_date
+             e.company_email, e.department,
+             TO_CHAR(e.joining_date, 'YYYY-MM-DD') AS join_date
       FROM employees e
       WHERE LOWER(CONCAT(e.first_name,' ',e.last_name)) ILIKE $1
-         OR LOWER(e.email) ILIKE $1
-         OR e.employee_code ILIKE $1
+         OR LOWER(e.company_email) ILIKE $1
+         OR e.office_id ILIKE $1
       ORDER BY e.first_name
       LIMIT 20
     `, [`%${q.toLowerCase()}%`]);
@@ -288,18 +322,20 @@ router.post('/gdpr/purge/:userId', async (req, res) => {
   try {
     await pool.query(`
       UPDATE employees SET
-        first_name=$1, last_name='', email=$2, phone=NULL,
-        pan_number=NULL, bank_account=NULL, bank_ifsc=NULL,
-        emergency_contact=NULL, address=NULL
+        first_name=$1, last_name='', company_email=$2, personal_email=NULL,
+        phone=NULL, pan_number=NULL, aadhaar_number=NULL,
+        account_number=NULL, ifsc_code=NULL, bank_name=NULL,
+        emergency_name=NULL, emergency_phone=NULL, emergency_relationship=NULL,
+        current_address=NULL, permanent_address=NULL
       WHERE id=$3
     `, [anonName, anonEmail, uid]);
     await pool.query(`
       UPDATE users SET name=$1, email=$2, two_fa_enabled=FALSE, totp_secret=NULL WHERE email=(
-        SELECT email FROM employees WHERE id=$3 LIMIT 1
+        SELECT company_email FROM employees WHERE id=$3 LIMIT 1
       )
     `, [anonName, anonEmail, uid]).catch(()=>{});
     await pool.query(
-      `INSERT INTO security_events(event_type,severity,user_id,detail) VALUES($1,$2,$3,$4)`,
+      `INSERT INTO security_events(event_type,severity,user_id,details) VALUES($1,$2,$3,$4)`,
       ['gdpr_purge','high', req.user?.userId??req.user?.id??null, JSON.stringify({ purged_user_id:uid })]
     );
     logAudit(req, 'delete', uid, 'employee', null, { action:'gdpr_purge', purged_user_id:uid });

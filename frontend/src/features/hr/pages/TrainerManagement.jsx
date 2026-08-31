@@ -1,8 +1,10 @@
 // frontend/src/features/hr/pages/TrainerManagement.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { Users } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const inputStyle = { width:'100%', boxSizing:'border-box', padding:'8px 10px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 };
 
@@ -83,7 +85,17 @@ export default function TrainerManagement() {
   );
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="👨‍🏫 Trainer Management"
+        subtitle="Internal and external trainers, programs delivered, ratings"
+        actions={<button className="plh-cta" onClick={() => { setShowForm(true); setEditTrainer(null); setForm({ name:'', trainer_type:'internal', employee_id:'', email:'', phone:'', specialization:'' }); }}>
+          + Add Trainer
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeactivate}
         title="Deactivate Trainer"
@@ -93,16 +105,7 @@ export default function TrainerManagement() {
         onConfirm={deactivate}
         onCancel={() => setPendingDeactivate(null)}
       />
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, flexWrap:'wrap', gap:10 }}>
-        <div>
-          <h2 style={{ margin:0, color:'#4c1d95', fontSize:22 }}>👨‍🏫 Trainer Management</h2>
-          <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Internal and external trainers, programs delivered, ratings</p>
-        </div>
-        <button onClick={() => { setShowForm(true); setEditTrainer(null); setForm({ name:'', trainer_type:'internal', employee_id:'', email:'', phone:'', specialization:'' }); }}
-          style={{ background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontWeight:600 }}>
-          + Add Trainer
-        </button>
-      </div>
+
 
       <div style={{ marginBottom:16, maxWidth:400 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name or specialization…" style={inputStyle} />
@@ -118,7 +121,7 @@ export default function TrainerManagement() {
                   <div style={{ fontSize:11, color:'#9ca3af', marginTop:1 }}>({t.employee_full_name})</div>
                 )}
               </div>
-              <span style={{ fontSize:11, padding:'2px 8px', borderRadius:10, fontWeight:600, background: t.trainer_type==='internal' ? '#e9e4ff' : '#fef3c7', color: t.trainer_type==='internal' ? '#6B3FDB' : '#d97706' }}>
+              <span style={{ fontSize:11, padding:'2px 8px', borderRadius:10, fontWeight:600, background: t.trainer_type==='internal' ? '#e9e4ff' : '#ede9fe', color: t.trainer_type==='internal' ? '#6B3FDB' : '#6d28d9' }}>
                 {t.trainer_type}
               </span>
             </div>
@@ -202,7 +205,7 @@ export default function TrainerManagement() {
                   <td style={{ padding:'8px 10px', fontSize:12 }}>{p.scheduled_date || '—'}</td>
                   <td style={{ padding:'8px 10px', fontSize:12 }}>{p.enrolled_count || 0}</td>
                   <td style={{ padding:'8px 10px', fontSize:12 }}>{p.completed_count || 0}</td>
-                  <td style={{ padding:'8px 10px', fontWeight:700, color:'#d97706', fontSize:12 }}>{p.avg_rating ? `${p.avg_rating} ⭐` : '—'}</td>
+                  <td style={{ padding:'8px 10px', fontWeight:700, color:'#6d28d9', fontSize:12 }}>{p.avg_rating ? `${p.avg_rating} ⭐` : '—'}</td>
                 </tr>
               ))}
               {trainerPrograms.length === 0 && <tr><td colSpan={6} style={{ padding:'24px', textAlign:'center', color:'#9ca3af' }}>No programs delivered yet</td></tr>}
@@ -210,6 +213,6 @@ export default function TrainerManagement() {
           </table>
         </Modal>
       )}
-    </div>
+    </PageShell>
   );
 }

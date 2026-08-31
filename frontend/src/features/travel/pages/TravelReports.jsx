@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
-import { BarChart2, Download, Search, RefreshCw } from 'lucide-react';
+import { BarChart2, Download, Search, RefreshCw, BarChart3 } from 'lucide-react';
 import { fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const REPORT_TYPES = [
   { key: 'by-employee',    label: 'By Employee',   endpoint: '/travel/analytics/by-employee' },
@@ -136,26 +137,22 @@ export default function TravelReports() {
   const handleExportCSV = () => downloadCSV(filtered, columns, reportConfig?.label || 'travel_report');
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Travel & Expense Reports</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            Comprehensive travel cost analytics with export
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={loadReport}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Travel"
+        title="Travel & Expense Reports"
+        subtitle="Comprehensive travel cost analytics with export"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={loadReport}>
             <RefreshCw size={14} /> Refresh
           </button>
-          <button onClick={handleExportCSV}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+          <button className="plh-cta" onClick={handleExportCSV}>
             <Download size={14} /> Export CSV
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       {/* Report type tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -259,6 +256,6 @@ export default function TravelReports() {
           </table>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

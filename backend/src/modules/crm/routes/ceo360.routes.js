@@ -4,6 +4,7 @@ import express from 'express';
 import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { companyOf } from '../../../shared/scope.js';
+import { classifyVendorScore, vendorScoreColor } from '../../../shared/vendorScore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -62,12 +63,22 @@ router.get('/customers', requirePermission('crm', 'view'), async (req, res) => {
         GROUP BY pt.id
       `).catch(() => ({ rows: [] })),
 
-      // Open critical tickets per customer
+      // Open critical tickets per customer — support_tickets.customer_id FKs
+      // accounts(id) (integer), not parties.id (uuid) like the rest of this
+      // endpoint's maps. Grouping by it directly meant ticketMap[c.id] never
+      // matched, so `tickets` silently defaulted to 0 and every customer got
+      // a full 25/25 ticket-health score regardless of real open critical
+      // tickets. Bridge through contacts -> accounts.party_id, same pattern
+      // used by customer360.routes.js's /service endpoint and
+      // customerHealth.service.js's calcServiceScore/getServiceDashboard.
       pool.query(`
-        SELECT customer_id, COUNT(*)::int AS open_tickets,
-               COUNT(CASE WHEN priority='critical' THEN 1 END)::int AS critical_tickets
-        FROM support_tickets WHERE status NOT IN ('resolved','closed')
-        GROUP BY customer_id
+        SELECT a.party_id AS customer_id, COUNT(*)::int AS open_tickets,
+               COUNT(CASE WHEN st.priority='critical' THEN 1 END)::int AS critical_tickets
+        FROM support_tickets st
+        LEFT JOIN contacts c ON c.id = st.contact_id
+        LEFT JOIN accounts a ON a.id = c.account_id
+        WHERE st.status NOT IN ('resolved','closed') AND a.party_id IS NOT NULL
+        GROUP BY a.party_id
       `).catch(() => ({ rows: [] })),
 
       // Active AMC per customer — amc_contracts has no customer_id/annual_value columns;
@@ -223,9 +234,16 @@ router.get('/vendors', requirePermission('procurement', 'view'), async (req, res
       const otd  = deliveryMap[v.id];
       const overall = parseFloat(sc.overall_score || 0);
 
-      // Vendor health: Preferred / Approved / Watchlist / Blocked
-      const label = overall >= 4 ? 'Preferred' : overall >= 3 ? 'Approved' : overall >= 2 ? 'Watchlist' : ncr.open_ncrs > 3 ? 'Blocked' : 'Watchlist';
-      const healthColor = label === 'Preferred' ? '#16a34a' : label === 'Approved' ? '#2563eb' : label === 'Watchlist' ? '#d97706' : '#dc2626';
+      // Vendor health: Preferred / Approved / Watchlist / Blocked.
+      // vendor_scorecards is scored 0-100 (shared/vendorScore.js); the bands
+      // here used to be 4/3/2, which only ever matched the seeded 1-5
+      // placeholder rows. 'Blocked' stays this board's own overlay for a
+      // bottom-band supplier carrying a stack of open NCRs.
+      const banded = classifyVendorScore(overall);
+      const label = banded === 'Critical'
+        ? (ncr.open_ncrs > 3 ? 'Blocked' : 'Watchlist')
+        : banded;
+      const healthColor = label === 'Blocked' ? '#dc2626' : vendorScoreColor(overall);
 
       return {
         id: v.id, name: v.name, vendor_code: v.vendor_code, vendor_type: v.vendor_type,

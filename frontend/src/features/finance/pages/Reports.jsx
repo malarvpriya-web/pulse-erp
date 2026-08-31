@@ -4,14 +4,15 @@ import {
   CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
 import {
-  Download, RefreshCw, Calendar, TrendingUp, TrendingDown,
-  FileText, BarChart2, IndianRupee, Scale, Activity,
-  ChevronRight, ChevronDown, Printer, Filter
+  Download, RefreshCw, Calendar, TrendingUp, TrendingDown, FileText,
+  BarChart2, IndianRupee, Scale, Activity, ChevronRight, ChevronDown,
+  Printer, Filter, BarChart3,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useFY } from '@/context/FYContext';
 import FYSelector from '@/components/core/FYSelector';
 import './Reports.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function exportCSV(rows, filename) {
@@ -388,7 +389,7 @@ export default function FinancialReports() {
   const plChartData = [
     { name:'Revenue', value: pl.revenue.total,  fill:'#6366f1' },
     { name:'COGS',    value: pl.cogs.total,      fill:'#ef4444' },
-    { name:'OpEx',    value: pl.opex.total,      fill:'#f59e0b' },
+    { name:'OpEx',    value: pl.opex.total,      fill:'#7c5cf0' },
     { name:'Net Profit',value: pl.netProfit,     fill:'#10b981' },
   ];
 
@@ -404,12 +405,18 @@ export default function FinancialReports() {
   const debtToEquity  = (bs.liabilities.total / bs.equity.total).toFixed(2);
 
   return (
-    <div className="rpt-root">
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Finance"
+        title="Financial Reports"
+      />
+    }>
 
       {/* Header */}
       <div className="rpt-header">
         <div>
-          <h2 className="rpt-title">Financial Reports</h2>
+
           <p className="rpt-sub">
             {new Date(dateRange.start).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
             {' — '}
@@ -493,7 +500,7 @@ export default function FinancialReports() {
           </div>
         </div>
         <div className="rpt-kpi">
-          <Scale size={16} color="#f59e0b"/>
+          <Scale size={16} color="#7c5cf0"/>
           <div>
             <p className="rpt-kpi-label">Current Ratio</p>
             <p className="rpt-kpi-val">{currentRatio}x</p>
@@ -568,7 +575,7 @@ export default function FinancialReports() {
                   </div>
                 </div>
 
-                <Section title="Operating Expenses" total={-pl.opex.total} accent="#f59e0b">
+                <Section title="Operating Expenses" total={-pl.opex.total} accent="#7c5cf0">
                   {pl.opex.items.map((item,i)=>(
                     <LineRow key={i} label={item.name} value={-item.amount} indent={1} negative/>
                   ))}
@@ -679,7 +686,7 @@ export default function FinancialReports() {
                       ))}
                       <LineRow label="Total Current Liabilities" value={bs.liabilities.current.total} bold total/>
                     </Section>
-                    <Section title="Long-term Liabilities" total={bs.liabilities.longterm.total} accent="#f59e0b">
+                    <Section title="Long-term Liabilities" total={bs.liabilities.longterm.total} accent="#7c5cf0">
                       {bs.liabilities.longterm.items.map((item,i)=>(
                         <LineRow key={i} label={item.name} value={item.amount} indent={1}/>
                       ))}
@@ -760,7 +767,7 @@ export default function FinancialReports() {
                 </Section>
 
                 <Section title="Investing Activities" total={cf.investing.total}
-                  accent={cf.investing.total >= 0 ? '#10b981' : '#f59e0b'}>
+                  accent={cf.investing.total >= 0 ? '#10b981' : '#7c5cf0'}>
                   {cf.investing.items.map((item,i)=>(
                     <LineRow key={i} label={item.name} value={item.amount} indent={1}
                       negative={item.amount < 0}/>
@@ -883,7 +890,7 @@ export default function FinancialReports() {
               <div className="rpt-aging-summary">
                 {[
                   {label:'Current (0–30d)', value: arAging.reduce((s,r)=>s+r.current,0), color:'#10b981'},
-                  {label:'31–60 days',       value: arAging.reduce((s,r)=>s+r.d30,0),    color:'#f59e0b'},
+                  {label:'31–60 days',       value: arAging.reduce((s,r)=>s+r.d30,0),    color:'#7c5cf0'},
                   {label:'61–90 days',       value: arAging.reduce((s,r)=>s+r.d60,0),    color:'#ef4444'},
                   {label:'>90 days',         value: arAging.reduce((s,r)=>s+r.over90,0), color:'#991b1b'},
                 ].map((b,i)=>(
@@ -950,7 +957,7 @@ export default function FinancialReports() {
               <div className="rpt-aging-summary">
                 {[
                   {label:'Current (0–30d)', value: apAging.reduce((s,r)=>s+r.current,0), color:'#10b981'},
-                  {label:'31–60 days',       value: apAging.reduce((s,r)=>s+r.d30,0),    color:'#f59e0b'},
+                  {label:'31–60 days',       value: apAging.reduce((s,r)=>s+r.d30,0),    color:'#7c5cf0'},
                   {label:'61–90 days',       value: apAging.reduce((s,r)=>s+r.d60,0),    color:'#ef4444'},
                   {label:'>90 days',         value: apAging.reduce((s,r)=>s+r.over90,0), color:'#991b1b'},
                 ].map((b,i)=>(
@@ -1007,6 +1014,6 @@ export default function FinancialReports() {
 
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

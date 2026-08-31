@@ -10,7 +10,8 @@
  * workflow_transition_failures  WorkflowService.advanceWorkflow ROLLBACK
  * validation_failures           ValidationEngineService.validate — any field error
  * rules_triggered               RuleEngineService.evaluateRules — per triggered rule
- * notification_failures         WorkflowNotificationService._insert catch
+ * notification_failures         WorkflowNotificationService — any delivery failure:
+ *                               recipient resolve, _insert, or the dispatch catch-all
  */
 
 const _counters = {

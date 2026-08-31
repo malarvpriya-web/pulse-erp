@@ -4,6 +4,7 @@ import api from "@/services/api/client";
 import { useAuth } from "@/context/AuthContext";
 import ResultDialog from "@/components/ResultDialog";
 import "./HolidayCalendar.css";
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Mirrors the backend guard on POST/PATCH/DELETE /holidays — everyone else is view-only.
 const HOLIDAY_EDITOR_ROLES = new Set(["super_admin", "admin", "hr", "hr_manager", "hr_exec"]);
@@ -20,7 +21,7 @@ const typeColor = (type = "Optional") => {
   if (t === "regional")   return { bg: "#dbeafe", color: "#1e3a8a" };
   if (t === "restricted") return { bg: "#fee2e2", color: "#991b1b" };
   if (t === "festival")   return { bg: "#f3e8ff", color: "#6b21a8" };
-  return { bg: "#fef3c7", color: "#92400e" };
+  return { bg: "#ede9fe", color: "#5b21b6" };
 };
 
 const toYMD = (date) => {
@@ -146,7 +147,9 @@ export default function HolidayCalendar() {
 
   useEffect(() => {
     api.get("/master/zones")
-      .then((r) => setZones(Array.isArray(r.data) ? r.data : []))
+      // Rows with a null id are free-text zones read off employee records; they
+      // are not real master zones and cannot be stored as holidays.zone_id.
+      .then((r) => setZones((Array.isArray(r.data) ? r.data : []).filter((z) => z.id != null)))
       .catch(() => {});
   }, []);
 
@@ -304,14 +307,21 @@ export default function HolidayCalendar() {
     : null;
 
   return (
-    <div className="holiday-page">
+    <PageShell dock={
+      <PageHero
+        icon={CalendarDays}
+        eyebrow="Human Resources"
+        title="Holiday Calendar"
+        subtitle="Manage national, regional, optional and restricted holidays"
+      />
+    }>
       <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
 
       {/* Header */}
       <div className="holiday-header">
         <div>
-          <h1>Holiday Calendar</h1>
-          <p>Manage national, regional, optional and restricted holidays</p>
+
+
         </div>
         <div className="holiday-actions">
           <select
@@ -526,6 +536,6 @@ export default function HolidayCalendar() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '@/services/api/client';
 import { Plus, X, RefreshCw, Package, AlertTriangle, TrendingDown, ArrowUp, ArrowDown, Download, History } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY_PART = {
   name: '', part_number: '', unit: 'Pcs', unit_cost: '',
@@ -19,7 +20,7 @@ const MOVEMENT_COLOR = {
   receipt    : { bg: '#d1fae5', color: '#065f46' },
   issue      : { bg: '#fee2e2', color: '#991b1b' },
   return     : { bg: '#dbeafe', color: '#1e40af' },
-  adjustment : { bg: '#fef3c7', color: '#92400e' },
+  adjustment : { bg: '#ede9fe', color: '#5b21b6' },
   opening    : { bg: '#f3f4f6', color: '#374151' },
 };
 
@@ -149,30 +150,28 @@ export default function StockManagement() {
   const totalValue = parts.reduce((s, p) => s + (Number(p.stock_quantity) * Number(p.unit_cost || 0)), 0);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Package}
+        eyebrow="Service Desk"
+        title="Spare Parts & Stock"
+        subtitle="Stock levels, receipts, adjustments, and movement audit trail"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={exportParts}>
+            <Download size={14} /> Export
+          </button>
+          <button className="plh-cta" onClick={() => { setShowPart(true); setPartForm(EMPTY_PART); }}>
+            <Plus size={15} /> Add Part
+          </button>
+        </>}
+      />
+    }>
       {toast && (
         <div style={{ position: 'fixed', top: 20, right: 24, zIndex: 9999, padding: '10px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: toast.type === 'error' ? '#fee2e2' : '#dcfce7', color: toast.type === 'error' ? '#dc2626' : '#15803d', boxShadow: '0 2px 8px rgba(0,0,0,.12)' }}>
           {toast.msg}
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Spare Parts & Stock</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>Stock levels, receipts, adjustments, and movement audit trail</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={exportParts}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontSize: 13, color: '#374151' }}>
-            <Download size={14} /> Export
-          </button>
-          <button onClick={() => { setShowPart(true); setPartForm(EMPTY_PART); }}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            <Plus size={15} /> Add Part
-          </button>
-        </div>
-      </div>
 
       {/* KPI strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
@@ -273,7 +272,7 @@ export default function StockManagement() {
                             </button>
                             <button onClick={() => { setShowAdjust(p); setAdjustForm(EMPTY_ADJUST); }}
                               title="Adjust stock"
-                              style={{ padding: '3px 8px', background: '#fef3c7', color: '#92400e', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Adjust</button>
+                              style={{ padding: '3px 8px', background: '#ede9fe', color: '#5b21b6', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Adjust</button>
                             <button onClick={() => loadPartMovements(p.id)}
                               title="View movement history"
                               style={{ padding: '3px 8px', background: '#ede9fe', color: '#6B3FDB', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', gap: 3 }}>
@@ -468,7 +467,7 @@ export default function StockManagement() {
               <h2 style={{ fontSize: 17, fontWeight: 700, color: '#1f2937', margin: 0 }}>Adjust Stock — {showAdjust.name}</h2>
               <button onClick={() => setShowAdjust(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}><X size={20} /></button>
             </div>
-            <div style={{ background: '#fef3c7', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#92400e' }}>
+            <div style={{ background: '#ede9fe', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#5b21b6' }}>
               Current stock: <strong>{showAdjust.stock_quantity} {showAdjust.unit}</strong>. Enter new absolute quantity.
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 20 }}>
@@ -485,7 +484,7 @@ export default function StockManagement() {
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button onClick={() => setShowAdjust(null)} style={{ padding: '9px 18px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
               <button onClick={handleAdjust} disabled={saving}
-                style={{ padding: '9px 18px', background: '#f59e0b', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: saving ? 0.6 : 1 }}>
+                style={{ padding: '9px 18px', background: '#7c5cf0', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: saving ? 0.6 : 1 }}>
                 {saving ? 'Adjusting...' : 'Confirm Adjustment'}
               </button>
             </div>
@@ -541,6 +540,6 @@ export default function StockManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

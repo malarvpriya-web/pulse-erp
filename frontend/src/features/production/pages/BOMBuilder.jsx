@@ -1,8 +1,10 @@
 // frontend/src/features/production/pages/BOMBuilder.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { Factory } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function formatINR(n) {
   const num = parseFloat(n);
@@ -139,7 +141,7 @@ function NewVersionModal({ bom, onClose, onCreated }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6b7280' }}>✕</button>
         </div>
 
-        <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, padding: '10px 14px', marginBottom: 18, fontSize: 12, color: '#92400e' }}>
+        <div style={{ background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 8, padding: '10px 14px', marginBottom: 18, fontSize: 12, color: '#5b21b6' }}>
           A new ECN will be auto-raised and linked to this version. This creates an immutable audit trail of who changed what and why.
         </div>
 
@@ -201,8 +203,8 @@ function VersionHistory({ bomId, currentId, onSelect }) {
                 <span style={{ fontWeight: 700, color: '#4c1d95', fontSize: 14 }}>v{v.version}</span>
                 <span style={{
                   fontSize: 10, padding: '1px 6px', borderRadius: 8, fontWeight: 700,
-                  background: v.status === 'active' ? '#d1fae5' : '#fef3c7',
-                  color: v.status === 'active' ? '#16a34a' : '#d97706',
+                  background: v.status === 'active' ? '#d1fae5' : '#ede9fe',
+                  color: v.status === 'active' ? '#16a34a' : '#6d28d9',
                 }}>{v.status}</span>
                 {v.frozen_at && (
                   <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, fontWeight: 700, background: '#dbeafe', color: '#1d4ed8' }}>
@@ -616,7 +618,14 @@ export default function BOMBuilder() {
   });
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="BOM & MRP Engine"
+        subtitle="Bill of Materials, routing, and Material Requirements Planning"
+      />
+    }>
       <ConfirmDialog
         open={pendingFreeze}
         title="Freeze BOM"
@@ -626,10 +635,6 @@ export default function BOMBuilder() {
         onConfirm={handleFreeze}
         onCancel={() => setPendingFreeze(false)}
       />
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: '0 0 4px', color: '#4c1d95', fontSize: 22 }}>BOM & MRP Engine</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Bill of Materials, routing, and Material Requirements Planning</p>
-      </div>
 
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
 
@@ -672,8 +677,8 @@ export default function BOMBuilder() {
                     v{bom.version}
                   </span>
                   <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, fontWeight: 700,
-                    background: bom.status === 'active' ? '#d1fae5' : '#fef3c7',
-                    color: bom.status === 'active' ? '#16a34a' : '#d97706' }}>
+                    background: bom.status === 'active' ? '#d1fae5' : '#ede9fe',
+                    color: bom.status === 'active' ? '#16a34a' : '#6d28d9' }}>
                     {bom.status}
                   </span>
                   {bom.frozen_at && (
@@ -703,7 +708,6 @@ export default function BOMBuilder() {
             </div>
           ) : (
             <>
-              {/* Header bar */}
               <div style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 12, padding: '14px 18px', marginBottom: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10 }}>
                   <div>
@@ -878,14 +882,14 @@ export default function BOMBuilder() {
                           {detail?.routing?.map((step) => {
                             const machineCost = parseFloat(step.std_time_hrs || 0) * parseFloat(step.cost_per_hour || 0);
                             return (
-                              <div key={step.id} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '12px 14px', background: '#faf9ff', borderRadius: 8, border: `1px solid ${step.is_inspection ? '#fcd34d' : '#e9e4ff'}` }}>
+                              <div key={step.id} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '12px 14px', background: '#faf9ff', borderRadius: 8, border: `1px solid ${step.is_inspection ? '#c4b5fd' : '#e9e4ff'}` }}>
                                 <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#6B3FDB', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
                                   {step.step_no}
                                 </div>
                                 <div style={{ flex: 1 }}>
                                   <div style={{ fontWeight: 600, color: '#1f2937', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
                                     {step.operation}
-                                    {step.is_inspection && <span style={{ fontSize: 10, background: '#fef3c7', color: '#d97706', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>QC GATE</span>}
+                                    {step.is_inspection && <span style={{ fontSize: 10, background: '#ede9fe', color: '#6d28d9', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>QC GATE</span>}
                                   </div>
                                   <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
                                     {step.work_centre_name || '—'} · {step.std_time_hrs}h std{step.setup_time_hrs ? ` · ${step.setup_time_hrs}h setup` : ''}
@@ -1064,6 +1068,6 @@ export default function BOMBuilder() {
           }}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

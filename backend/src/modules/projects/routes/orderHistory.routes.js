@@ -167,7 +167,7 @@ router.get('/:id/full-history', async (req, res) => {
 
     // ── Production Orders ─────────────────────────────────────────────────
     const productionOrders = await safeQuery(
-      `SELECT po.*, b.bom_number, b.revision AS bom_revision
+      `SELECT po.*, b.bom_number, b.version AS bom_revision
        FROM production_orders po
        LEFT JOIN bom_headers b ON b.id = po.bom_id
        WHERE po.project_id=$1 OR po.sales_order_id=$2
@@ -189,27 +189,27 @@ router.get('/:id/full-history', async (req, res) => {
 
     // ── Vendors ───────────────────────────────────────────────────────────
     const vendors = purchaseOrders.length ? await safeQuery(
-      `SELECT DISTINCT v.id, v.vendor_name, v.gstin, v.rating,
+      `SELECT DISTINCT v.id, v.vendor_name, v.gstin, v.quality_rating,
               COUNT(po.id)::int AS po_count,
               SUM(po.total_amount) AS total_spend
        FROM purchase_orders po
        JOIN vendors v ON v.id = po.supplier_id
        WHERE po.id = ANY($1::int[])
-       GROUP BY v.id, v.vendor_name, v.gstin, v.rating`,
+       GROUP BY v.id, v.vendor_name, v.gstin, v.quality_rating`,
       [purchaseOrders.map(p => p.id)]
     ) : [];
 
     // ── GRN ───────────────────────────────────────────────────────────────
     const grns = purchaseOrders.length ? await safeQuery(
-      `SELECT g.* FROM grn g
-       WHERE g.purchase_order_id = ANY($1::int[])
-       ORDER BY g.receipt_date DESC`,
+      `SELECT g.* FROM goods_receipt_notes g
+       WHERE g.po_id = ANY($1::int[])
+       ORDER BY g.received_date DESC`,
       [purchaseOrders.map(p => p.id)]
     ) : [];
 
     // ── Batch / material consumption ──────────────────────────────────────
     const batches = productionOrders.length ? await safeQuery(
-      `SELECT bt.* FROM batch_tracking bt
+      `SELECT bt.* FROM inventory_batches bt
        WHERE bt.production_order_id = ANY($1::int[])
        ORDER BY bt.created_at DESC`,
       [productionOrders.map(p => p.id)]
@@ -224,12 +224,17 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT * FROM sat_trackers WHERE project_id=$1 ORDER BY actual_date DESC`,
       [projectId]
     );
-    const ncrs = productionOrders.length ? await safeQuery(
-      `SELECT n.* FROM quality_ncrs n
-       WHERE n.production_order_id = ANY($1::int[])
-       ORDER BY n.created_at DESC`,
-      [productionOrders.map(p => p.id)]
-    ) : [];
+    // ncr_reports has no production_order_id. It carries project_id directly,
+    // plus a polymorphic reference_type/reference_id pair — so an NCR raised
+    // against one of this project's production orders is reachable either way.
+    const ncrs = await safeQuery(
+      `SELECT n.* FROM ncr_reports n
+        WHERE n.project_id = $1
+           OR (LOWER(n.reference_type) = 'production_order'
+               AND n.reference_id = ANY($2::int[]))
+        ORDER BY n.created_at DESC`,
+      [projectId, productionOrders.map(p => p.id)]
+    );
 
     // ── Shipments ─────────────────────────────────────────────────────────
     const shipments = salesOrderId ? await safeQuery(
@@ -269,7 +274,7 @@ router.get('/:id/full-history', async (req, res) => {
     // ── AMC Contracts ─────────────────────────────────────────────────────
     const amcContracts = await safeQuery(
       `SELECT ac.*,
-              (SELECT COUNT(*)::int FROM amc_renewals ar WHERE ar.amc_contract_id=ac.id) AS renewal_count
+              (SELECT COUNT(*)::int FROM amc_renewal_history ar WHERE ar.amc_contract_id=ac.id) AS renewal_count
        FROM amc_contracts ac
        WHERE ac.project_id=$1
           OR (ac.lifecycle_instance_id IS NOT NULL AND ac.lifecycle_instance_id=$2)

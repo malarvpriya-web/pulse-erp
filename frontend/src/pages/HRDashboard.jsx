@@ -4,7 +4,7 @@ import { useAuth } from '@/context/AuthContext';
 import {
   Users, UserCheck, UserX, Clock, RefreshCw, ChevronRight,
   Plus, Bell, CheckCircle, Calendar, Briefcase,
-  TrendingDown, Zap, ArrowUpRight, Filter, BarChart2, Inbox,
+  TrendingDown, Zap, ArrowUpRight, BarChart2, Inbox,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -17,7 +17,10 @@ import {
   getProductivity, getTopPerformers, getHRInsights,
   getHeadcountTrend, getSalaryBands, getTimeToHire,
   getSatisfaction, getOnboarding, getComplianceAlerts,
+  getHrFilterOptions, isErrored, errorOf,
 } from '@/features/hr-analytics/services/hrAnalyticsApi';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar } from '@/components/pulse-ui';
 import { generateInsights } from '@/features/analytics/services/insightsEngine';
 import HeadcountCard           from '@/features/hr-analytics/components/HeadcountCard';
 import AttritionRateCard       from '@/features/hr-analytics/components/AttritionRateCard';
@@ -44,7 +47,9 @@ const P      = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
 const BORDER = '#e9e4ff';
 
-const DEPTS = ['All','Engineering','Sales','HR','Finance','Operations','Marketing','Support'];
+// The hardcoded DEPTS list that used to live here offered three departments with
+// no employees ('Operations', 'Marketing', 'Support') and omitted ten real ones.
+// Departments are now loaded from /analytics/hr-filter-options at mount.
 
 function generateHRInsights({ total: _total, attritionRate, newHires, pendingLeaves, probationEnding }) {
   const out = [];
@@ -139,6 +144,18 @@ export default function HRDashboard({ setPage }) {
 
   const [activeTab,   setActiveTab]   = useState('overview');
 
+  // Canonical filter contract — the same hook and bar every other dashboard uses.
+  // This page previously had a department dropdown that sent nothing to the API
+  // and no date filter at all, even though the endpoints have supported both for
+  // some time.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'last12m',
+    storageKey: 'hr-dashboard',
+    dimensions: { department: 'all' },
+  });
+  const { params: filterParams } = filters;
+  const [deptOptions, setDeptOptions] = useState([]);
+
   // ── Overview state ──────────────────────────────────────────────────────────
   const [analytics,   setAnalytics]   = useState(EMPTY_ANALYTICS);
   const [hrAlerts,    setHRAlerts]    = useState([]);
@@ -150,9 +167,10 @@ export default function HRDashboard({ setPage }) {
 
   // ── Analytics state ─────────────────────────────────────────────────────────
   const analyticsLoadedRef             = useRef(false);
-  const [dept,         setDept]        = useState('All');
   const [aLoading,     setALoading]    = useState(false);
   const [aError,       setAError]      = useState(null);
+  // Distinguishes "the API failed" from "there is genuinely nothing to show".
+  const [aFailures,    setAFailures]   = useState([]);
   const [lastRefresh,  setLastRefresh] = useState(null);
   const [headcount,    setHeadcount]   = useState({});
   const [attrition,    setAttrition]   = useState({});
@@ -208,11 +226,14 @@ export default function HRDashboard({ setPage }) {
   const loadAnalytics = useCallback(async () => {
     setALoading(true);
     setAError(null);
+    // Every call now carries the active period and department, so changing a
+    // filter re-queries the database instead of re-slicing one cached array.
+    const fp = filterParams;
     const [hc, at, oa, ab, atT, hiT, gd, dw, pr, tp, ins, hcT, sb, tth, sat] = await Promise.allSettled([
-      getHeadcount(), getAttrition(), getOfferAcceptance(), getAbsenteeism(),
-      getAttritionTrend(), getHiringTrend(), getGenderDist(), getDeptWorkforce(),
-      getProductivity(), getTopPerformers(), getHRInsights(),
-      getHeadcountTrend(), getSalaryBands(), getTimeToHire(), getSatisfaction(),
+      getHeadcount(fp), getAttrition(fp), getOfferAcceptance(fp), getAbsenteeism(fp),
+      getAttritionTrend(fp), getHiringTrend(fp), getGenderDist(fp), getDeptWorkforce(fp),
+      getProductivity(fp), getTopPerformers(fp), getHRInsights(fp),
+      getHeadcountTrend(fp), getSalaryBands(fp), getTimeToHire(fp), getSatisfaction(fp),
     ]);
     if (hc.status  === 'fulfilled') setHeadcount(hc.value);
     if (at.status  === 'fulfilled') setAttrition(at.value);
@@ -229,14 +250,42 @@ export default function HRDashboard({ setPage }) {
     if (sb.status  === 'fulfilled') setSalaryBands(sb.value);
     if (tth.status === 'fulfilled') setTimeToHire(tth.value);
     if (sat.status === 'fulfilled') setSatisfaction(sat.value);
-    const allRejected = [hc,at,oa,ab,atT,hiT,gd,dw,pr,tp,ins,hcT,sb,tth,sat].every(r => r.status === 'rejected');
-    if (allRejected) setAError('Failed to load HR analytics data');
+    // Surface partial failures. Previously only a total wipeout produced an error
+    // banner, so a single 403 or 500 rendered as a permanently empty widget with
+    // no indication anything had gone wrong.
+    const named = [
+      ['Headcount', hc], ['Attrition', at], ['Offer acceptance', oa], ['Absenteeism', ab],
+      ['Attrition trend', atT], ['Hiring trend', hiT], ['Gender split', gd],
+      ['Department strength', dw], ['Productivity', pr], ['Top performers', tp],
+      ['Insights', ins], ['Headcount trend', hcT], ['Salary bands', sb],
+      ['Time to hire', tth], ['Satisfaction', sat],
+    ];
+    const failures = named
+      .filter(([, r]) => r.status === 'rejected' || isErrored(r.value))
+      .map(([label, r]) => ({
+        label,
+        ...(r.status === 'fulfilled' ? errorOf(r.value) : { message: 'Request failed', status: 0 }),
+      }));
+    setAFailures(failures);
+    if (failures.length === named.length) setAError('Could not load HR analytics — every request failed.');
+
     setALoading(false);
     setLastRefresh(new Date().toLocaleTimeString());
     analyticsLoadedRef.current = true;
-  }, []);
+  }, [filterParams]);
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
+
+  // Department options come from the employee master, not a literal list.
+  useEffect(() => {
+    getHrFilterOptions().then(d => setDeptOptions(Array.isArray(d?.departments) ? d.departments : []));
+  }, []);
+
+  // Re-query when a filter changes — but only once the tab has been opened, so
+  // switching periods on the Overview tab does not fetch a deck nobody is looking at.
+  useEffect(() => {
+    if (activeTab === 'analytics' && analyticsLoadedRef.current) loadAnalytics();
+  }, [filterParams, activeTab]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleTabSwitch = (tab) => {
     setActiveTab(tab);
@@ -268,9 +317,8 @@ export default function HRDashboard({ setPage }) {
     return [...apiInsights, ...ruleInsights.filter(i => !seen.has(i.rule))];
   }, [attrition, offerAccept, apiInsights]);
 
-  const filteredDepts = useMemo(() =>
-    dept === 'All' ? deptWorkforce : deptWorkforce.filter(d => d.dept === dept),
-  [dept, deptWorkforce]);
+  // Department filtering happens in SQL now (see loadAnalytics), so the chart
+  // renders exactly what the API returned.
 
   const handleSelectPerformer = (p) => {
     if (setPage) {
@@ -370,14 +418,7 @@ export default function HRDashboard({ setPage }) {
           </p>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          {activeTab === 'analytics' && (
-            <div style={{ display:'flex', alignItems:'center', gap:6, background:'#fff', border:'1px solid #e5e7eb', borderRadius:8, padding:'6px 10px' }}>
-              <Filter size={13} color="#9ca3af"/>
-              <select value={dept} onChange={e => setDept(e.target.value)} style={{ border:'none', outline:'none', fontSize:12, color:'#374151', cursor:'pointer', background:'transparent' }}>
-                {DEPTS.map(d => <option key={d}>{d}</option>)}
-              </select>
-            </div>
-          )}
+
           {activeTab === 'overview' && canManage && (
             <button onClick={() => setPage('AddEmployee')} style={{
               padding:'7px 12px', background:P, color:'#fff', border:'none',
@@ -395,6 +436,19 @@ export default function HRDashboard({ setPage }) {
           </button>
         </div>
       </div>
+
+      {/* Canonical filter bar — period + department, both applied server-side. */}
+      {activeTab === 'analytics' && (
+        <DashboardFilterBar
+          filters={filters}
+          dimensions={[{
+            key: 'department',
+            label: 'Department',
+            allLabel: 'All Departments',
+            options: deptOptions.map(d => ({ value: d, label: d })),
+          }]}
+        />
+      )}
 
       {/* ── Tab switcher ──────────────────────────────────────────────────────── */}
       <div style={{ display:'flex', gap:2, background:'#f3f4f6', borderRadius:10, padding:3, marginBottom:14, width:'fit-content' }}>
@@ -673,6 +727,18 @@ export default function HRDashboard({ setPage }) {
           {aError && (
             <div style={{ background:'#fee2e2', color:'#dc2626', borderRadius:8, padding:'10px 14px', marginBottom:16, fontSize:13 }}>{aError}</div>
           )}
+          {/* Partial failures are named rather than left to look like empty data.
+              A 403 is called out separately because it is a permissions problem,
+              not an outage. */}
+          {!aError && aFailures.length > 0 && (
+            <div style={{ background:'#fffbeb', border:'1px solid #fde68a', color:'#92400e', borderRadius:8, padding:'10px 14px', marginBottom:16, fontSize:12.5 }}>
+              <strong>{aFailures.length} widget{aFailures.length > 1 ? 's' : ''} could not load.</strong>{' '}
+              {aFailures.some(f => f.forbidden)
+                ? 'Some data is restricted for your role: '
+                : 'These are showing empty because the request failed, not because there is no data: '}
+              {aFailures.map(f => f.label).join(', ')}.
+            </div>
+          )}
           {/* Row 1: 6 KPI cards */}
           <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:12, marginBottom:12 }}>
             <HeadcountCard       data={headcount}    loading={aLoading} />
@@ -695,7 +761,7 @@ export default function HRDashboard({ setPage }) {
           {/* Row 4: Gender + Dept strength */}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:12, marginBottom:12 }}>
             <GenderDistributionChart data={genderDist}    loading={aLoading} />
-            <DepartmentStrengthChart data={filteredDepts} loading={aLoading} />
+            <DepartmentStrengthChart data={deptWorkforce} loading={aLoading} />
           </div>
           {/* Row 5: Productivity + Top performers */}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 import {
-  Settings2, Globe, Bell, Monitor,
-  Check, Save, RefreshCw,
+  Settings2, Globe, Bell, Monitor, Check, Save, RefreshCw,
+  SlidersHorizontal,
 } from 'lucide-react';
 
 const P  = '#6B3FDB';
@@ -177,56 +178,28 @@ export default function UserPreferences() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f8f9fc', padding: '28px 32px' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 28, flexWrap: 'wrap', gap: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{
-            width: 40, height: 40, borderRadius: 10, background: PL,
-            border: `1px solid ${PB}`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Settings2 size={19} color={P} />
-          </div>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: '#0f172a' }}>User Preferences</h1>
-            <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
-              Personal settings — stored locally on this device
-            </p>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={handleReset}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '8px 14px', borderRadius: 8,
-              border: resetDone ? '1px solid #10b981' : '1px solid #e2e8f0',
-              background: resetDone ? '#f0fdf4' : '#fff',
-              fontSize: 12, color: resetDone ? '#10b981' : '#64748b',
-              cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.2s',
-            }}
-          >
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Account"
+        title="User Preferences"
+        subtitle="Personal settings — stored locally on this device"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={handleReset}>
             {resetDone ? <><Check size={13} /> Reset</> : <><RefreshCw size={13} /> Reset defaults</>}
           </button>
-          <button
+          <button className="plh-cta"
             onClick={handleSave}
-            disabled={!changed}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '8px 16px', borderRadius: 8, border: 'none',
-              background: saved ? '#10b981' : changed ? P : '#e2e8f0',
-              color: changed || saved ? '#fff' : '#94a3b8',
-              fontSize: 12, fontWeight: 600, cursor: changed ? 'pointer' : 'not-allowed',
-              transition: 'background 0.2s', fontFamily: 'inherit',
-            }}
-          >
+            disabled={!changed}>
             {saved ? <><Check size={13} /> Saved</> : <><Save size={13} /> Save preferences</>}
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      {/* Header */}
+
 
       <div style={{ maxWidth: 680 }}>
 
@@ -234,8 +207,8 @@ export default function UserPreferences() {
         <Group title="Localization" icon={Globe}>
           <div style={{
             margin: '8px 20px 4px', padding: '8px 12px', borderRadius: 7,
-            background: '#fffbeb', border: '1px solid #fde68a',
-            fontSize: 11, color: '#92400e', lineHeight: 1.5,
+            background: '#f5f3ff', border: '1px solid #ddd6fe',
+            fontSize: 11, color: '#5b21b6', lineHeight: 1.5,
           }}>
             Language, timezone &amp; display format preferences are saved here.
             App-wide date/currency formatters currently use India defaults (DD/MM/YYYY, ₹, Indian numbering)
@@ -355,6 +328,6 @@ export default function UserPreferences() {
           A local copy is also cached in this browser for instant load.
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

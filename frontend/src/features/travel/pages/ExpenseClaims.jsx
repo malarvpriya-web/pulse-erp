@@ -2,8 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
-import { Plus, X, Search, Receipt, Link, ChevronRight, CheckCircle, Clock, AlertCircle } from 'lucide-react';
+import {
+  Plus, X, Search, Receipt, Link, ChevronRight, CheckCircle, Clock,
+  AlertCircle, IndianRupee,
+} from 'lucide-react';
 import { fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EXPENSE_TYPES = [
   {
@@ -39,7 +43,7 @@ const STATUS_STEPS = [
 
 const STATUS_COLOR = {
   'Draft':              { bg: '#f3f4f6', color: '#6b7280' },
-  'Submitted':          { bg: '#fef3c7', color: '#92400e' },
+  'Submitted':          { bg: '#ede9fe', color: '#5b21b6' },
   'Manager Approved':   { bg: '#dbeafe', color: '#1e40af' },
   'Manager Rejected':   { bg: '#fee2e2', color: '#991b1b' },
   'Accounts Verified':  { bg: '#d1fae5', color: '#065f46' },
@@ -239,26 +243,23 @@ export default function ExpenseClaims() {
   const statuses = ['All', 'Draft', 'Submitted', 'Manager Approved', 'Accounts Verified', 'Mgmt Approved', 'Paid'];
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Expense Claims</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            Travel expense reimbursement management
-          </p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Travel"
+        title="Expense Claims"
+        subtitle="Travel expense reimbursement management"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15} /> New Claim
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* KPI cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 20 }}>
         {[
           { label: 'Total Claims',    value: claims.length,         color: '#6366f1' },
-          { label: 'Pending Amount',  value: fmt(totalPending),     color: '#f59e0b', isText: true },
+          { label: 'Pending Amount',  value: fmt(totalPending),     color: '#7c5cf0', isText: true },
           { label: 'Reimbursed',      value: fmt(totalPaid),        color: '#10b981', isText: true },
           { label: 'Over Policy',     value: overPolicy,            color: '#ef4444' },
         ].map(k => (
@@ -329,7 +330,7 @@ export default function ExpenseClaims() {
                   </td>
                   <td style={{ padding: '10px 14px', color: '#6b7280', whiteSpace: 'nowrap' }}>{c.expense_date?.slice(0,10)}</td>
                   <td style={{ padding: '10px 14px', color: '#374151', fontWeight: 500 }}>{fmt(c.amount)}</td>
-                  <td style={{ padding: '10px 14px', color: '#f59e0b' }}>{fmt(c.gst_amount || 0)}</td>
+                  <td style={{ padding: '10px 14px', color: '#7c5cf0' }}>{fmt(c.gst_amount || 0)}</td>
                   <td style={{ padding: '10px 14px', color: '#10b981', fontWeight: 600 }}>{fmt(c.total_amount || c.amount)}</td>
                   <td style={{ padding: '10px 14px' }}>
                     {c.google_drive_link
@@ -561,11 +562,11 @@ export default function ExpenseClaims() {
 
               {/* Policy warning */}
               {policyInfo && !policyInfo.within_policy && (
-                <div style={{ gridColumn: '1/-1', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  <AlertCircle size={16} color="#f97316" style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ gridColumn: '1/-1', background: '#fff7ed', border: '1px solid #ddd6fe', borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <AlertCircle size={16} color="#7c5cf0" style={{ flexShrink: 0, marginTop: 2 }} />
                   <div style={{ fontSize: 12 }}>
-                    <div style={{ fontWeight: 600, color: '#c2410c' }}>Over Policy Limit</div>
-                    <div style={{ color: '#9a3412' }}>Policy limit: {fmt(policyInfo.policy_limit)} | Your claim: {fmt(form.amount)}</div>
+                    <div style={{ fontWeight: 600, color: '#5b21b6' }}>Over Policy Limit</div>
+                    <div style={{ color: '#4c1d95' }}>Policy limit: {fmt(policyInfo.policy_limit)} | Your claim: {fmt(form.amount)}</div>
                   </div>
                 </div>
               )}
@@ -615,6 +616,6 @@ export default function ExpenseClaims() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -7,17 +7,22 @@ const recruitmentRepository = {
   // ==================== JOB REQUISITIONS ====================
   async createRequisition(data) {
     const {
-      job_title, department_id, employment_type, number_of_positions,
+      job_title, department, department_id, employment_type, number_of_positions,
       job_description, skills_required, experience_required, location,
       salary_range, requested_by_employee_id, company_id,
     } = data;
+    // job_requisitions.department stores a department NAME, not an id. The
+    // frontend historically sent it as `department_id`, which made every reader
+    // of this payload assume it was a foreign key. `department` is the correct
+    // field name; `department_id` stays accepted so older callers keep working.
+    const departmentName = department ?? department_id ?? null;
     const result = await pool.query(
       `INSERT INTO job_requisitions
          (job_title, department, employment_type, number_of_positions, job_description,
           skills_required, experience_required, location, salary_range, requested_by,
           company_id, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'draft') RETURNING *`,
-      [job_title, department_id, employment_type, number_of_positions, job_description,
+      [job_title, departmentName, employment_type, number_of_positions, job_description,
        skills_required, experience_required, location, salary_range,
        requested_by_employee_id, company_id]
     );
@@ -115,21 +120,64 @@ const recruitmentRepository = {
       salary_range ? `Salary: ${salary_range}` : null,
     ].filter(Boolean).join(' | ') || null;
 
-    const result = await pool.query(
-      `INSERT INTO job_openings
-         (requisition_id, job_title, department, location, employment_type,
-          experience_min, experience_max, salary_min, salary_max,
-          description, requirements, benefits, closing_date, company_id, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-      [requisition_id || null, job_title, department, location, employment_type,
-       experience_min || null, experience_max || null, salary_min || null, salary_max || null,
-       description, requirementsText, benefits || null, closing_date || null, company_id,
-       status || 'open']
-    );
-    if (requisition_id) {
-      await pool.query(`UPDATE job_requisitions SET status = 'open' WHERE id = $1`, [requisition_id]);
+    // Concurrency: the caller's route-level "is the requisition approved?" check
+    // and this insert used to be separate unlocked statements, so two concurrent
+    // POST /openings against the same just-approved requisition could both pass
+    // the check before either committed — yielding two openings for one approval.
+    // The gate now lives inside the transaction and takes a row lock (FOR UPDATE)
+    // on the requisition, so the second caller blocks until the first commits and
+    // then reads status='open' rather than 'approved'. Same compare-and-swap
+    // intent as acceptOffer()/approveSourceItem(), enforced by a lock because the
+    // guard and the write target different tables.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (requisition_id) {
+        const req = await client.query(
+          `SELECT id, status FROM job_requisitions
+            WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) AND deleted_at IS NULL
+            FOR UPDATE`,
+          [requisition_id, company_id]
+        );
+        if (!req.rows.length) {
+          throw Object.assign(new Error('Requisition not found.'), { statusCode: 404 });
+        }
+        const reqStatus = req.rows[0].status;
+        if (reqStatus !== 'approved') {
+          // 'open' specifically means this requisition was approved but has already
+          // been consumed by another opening — including by the request that just
+          // won this row lock. Saying "not approved yet" there would be wrong.
+          throw reqStatus === 'open'
+            ? Object.assign(
+                new Error('A job opening has already been created against this requisition.'),
+                { statusCode: 409 })
+            : Object.assign(
+                new Error(`This requisition has not been approved yet (current status: '${reqStatus}'). Job openings can only be created against an approved requisition.`),
+                { statusCode: 400 });
+        }
+      }
+      const result = await client.query(
+        `INSERT INTO job_openings
+           (requisition_id, job_title, department, location, employment_type,
+            experience_min, experience_max, salary_min, salary_max,
+            description, requirements, benefits, closing_date, company_id, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+        [requisition_id || null, job_title, department, location, employment_type,
+         experience_min || null, experience_max || null, salary_min || null, salary_max || null,
+         description, requirementsText, benefits || null, closing_date || null, company_id,
+         status || 'open']
+      );
+      if (requisition_id) {
+        await client.query(`UPDATE job_requisitions SET status = 'open' WHERE id = $1`, [requisition_id]);
+      }
+      await client.query('COMMIT');
+      return result.rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
-    return result.rows[0];
   },
 
   async findOpenings(filters = {}) {
@@ -209,6 +257,45 @@ const recruitmentRepository = {
       full_name, email, phone, resume_file_url, source, applied_job_id, company_id, source_agency_id,
       current_company, current_designation, experience_years, notice_period_days, expected_ctc, skills, notes,
     } = data;
+
+    // Duplicate-candidate guard. `candidates_company_email_uniq` (migration
+    // 20260812000004) is the real backstop; this check exists so the common case
+    // returns an actionable message naming the existing record instead of a raw
+    // Postgres unique-violation string. Same normalisation as the index.
+    if (email && String(email).trim()) {
+      const { rows: dupe } = await pool.query(
+        `SELECT id, full_name, current_stage FROM candidates
+          WHERE company_id = $1 AND LOWER(TRIM(email)) = LOWER(TRIM($2)) AND deleted_at IS NULL
+          LIMIT 1`,
+        [company_id, email]
+      );
+      if (dupe.length) {
+        throw Object.assign(
+          new Error(`${dupe[0].full_name} is already in the pipeline with this email address (currently at the ${dupe[0].current_stage} stage). Open their existing record instead of creating a second one.`),
+          { statusCode: 409, existingCandidateId: dupe[0].id }
+        );
+      }
+    }
+
+    // An opening that is closed/filled should not accept new applicants — the
+    // insert previously succeeded silently, so recruiters could keep sourcing
+    // against a req that was already closed by someone else.
+    if (applied_job_id) {
+      const { rows: opening } = await pool.query(
+        `SELECT status FROM job_openings WHERE id = $1 AND deleted_at IS NULL`,
+        [applied_job_id]
+      );
+      if (!opening.length) {
+        throw Object.assign(new Error('That job opening no longer exists.'), { statusCode: 400 });
+      }
+      if (['closed', 'cancelled', 'on_hold'].includes((opening[0].status || '').toLowerCase())) {
+        throw Object.assign(
+          new Error(`This job opening is ${opening[0].status} and is no longer accepting candidates.`),
+          { statusCode: 409 }
+        );
+      }
+    }
+
     const result = await pool.query(
       `INSERT INTO candidates
          (full_name, email, phone, resume_file_url, source, applied_job_id,
@@ -231,6 +318,39 @@ const recruitmentRepository = {
 
   async bulkCreateCandidates(candidates) {
     if (!candidates.length) return [];
+
+    // Same duplicate guard as createCandidate(), applied to the batch: drop rows
+    // that collide with an existing candidate OR with an earlier row in this same
+    // upload. Without this the whole multi-row INSERT aborts on the first
+    // collision with candidates_company_email_uniq, losing every good row with it
+    // — a bulk resume import is exactly where duplicates are most likely.
+    const norm = (e) => String(e || '').trim().toLowerCase();
+    const withEmail = candidates.filter(c => norm(c.email));
+    let existingEmails = new Set();
+    if (withEmail.length) {
+      const { rows } = await pool.query(
+        `SELECT company_id, LOWER(TRIM(email)) AS em FROM candidates
+          WHERE deleted_at IS NULL AND LOWER(TRIM(email)) = ANY($1::text[])`,
+        [withEmail.map(c => norm(c.email))]
+      );
+      existingEmails = new Set(rows.map(r => `${r.company_id}|${r.em}`));
+    }
+    const seen = new Set();
+    const skipped = [];
+    candidates = candidates.filter(c => {
+      const key = `${c.company_id}|${norm(c.email)}`;
+      if (!norm(c.email)) return true;
+      if (existingEmails.has(key) || seen.has(key)) {
+        skipped.push({ full_name: c.full_name, email: c.email });
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+    if (!candidates.length) {
+      const err = new Error('Every candidate in this file is already in the pipeline.');
+      return Object.assign([], { skipped, error: err.message });
+    }
 
     // Single multi-row INSERT — avoids N+1 round-trips (was 2× queries per candidate)
     const cols = `(full_name, email, phone, resume_file_url, source, applied_job_id,
@@ -261,7 +381,9 @@ const recruitmentRepository = {
       histParams
     );
 
-    return inserted.rows;
+    // `skipped` rides along on the array so the route can tell the uploader which
+    // rows were duplicates without changing the endpoint's array response shape.
+    return Object.assign(inserted.rows, { skipped });
   },
 
   async findCandidates(filters = {}) {
@@ -333,34 +455,46 @@ const recruitmentRepository = {
   // company_id was previously not threaded through at all — any authenticated
   // user could move another company's candidate through the pipeline by id.
   // Skips the history insert if the scoped UPDATE didn't match a row.
-  async moveCandidateStage(candidate_id, new_stage, moved_by, notes, company_id = null) {
+  // Optional dbClient lets callers (e.g. acceptOffer()) fold this into their
+  // own transaction instead of running as a standalone pool query.
+  async moveCandidateStage(candidate_id, new_stage, moved_by, notes, company_id = null, dbClient = null) {
+    const client = dbClient || pool;
     const extra = new_stage === 'hired'
       ? ', overall_status = \'hired\', hired_at = NOW()'
       : new_stage === 'rejected' || new_stage === 'not_suitable'
         ? ', overall_status = \'rejected\''
         : '';
 
-    const result = await pool.query(
+    const result = await client.query(
       `UPDATE candidates SET current_stage = $1, updated_at = CURRENT_TIMESTAMP ${extra}
         WHERE id = $2 AND ($3::int IS NULL OR company_id = $3)`,
       [new_stage, candidate_id, company_id]
     );
     if (result.rowCount === 0) throw new Error('Candidate not found');
-    await pool.query(
+    await client.query(
       `INSERT INTO candidate_stage_history (candidate_id, stage, moved_by, notes)
        VALUES ($1, $2, $3, $4)`,
       [candidate_id, new_stage, moved_by, notes]
     );
   },
 
-  async getCandidateStageHistory(candidate_id) {
+  // candidate_stage_history has no company_id of its own, so scoping goes through
+  // the owning candidate — the same join findInterviewNotes() uses for the same
+  // reason. Without it this read was fully cross-tenant: any authenticated user
+  // could enumerate another company's candidates by id and see their entire
+  // pipeline history, including the notes recorded at each stage move.
+  async getCandidateStageHistory(candidate_id, company_id = null) {
+    const params = [candidate_id];
+    let extra = '';
+    if (company_id) { extra = ` AND c.company_id = $2`; params.push(company_id); }
     const result = await pool.query(
       `SELECT csh.*, TRIM(CONCAT(e.first_name, ' ', COALESCE(e.last_name, ''))) AS moved_by_name
        FROM candidate_stage_history csh
+       JOIN candidates c ON c.id = csh.candidate_id
        LEFT JOIN employees e ON csh.moved_by = e.id
-       WHERE csh.candidate_id = $1
+       WHERE csh.candidate_id = $1${extra}
        ORDER BY csh.moved_date DESC`,
-      [candidate_id]
+      params
     );
     return result.rows;
   },
@@ -423,11 +557,24 @@ const recruitmentRepository = {
       candidate_id, interview_date, interview_time, interview_mode,
       meeting_link, interviewer_id, notes, company_id,
     } = data;
+    // A plain INSERT...RETURNING * only has interview_schedules' own columns
+    // (candidate_id, interview_mode, ...) — no candidate_name/candidate_email.
+    // recruitment.routes.js's POST /interviews handler fires the
+    // 'interview_l1_scheduled' email off interview.candidate_email/
+    // candidate_name/mode, none of which existed on that raw row, so the
+    // email silently no-op'd on every interview scheduled. Join candidates
+    // here (same alias shape findInterviews() already uses) so the caller
+    // gets real data instead of undefined -> ''.
     const result = await pool.query(
-      `INSERT INTO interview_schedules
-         (candidate_id, interview_date, interview_time, interview_mode,
-          meeting_link, interviewer_id, notes, company_id, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled') RETURNING *`,
+      `WITH ins AS (
+         INSERT INTO interview_schedules
+           (candidate_id, interview_date, interview_time, interview_mode,
+            meeting_link, interviewer_id, notes, company_id, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled') RETURNING *
+       )
+       SELECT ins.*, c.full_name AS candidate_name, c.email AS candidate_email
+       FROM ins
+       LEFT JOIN candidates c ON c.id::text = ins.candidate_id::text`,
       [candidate_id, interview_date, interview_time, interview_mode,
        meeting_link, interviewer_id, notes, company_id]
     );
@@ -487,20 +634,40 @@ const recruitmentRepository = {
   },
 
   // ==================== EMAIL TEMPLATES ====================
-  async createEmailTemplate(data) {
+  // `email_templates` is shared with CRM (backend/src/modules/crm/routes/email.routes.js),
+  // which reads/writes name/category/stage_trigger — different columns than this
+  // module's template_name/template_type. The actual send-time lookup,
+  // services/emailTrigger.js's triggerEmail(), only ever matches on
+  // `stage_trigger`/`category`, so a template created here previously could
+  // never be picked up by the code that sends recruitment emails at all.
+  // Mirroring template_type/template_name into stage_trigger/category/name on
+  // write closes that gap without a schema change or touching CRM's own path.
+  //
+  // company_id/module (migration 20260812000001) scope every row to a tenant
+  // and to the module that owns it — always set here from the server side
+  // (cid(req) at the route layer, module hardcoded below), never trusted from
+  // request `data`, so a caller can't relabel a row into CRM's module or jump
+  // it to another tenant by passing those keys in the body.
+  async createEmailTemplate(data, company_id = null) {
     const { template_name, template_type, subject, body_html, variables_json } = data;
     const result = await pool.query(
-      `INSERT INTO email_templates (template_name, template_type, subject, body_html, variables_json)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [template_name, template_type, subject, body_html, variables_json]
+      `INSERT INTO email_templates
+         (template_name, template_type, subject, body_html, variables_json, name, category, stage_trigger, company_id, module)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'recruitment') RETURNING *`,
+      // name/category/stage_trigger are separately-typed columns (varchar vs
+      // text) from template_name/template_type — reusing the same $n for both
+      // fails with "inconsistent types deduced for parameter" even though the
+      // JS values are identical, so each gets its own placeholder.
+      [template_name, template_type, subject, body_html, variables_json, template_name, template_type, template_type, company_id]
     );
     return result.rows[0];
   },
 
-  async findEmailTemplates(filters = {}) {
-    let query = `SELECT * FROM email_templates WHERE is_active IS NOT FALSE`;
+  async findEmailTemplates(filters = {}, company_id = null) {
+    let query = `SELECT * FROM email_templates WHERE is_active IS NOT FALSE AND module = 'recruitment'`;
     const params = [];
     let n = 1;
+    query += ` AND ($${n}::int IS NULL OR company_id = $${n})`; params.push(company_id); n++;
     if (filters.template_type) { query += ` AND template_type = $${n++}`; params.push(filters.template_type); }
     if (filters.is_active !== undefined) { query += ` AND is_active = $${n++}`; params.push(filters.is_active); }
     query += ` ORDER BY template_name`;
@@ -508,19 +675,33 @@ const recruitmentRepository = {
     return result.rows;
   },
 
-  async findEmailTemplateById(id) {
+  async findEmailTemplateById(id, company_id = null) {
     const result = await pool.query(
-      `SELECT * FROM email_templates WHERE id = $1`, [id]
+      `SELECT * FROM email_templates
+        WHERE id = $1 AND module = 'recruitment'
+          AND ($2::int IS NULL OR company_id = $2)`,
+      [id, company_id]
     );
     return result.rows[0];
   },
 
-  // Same key-interpolation mass-assignment/injection issue as updateRequisition
-  // above — see that comment. `email_templates` has no `company_id` column
-  // (confirmed: unscoped everywhere else in this file too), so no tenant
-  // scoping to add here, unlike the other five update*() functions.
-  async updateEmailTemplate(id, data) {
-    const safe = await pickUpdatable('email_templates', data);
+  async updateEmailTemplate(id, data, company_id = null) {
+    // Keep the CRM-style mirror columns in sync — see createEmailTemplate's
+    // comment above for why this matters (triggerEmail() only reads these).
+    // company_id/module are deliberately excluded even if present in `data` —
+    // pickUpdatable() would otherwise happily let a caller move a row to
+    // another tenant or relabel its module, the same class of bug this
+    // migration's own comment describes for the rest of the table.
+    const { company_id: _ignoredCompanyId, module: _ignoredModule, ...rest } = data;
+    const mirrored = { ...rest };
+    if (data.template_type !== undefined) {
+      mirrored.stage_trigger = data.template_type;
+      mirrored.category = data.template_type;
+    }
+    if (data.template_name !== undefined) {
+      mirrored.name = data.template_name;
+    }
+    const safe = await pickUpdatable('email_templates', mirrored);
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -529,18 +710,28 @@ const recruitmentRepository = {
       values.push(safe[key]);
       paramCount++;
     });
-    if (!fields.length) return this.findEmailTemplateById(id);
+    if (!fields.length) return this.findEmailTemplateById(id, company_id);
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
+    values.push(company_id);
     const result = await pool.query(
-      `UPDATE email_templates SET ${fields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+      `UPDATE email_templates SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+          AND module = 'recruitment'
+          AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
+        RETURNING *`,
       values
     );
     return result.rows[0];
   },
 
-  async deleteEmailTemplate(id) {
-    await pool.query(`UPDATE email_templates SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+  async deleteEmailTemplate(id, company_id = null) {
+    await pool.query(
+      `UPDATE email_templates SET deleted_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND module = 'recruitment'
+          AND ($2::int IS NULL OR company_id = $2)`,
+      [id, company_id]
+    );
   },
 
   async logEmailSent(data) {
@@ -554,12 +745,25 @@ const recruitmentRepository = {
 
   // ==================== OFFER MANAGEMENT ====================
   async createOffer(data) {
-    const { candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id } = data;
+    const {
+      candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id,
+      // Optional. Normally left NULL here and stamped at send time from the
+      // company's Default Offer Validity (approvals.controller.js 'offer' case),
+      // but a recruiter may set a deliberate date on the draft — the send path
+      // COALESCEs and will not overwrite it.
+      offer_expiry_date,
+      // Employee id of whoever raised this offer, so approveSourceItem() can refuse
+      // to let the same person approve it (migration 20260813000002). NULL for the
+      // auto-draft path, which has no human author — a machine-drafted offer has no
+      // one to exclude, and still requires a human approver to send.
+      created_by,
+    } = data;
     const result = await pool.query(
       `INSERT INTO offer_letters
-         (candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id, offer_status)
-       VALUES ($1,$2,$3,$4,$5,$6,'draft') RETURNING *`,
-      [candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id]
+         (candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id, offer_status, offer_expiry_date, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8) RETURNING *`,
+      [candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id,
+       offer_expiry_date || null, created_by || null]
     );
     await this.moveCandidateStage(candidate_id, 'offer', null, 'Offer created');
     return result.rows[0];
@@ -645,7 +849,14 @@ const recruitmentRepository = {
   // Same key-interpolation mass-assignment/injection issue as updateRequisition
   // above — see that comment.
   async updateOffer(id, data, company_id = null) {
-    const safe = await pickUpdatable('offer_letters', data);
+    // created_by/company_id are stripped before pickUpdatable() sees them. Both are
+    // real columns, so pickUpdatable would otherwise accept them straight from the
+    // request body — and created_by is exactly the value the Approval Center reads
+    // to block self-approval, so a caller who could rewrite it could approve their
+    // own offer by first reassigning its author. Same guard, same reasoning as
+    // updateEmailTemplate()'s company_id/module strip.
+    const { created_by: _ignoredCreatedBy, company_id: _ignoredCompanyId, ...rest } = data;
+    const safe = await pickUpdatable('offer_letters', rest);
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -670,58 +881,202 @@ const recruitmentRepository = {
 
   // Previously had no company_id scoping — any authenticated user could
   // accept another company's offer by id.
+  //
+  // Concurrency: the status-guard (`AND offer_status = 'sent'`) makes this a
+  // compare-and-swap — the same pattern approvals.controller.js uses on the
+  // central approvals table. Without it, a double-click/retry/two-approver race
+  // re-ran all three writes and incremented job_openings.positions_filled twice
+  // for a single hire, silently corrupting every vacancy/open-position number
+  // downstream. All three writes now share one transaction so a mid-sequence
+  // failure can't leave the offer accepted but the candidate un-hired.
   async acceptOffer(offer_id, company_id = null) {
-    const result = await pool.query(
-      `UPDATE offer_letters
-       SET offer_status = 'accepted', response_date = CURRENT_DATE, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)
-       RETURNING *`,
-      [offer_id, company_id]
-    );
-    const offer = result.rows[0];
-    if (!offer) throw new Error('Offer not found');
-    await pool.query(
-      `UPDATE candidates SET overall_status = 'hired', current_stage = 'hired', hired_at = NOW()
-       WHERE id = $1`,
-      [offer.candidate_id]
-    );
-    await pool.query(
-      `UPDATE job_openings SET positions_filled = COALESCE(positions_filled, 0) + 1 WHERE id = $1`,
-      [offer.job_opening_id]
-    );
-    return offer;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `UPDATE offer_letters
+         SET offer_status = 'accepted', response_date = CURRENT_DATE, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)
+           AND offer_status = 'sent'
+         RETURNING *`,
+        [offer_id, company_id]
+      );
+      const offer = result.rows[0];
+      if (!offer) {
+        // Distinguish "already accepted/withdrawn" from "doesn't exist" so the
+        // caller can return 409 vs 404 rather than a blanket 500.
+        const current = await client.query(
+          `SELECT offer_status FROM offer_letters
+            WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) AND deleted_at IS NULL`,
+          [offer_id, company_id]
+        );
+        await client.query('ROLLBACK');
+        if (!current.rows.length) {
+          throw Object.assign(new Error('Offer not found'), { statusCode: 404 });
+        }
+        throw Object.assign(
+          new Error(`This offer can no longer be accepted — its current status is '${current.rows[0].offer_status}'.`),
+          { statusCode: 409 }
+        );
+      }
+      await client.query(
+        `UPDATE candidates SET overall_status = 'hired', current_stage = 'hired', hired_at = NOW()
+         WHERE id = $1`,
+        [offer.candidate_id]
+      );
+      // positions_filled is deliberately NOT incremented here — hireCandidate()
+      // step 6 owns that counter, and this route triggers it immediately after.
+      // Incrementing in both places double-counted every offer-accept hire.
+      await client.query('COMMIT');
+      return offer;
+    } catch (err) {
+      // ROLLBACK already issued on the guard-miss path above; safe to repeat.
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   },
 
   // ==================== ANALYTICS & DASHBOARD ====================
 
-  async getDashboard(company_id) {
+  // ── CANONICAL RECRUITMENT KPIs ──────────────────────────────────────────────
+  // Single source of truth for every headline recruitment number, consumed by
+  // /recruitment/dashboard-summary (exec Dashboard) AND /talent/recruiter-dashboard
+  // (My Workbench). Those two endpoints previously ran their own independent
+  // SQL for the same-named KPIs and disagreed in three concrete ways:
+  //   • open_positions — the Workbench copy omitted `deleted_at IS NULL`, so
+  //     soft-deleted openings inflated its count relative to the Dashboard's.
+  //   • pending_offers — same missing soft-delete filter.
+  //   • avg_time_to_hire — the Workbench used hired_at−created_at while
+  //     Dashboard/Reports/Forecast used offer_sent_date−created_at, i.e. two
+  //     different questions rendered under one label.
+  //
+  // Two deliberately DISTINCT open-role metrics are returned, because the module
+  // legitimately needs both and conflating them was the root of the "Dashboard
+  // says 27, Forecast says 25" split:
+  //   • open_positions  — how many roles are open   (count of job_openings rows)
+  //   • open_headcount  — how many seats are unfilled (Σ positions still to fill)
+  // They are labelled distinctly in the UI ("Open Positions" vs "Vacancies").
+  /**
+   * Canonical recruitment KPI set. Every dashboard reads these — do not
+   * reimplement the counts elsewhere.
+   *
+   * @param {number|null} company_id tenant scope
+   * @param {object} [filters] dashboard filter bar values
+   * @param {string|null} [filters.from] inclusive range start (YYYY-MM-DD)
+   * @param {string|null} [filters.to]   inclusive range end
+   * @param {string|null} [filters.department] matched on job_openings.department
+   *   (candidates carry no department of their own, so they match through
+   *   applied_job_id)
+   *
+   * Backlog counts (open positions, active candidates, upcoming interviews,
+   * pending offers) are point-in-time and ignore the range — a narrow period
+   * must not hide live pipeline. Activity counts (applications, hires, time to
+   * hire) follow it.
+   */
+  async getRecruitmentKpis(company_id, filters = {}) {
+    const { from = null, to = null, department = null } = filters;
     const safeQ = async (sql, params = []) => {
       try { return (await pool.query(sql, params)).rows[0] || {}; } catch { return {}; }
     };
 
-    const [positions, active, interviews, offers, hired] = await Promise.all([
+    // Each query gets exactly the params it references, numbered from its own
+    // list. Postgres infers a parameter's type from its use site, so a supplied
+    // but unreferenced $n fails outright with "could not determine data type of
+    // parameter" — a shared fixed-position array silently breaks every query
+    // that doesn't use all of it.
+    const q = () => {
+      const params = [company_id];
+      return {
+        params,
+        /** Period predicate on `col` (no-op when the range is unbounded). */
+        inRange(col) {
+          let sql = '';
+          if (from) { params.push(from); sql += ` AND ${col} >= $${params.length}::date`; }
+          if (to)   { params.push(to);   sql += ` AND ${col} < ($${params.length}::date + INTERVAL '1 day')`; }
+          return sql;
+        },
+        /** Department held directly on the table. */
+        deptOn(alias) {
+          if (!department) return '';
+          params.push(department);
+          return ` AND ${alias}.department = $${params.length}`;
+        },
+        /** candidates/offers carry no department — reach it via the job opening. */
+        deptViaOpening(col) {
+          if (!department) return '';
+          params.push(department);
+          return ` AND ${col} IN (SELECT id FROM job_openings WHERE department = $${params.length})`;
+        },
+      };
+    };
+
+    const qPositions = q(); const fPositions = qPositions.deptOn('jo');
+    const qHeadcount = q(); const fHeadcount = qHeadcount.deptOn('jo');
+    const qActive    = q(); const fActive    = qActive.deptViaOpening('applied_job_id');
+    const qTotal     = q(); const fTotal     = qTotal.deptViaOpening('applied_job_id') + qTotal.inRange('created_at');
+    const qHired     = q(); const fHired     = qHired.deptViaOpening('applied_job_id') + qHired.inRange('hired_at');
+    const qTth       = q(); const fTth       = qTth.deptViaOpening('applied_job_id') + qTth.inRange('hired_at');
+
+    const [positions, headcount, active, total, todayIv, upcomingIv, offers, hired, tth] = await Promise.all([
       safeQ(`SELECT COUNT(*) AS cnt FROM job_openings jo
-             WHERE jo.status = 'open' AND jo.company_id = $1 AND jo.deleted_at IS NULL`, [company_id]),
+             WHERE jo.status = 'open' AND jo.company_id = $1 AND jo.deleted_at IS NULL
+               ${fPositions}`, qPositions.params),
+      // Unfilled seats across open roles. number_of_positions lives on the
+      // requisition; openings with no linked requisition count as 1 seat.
+      safeQ(`SELECT COALESCE(SUM(GREATEST(COALESCE(jr.number_of_positions, 1) - COALESCE(jo.positions_filled, 0), 0)), 0) AS cnt
+               FROM job_openings jo
+               LEFT JOIN job_requisitions jr ON jr.id = jo.requisition_id
+              WHERE jo.status = 'open' AND jo.company_id = $1 AND jo.deleted_at IS NULL
+                ${fHeadcount}`, qHeadcount.params),
       safeQ(`SELECT COUNT(*) AS cnt FROM candidates
-             WHERE overall_status = 'active' AND company_id = $1 AND deleted_at IS NULL`, [company_id]),
+             WHERE overall_status = 'active' AND company_id = $1 AND deleted_at IS NULL
+               ${fActive}`, qActive.params),
+      // Applications received — activity, so it follows the period.
+      safeQ(`SELECT COUNT(*) AS cnt FROM candidates
+             WHERE company_id = $1 AND deleted_at IS NULL
+               ${fTotal}`, qTotal.params),
       safeQ(`SELECT COUNT(*) AS cnt FROM interview_schedules
              WHERE interview_date = CURRENT_DATE AND status = 'scheduled'
                AND company_id = $1 AND deleted_at IS NULL`, [company_id]),
+      safeQ(`SELECT COUNT(*) AS cnt FROM interview_schedules
+             WHERE interview_date >= CURRENT_DATE AND status <> 'cancelled'
+               AND company_id = $1 AND deleted_at IS NULL`, [company_id]),
       safeQ(`SELECT COUNT(*) AS cnt FROM offer_letters
              WHERE offer_status = 'sent' AND company_id = $1 AND deleted_at IS NULL`, [company_id]),
+      // Keyed on hired_at, not updated_at. updated_at is bumped by ANY later edit
+      // to the candidate row (even a note), so a candidate hired months ago moved
+      // into "this month" the moment anyone touched their record.
+      // The window was hardcoded to the calendar month; it now follows the period.
       safeQ(`SELECT COUNT(*) AS cnt FROM candidates
-             WHERE overall_status = 'hired'
-               AND DATE_TRUNC('month', updated_at) = DATE_TRUNC('month', CURRENT_DATE)
-               AND company_id = $1 AND deleted_at IS NULL`, [company_id]),
+             WHERE overall_status = 'hired' AND hired_at IS NOT NULL
+               AND company_id = $1 AND deleted_at IS NULL
+               ${fHired}`, qHired.params),
+      safeQ(`SELECT ROUND(AVG(DATE_PART('day', hired_at - created_at)))::int AS cnt
+               FROM candidates
+              WHERE hired_at IS NOT NULL AND company_id = $1 AND deleted_at IS NULL
+                ${fTth}`, qTth.params),
     ]);
 
     return {
-      open_positions:    parseInt(positions.cnt)  || 0,
-      active_candidates: parseInt(active.cnt)     || 0,
-      interviews_today:  parseInt(interviews.cnt) || 0,
-      pending_offers:    parseInt(offers.cnt)     || 0,
-      hired_this_month:  parseInt(hired.cnt)      || 0,
+      open_positions:      parseInt(positions.cnt)  || 0,
+      open_headcount:      parseInt(headcount.cnt)  || 0,
+      active_candidates:   parseInt(active.cnt)     || 0,
+      total_candidates:    parseInt(total.cnt)      || 0,
+      interviews_today:    parseInt(todayIv.cnt)    || 0,
+      upcoming_interviews: parseInt(upcomingIv.cnt) || 0,
+      pending_offers:      parseInt(offers.cnt)     || 0,
+      // Renamed in meaning: hires within the selected period, not the calendar
+      // month. Key kept so existing callers keep rendering.
+      hired_this_month:    parseInt(hired.cnt)      || 0,
+      hired_in_period:     parseInt(hired.cnt)      || 0,
+      avg_time_to_hire:    tth.cnt == null ? null : parseInt(tth.cnt),
     };
+  },
+
+  async getDashboard(company_id, filters = {}) {
+    return this.getRecruitmentKpis(company_id, filters);
   },
 
   // Single source of truth for candidate-pipeline-by-stage counts, used by
@@ -784,18 +1139,25 @@ const recruitmentRepository = {
   // copy of the same query. min/max/matched added for TimeToHireCard's
   // fastest/longest/sample-size fields; avg_days kept as the pre-existing
   // field name so HiringForecasts.jsx's lookup doesn't need to change.
+  // Canonical "time to hire" — application (candidates.created_at) to actual
+  // hire (candidates.hired_at), matching getRecruitmentKpis().avg_time_to_hire.
+  //
+  // This previously measured offer_sent_date − created_at over accepted offers,
+  // which is time-to-OFFER, and excluded anyone hired without a formal offer
+  // letter. /talent/recruiter-dashboard meanwhile measured hired_at − created_at,
+  // so My Workbench and the Dashboard/Reports/Forecast reported different
+  // "Average Time to Hire" figures from the same underlying data. One formula now.
   async getTimeToHire(company_id) {
     let query = `
       SELECT
-        ROUND(AVG(EXTRACT(DAY FROM (ol.offer_sent_date - c.created_at)))) AS avg_days,
-        ROUND(MIN(EXTRACT(DAY FROM (ol.offer_sent_date - c.created_at)))) AS min_days,
-        ROUND(MAX(EXTRACT(DAY FROM (ol.offer_sent_date - c.created_at)))) AS max_days,
+        ROUND(AVG(DATE_PART('day', hired_at - created_at))) AS avg_days,
+        ROUND(MIN(DATE_PART('day', hired_at - created_at))) AS min_days,
+        ROUND(MAX(DATE_PART('day', hired_at - created_at))) AS max_days,
         COUNT(*) AS matched
-      FROM offer_letters ol
-      LEFT JOIN candidates c ON c.id::text = ol.candidate_id::text
-      WHERE ol.offer_status = 'accepted' AND ol.deleted_at IS NULL`;
+      FROM candidates
+      WHERE hired_at IS NOT NULL AND deleted_at IS NULL`;
     const params = [];
-    if (company_id) { query += ` AND ol.company_id = $1`; params.push(company_id); }
+    if (company_id) { query += ` AND company_id = $1`; params.push(company_id); }
     const result = await pool.query(query, params);
     const row = result.rows[0];
     return {
@@ -828,7 +1190,10 @@ const recruitmentRepository = {
     const offered  = parseInt(row.offered)  || 0;
     const accepted = parseInt(row.accepted) || 0;
     const declined = parseInt(row.declined) || 0;
-    const rate = offered > 0 ? (accepted / offered * 100).toFixed(2) : 0;
+    // One decimal place, matching /analytics/hr-benchmarks. The two surfaces
+    // previously rounded the same ratio to different precision (66.67 vs 66.7),
+    // which reads as two different numbers for one KPI.
+    const rate = offered > 0 ? (accepted / offered * 100).toFixed(1) : 0;
     return { offered, accepted, declined, total: offered, rate: parseFloat(rate) };
   },
 
@@ -859,6 +1224,13 @@ const recruitmentRepository = {
   // offeredSalary/sourceCandidateId — that route previously reimplemented all
   // of this separately). `options` fields are all optional so the direct-hire
   // caller's behavior is unchanged.
+  // This is the single chokepoint every hire path funnels through (move-stage →
+  // hired, offer-accept, the manual auto-creation trigger, and the direct
+  // POST /candidates/:id/hire route). The duplicate guard therefore lives HERE
+  // rather than only in autoCreateEmployeeFromCandidate() — that wrapper's
+  // creation-log check protected three of those four paths, leaving the direct
+  // route able to create a second employee, login and payroll enrolment for a
+  // candidate who was already hired.
   async hireCandidate(candidateId, companyId, dbClient, options = {}) {
     const client = dbClient || pool;
     const { employmentType = null, offeredSalary = null, sourceCandidateId = null } = options;
@@ -868,7 +1240,8 @@ const recruitmentRepository = {
     // scoped here before, despite companyId being passed in).
     const candResult = await client.query(
       `SELECT c.*, COALESCE(jo.job_title, jr.job_title) AS job_title,
-              jo.id AS job_opening_id, jo.department
+              jo.id AS job_opening_id, jo.department,
+              jr.number_of_positions
        FROM candidates c
        LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
        LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
@@ -876,9 +1249,36 @@ const recruitmentRepository = {
       [candidateId, companyId]
     );
     const cand = candResult.rows[0];
-    if (!cand) throw new Error('Candidate not found');
+    if (!cand) throw Object.assign(new Error('Candidate not found'), { statusCode: 404 });
 
-    // 2. Generate sequential Employee ID for this company
+    // 1b. Idempotency guard — refuse to hire a candidate who already has an
+    // employee record. Checked inside the caller's transaction so a concurrent
+    // double-submit serialises on the advisory lock below rather than both
+    // passing this check.
+    const dupe = await client.query(
+      `SELECT office_id FROM employees
+        WHERE source_candidate_id = $1 AND ($2::int IS NULL OR company_id = $2)
+        LIMIT 1`,
+      [candidateId, companyId]
+    );
+    if (dupe.rows.length) {
+      throw Object.assign(
+        new Error(`This candidate has already been hired as employee ${dupe.rows[0].office_id}.`),
+        { statusCode: 409 }
+      );
+    }
+
+    // 2. Generate sequential Employee ID for this company.
+    // The MAX()+1 read and the INSERT below are a check-then-act pair: without
+    // serialisation two concurrent hires in the same company both read the same
+    // max and mint the same EMP-#### code (employees.office_id has no unique
+    // constraint to catch it). The advisory lock is company-scoped and released
+    // automatically at COMMIT/ROLLBACK, so it only serialises the ID-minting
+    // window and only between hires for the same company.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext('recruitment_employee_id')::int, $1::int)`,
+      [companyId ?? 0]
+    );
     const idResult = await client.query(
       `SELECT COALESCE(MAX(CAST(REGEXP_REPLACE(office_id,'[^0-9]','','g') AS INT)), 0) AS max_num
        FROM employees WHERE company_id = $1 AND office_id ~ '^EMP-[0-9]+'`,
@@ -980,14 +1380,30 @@ const recruitmentRepository = {
       [candidateId]
     );
 
-    // 6. Mark job opening as filled
-    await client.query(
-      `UPDATE job_openings
-       SET status = 'closed', positions_filled = COALESCE(positions_filled,0) + 1,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [cand.job_opening_id]
-    );
+    // 6. Record the filled position on the opening.
+    //
+    // This is the ONLY place positions_filled is incremented. acceptOffer() used
+    // to increment it as well, so the offer-accept path (which then triggers
+    // this function) counted a single hire twice against the opening's headcount.
+    //
+    // The opening also used to be closed unconditionally on the first hire — a
+    // 5-position requisition closed after one candidate, hiding it from every
+    // "open positions" count while four seats were still unfilled. It now closes
+    // only once the requisition's full headcount is met (openings with no linked
+    // requisition have no headcount to compare against and keep the old
+    // close-on-first-hire behaviour).
+    if (cand.job_opening_id) {
+      await client.query(
+        `UPDATE job_openings
+            SET positions_filled = COALESCE(positions_filled,0) + 1,
+                status = CASE
+                  WHEN $2::int IS NULL OR COALESCE(positions_filled,0) + 1 >= $2::int
+                    THEN 'closed' ELSE status END,
+                updated_at = NOW()
+          WHERE id = $1`,
+        [cand.job_opening_id, cand.number_of_positions ?? null]
+      );
+    }
 
     return { employee, employeeId, payrollEnrolled, loginProvisioned, onboardingInitialized };
   },
@@ -1035,9 +1451,17 @@ const recruitmentRepository = {
     `, [companyId, candidateId, c.full_name, c.job_opening_id, c.job_title, triggeredBy]);
     const logId = logRows[0]?.id;
 
+    // hireCandidate() was previously called with the bare `pool` here, so this —
+    // the path every automatic hire actually takes — ran 7+ sequential writes
+    // (employee, salary, login, onboarding, candidate, stage history, opening)
+    // with no transaction: a failure partway left an orphaned half-provisioned
+    // employee. A real client also makes hireCandidate()'s advisory lock
+    // effective, since an advisory *xact* lock is a no-op outside a transaction.
+    const client = await pool.connect();
     try {
+      await client.query('BEGIN');
       const { employee, employeeId, payrollEnrolled, loginProvisioned, onboardingInitialized } =
-        await this.hireCandidate(candidateId, companyId, pool, {
+        await this.hireCandidate(candidateId, companyId, client, {
           employmentType: c.employment_type,
           offeredSalary: parseFloat(c.offered_salary),
           sourceCandidateId: candidateId,
@@ -1055,17 +1479,26 @@ const recruitmentRepository = {
         { task: 'Org chart node to be added', done: false },
       ];
 
-      await pool.query(`
+      await client.query(`
         UPDATE recruitment_employee_creation_log
            SET status = 'completed', employee_id = $1, employee_code = $2, completed_at = NOW(),
                checklist_items = $3
          WHERE id = $4
       `, [employee.id, employeeId, JSON.stringify(checklist_items), logId]);
 
+      await client.query('COMMIT');
       return { status: 201, employee, employeeId, candidateName: c.full_name };
     } catch (empErr) {
-      await pool.query(`UPDATE recruitment_employee_creation_log SET status='failed', error_log=$1 WHERE id=$2`, [empErr.message, logId]);
-      return { status: 500, error: `Employee creation failed: ${empErr.message}` };
+      await client.query('ROLLBACK').catch(() => {});
+      // The failure log is written on the pool, not the rolled-back client —
+      // otherwise it would be discarded along with the failed hire.
+      await pool.query(`UPDATE recruitment_employee_creation_log SET status='failed', error_log=$1 WHERE id=$2`, [empErr.message, logId])
+        .catch(() => {});
+      // A duplicate-hire rejection is an expected outcome, not a failure to
+      // report as a 500 — surface hireCandidate()'s own status code.
+      return { status: empErr.statusCode || 500, error: empErr.statusCode === 409 ? empErr.message : `Employee creation failed: ${empErr.message}` };
+    } finally {
+      client.release();
     }
   },
 
@@ -1086,8 +1519,8 @@ const recruitmentRepository = {
         COUNT(DISTINCT c.id) FILTER (WHERE c.overall_status = 'hired') AS total_hired,
         COUNT(DISTINCT c.id) FILTER (WHERE c.overall_status = 'rejected') AS total_rejected,
         COUNT(DISTINCT c.id) FILTER (WHERE c.overall_status = 'active') AS active_pipeline,
-        AVG(EXTRACT(DAY FROM (ol.offer_sent_date - c.created_at)))
-          FILTER (WHERE ol.offer_status = 'accepted') AS avg_time_to_hire,
+        AVG(DATE_PART('day', c.hired_at - c.created_at))
+          FILTER (WHERE c.hired_at IS NOT NULL) AS avg_time_to_hire,
         COUNT(DISTINCT c.id) FILTER (WHERE c.source = 'referral') AS referral_hires,
         COUNT(DISTINCT c.id) FILTER (WHERE c.source = 'linkedin') AS linkedin_hires,
         COUNT(DISTINCT c.id) FILTER (WHERE c.source = 'website') AS website_hires,

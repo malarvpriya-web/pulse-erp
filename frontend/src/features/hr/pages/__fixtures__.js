@@ -56,7 +56,7 @@ export const SAMPLE_EMPLOYEES_DIR = [
 export const SAMPLE_SHIFTS = [
   { id:1, name:'Morning Shift',   start:'08:00', end:'16:00', grace_minutes:15, departments:['Engineering', 'Sales'],   employees_count:42, color:'#6366f1' },
   { id:2, name:'General Shift',   start:'09:30', end:'18:30', grace_minutes:15, departments:['HR', 'Finance', 'Admin'], employees_count:28, color:'#10b981' },
-  { id:3, name:'Evening Shift',   start:'14:00', end:'22:00', grace_minutes:10, departments:['Operations'],             employees_count:15, color:'#f59e0b' },
+  { id:3, name:'Evening Shift',   start:'14:00', end:'22:00', grace_minutes:10, departments:['Operations'],             employees_count:15, color:'#7c5cf0' },
   { id:4, name:'Night Shift',     start:'22:00', end:'06:00', grace_minutes:10, departments:['Support'],               employees_count:8,  color:'#8b5cf6' },
   { id:5, name:'Flexible Shift',  start:'10:00', end:'19:00', grace_minutes:30, departments:['Product', 'Marketing'],  employees_count:20, color:'#ec4899' },
 ];

@@ -447,18 +447,32 @@ router.get('/statements/:repId', async (req, res) => {
 router.get('/leaderboard', async (req, res) => {
   try {
     const cid = companyOf(req);
+
+    // Was hardcoded to the CALENDAR year, which disagreed with /stats (and the
+    // rest of the app) using the Indian FY, and gave the page nothing to filter
+    // by. `fy_year` is the FY START year, e.g. 2026 => 1 Apr 2026 - 31 Mar 2027.
+    const now = new Date();
+    const currentFy = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+    const parsed = parseInt(req.query.fy_year, 10);
+    const fyYear = Number.isInteger(parsed) && parsed >= 2000 && parsed <= 2100 ? parsed : currentFy;
+    const fyFrom = `${fyYear}-04-01`;
+    const fyTo   = `${fyYear + 1}-03-31`;
+
     const result = await pool.query(
+      // Upper bound is written as < (to + 1 day) so the last day is included
+      // whether earned_date is a DATE or a TIMESTAMP in the live schema.
       `SELECT rep_id, rep_name,
          SUM(sale_amount)       AS achieved_amount,
          SUM(commission_amount) AS commission_earned,
          COUNT(*)               AS deal_count
        FROM commission_entries
        WHERE company_id=$1 AND status != 'clawback'
-         AND EXTRACT(YEAR FROM earned_date)=EXTRACT(YEAR FROM CURRENT_DATE)
+         AND earned_date >= $2::date
+         AND earned_date <  ($3::date + INTERVAL '1 day')
        GROUP BY rep_id, rep_name
        ORDER BY commission_earned DESC
        LIMIT 10`,
-      [cid]
+      [cid, fyFrom, fyTo]
     );
     res.json(result.rows.map((r, i) => ({
       rank:              i + 1,
@@ -467,6 +481,8 @@ router.get('/leaderboard', async (req, res) => {
       achieved_amount:   parseFloat(r.achieved_amount),
       commission_earned: parseFloat(r.commission_earned),
       deal_count:        parseInt(r.deal_count),
+      fy_year:           fyYear,
+      period_label:      `FY ${fyYear}-${String(fyYear + 1).slice(2)}`,
     })));
   } catch (err) {
     res.status(500).json({ error: err.message });

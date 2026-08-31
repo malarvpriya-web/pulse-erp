@@ -243,17 +243,36 @@ describe('GET /api/pipeline/lead-scoring-rules', () => {
 describe('GET /api/pipeline/win-loss-analysis', () => {
   it('200 returns win/loss breakdown data', async () => {
     mockVerifyToken();
-    // win-loss route makes 4 sequential sharedPool queries
-    sharedPool.query
-      .mockResolvedValueOnce({ rows: [{ total: 8, won: 5, lost: 3, avg_deal_size: '675000', avg_cycle_days: '30' }] }) // summary stats
-      .mockResolvedValueOnce({ rows: [] })  // loss reasons
-      .mockResolvedValueOnce({ rows: [] })  // monthly breakdown
-      .mockResolvedValueOnce({ rows: [] }); // stage conversion
+    // Dispatch on SQL, not call order. Stage conversion is now a cohort rate
+    // computed from opportunity_stage_history rather than a ratio of current
+    // stage occupancy (which could exceed 100% and did — audit C-15), so the
+    // route reads two extra tables. An ordered queue would break on every such
+    // change without asserting anything about correctness.
+    sharedPool.query.mockImplementation(async (sql) => {
+      const q = String(sql);
+      if (/avg_cycle_days/i.test(q) && !/opportunity_stage_history/i.test(q))
+        return { rows: [{ total: 8, won: 5, lost: 3, avg_deal_size: '675000', avg_cycle_days: '30' }] };
+      if (/FROM crm_pipeline_stages/i.test(q))
+        return { rows: [
+          { name: 'Prospecting',   stage_key: 'prospecting',   sort_order: 1, is_won: false, is_lost: false },
+          { name: 'Qualification', stage_key: 'qualification', sort_order: 2, is_won: false, is_lost: false },
+          { name: 'Won',           stage_key: 'won',           sort_order: 3, is_won: true,  is_lost: false },
+        ] };
+      if (/FROM opportunity_stage_history/i.test(q))
+        return { rows: [{ stage: 'prospecting', n: 8 }, { stage: 'qualification', n: 6 }, { stage: 'won', n: 5 }] };
+      return { rows: [] };
+    });
 
     const res = await request(app).get('/api/pipeline/win-loss-analysis')
       .set('Authorization', `Bearer ${adminToken()}`);
 
     expect(res.status).toBe(200);
+    // The defect this route carried: stage "conversion" divided current stage
+    // occupancy counts, so it reported 200%. A cohort rate cannot exceed 100%.
+    for (const sc of res.body.data.stage_conversion) {
+      expect(sc.rate).toBeLessThanOrEqual(100);
+      expect(sc.rate).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 

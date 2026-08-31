@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import { CheckCircle, XCircle, Clock, Search } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, Search, Plane } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = n => `₹${Number(n||0).toLocaleString('en-IN')}`;
 
@@ -43,7 +44,14 @@ export default function TravelApprovals() {
   );
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Plane}
+        eyebrow="Travel"
+        title="Travel Approvals"
+        subtitle="Review and action travel requests"
+      />
+    }>
       {toast && (
         <div style={{ position:'fixed', top:16, right:16, zIndex:9999, padding:'10px 18px', borderRadius:8, fontWeight:600, fontSize:13,
           background: toast.type === 'success' ? '#d1fae5' : '#fee2e2',
@@ -51,10 +59,6 @@ export default function TravelApprovals() {
           {toast.msg}
         </div>
       )}
-      <div style={{ marginBottom:24 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Travel Approvals</h1>
-        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Review and action travel requests</p>
-      </div>
 
       <div style={{ display:'flex', gap:12, marginBottom:20 }}>
         <div style={{ position:'relative', flex:1 }}>
@@ -98,8 +102,8 @@ export default function TravelApprovals() {
                   <td style={{ padding:'10px 16px', color:'#374151' }}>{fmt(r.budget || r.estimatedBudget)}</td>
                   <td style={{ padding:'10px 16px' }}>
                     <span style={{
-                      background: r.status==='Pending'?'#fef3c7':r.status==='Approved'?'#d1fae5':'#fee2e2',
-                      color:      r.status==='Pending'?'#92400e':r.status==='Approved'?'#065f46':'#991b1b',
+                      background: r.status==='Pending'?'#ede9fe':r.status==='Approved'?'#d1fae5':'#fee2e2',
+                      color:      r.status==='Pending'?'#5b21b6':r.status==='Approved'?'#065f46':'#991b1b',
                       padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600
                     }}>{r.status}</span>
                   </td>
@@ -123,6 +127,6 @@ export default function TravelApprovals() {
           </table>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

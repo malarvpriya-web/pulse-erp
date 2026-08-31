@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { ChevronLeft, ChevronRight, Plane } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 const STATUS_COLOR = {
   Approved: '#10b981',
-  Pending:  '#f59e0b',
+  Pending:  '#7c5cf0',
   Rejected: '#ef4444',
   Completed:'#6366f1',
 };
@@ -49,18 +50,18 @@ export default function TravelCalendar() {
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Travel Calendar</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Team travel schedule at a glance</p>
-        </div>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <button onClick={prev} style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:8, padding:'7px 10px', cursor:'pointer' }}><ChevronLeft size={16}/></button>
-          <span style={{ fontSize:15, fontWeight:600, color:'#1f2937', minWidth:160, textAlign:'center' }}>{MONTHS[month]} {year}</span>
-          <button onClick={next} style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:8, padding:'7px 10px', cursor:'pointer' }}><ChevronRight size={16}/></button>
-        </div>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Plane}
+        eyebrow="Travel"
+        title="Travel Calendar"
+        subtitle="Team travel schedule at a glance"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={prev}><ChevronLeft size={16}/></button>
+          <button className="plh-cta" onClick={next}><ChevronRight size={16}/></button>
+        </>}
+      />
+    }>
 
       {loading ? <div style={{ textAlign:'center', padding:40, color:'#9ca3af' }}>Loading trips...</div> : (
         <>
@@ -136,6 +137,6 @@ export default function TravelCalendar() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

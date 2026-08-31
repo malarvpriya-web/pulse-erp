@@ -222,6 +222,28 @@ router.get('/quotations/stats', requirePermission('sales', 'view'), async (req, 
   }
 });
 
+// ── Quotations CSV Export ─────────────────────────────────────────────────────
+router.get('/quotations/export', requirePermission('sales', 'view'), async (req, res) => {
+  try {
+    const cid = companyOf(req);
+    const rows = await quotationsRepository.findAll({ company_id: cid, status: req.query.status });
+
+    const headers = ['Quotation #','Version','Customer','Status','Date','Valid Until','Subtotal','Tax','Total','Notes'];
+    const toRow = r => [
+      r.quotation_number, r.version || 1, r.customer_name, r.status,
+      r.quotation_date ? new Date(r.quotation_date).toISOString().split('T')[0] : '',
+      r.validity_date  ? new Date(r.validity_date).toISOString().split('T')[0]  : '',
+      r.subtotal, r.tax_amount, r.total_amount,
+      (r.notes || '').replace(/[\r\n,]/g, ' '),
+    ].map(v => `"${(v ?? '').toString().replace(/"/g, '""')}"`).join(',');
+
+    const csv = [headers.join(','), ...rows.map(toRow)].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="quotations_${Date.now()}.csv"`);
+    res.send(csv);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/quotations/:id', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const quotation = await quotationsRepository.findById(req.params.id);
@@ -403,9 +425,15 @@ router.patch('/quotations/:id/convert-to-order', requirePermission('sales', 'add
     // Sales Order" button for accepted quotations), not dead code.
     if (quotation.customer_id) {
       const clRes = await pool.query(
-        `SELECT credit_hold, hold_reason, credit_limit, current_outstanding,
-                credit_limit - current_outstanding AS available_credit
-         FROM credit_limits WHERE customer_id = $1`,
+        `SELECT cl.credit_hold, cl.hold_reason, cl.credit_limit,
+                COALESCE(ar.outstanding, 0) AS current_outstanding,
+                cl.credit_limit - COALESCE(ar.outstanding, 0) AS available_credit
+         FROM credit_limits cl
+         LEFT JOIN LATERAL (
+           SELECT SUM(total_amount - COALESCE(paid_amount, 0)) AS outstanding
+           FROM invoices WHERE customer_id = cl.customer_id AND LOWER(status) NOT IN ('paid','cancelled','draft')
+         ) ar ON true
+         WHERE cl.customer_id = $1`,
         [quotation.customer_id]
       );
       if (clRes.rows.length) {
@@ -499,9 +527,15 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
     // approves, just flags high utilization).
     if (preCheck.customer_id) {
       const clRes = await pool.query(
-        `SELECT credit_hold, hold_reason, credit_limit, current_outstanding,
-                credit_limit - current_outstanding AS available_credit
-         FROM credit_limits WHERE customer_id = $1`,
+        `SELECT cl.credit_hold, cl.hold_reason, cl.credit_limit,
+                COALESCE(ar.outstanding, 0) AS current_outstanding,
+                cl.credit_limit - COALESCE(ar.outstanding, 0) AS available_credit
+         FROM credit_limits cl
+         LEFT JOIN LATERAL (
+           SELECT SUM(total_amount - COALESCE(paid_amount, 0)) AS outstanding
+           FROM invoices WHERE customer_id = cl.customer_id AND LOWER(status) NOT IN ('paid','cancelled','draft')
+         ) ar ON true
+         WHERE cl.customer_id = $1`,
         [preCheck.customer_id]
       );
       if (clRes.rows.length) {
@@ -954,9 +988,15 @@ router.post('/orders/from-quotation/:quotationId', requirePermission('sales', 'a
     // a second, alternate quotation-to-order path and was missing it too.
     if (quotation.customer_id) {
       const clRes = await pool.query(
-        `SELECT credit_hold, hold_reason, credit_limit, current_outstanding,
-                credit_limit - current_outstanding AS available_credit
-         FROM credit_limits WHERE customer_id = $1`,
+        `SELECT cl.credit_hold, cl.hold_reason, cl.credit_limit,
+                COALESCE(ar.outstanding, 0) AS current_outstanding,
+                cl.credit_limit - COALESCE(ar.outstanding, 0) AS available_credit
+         FROM credit_limits cl
+         LEFT JOIN LATERAL (
+           SELECT SUM(total_amount - COALESCE(paid_amount, 0)) AS outstanding
+           FROM invoices WHERE customer_id = cl.customer_id AND LOWER(status) NOT IN ('paid','cancelled','draft')
+         ) ar ON true
+         WHERE cl.customer_id = $1`,
         [quotation.customer_id]
       );
       if (clRes.rows.length) {
@@ -1185,14 +1225,14 @@ router.get('/fulfilment/credit-control', requirePermission('sales', 'view'), asy
          COALESCE(SUM(so.total_amount) FILTER (
            WHERE so.order_status NOT IN ('cancelled','invoiced')
          ), 0)::numeric                                                            AS open_orders_value,
-         COALESCE(SUM(inv.balance_due) FILTER (
+         COALESCE(SUM(inv.balance) FILTER (
            WHERE inv.status IN ('sent','overdue','Sent','Overdue')
          ), 0)::numeric                                                            AS outstanding_invoices,
          COALESCE(ccs.credit_limit, 0) -
            COALESCE(SUM(so.total_amount) FILTER (
              WHERE so.order_status NOT IN ('cancelled','invoiced')
            ), 0) -
-           COALESCE(SUM(inv.balance_due) FILTER (
+           COALESCE(SUM(inv.balance) FILTER (
              WHERE inv.status IN ('sent','overdue','Sent','Overdue')
            ), 0)                                                                   AS available_credit,
          CASE
@@ -1201,15 +1241,18 @@ router.get('/fulfilment/credit-control', requirePermission('sales', 'view'), asy
              COALESCE(SUM(so.total_amount) FILTER (
                WHERE so.order_status NOT IN ('cancelled','invoiced')
              ), 0) +
-             COALESCE(SUM(inv.balance_due) FILTER (
+             COALESCE(SUM(inv.balance) FILTER (
                WHERE inv.status IN ('sent','overdue','Sent','Overdue')
              ), 0)
            ) > COALESCE(ccs.credit_limit, 0) THEN 'exceeded'
            ELSE 'ok'
          END AS credit_status
        FROM parties p
+       -- credit settings hang off accounts.id (integer), not parties.id (uuid);
+       -- joining them directly raised: operator does not exist: integer = uuid.
+       LEFT JOIN accounts a ON a.party_id = p.id
        LEFT JOIN customer_credit_settings ccs
-         ON ccs.account_id = p.id AND ($1::int IS NULL OR ccs.company_id = $1)
+         ON ccs.account_id = a.id AND ($1::int IS NULL OR ccs.company_id = $1)
        LEFT JOIN sales_orders so
          ON so.customer_id = p.id
          AND so.deleted_at IS NULL
@@ -1367,9 +1410,14 @@ router.get('/credit-limits', requirePermission('sales', 'view'), async (req, res
   try {
     const r = await pool.query(`
       SELECT cl.*,
-        ROUND((cl.current_outstanding / NULLIF(cl.credit_limit, 0)) * 100, 1) AS utilization_pct,
-        cl.credit_limit - cl.current_outstanding AS available_credit
+        COALESCE(ar.outstanding, 0) AS current_outstanding,
+        ROUND((COALESCE(ar.outstanding, 0) / NULLIF(cl.credit_limit, 0)) * 100, 1) AS utilization_pct,
+        cl.credit_limit - COALESCE(ar.outstanding, 0) AS available_credit
       FROM credit_limits cl
+      LEFT JOIN LATERAL (
+        SELECT SUM(total_amount - COALESCE(paid_amount, 0)) AS outstanding
+        FROM invoices WHERE customer_id = cl.customer_id AND LOWER(status) NOT IN ('paid','cancelled','draft')
+      ) ar ON true
       ORDER BY cl.customer_name
     `);
     res.json(r.rows);
@@ -1410,7 +1458,15 @@ router.post('/credit-check', requirePermission('sales', 'view'), async (req, res
   try {
     const { customer_id, order_amount } = req.body;
     const r = await pool.query(
-      `SELECT *, credit_limit - current_outstanding AS available_credit FROM credit_limits WHERE customer_id=$1`,
+      `SELECT cl.*,
+              COALESCE(ar.outstanding, 0) AS current_outstanding,
+              cl.credit_limit - COALESCE(ar.outstanding, 0) AS available_credit
+       FROM credit_limits cl
+       LEFT JOIN LATERAL (
+         SELECT SUM(total_amount - COALESCE(paid_amount, 0)) AS outstanding
+         FROM invoices WHERE customer_id = cl.customer_id AND LOWER(status) NOT IN ('paid','cancelled','draft')
+       ) ar ON true
+       WHERE cl.customer_id=$1`,
       [customer_id]
     );
     if (r.rows.length === 0) {
@@ -1991,9 +2047,13 @@ router.delete('/playbooks/:id/steps/:stepId', requirePermission('sales', 'edit')
         start_at TIMESTAMPTZ NOT NULL,
         end_at TIMESTAMPTZ,
         all_day BOOLEAN DEFAULT false,
-        owner_id UUID,
-        account_id UUID,
-        opportunity_id UUID,
+        -- INTEGER, not UUID: users.id, accounts.id and opportunities.id are all
+        -- integer-keyed. Declared uuid, this bootstrap made every insert fail
+        -- with 22P02 the moment owner_id was stamped from req.user.userId.
+        -- See migration 20260827000001_sales_events_actor_ids_to_integer.
+        owner_id INTEGER,
+        account_id INTEGER,
+        opportunity_id INTEGER,
         notes TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
@@ -2600,28 +2660,6 @@ ${quotation.notes ? `<div style="margin-top:20px;padding:10px;background:#f8f9fa
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── Quotations CSV Export ─────────────────────────────────────────────────────
-router.get('/quotations/export', requirePermission('sales', 'view'), async (req, res) => {
-  try {
-    const cid = companyOf(req);
-    const rows = await quotationsRepository.findAll({ company_id: cid, status: req.query.status });
-
-    const headers = ['Quotation #','Version','Customer','Status','Date','Valid Until','Subtotal','Tax','Total','Notes'];
-    const toRow = r => [
-      r.quotation_number, r.version || 1, r.customer_name, r.status,
-      r.quotation_date ? new Date(r.quotation_date).toISOString().split('T')[0] : '',
-      r.validity_date  ? new Date(r.validity_date).toISOString().split('T')[0]  : '',
-      r.subtotal, r.tax_amount, r.total_amount,
-      (r.notes || '').replace(/[\r\n,]/g, ' '),
-    ].map(v => `"${(v ?? '').toString().replace(/"/g, '""')}"`).join(',');
-
-    const csv = [headers.join(','), ...rows.map(toRow)].join('\n');
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="quotations_${Date.now()}.csv"`);
-    res.send(csv);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

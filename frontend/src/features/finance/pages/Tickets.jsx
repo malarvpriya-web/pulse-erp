@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
+import { LifeBuoy } from 'lucide-react';
 import api from '@/services/api/client';
 import './Tickets.css';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 export default function Tickets() {
   const toast = useToast();
@@ -128,7 +130,7 @@ export default function Tickets() {
   const getPriorityColor = (priority) => {
     const colors = {
       'Low': '#10b981',
-      'Medium': '#f59e0b',
+      'Medium': '#7c5cf0',
       'High': '#ef4444',
       'Critical': '#dc2626'
     };
@@ -141,13 +143,17 @@ export default function Tickets() {
   };
 
   return (
-    <div className="tickets-page">
-      <div className="page-header">
-        <h1>Helpdesk Tickets</h1>
-        <button className="primary-btn" onClick={() => setShowForm(!showForm)}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Finance"
+        title="Helpdesk Tickets"
+        actions={<button className="plh-cta" onClick={() => setShowForm(!showForm)}>
           {showForm ? 'Cancel' : 'Create Ticket'}
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
 
       {showForm && (
         <div className="ticket-form widget">
@@ -306,6 +312,6 @@ export default function Tickets() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -5,9 +5,10 @@ import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import QualityTestsPanel from '@/features/quality/components/QualityTestsPanel';
 import './GoodsReceipt.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_CFG = {
-  pending:  { bg: '#fef3c7', color: '#92400e', label: 'Pending'  },
+  pending:  { bg: '#ede9fe', color: '#5b21b6', label: 'Pending'  },
   partial:  { bg: '#dbeafe', color: '#1e40af', label: 'Partial'  },
   received: { bg: '#d1fae5', color: '#065f46', label: 'Received' },
   rejected: { bg: '#fee2e2', color: '#991b1b', label: 'Rejected' },
@@ -16,7 +17,7 @@ const sc = s => STATUS_CFG[(s||'').toLowerCase()] || STATUS_CFG.pending;
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-const emptyDetails = () => ({ received_date: today(), warehouse_id: '', notes: '' });
+const emptyDetails = () => ({ received_date: today(), warehouse_id: '', notes: '', vendor_invoice_no: '', vendor_invoice_date: '', vendor_invoice_amount: '' });
 
 export default function GoodsReceipt() {
   const { readOnly } = usePageAccess();
@@ -135,6 +136,15 @@ export default function GoodsReceipt() {
         received_date: details.received_date,
         warehouse_id:  details.warehouse_id,
         notes:         details.notes,
+        // Optional: when the vendor invoice is already in hand at receipt time,
+        // the backend auto-creates the 3-way match right here (same request) —
+        // no separate manual re-entry step needed. Omitted entirely when the
+        // invoice isn't on hand yet, matching the backend's truthy check.
+        ...(details.vendor_invoice_no ? {
+          vendor_invoice_no:     details.vendor_invoice_no,
+          vendor_invoice_date:   details.vendor_invoice_date || null,
+          vendor_invoice_amount: details.vendor_invoice_amount ? parseFloat(details.vendor_invoice_amount) : 0,
+        } : {}),
         items: poItems.map(it => ({
           po_item_id:        it.id,
           item_id:           it.item_id,
@@ -195,33 +205,30 @@ export default function GoodsReceipt() {
   const step2Valid = poItems.length > 0 && poItems.some(it => (itemRows[it.id]?.quantity_received || 0) > 0);
 
   return (
-    <div className="grn-root">
-      {toast && <div className={`grn-toast grn-toast-${toast.type}`}>{toast.msg}</div>}
-
-      {readOnly && <ReadOnlyBanner />}
-
-      {/* Header */}
-      <div className="grn-header">
-        <div className="grn-header-left">
-          <div className="grn-header-icon"><Truck size={20} /></div>
-          <div>
-            <h1 className="grn-title">Goods Receipt</h1>
-            <p className="grn-sub">Track inward goods with GRN documentation</p>
-          </div>
-        </div>
-        <div className="grn-header-actions">
-          <button className="grn-icon-btn" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
-          <button className="grn-icon-btn" title="Export CSV"
+    <PageShell dock={
+      <PageHero
+        icon={Truck}
+        eyebrow="Procurement"
+        title="Goods Receipt"
+        subtitle="Track inward goods with GRN documentation"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
+          <button className="plh-cta plh-cta--ghost" title="Export CSV"
             onClick={() => window.open('/api/procurement/grn/export', '_blank')}>
             ↓ Export
           </button>
           {!readOnly && (
-            <button className="grn-btn-primary" onClick={openModal}>
+            <button className="plh-cta" onClick={openModal}>
               <Plus size={14} /> New GRN
             </button>
           )}
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {toast && <div className={`grn-toast grn-toast-${toast.type}`}>{toast.msg}</div>}
+
+      {readOnly && <ReadOnlyBanner />}
+
 
       {/* KPIs */}
       <div className="grn-kpis">
@@ -230,7 +237,7 @@ export default function GoodsReceipt() {
           <div><div className="grn-kpi-val">{kpis.total}</div><div className="grn-kpi-lbl">Total GRNs</div></div>
         </div>
         <div className="grn-kpi" onClick={() => setStatusF('pending')} style={{ cursor: 'pointer' }}>
-          <div className="grn-kpi-icon" style={{ background: '#fffbeb', color: '#d97706' }}><AlertCircle size={18} /></div>
+          <div className="grn-kpi-icon" style={{ background: '#f5f3ff', color: '#6d28d9' }}><AlertCircle size={18} /></div>
           <div><div className="grn-kpi-val">{kpis.pending}</div><div className="grn-kpi-lbl">Pending</div></div>
         </div>
         <div className="grn-kpi" onClick={() => setStatusF('partial')} style={{ cursor: 'pointer' }}>
@@ -542,6 +549,36 @@ export default function GoodsReceipt() {
                     placeholder="Any remarks or observations…"
                   />
                 </div>
+                <div className="grn-field">
+                  <label>Vendor Invoice No <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional — if already on hand)</span></label>
+                  <input
+                    type="text"
+                    value={details.vendor_invoice_no}
+                    onChange={e => setDetails(p => ({ ...p, vendor_invoice_no: e.target.value }))}
+                    placeholder="e.g. INV-2026-0456"
+                  />
+                </div>
+                {details.vendor_invoice_no && (
+                  <div className="grn-form-row">
+                    <div className="grn-field">
+                      <label>Invoice Date</label>
+                      <input
+                        type="date"
+                        value={details.vendor_invoice_date}
+                        onChange={e => setDetails(p => ({ ...p, vendor_invoice_date: e.target.value }))}
+                      />
+                    </div>
+                    <div className="grn-field">
+                      <label>Invoice Amount (₹)</label>
+                      <input
+                        type="number"
+                        value={details.vendor_invoice_amount}
+                        onChange={e => setDetails(p => ({ ...p, vendor_invoice_amount: e.target.value }))}
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+                )}
                 {/* Summary */}
                 <div className="grn-summary">
                   <div className="grn-summary-title">Items Summary</div>
@@ -594,6 +631,6 @@ export default function GoodsReceipt() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

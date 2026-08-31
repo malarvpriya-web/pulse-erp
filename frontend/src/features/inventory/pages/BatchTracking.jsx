@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Layers } from 'lucide-react';
+import { Layers, Factory } from 'lucide-react';
 import api from '@/services/api/client';
 import './AdvancedInventory.css';
 import { useToast } from '@/context/ToastContext';
-import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 const BatchTracking = ({ setPage }) => {
   const toast = useToast();
@@ -97,13 +97,16 @@ const BatchTracking = ({ setPage }) => {
   };
 
   return (
-    <PageLayout>
-      <PageHeader
-        actions={
-          <button className="pulse-btn-primary" onClick={() => setShowForm(true)}>+ New Batch</button>
-        }
-        filters={
-          <select
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Factory}
+          eyebrow="Inventory"
+          title="Batch Tracking"
+          actions={<button className="plh-cta" onClick={() => setShowForm(true)}>+ New Batch</button>}
+        />
+        <div className="plh-toolbar">
+          {<select
             className="pl-icon-btn"
             value={filters.status}
             onChange={(e) => setFilters({ ...filters, status: e.target.value })}
@@ -112,9 +115,11 @@ const BatchTracking = ({ setPage }) => {
             <option value="active">Active</option>
             <option value="expired">Expired</option>
             <option value="depleted">Depleted</option>
-          </select>
-        }
-      />
+          </select>}
+        </div>
+      </>
+    }>
+
 
       {showForm && (
         <div className="modal-overlay">
@@ -224,7 +229,7 @@ const BatchTracking = ({ setPage }) => {
           </tbody>
         </table>
       </TableContainer>
-    </PageLayout>
+    </PageShell>
   );
 };
 

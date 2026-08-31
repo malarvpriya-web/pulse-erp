@@ -211,6 +211,7 @@ async function postMonthlyDepreciation(companyId, asOfDate) {
           reference_type: 'depreciation',
           reference_id:   asset.id,
           description:    `Depreciation — ${assetLabel} — ${periodKey}`,
+          company_id:     companyId,
         });
 
         // account_code is resolved against chart_of_accounts by journalRepo
