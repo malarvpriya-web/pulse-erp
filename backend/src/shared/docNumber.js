@@ -175,9 +175,25 @@ export async function nextGrnNumber(client) {
 
 /** RFQ-YYYY-001  (year label comes from JS, counter is global) */
 export async function nextRfqNumber(client) {
+  return nextRfxNumber('RFQ', client);
+}
+
+/**
+ * RFI-YYYY-001 / RFP-YYYY-001 / RFQ-YYYY-001.
+ *
+ * All three RFx stages share `seq_rfq` on purpose. They are one event series
+ * living in one table, so a shared counter keeps the numbers unique without a
+ * second sequence to create, seed and keep in step — only the prefix says which
+ * stage the event is. An unrecognised type falls back to RFQ rather than
+ * minting a document with a made-up prefix.
+ */
+export async function nextRfxNumber(rfxType, client) {
   const n = await nextval('seq_rfq', client);
   const year = new Date().getFullYear();
-  return `RFQ-${year}-${String(n).padStart(3, '0')}`;
+  const prefix = ['RFI', 'RFP', 'RFQ'].includes(String(rfxType || '').toUpperCase())
+    ? String(rfxType).toUpperCase()
+    : 'RFQ';
+  return `${prefix}-${year}-${String(n).padStart(3, '0')}`;
 }
 
 /** ITEM0001 */

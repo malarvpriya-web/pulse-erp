@@ -872,9 +872,15 @@ export async function saveStrategy(companyId, categoryKey, payload = {}, decided
   };
 }
 
+/** Just the categories, for a picker. No scoring, no spend — a dropdown's worth. */
+export async function listCategories(companyId) {
+  return loadCategories(companyId);
+}
+
 export default {
   getPortfolio,
   getCategory,
   saveStrategy,
+  listCategories,
   resolveWindow,
 };

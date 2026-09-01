@@ -15088,7 +15088,51 @@ failure.
 - `inventory_items.category_id` is NULL for every item, so the category board
   has one live bucket. That is a **data backfill, not code** — classifying items
   is what turns the board on.
-- RFI and RFP events cannot yet be *raised* from the UI; the type exists on the
-  event and the models are wired, but the creation form still posts RFQs.
+- ~~RFI and RFP events cannot yet be raised from the UI~~ — **closed below.**
 - Nothing is committed; the working tree is still ahead of the last commit
   (`ebd0168`, 11 Aug).
+
+
+### §136.1 — Raising an RFI or an RFP, not just an RFQ (same task)
+
+The event table could hold all three stages but only one could be created, so
+qualification and proposal still happened in email. Closed by three additive
+changes:
+
+- `nextRfxNumber(type)` in `shared/docNumber.js` — all three stages share
+  `seq_rfq` on purpose (one event series, one table, one counter); only the
+  prefix says which stage it is. `nextRfqNumber()` now delegates to it, so no
+  existing caller changed.
+- `POST /procurement/rfqs` accepts optional `rfx_type`, `category_id` and
+  `objective`. **Every field defaults to the old behaviour** — verified live: a
+  legacy body with no `rfx_type` still produced `RFQ-2026-005` / type `RFQ`,
+  while the new path produced `RFI-2026-004` linked to the Mechanical category.
+  An unknown type is a 400, not a silently-minted document.
+- A **New RFx** dialog on `RfxEvaluation.jsx`: type first (it decides the model,
+  whose criteria and weights are shown before the event is sent, not after the
+  bids arrive), category, objective, multi-line item picker, and vendor
+  invitation. Creation and invitation are **two calls on purpose** — the event is
+  ours, the invitation goes to other companies, so a mail failure leaves a
+  re-sendable draft rather than losing the buyer's work.
+
+### ⚠ The category dropdown does not use the categories endpoint
+
+`/inventory/catalog/categories` is gated by `requirePermission('inventory',
+'view')`, which fails CLOSED, and few roles carry an `inventory` row — a buyer
+filling in an RFx would have got a 403 on a dropdown. A light
+`GET /sourcing-strategy/categories` serves it under the same auth as the rest of
+the sourcing board instead.
+
+### ⚠ An RFI was announcing a cost basis it does not have
+
+The scorecard computed a TCO for every event and reported *"Cost is scored on
+total cost of ownership per unit"* — including on an RFI, whose model has no
+cost criterion at all, because qualification comes before commercials. It read
+as a missing column rather than a deliberate omission. `costMeasures()` now
+skips costing entirely when the model has no `cost`/`commercial` criterion and
+returns `cost_basis_key: 'not_scored'`, which the page renders as its own
+sentence. Verified live: the RFI reads *"Request for Information does not score
+price"* while the RFQ still reads the TCO basis.
+
+Probe events were deleted afterwards; `seq_rfq` keeps the two consumed numbers,
+which is what a sequence is for.

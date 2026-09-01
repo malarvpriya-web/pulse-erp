@@ -7,7 +7,7 @@ import poRepo from '../repositories/purchaseOrder.repository.js';
 import grnService from '../services/grn.service.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
-import { nextRfqNumber, nextPurchaseOrderNumber } from '../../../shared/docNumber.js';
+import { nextRfxNumber, nextPurchaseOrderNumber } from '../../../shared/docNumber.js';
 import { uploadFile } from '../../../services/StorageService.js';
 import { checkAndCreateAlerts } from '../../../services/stockAlerts.js';
 import { sendPurchaseOrderToVendor, sendRfqToVendor } from '../../../utils/mailer.js';
@@ -1304,7 +1304,19 @@ function parsePaymentTermsDays(text) {
 router.post('/rfqs', async (req, res) => {
   const client = await pool.connect();
   try {
-    const { item_description, quantity, unit, required_by, linked_pr_id, vendor_ids, items } = req.body;
+    const {
+      item_description, quantity, unit, required_by, linked_pr_id, vendor_ids, items,
+      // §136 — the same row is now an RFI, an RFP or an RFQ. Every field below is
+      // optional and defaults to the old behaviour, so the callers that predate
+      // this (VendorComparison's one-click "request quote", the PR path) keep
+      // creating plain RFQs without knowing the concept exists.
+      rfx_type, category_id, objective,
+    } = req.body;
+
+    const rfxType = String(rfx_type || 'RFQ').toUpperCase();
+    if (!['RFI', 'RFP', 'RFQ'].includes(rfxType)) {
+      return res.status(400).json({ error: `Unknown RFx type '${rfx_type}'` });
+    }
     // items[] is the real multi-line path; falling back to the header's own
     // scalar fields keeps any older caller that still posts the single-item
     // shape working unchanged.
@@ -1316,16 +1328,18 @@ router.post('/rfqs', async (req, res) => {
     }
 
     await client.query('BEGIN');
-    const rfq_number = await nextRfqNumber();
+    const rfq_number = await nextRfxNumber(rfxType, client);
     const first = lineItems[0];
     const { rows } = await client.query(`
-      INSERT INTO rfqs (rfq_number, pr_id, item_description, quantity, unit, required_by, vendor_ids, status, company_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8)
+      INSERT INTO rfqs (rfq_number, pr_id, item_description, quantity, unit, required_by,
+                        vendor_ids, status, company_id, rfx_type, category_id, objective)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11)
       RETURNING *
     `, [
       rfq_number, linked_pr_id || null,
       first.item_name || first.item_description || '', first.quantity || 1, first.unit || 'Nos',
       required_by || null, JSON.stringify(vendor_ids || []), cid(req),
+      rfxType, category_id || null, objective || null,
     ]);
     const rfq = rows[0];
 

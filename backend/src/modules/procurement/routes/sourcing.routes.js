@@ -65,6 +65,24 @@ router.get('/taxonomy', (req, res) => {
   });
 });
 
+/**
+ * The category list, for pickers.
+ *
+ * Deliberately served from here rather than reusing
+ * `/inventory/catalog/categories`: that route is gated by
+ * `requirePermission('inventory', 'view')`, which fails CLOSED, and only a
+ * handful of roles carry an `inventory` permission row. A buyer filling in an
+ * RFx would get a 403 on a dropdown. This one rides the same scope and auth as
+ * the rest of the sourcing board.
+ */
+router.get('/categories', async (req, res) => {
+  try {
+    res.json(await svc.listCategories(scopeOf(req)));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
 /** The whole board: every category, positioned, with its top plays. */
 router.get('/portfolio', async (req, res) => {
   try {
