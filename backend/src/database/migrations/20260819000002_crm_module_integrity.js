@@ -325,6 +325,12 @@ export async function up(knex) {
   await knex.raw(`CREATE INDEX IF NOT EXISTS idx_crm_emails_opportunity ON crm_emails (opportunity_id) WHERE opportunity_id IS NOT NULL;`);
 
   // ── 10. Quotation numbering ───────────────────────────────────────────────
+  // NOTE: seeded as (highest, count) + 1 with is_called=false, NOT (highest) with
+  // is_called=true. Both make the next number GREATEST+1, but the `true` form
+  // passes 0 on an empty `quotations` table and Postgres rejects it —
+  //   setval: value 0 is out of bounds for sequence (1..9223372036854775807)
+  // — so the migration ran fine here (where quotations already existed) and
+  // could NEVER run on a fresh database. Verified by rebuilding from zero.
   // Was COUNT(*)+1 against a UNIQUE column — races under concurrency and reuses
   // a number after any delete. Seed the sequence past the highest existing
   // QT-yyyy-nnnn suffix so it can never collide with history.
@@ -337,8 +343,8 @@ export async function up(knex) {
            FROM quotations
           WHERE quotation_number ~ '^QT-[0-9]{4}-[0-9]+$'),
         (SELECT COUNT(*) FROM quotations)
-      ),
-      true
+      ) + 1,
+      false
     );
   `);
 }
