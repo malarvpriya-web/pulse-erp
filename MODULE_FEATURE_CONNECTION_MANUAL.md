@@ -13756,25 +13756,95 @@ of them 30 points below its own scorecard. `computeAndSave` is the only place
 that derives them from GRN data, so it now publishes them — gated on evidence,
 NULL otherwise.
 
-### Verified
+### 6. The composite let unmeasured dimensions vote (follow-up, same task)
 
-`recalculate-all` **6/6**, all seven `/vendor-health` endpoints 200, scorecards
-back on 0–100 (86.00 → `Low` risk), backend **750/750**, frontend **298/298**,
-eslint 0 errors, and a Playwright render of the new page: **0 console errors, 0
-4xx/5xx, 6 suppliers listed, OTD "—" where unmeasured.**
+§130's first pass stopped at flagging this; it is now closed. The eight weights
+are a fixed 1.0 split, so a dimension with no evidence still cast its **default**
+into the composite — and the defaults are not neutral, in either direction:
 
-### Open — needs a product call
+| Dimension | Default when unmeasured | Effect |
+|---|---|---|
+| `scoreDelivery` | `otdPct = 75` → below the `>= 80` bucket → **`base = 0`** | −20% of the index, free |
+| `scoreQuality` | `passRate = 75` → **`base = 20`** | −25% weight, near-worst |
+| `scoreCost` | `priceVariancePct = 0` reads as "perfectly stable" → **100** | +15% weight, unearned |
+| `scoreRiskEvents` | no events on record → **100** | +5% weight, a clean sheet earned by never being used |
 
-**Partial evidence still distorts the composite.** `hasEvidence` is all-or-
-nothing, so a supplier with one NCR but zero receipts is "rated" — and still
-takes `delivery_score = 0` from the no-data prior, which is **20% of the index**.
-Four of the six suppliers here are Critical largely on that. The fix is to
-normalize the weights across only the dimensions that have evidence, but that
-changes every score and the meaning of the Preferred/Approved cut-offs, and each
-dimension needs its own "is this measured?" rule (does "0 late deliveries" count
-as measured for a supplier with no POs?). Deliberately not done unilaterally.
+So a supplier with one NCR and no deliveries took a hard **0 on 20% of its
+index** for deliveries that were never scheduled, while simultaneously being
+handed 20% of free marks for a price history and an event record it did not have.
 
----
+**The composite is now renormalised over the measured weights only:**
+
+```js
+health_score = Σ(score_d × w_d  for measured d) / Σ(w_d  for measured d)
+```
+
+Every scorer returns `measured`. Two cases cannot be derived from the numbers
+and take an explicit hint from the service, because the "no data" value is
+indistinguishable from a genuinely good one:
+
+- `scoreCost({ hasPriceHistory })` — a `priceVariancePct` of 0 is produced both
+  by a supplier whose prices never moved and by one with no history to compare.
+  Set from `avgPriceRecent > 0 && avgPricePrev > 0`.
+- `scoreRiskEvents({ hasHistory })` — "no bad events" is trivially true for a
+  supplier nobody has transacted with. Set from `totalPOs > 0 || totalGRNs > 0`.
+
+Compliance, financial and dependency are **always** measured: they read
+vendor-master facts, and a missing GST certificate is a finding about the
+supplier, not a gap in our data about them.
+
+⚠ **An unmeasured dimension now reports `null`, not its default.** Storing the
+default would have put the same fabrication straight back on the radar chart and
+in the heatmap columns that the renormalisation had just removed from the
+composite. Renderers had to follow — `|| 0` again — in three places:
+`SupplierPerformanceIndex.jsx` (new `DimCell`, prints `—`),
+`VendorHealthWidget.jsx` (unmeasured spokes are **filtered out** of the radar
+rather than plotted at the centre) and `VendorHealthTrend.jsx` (nulls stay
+nulls, so recharts draws a **gap** instead of a cliff to the axis that reads as
+a collapse in performance).
+
+New **`coverage_pct`** (migration `20260826000004`, on both
+`vendor_health_scores` and `vendor_health_timeline`) records the share of the
+weight that voted, and the index table shows it as a bar next to the score —
+because two suppliers can both score 60 off very different readings.
+
+Effect on this instance:
+
+| Vendor | Before | After | Coverage |
+|---|---|---|---|
+| `test` (no history at all) | 49.95 **Critical** | 67.71 **Unrated** | 35% |
+| Dell (50% OTD, real) | 39.75 Critical | **23.67** Critical | 75% |
+| Amazon (100% OTD, real) | 58.30 Watchlist | 50.94 Watchlist | 85% |
+
+Dell falling is the point: it lost 15 points of unearned cost/risk credit and
+now carries its genuinely bad delivery at full weight. `cost_score` is `null`
+for **every** supplier here — none has priced lines in both comparison windows.
+
+**Verified (both passes):** `recalculate-all` 6/6 and all seven `/vendor-health`
+endpoints 200; scorecards back on 0–100 (86.00 → `Low` risk);
+`runVendorHealthRecalcNow()` driven directly rather than only through the HTTP
+route — 6/6 scored, September timeline snapshot written alongside August;
+backend **750/750**; frontend **298/298**; SQL-reference gate **PASS**; eslint 0
+errors; Playwright — index page and Vendor 360 both **0 console errors, 0
+4xx/5xx**, dimensions rendering `—` where unmeasured.
+
+### Still open
+
+**`scoreQuality`'s base is still set by an unmeasured pass rate.** When a
+supplier has NCRs but no inspections, the dimension counts as measured (the NCRs
+are real evidence) yet `base` is still the 75-default's **20**, with the NCR
+penalties applied on top. That is why the quality column reads `2` for most
+suppliers here. Fixing it means choosing what an unmeasured pass rate should
+start from — neutral 50, or 100 with penalties doing all the work — and that is
+a calibration decision about how harshly to treat partial evidence, not a
+correctness bug. Left deliberately.
+
+**Environment:** the orphaned `node server.js` processes noted in §126.1 are
+consolidated — one detached backend on :5000. They were the cause of the pg pool
+`Connection terminated due to connection timeout` flake in
+`analytics.schemaGuards.test.js`, not a defect in that gate. Note that a
+`nohup … &` backend launched from a tool shell is reaped when the session ends;
+`Start-Process -WindowStyle Hidden` survives.
 
 ## §128.1 — The three things §128 left open, closed: the direct-PO path, an
 ## award audit trail, and a test suite that could not be trusted (2026-08-26)
