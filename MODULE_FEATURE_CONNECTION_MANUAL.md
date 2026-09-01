@@ -14365,7 +14365,9 @@ own shell.
   from somewhere else entirely: the order→quotation→opportunity chain resolves
   for **zero** of the six booked orders, so the SUM was NULL and a `COALESCE`
   published it as a measured zero. It was a reporting defect, not a data gap.
-- Still nothing committed; the last commit is 11 Aug.
+- ~~Still nothing committed; the last commit is 11 Aug.~~ **Superseded:** all of
+  §132 landed in `5a02400` ("Commit three weeks of uncommitted work"), which is
+  on `origin/fix/meetings-visibility`.
 
 ## §133 — Sales module filter sweep: three pages had no filter at all, and the one FY selector that existed governed only 3 of its 9 calls
 
@@ -14722,8 +14724,12 @@ a real employee, which is the part that was actually broken.
 
 ### Open
 
-- Nothing committed; the last commit is still 11 Aug. Everything from §128
-  onward is uncommitted working-tree state.
+- ~~Nothing committed; the last commit is still 11 Aug.~~ **Closed 2026-09-01.**
+  The §128-§134 backlog, this section's migration
+  (`20260827000002_crm_assignee_employee_fk.js`), `shared/statusSets.js` and both
+  §132 sections went in as `5a02400` and are pushed. ⚠ §128-§131, §133 and §134
+  still carry their own "still nothing committed" line in their Open lists — those
+  are stale for the same reason, left for each section's author to retire.
 
 ## §135 — Whole-app live endpoint audit and its repair, re-documented; plus the
 ## three items it had left open, now closed (2026-08-31)
