@@ -62,11 +62,23 @@ export async function assertPageHasContent(page: Page): Promise<void> {
 
 /**
  * Assert the page is not stuck on the "Unauthorized" screen.
+ *
+ * Matches the heading `pages/Unauthorized.jsx` actually renders. The previous
+ * version tested `bodyText.includes('You are not authorized') || includes('403')`
+ * and was wrong in BOTH directions:
+ *
+ *   - that first string appears nowhere in the app, so a genuine Access Denied
+ *     screen would have sailed straight through this check;
+ *   - `'403'` is a bare substring of the whole page, so any page whose DATA
+ *     contains those digits failed. Audit Logs did exactly that — a row reading
+ *     `inspection_report #403` was enough to fail an otherwise healthy page.
+ *
+ * Scope it to the heading, so it keys on the screen rather than on the content.
  */
 export async function assertNotUnauthorized(page: Page): Promise<void> {
-  const bodyText = await page.locator('body').innerText({ timeout: 5_000 }).catch(() => '');
-  if (bodyText.includes('You are not authorized') || bodyText.includes('403')) {
-    throw new Error(`Unauthorized on ${page.url()} — check role permissions`);
+  const denied = page.getByRole('heading', { name: /access denied/i });
+  if (await denied.count().catch(() => 0)) {
+    throw new Error(`Access Denied on ${page.url()} — check role permissions`);
   }
 }
 
