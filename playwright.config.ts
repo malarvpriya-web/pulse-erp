@@ -91,6 +91,16 @@ export default defineConfig({
       dependencies: ['setup'],
       use: { storageState: AUTH_FILE },
     },
+    // Sales Intelligence's Conversion Analytics tab. Every defect section 132
+    // fixed compiled clean and answered 200 — a 450% "conversion", a win rate
+    // contradicting the funnel beside it, an empty Monthly Trends tab. Only a
+    // render catches that class.
+    {
+      name: 'sales-conversion',
+      testMatch: '**/suites/sales-conversion.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: AUTH_FILE },
+    },
     {
       name: 'forms',
       testMatch: '**/05-forms.spec.ts',
