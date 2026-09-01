@@ -746,6 +746,8 @@ export const NAV_ITEMS = [
     { name: 'Vendors & Planning', separator: true },
     { name: 'Vendor Center',      page: 'VendorCenter' },     // Overview·Master·Approvals·Risk·360°·Portal·Scorecard·Pricing·Compare
     { name: 'Supplier Performance', page: 'SupplierPerformanceIndex' },  // cross-vendor 0-100 index, heatmap, early warnings
+    { name: 'Sourcing Strategy',  page: 'SourcingStrategy' },   // §136 five forces + purchasing chessboard, per category
+    { name: 'RFx Evaluation',     page: 'RfxEvaluation' },     // §136 RFI/RFP/RFQ scoring → preferred vendor
     { name: 'MRP Planning',       page: 'MRPPlanning' },
     { name: 'Reports & Setup',    separator: true },
     { name: 'Reports',            page: 'ProcurementReports' },

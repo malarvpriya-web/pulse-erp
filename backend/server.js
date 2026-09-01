@@ -148,8 +148,9 @@ import vendorRegistrationRoutes   from "./src/modules/procurement/routes/vendor-
 import vendorApprovalRoutes       from "./src/modules/procurement/routes/vendor-approval.routes.js";
 // ── Phase 49G — Vendor Health Score Engine ────────────────────────────────────
 import vendorHealthRoutes         from "./src/modules/procurement/routes/vendorHealth.routes.js";
-// §135 — Sourcing Strategy (Porter's Five Forces + Purchasing Chessboard)
+// §136 — Sourcing Strategy (Porter's Five Forces + Purchasing Chessboard)
 import sourcingStrategyRoutes    from "./src/modules/procurement/routes/sourcing.routes.js";
+import rfxRoutes                 from "./src/modules/procurement/routes/rfx.routes.js";
 import projectProfitabilityRoutes from "./src/modules/projects/routes/project-profitability.routes.js";
 import project360Routes           from "./src/modules/projects/routes/project360.routes.js";
 import deliveryTrackerRoutes       from "./src/modules/projects/routes/deliveryTracker.routes.js";
@@ -639,6 +640,7 @@ v1Router.use("/vendor-health",        verifyToken, vendorHealthRoutes);
 // owns a /:id parameter route, and a literal segment added after one is
 // unreachable (a defect class this repo has hit before).
 v1Router.use("/sourcing-strategy",    verifyToken, sourcingStrategyRoutes);
+v1Router.use("/rfx",                  verifyToken, rfxRoutes);   // §136 RFI/RFP/RFQ scoring + preferred-vendor selection
 v1Router.use("/project-profitability",verifyToken, projectProfitabilityRoutes);
 v1Router.use("/project-360",          verifyToken, project360Routes);
 v1Router.use("/delivery-tracker",     verifyToken, deliveryTrackerRoutes); // IPM<->IPP production/fulfilment grid

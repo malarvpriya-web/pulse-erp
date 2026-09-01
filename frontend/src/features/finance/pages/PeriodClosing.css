@@ -46,6 +46,13 @@
 .pc-sum-val{display:block;font-size:18px;font-weight:700;color:#111827;margin-bottom:2px;}
 .pc-sum-sub{font-size:11px;color:#9ca3af;}
 
+/* States shown INSTEAD of the summary grid: loading, no period for the selected
+   month, or a failed load. The figures behind these cards drive a period-close
+   decision, so a failure has to read as a failure -- never as zero. */
+.pc-summary-note{padding:14px 16px;margin-bottom:16px;border-radius:10px;background:#faf9ff;border:1px solid #e9e4ff;font-size:13px;color:#5b21b6;line-height:1.55;}
+.pc-summary-note-error{background:#fef2f2;border-color:#fecaca;color:#b91c1c;}
+.pc-empty-row{text-align:center;padding:48px 16px;color:#9ca3af;font-size:13px;}
+
 /* tabs */
 .pc-tabs{display:flex;gap:2px;border-bottom:2px solid #f0f0f4;margin-bottom:16px;}
 .pc-tab{display:flex;align-items:center;gap:6px;padding:9px 16px;border:none;background:none;font-size:13px;color:#6b7280;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;}

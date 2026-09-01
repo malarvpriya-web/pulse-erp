@@ -19,8 +19,15 @@ async function openSubmenu(page: Parameters<typeof test>[1] extends (args: { pag
   const sidebar = page.locator('.sidebar');
   await expect(sidebar).toBeVisible();
 
-  // Find sidebar list item containing the label text
-  const navItem = sidebar.locator('li').filter({ hasText: itemName }).first();
+  // Target the <li> that actually CONTAINS a nav button of this exact name.
+  // `li:hasText(name).first()` used to win the <li class="sidebar-band"> section
+  // header instead -- a band carrying the same word ("Finance") sits above the
+  // real item, is not hoverable (the <ul> intercepts its pointer events), and
+  // made this helper time out rather than open the menu.
+  const navItem = sidebar
+    .locator('li:not(.sidebar-band)')
+    .filter({ has: page.getByRole('button', { name: itemName, exact: true }) })
+    .first();
   await navItem.hover();
 
   // Wait for the fly-out submenu panel to appear
@@ -109,7 +116,8 @@ test('@P1 CRM submenu opens and clicking "Leads" navigates correctly', async ({ 
   await waitForPageLoad(page);
 
   const panel = await openSubmenu(page, 'CRM');
-  await panel.getByRole('button', { name: 'Leads' }).click();
+  // Labelled "IEM — Enquiries" in the nav; the page key behind it is still Leads.
+  await panel.getByRole('button', { name: 'IEM — Enquiries', exact: true }).click();
 
   await page.waitForURL(`${BASE}/Leads`, { timeout: 10_000 });
   await waitForPageLoad(page);

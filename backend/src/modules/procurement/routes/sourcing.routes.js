@@ -17,6 +17,17 @@ const router = express.Router();
 
 const scopeOf = (req) => req.scope?.company_id ?? companyOf(req);
 
+/**
+ * The acting user's **users.id**.
+ *
+ * `verifyToken` assigns `req.user = decoded`, the raw JWT payload, and that
+ * payload's field is `userId` — `req.user.id` is undefined. Reading `.id`
+ * alone stores NULL for the actor, which is exactly the "who decided this"
+ * gap the frozen snapshots exist to close. The fallback chain matches the
+ * 410 other call sites in this codebase.
+ */
+const actorUserId = (req) => req.user?.userId ?? req.user?.id ?? null;
+
 const windowOpts = (req) => ({
   months: req.query.months ? Number(req.query.months) : 12,
   from: req.query.from || null,
@@ -96,7 +107,7 @@ router.post('/categories/:categoryKey/strategy', async (req, res) => {
     // users.id — the JWT's id space. Named on the column for the same reason
     // (`decided_by_user_id`), because employees(id) and users(id) have been
     // confused four separate times in this codebase.
-    const userId = req.user?.id ?? null;
+    const userId = actorUserId(req);
     const saved = await svc.saveStrategy(scopeOf(req), req.params.categoryKey, req.body || {}, userId);
     res.status(201).json(saved);
   } catch (err) {

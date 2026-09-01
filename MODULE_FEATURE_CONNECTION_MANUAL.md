@@ -14921,3 +14921,168 @@ exactly what this score should have been surfacing all along.
 - The data gaps the new score exposes are real and need a **backfill, not code**: vendor approval
   metadata, and `vendors.party_id` for all six vendors.
 - Nothing is committed; the working tree is still ahead of the last commit.
+
+---
+
+## §136 — Strategic sourcing: how a category should be bought (1.7.4), and who should get it (1.7.5)
+
+Spec 1.7.4 asks for Porter's Five Forces and A.T. Kearney's Purchasing
+Chessboard, applied per category and supplier segment. Spec 1.7.5 asks for RFIs,
+RFPs and RFQs issued against clear benchmarks and scoring models. Neither
+existed. What existed was a per-transaction pipeline — raise an RFQ, collect
+quotes, award the cheapest, now the cheapest on total cost since §128 — with no
+layer above it. Every sourcing decision in the app was made one purchase order
+at a time.
+
+Two engines, both pure, both fed from live purchase history rather than a
+workshop.
+
+### 1.7.4 — `sourcingStrategyEngine.js` + `SourcingStrategy.jsx`
+
+`assessFiveForces(facts)` scores the five forces 1–5 from measured signals:
+spend concentration (HHI), supplier count, top-supplier share, sole-sourced item
+share, approved-vendor depth, tooling, lead time, quotes per RFQ, price spread,
+newly qualified vendors, our share of total spend, and make-capability.
+
+`positionOnChessboard()` collapses those onto the chessboard's two axes. Supply
+power is supplier power **net of** the three forces that erode it — rivalry, new
+entrants and substitutes are each inverted before being averaged in. That
+inversion is the whole reason to score five forces rather than eyeball a 2×2: a
+category can have one dominant incumbent *and* be contestable because five
+others are qualified and quoting.
+
+`recommendMethods()` then ranks the 16 methods of that quadrant — 4 quadrants ×
+4 levers × 4 methods = **64 plays** — with `evidenced` and a `why` naming the
+fact that fired each one, or the `requires` it still needs.
+
+`sourcing_category_strategies` stores the decision of record: quadrant, lever,
+method, rationale, target saving, review date — plus `facts_snapshot`,
+`position_snapshot` and `forces_snapshot` frozen at decision time, the same
+discipline §128 applies to a TCO award. The client sends **only a `method_key`**;
+the lever and quadrant are resolved server-side from the engine's taxonomy, so a
+method cannot be filed under a quadrant it does not belong to.
+
+### ⚠⚠ Every item category is empty — and all the spend is uncategorised
+
+Live, company 1: **every `inventory_items.category_id` is NULL**. All 12 seeded
+categories therefore score 0% coverage and are reported as *"not enough evidence
+to place"*, while 100% of attributed spend (₹43,000 over 2 POs) lands in an
+explicit `Uncategorised` bucket that positions at Change Nature of Demand.
+
+That is the correct output, and it is the point. An unmeasured force returns
+`null`, not 3, and is excluded from the composite rather than dragging it to the
+middle — because a category defaulted to 3/3 lands dead-centre of the board,
+which is a *position*, not an absence of one. The page draws unplaceable
+categories as a separate list, never as dots at the origin or the centre.
+
+### ⚠ `off_avl_spend_pct` is measured only over items that HAVE an approved vendor list
+
+The off-AVL query joins a `governed` CTE of items with at least one approved
+row. Without it, every item nobody has got round to approving would report
+**100% maverick spend** — nothing was ever approved, so nothing can be off it.
+Live this reads a true 100%: both purchased items went to vendors not approved
+for them.
+
+### ⚠ Reproduced `a || b` on a numeric zero, in new code, and caught it in review
+
+The first draft ended facts with `shared_supplier_count: sharedSuppliers || null`
+and four similar lines, turning a measured **0** into "unmeasured". The rule that
+replaced it: report `0` where the population that could produce a non-zero was
+actually observed, `null` where the population itself is empty. `branch_count`
+goes the other way — the PO rows carry no `branch_id` at all, so it is `null`,
+not `0`. Same defect family as §126; it is easy to write on autopilot.
+
+### 1.7.5 — `rfxScoringEngine.js` + `RfxEvaluation.jsx`
+
+`rfqs` becomes the RFx event table: `rfx_type` (RFI | RFP | RFQ, CHECK
+constrained — a genuinely closed vocabulary, unlike `purchase_orders.status`
+which stays an exclusion set), `category_id` linking the event to the §136
+category strategy that called for it, and the frozen `scoring_model`.
+
+Each type has its own weighted model. Cost and delivery are **benchmarked**
+across the field (`benchmark()` — best in field scores 100, the worst floors at
+30 rather than 0, because 8% dearer is not worthless). The vendor-record
+criteria come from the §49G health engine. Capability, capacity, solution fit
+and technical merit cannot be computed from anything this system holds, so they
+are left unscored and shown as outstanding.
+
+**The two things that make it honest:**
+
+1. An unscored criterion is a **missing row**, not a zero. `scoreBid()` divides
+   by the weight actually scored, so a bid scored only on cost (45% of the RFQ
+   model) at 80 totals **80, not 36**. `coverage_pct` carries the shrinkage.
+2. **A lead smaller than the uncertainty is not a lead.** `rankBids()` returns
+   `too_close_to_call` when the gap between first and second is inside the
+   unscored weight — the most the missing evidence could move them relative to
+   each other. A scoring model whose arithmetic always yields a winner is a
+   machine for laundering coin flips into decisions with a number attached, and
+   the route refuses the selection with a **409** unless the caller passes
+   `acknowledge_override`.
+
+### ⚠ The §49G health contract this relies on
+
+`vendorHealthEngine.dim()` writes **null**, not the dimension default, for any
+dimension with no evidence, and `vendorHealth.service` persists exactly that. So
+a non-null dimension score is real evidence and a null one is an absence,
+per-dimension. An earlier draft here added a *second* guard that discarded any
+dimension from a vendor whose overall health coverage was thin — which threw
+away genuinely measured compliance and financial scores because unrelated
+dimensions were blank. Removed: `health_coverage_pct` travels with every bid as
+context, but it does not veto evidence that exists.
+
+### ⚠⚠ `req.user.id` is undefined — the JWT payload's field is `userId`
+
+`verifyToken` does `req.user = decoded`, the raw JWT, whose field is `userId`.
+Both new route files initially read `req.user?.id`, and the first HTTP-path
+selection stored **`selected_by_user_id: null`** — the exact "who decided this"
+gap the frozen snapshots exist to close. Caught by probing over HTTP rather than
+by calling the service directly; a service-level test passes an id in and would
+never have seen it. The codebase splits 410 `req.user?.userId` to 251
+`req.user?.id`, so both spellings look idiomatic in grep. Fixed with a named
+`actorUserId(req)` helper in both files.
+
+### ⚠⚠ Selecting a preferred vendor cleared the preferred price and set none
+
+`selectPreferredVendor()` writes to the three places the rest of procurement
+reads: `approved_vendor_list`, `item_vendor_prices.is_preferred`, and
+`inventory_items.preferred_vendor_id`. The first live run returned
+`{cleared: 1, set_preferred: 0}` — the winning vendor had **no price row for the
+item**, which is normal, because a vendor is invited to quote precisely when
+they are not already a source. So the selection demoted the incumbent's price
+and promoted nothing, leaving the item with *fewer* preferred vendors than
+before: a selection that made things worse.
+
+It now writes the price row from the winning quote (unit price, currency, MOQ,
+tax, lead time, validity, freight per unit, tooling, warranty) when none exists.
+Verified live: `{cleared: 1, set_preferred: 1, price_row_created: true}`. Other
+vendors lose preferred standing but stay **approved** — dropping them off the
+AVL would quietly destroy the bench.
+
+### Reachability
+
+Both pages are auto-routed (neither filename matches `autoRouter`'s
+`Panel|Widget|Heatmap|Trend` non-page suffix) and are docked in the Procurement
+submenu after *Supplier Performance*, so neither repeats §130's unreachable-page
+failure.
+
+### Verification
+
+- 45 new engine tests (20 sourcing, 25 RFx); full suite **795 passed / 9 skipped
+  / 0 failed** across 33 files.
+- `check:sql-refs` and `check:statuses` both PASS.
+- Every service query run against the live DB, and every endpoint probed over
+  HTTP with a minted token (200 / 400 / 401 / 404 / 409 paths all confirmed).
+- Both pages rendered in Chromium at 1366×768 and 1440×900: no console errors,
+  no failed requests, no horizontal scroll, no clipped nodes.
+- The preferred-vendor write path was exercised end-to-end against the live
+  database and the affected rows then **restored to their pre-probe state**.
+
+### Open
+
+- `inventory_items.category_id` is NULL for every item, so the category board
+  has one live bucket. That is a **data backfill, not code** — classifying items
+  is what turns the board on.
+- RFI and RFP events cannot yet be *raised* from the UI; the type exists on the
+  event and the models are wired, but the creation form still posts RFQs.
+- Nothing is committed; the working tree is still ahead of the last commit
+  (`ebd0168`, 11 Aug).
