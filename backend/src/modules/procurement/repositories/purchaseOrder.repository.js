@@ -68,14 +68,38 @@ class PurchaseOrderRepository {
     return result.rows;
   }
 
+  /**
+   * The counts behind the Purchase Orders KPI strip.
+   *
+   * Every status gets a bucket, because the strip reports a `total` beside them
+   * and a reader takes the two as reconciling. It did not: `draft`, `partial`
+   * and `cancelled` had no bucket, so a database holding 10 orders showed
+   * cards adding to 8 and two orders that no card could select — the same
+   * "a chip count that exposes rows no chip can reach" shape as the §133 sales
+   * filter sweep.
+   *
+   * `follow_up` is the one figure that is NOT a bucket: it counts orders that
+   * are already inside `pending` and have gone quiet for a week. It is excluded
+   * from the reconciliation on purpose, and `other` exists so a status added
+   * later surfaces as an unnamed bucket rather than quietly unbalancing the
+   * strip again.
+   *
+   * Invariant, asserted in integration.procurementAnalytics.test.js:
+   *   draft + pending + approved + partial + received + cancelled + other === total
+   */
   async getStats(companyId) {
     const params = companyId ? [companyId] : [];
     const companyFilter = companyId ? 'AND company_id = $1' : '';
     const { rows } = await pool.query(`
       SELECT
+        COUNT(*) FILTER (WHERE status = 'draft')                                                     AS draft,
         COUNT(*) FILTER (WHERE status = 'sent')                                                      AS pending,
         COUNT(*) FILTER (WHERE status = 'approved')                                                  AS approved,
+        COUNT(*) FILTER (WHERE status = 'partial')                                                   AS partial,
         COUNT(*) FILTER (WHERE status = 'received')                                                  AS received,
+        COUNT(*) FILTER (WHERE status = 'cancelled')                                                 AS cancelled,
+        COUNT(*) FILTER (WHERE status NOT IN
+          ('draft','sent','approved','partial','received','cancelled'))                              AS other,
         COUNT(*) FILTER (WHERE status = 'sent' AND created_at < NOW() - INTERVAL '7 days')           AS follow_up,
         COALESCE(SUM(total_amount) FILTER (WHERE status NOT IN ('cancelled')), 0)                    AS total_value,
         COUNT(*)                                                                                      AS total
@@ -84,9 +108,18 @@ class PurchaseOrderRepository {
     `, params);
     const s = rows[0];
     return {
+      draft:       parseInt(s.draft),
       pending:     parseInt(s.pending),
       approved:    parseInt(s.approved),
+      partial:     parseInt(s.partial),
       received:    parseInt(s.received),
+      cancelled:   parseInt(s.cancelled),
+      // Any status this strip does not name. Never expected to be non-zero;
+      // it exists so that a status added later shows up as an unnamed bucket
+      // instead of silently making the strip stop adding up.
+      other:       parseInt(s.other),
+      // A SUBSET of `pending`, not a bucket — deliberately excluded from the
+      // reconciliation below, because an order can be both sent and overdue.
       follow_up:   parseInt(s.follow_up),
       total_value: parseFloat(s.total_value),
       total:       parseInt(s.total),

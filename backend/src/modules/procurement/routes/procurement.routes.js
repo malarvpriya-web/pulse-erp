@@ -13,6 +13,7 @@ import { checkAndCreateAlerts } from '../../../services/stockAlerts.js';
 import { sendPurchaseOrderToVendor, sendRfqToVendor } from '../../../utils/mailer.js';
 import { companyOf, employeeOf } from '../../../shared/scope.js';
 import { resolveGstRate } from '../../../shared/gstRate.js';
+import { rollupQualityStatus } from '../../quality/services/qualityRollup.service.js';
 import { hasRole, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { requiredBand, assertCanDecideAmount, requireProcurement } from '../procurement.authz.js';
 import { rankOptions, TCO_DEFAULTS } from '../engines/tcoEngine.js';
@@ -56,23 +57,35 @@ router.get('/purchase-requests/stats', requireProcurement('view'), async (req, r
     // which was all of them, so these KPIs counted a fraction of the register.
     const cidFilter = companyId ? `AND pr.company_id = $1` : '';
     const params = companyId ? [companyId] : [];
+    // Every status gets a bucket, so the counts reconcile against the `total`
+    // reported beside them. They did not: `draft` had none, and a register of
+    // 22 requisitions answered with buckets summing to 15. No screen consumes
+    // this endpoint today — the requisition page filters the list itself — but
+    // an endpoint that reports a total and a breakdown that disagree is a trap
+    // for whoever wires it up next. `other` catches a status added later
+    // instead of silently unbalancing the response again.
     const { rows } = await pool.query(`
       SELECT
         COUNT(*)                                                       AS total,
+        COUNT(*) FILTER (WHERE pr.status = 'draft')                    AS draft,
         COUNT(*) FILTER (WHERE pr.status = 'pending_approval')         AS pending_approval,
         COUNT(*) FILTER (WHERE pr.status = 'approved')                 AS approved,
         COUNT(*) FILTER (WHERE pr.status = 'converted_to_po')          AS ordered,
-        COUNT(*) FILTER (WHERE pr.status = 'rejected')                 AS rejected
+        COUNT(*) FILTER (WHERE pr.status = 'rejected')                 AS rejected,
+        COUNT(*) FILTER (WHERE pr.status NOT IN
+          ('draft','pending_approval','approved','converted_to_po','rejected')) AS other
       FROM purchase_requests pr
       WHERE pr.deleted_at IS NULL ${cidFilter}
     `, params);
     const s = rows[0];
     res.json({
       total:            parseInt(s.total),
+      draft:            parseInt(s.draft),
       pending_approval: parseInt(s.pending_approval),
       approved:         parseInt(s.approved),
       ordered:          parseInt(s.ordered),
       rejected:         parseInt(s.rejected),
+      other:            parseInt(s.other),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -469,7 +482,16 @@ router.patch('/purchase-requests/:id/convert-to-po', requireProcurement('edit'),
         // recurring bug as stock_ledger.created_by (project_stock_ledger_created_by_fk).
         // Surfaced live while verifying §5.2: this 500'd on every convert for
         // any actor without a matching employees row, including super_admin.
-        created_by:     req.user?.employee_id ?? null,
+        //
+        // employeeOf(), not the raw claim. `req.user.employee_id` is only
+        // present on tokens minted after that field was added, and it is the
+        // recipient the PO-approval notification is addressed to — so a token
+        // without it produced an order with created_by NULL, and then
+        // `if (settings.notify_po_approval && oldPo.created_by)` silently
+        // declined to notify anyone while Settings still read "on". employeeOf
+        // falls back to the users row, which is what makes the toggle mean
+        // something for a legacy session.
+        created_by:     await employeeOf(req, pool),
         company_id:     cid(req),
       });
 
@@ -793,8 +815,12 @@ router.post('/purchase-orders', requireProcurement('add'), async (req, res) => {
       total_amount: Number((subtotal + taxTotal).toFixed(2)),
       po_number:    poNumber,
       company_id:   companyId,
-      // purchase_orders.created_by FKs employees(id), not users(id).
-      created_by:   req.user?.employee_id ?? null,
+      // purchase_orders.created_by FKs employees(id), not users(id) — and
+      // employeeOf() rather than the raw claim, so a token minted before
+      // employee_id existed still yields a real recipient for the approval
+      // notification instead of a NULL that silences it. See the same note on
+      // the convert-to-po path.
+      created_by:   await employeeOf(req, pool),
     });
 
     for (const line of lines) {
@@ -3327,27 +3353,109 @@ router.get('/quality-inspections', requireProcurement('view', 'qc_manager', 'qc_
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/**
+ * POST /quality-inspections — record an incoming inspection against a receipt.
+ *
+ * This route used to write `quality_inspections` and stop. That made the screen
+ * a dead end: a storekeeper marked a receipt "pass", saw it saved, and the goods
+ * stayed held for inspection for ever, because the ONLY thing that releases held
+ * stock is the rollup over `quality_tests` — and that table lives in the Quality
+ * module, which this screen never touched. Verified live: inspection 201, GRN
+ * `quality_status` still 'pending', zero stock-ledger rows.
+ *
+ * So the inspection now also writes the tests it represents. Incoming quality
+ * has one system of record; this screen is a writer of it rather than a fourth
+ * opinion beside it, and a pass here releases exactly the stock a pass in the
+ * Quality module would.
+ *
+ * A failure is NOT auto-NCR'd here, unlike quality.routes' own test path. This
+ * screen already has its own explicit NCR flow beside it (POST /procurement/ncr,
+ * which the same page calls), and raising a second automatic one would give the
+ * buyer two records of one rejection.
+ */
 router.post('/quality-inspections', requireProcurement('add', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { grn_id, inspector_id, inspection_date, overall_result, notes, items } = req.body;
     if (!grn_id) return res.status(400).json({ error: 'grn_id is required' });
+    const companyId = cid(req);
+    const verdict   = String(overall_result || 'pass').toLowerCase() === 'fail' ? 'fail' : 'pass';
+    const actorEmp  = await employeeOf(req, pool);
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Scoped: the receipt has to be this company's before anything is written
+      // against it, or an inspection could be filed on another tenant's goods.
+      const { rows: [grn] } = await client.query(
+        `SELECT id FROM goods_receipt_notes
+          WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+        [grn_id, companyId]
+      );
+      if (!grn) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Goods receipt not found' }); }
+
       const { rows: [qi] } = await client.query(`
         INSERT INTO quality_inspections (company_id, grn_id, inspector_id, inspection_date, overall_result, notes, status)
         VALUES ($1,$2,$3,$4,$5,$6,'completed') RETURNING *
-      `, [cid(req), grn_id, inspector_id||null, inspection_date||new Date().toISOString().slice(0,10), overall_result||'pass', notes||null]);
+      `, [companyId, grn_id, inspector_id||null, inspection_date||new Date().toISOString().slice(0,10), verdict, notes||null]);
 
-      for (const item of (items||[])) {
+      const lines = Array.isArray(items) ? items : [];
+      for (const item of lines) {
         await client.query(`
           INSERT INTO quality_inspection_items (inspection_id, item_id, parameter, expected_value, actual_value, result, remarks)
           VALUES ($1,$2,$3,$4,$5,$6,$7)
         `, [qi.id, item.item_id, item.parameter||null, item.expected_value||null, item.actual_value||null, item.result||'pass', item.remarks||null]);
       }
 
+      // The same inspection, expressed as completed quality_tests so the rollup
+      // can act on it. When the inspector recorded no per-parameter lines, the
+      // overall verdict is still a result and gets one row — otherwise a
+      // header-only "pass" would leave the receipt with no tests at all, which
+      // the rollup reads as 'not_required' rather than 'passed', and the goods
+      // would stay held exactly as before.
+      const tests = lines.length
+        ? lines.map((i) => ({
+            item_id: i.item_id ?? null,
+            test_name: i.parameter || 'Incoming inspection',
+            parameter: i.parameter || null,
+            expected_value: i.expected_value ?? null,
+            actual_value: i.actual_value ?? null,
+            result: String(i.result || 'pass').toLowerCase() === 'fail' ? 'fail' : 'pass',
+            remarks: i.remarks || null,
+          }))
+        : [{
+            item_id: null,
+            test_name: 'Incoming inspection',
+            parameter: null, expected_value: null, actual_value: null,
+            result: verdict, remarks: notes || null,
+          }];
+
+      for (const t of tests) {
+        await client.query(`
+          INSERT INTO quality_tests
+            (company_id, source_type, source_id, grn_id, item_id, stage, test_name, parameter,
+             expected_value, actual_value, result, status, remarks, tested_by, tested_at, created_by)
+          VALUES ($1,'grn',$2,$2,$3,'IQC',$4,$5,$6,$7,$8,'completed',$9,$10,NOW(),$10)
+        `, [companyId, grn_id, t.item_id, t.test_name, t.parameter,
+            t.expected_value, t.actual_value, t.result, t.remarks, actorEmp]);
+      }
+
       await client.query('COMMIT');
-      res.status(201).json(qi);
+
+      // AFTER the commit, deliberately: the rollup reads through the pool, so
+      // rows still inside this transaction would be invisible to it and it
+      // would compute the receipt's status from a state that does not exist.
+      let rollup = null;
+      try {
+        rollup = await rollupQualityStatus({ grn_id });
+      } catch (e) {
+        // The inspection is recorded and committed; a release failure must not
+        // undo it. Surfaced rather than swallowed, because "inspected, not
+        // released" is a state someone has to chase.
+        console.error(`[procurement] quality rollup for GRN ${grn_id} failed:`, e.message);
+      }
+
+      res.status(201).json({ ...qi, quality_status: rollup?.grn_status ?? null, stock_released: rollup?.released ?? false });
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
   } catch (err) { res.status(500).json({ error: err.message }); }

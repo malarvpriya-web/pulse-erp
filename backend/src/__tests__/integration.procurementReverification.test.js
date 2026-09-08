@@ -113,13 +113,47 @@ async function sweep() {
   );
   const ids = poIds.map(r => r.id);
   if (ids.length) {
+    const { rows: grnRows } = await pool.query(
+      `SELECT id FROM goods_receipt_notes WHERE po_id = ANY($1::int[])`, [ids]);
+    const grnIds = grnRows.map(r => r.id);
+
+    if (grnIds.length) {
+      // A released receipt leaves stock behind it, and current_stock has to come
+      // back down with the ledger rows or the next run starts from an inflated
+      // figure. `inventory_batches.grn_id` is RESTRICT, so the batches also have
+      // to go BEFORE their receipt — an earlier version deleted the receipt
+      // first and the whole teardown failed on the foreign key.
+      const { rows: posted } = await pool.query(
+        `SELECT item_id, SUM(quantity_in - quantity_out) AS net
+           FROM stock_ledger
+          WHERE reference_type='grn' AND reference_id::text = ANY($1::text[])
+          GROUP BY item_id`, [grnIds.map(String)]);
+      for (const p of posted) {
+        await pool.query(
+          `UPDATE inventory_items SET current_stock = COALESCE(current_stock,0) - $2 WHERE id = $1`,
+          [p.item_id, p.net]);
+      }
+      await pool.query(`DELETE FROM stock_ledger WHERE reference_type='grn' AND reference_id::text = ANY($1::text[])`, [grnIds.map(String)]);
+      await pool.query(`DELETE FROM inventory_batches WHERE grn_id = ANY($1::int[])`, [grnIds]);
+      await pool.query(`DELETE FROM quality_tests WHERE grn_id = ANY($1::int[])`, [grnIds]);
+      await pool.query(`DELETE FROM quality_inspection_items WHERE inspection_id IN (SELECT id FROM quality_inspections WHERE grn_id = ANY($1::int[]))`, [grnIds]);
+      await pool.query(`DELETE FROM quality_inspections WHERE grn_id = ANY($1::int[])`, [grnIds]);
+    }
+
     await pool.query(`DELETE FROM three_way_matches WHERE po_id = ANY($1::int[])`, [ids]);
-    await pool.query(`DELETE FROM grn_items WHERE grn_id IN (SELECT id FROM goods_receipt_notes WHERE po_id = ANY($1::int[]))`, [ids]);
+    await pool.query(`DELETE FROM grn_items WHERE grn_id = ANY($1::int[])`, [grnIds.length ? grnIds : [0]]);
     await pool.query(`DELETE FROM goods_receipt_notes WHERE po_id = ANY($1::int[])`, [ids]);
     await pool.query(`DELETE FROM purchase_order_items WHERE po_id = ANY($1::int[])`, [ids]);
     await pool.query(`DELETE FROM purchase_orders WHERE id = ANY($1::int[])`, [ids]);
   }
   await pool.query(`DELETE FROM rfqs WHERE item_description LIKE $1`, like);
+  // Hand-booked batches, which carry the tag in their batch number.
+  await pool.query(`DELETE FROM stock_ledger WHERE reference_type='inventory_batch'
+                     AND reference_id::text IN (SELECT id::text FROM inventory_batches WHERE batch_number LIKE $1)`, like);
+  await pool.query(`DELETE FROM inventory_batches WHERE batch_number LIKE $1`, like);
+  await pool.query(`DELETE FROM quality_tests WHERE remarks LIKE $1`, like);
+  await pool.query(`DELETE FROM quality_inspection_items WHERE inspection_id IN (SELECT id FROM quality_inspections WHERE notes LIKE $1)`, like);
+  await pool.query(`DELETE FROM quality_inspections WHERE notes LIKE $1`, like);
   await pool.query(`DELETE FROM purchase_request_items WHERE pr_id IN (SELECT id FROM purchase_requests WHERE notes LIKE $1)`, like);
   await pool.query(`DELETE FROM purchase_requests WHERE notes LIKE $1`, like);
   await pool.query(`DELETE FROM vendor_health_scores WHERE company_id = $1`, [CO_B]);
@@ -174,6 +208,22 @@ beforeAll(async () => {
   );
   if (!orphan) throw new Error('Every active account resolves to an employee — cannot test the actor-stamping class.');
   seed.userIdWithoutEmployee = orphan.id;
+
+  // An account whose JWT claim is absent but whose users row DOES link to an
+  // employee — the case employeeOf() exists to recover and the raw claim cannot.
+  const { rows: [linked] } = await pool.query(
+    `SELECT u.id, u.employee_id FROM users u
+       JOIN employees e ON e.id = u.employee_id
+      WHERE u.is_active AND e.company_id = $1 AND e.deleted_at IS NULL
+      ORDER BY u.id LIMIT 1`, [CO_A]
+  );
+  if (!linked) throw new Error('No active account links to a company-1 employee — cannot test the claim fallback.');
+  seed.userWithEmployee = linked;
+
+  const { rows: [wh] } = await pool.query(
+    `SELECT id FROM warehouses WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1) ORDER BY id LIMIT 1`, [CO_A]
+  );
+  seed.warehouseId = wh?.id ?? null;
 }, 30000);
 
 afterAll(async () => {
@@ -446,6 +496,198 @@ describe('D6 / D7 — the two buttons that reported success and did nothing', ()
       await pool.query('DELETE FROM purchase_request_items WHERE pr_id = $1', [pr.id]);
       await pool.query('DELETE FROM purchase_requests WHERE id = $1', [pr.id]);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The second round: D8, D9, D10, D14.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** An approved order with one line, ready to receive against. */
+async function approvedPo({ quantity = 4, price = 25 } = {}) {
+  const pr = await raisePr({ quantity, price });
+  await buyer().put(`/api/procurement/purchase-requests/${pr.id}/approve`).send({});
+  const conv = await buyer().patch(`/api/procurement/purchase-requests/${pr.id}/convert-to-po`)
+    .send({ supplier_id: seed.vendor.id });
+  await buyer().patch(`/api/procurement/purchase-orders/${conv.body.po_id}/approve`).send({});
+  const { rows: lines } = await pool.query('SELECT * FROM purchase_order_items WHERE po_id = $1', [conv.body.po_id]);
+  return { poId: conv.body.po_id, lines };
+}
+
+/** A receipt that is being held for incoming inspection. */
+async function heldReceipt() {
+  const { poId, lines } = await approvedPo();
+  const res = await buyer().post('/api/procurement/grn').send({
+    po_id: poId, warehouse_id: seed.warehouseId,
+    received_date: new Date().toISOString().slice(0, 10),
+    items: lines.map(l => ({
+      po_item_id: l.id, item_id: l.item_id,
+      quantity_received: Number(l.quantity), quantity_rejected: 0, rate: Number(l.rate),
+    })),
+  });
+  expect(res.status).toBe(201);
+  const { rows: [grn] } = await pool.query('SELECT * FROM goods_receipt_notes WHERE id = $1', [res.body.id]);
+  return grn;
+}
+
+const ledgerFor = async (grnId) => (await pool.query(
+  `SELECT * FROM stock_ledger WHERE reference_type='grn' AND reference_id::text = $1::text`, [String(grnId)])).rows;
+
+describe('D8 — a pass recorded in Procurement releases the goods it clears', () => {
+  it('releases the held stock, and posts batch and ledger together', async () => {
+    const grn = await heldReceipt();
+    expect(grn.quality_status, 'fixture drift: the receipt was not held for IQC').toBe('pending');
+    expect(await ledgerFor(grn.id)).toHaveLength(0);
+
+    const res = await buyer().post('/api/procurement/quality-inspections').send({
+      grn_id: grn.id, overall_result: 'pass', notes: `${TAG} incoming`,
+      items: [{ item_id: seed.item.id, parameter: 'visual', result: 'pass' }],
+    });
+    expect(res.status).toBe(201);
+
+    // The screen used to stop at the inspection row and the goods stayed held.
+    const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
+    expect(after.quality_status).toBe('passed');
+
+    const ledger = await ledgerFor(grn.id);
+    const { rows: batches } = await pool.query('SELECT * FROM inventory_batches WHERE grn_id = $1 AND deleted_at IS NULL', [grn.id]);
+    expect(ledger.length, 'a pass must post the held stock').toBe(1);
+    expect(batches.length, 'batch and ledger move together or not at all').toBe(1);
+    expect(Number(ledger[0].quantity_in)).toBe(Number(batches[0].quantity_available));
+    expect(res.body.stock_released).toBe(true);
+  }, 40_000);
+
+  it('does not release anything on a fail', async () => {
+    const grn = await heldReceipt();
+    const res = await buyer().post('/api/procurement/quality-inspections').send({
+      grn_id: grn.id, overall_result: 'fail', notes: `${TAG} rejected`,
+      items: [{ item_id: seed.item.id, parameter: 'visual', result: 'fail' }],
+    });
+    expect(res.status).toBe(201);
+    const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
+    expect(after.quality_status).toBe('failed');
+    expect(await ledgerFor(grn.id)).toHaveLength(0);
+    expect(res.body.stock_released).toBe(false);
+  }, 40_000);
+
+  it('releases on a header-only pass, with no per-parameter lines', async () => {
+    // A verdict with no lines used to leave the receipt with zero tests, which
+    // the rollup reads as 'not_required' rather than 'passed'.
+    const grn = await heldReceipt();
+    const res = await buyer().post('/api/procurement/quality-inspections').send({
+      grn_id: grn.id, overall_result: 'pass', notes: `${TAG} header only`,
+    });
+    expect(res.status).toBe(201);
+    const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
+    expect(after.quality_status).toBe('passed');
+    expect(await ledgerFor(grn.id)).toHaveLength(1);
+  }, 40_000);
+
+  it('will not file an inspection against another tenant\'s receipt', async () => {
+    const grn = await heldReceipt();
+    const res = await tenantB().post('/api/procurement/quality-inspections').send({
+      grn_id: grn.id, overall_result: 'pass', notes: `${TAG} foreign`,
+    });
+    expect(res.status).toBe(404);
+    const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
+    expect(after.quality_status).toBe('pending');
+    expect(await ledgerFor(grn.id)).toHaveLength(0);
+  }, 40_000);
+});
+
+describe('D9 — a purchase order records who raised it', () => {
+  it('resolves the requester from the users row when the token has no claim', async () => {
+    // The raw claim is absent on any token minted before employee_id existed.
+    // created_by is the recipient the approval notification is addressed to, so
+    // a NULL here silently disables the toggle rather than failing loudly.
+    const app = request(appAs({
+      roles: ['procurement_manager'],
+      userId: seed.userWithEmployee.id,
+      employeeId: null,               // the claim the old code read
+    }));
+    const res = await app.post('/api/procurement/purchase-orders').send({
+      supplier_id: seed.vendor.id,
+      order_date: new Date().toISOString().slice(0, 10),
+      notes: `${TAG} claimless`,
+      items: [{ item_id: seed.item.id, quantity: 1, rate: 10, gst_rate: 18 }],
+    });
+    expect(res.status).toBe(201);
+    const { rows: [po] } = await pool.query('SELECT created_by FROM purchase_orders WHERE id = $1', [res.body.id]);
+    expect(po.created_by).toBe(seed.userWithEmployee.employee_id);
+  });
+});
+
+describe('D10 — a KPI strip accounts for its own total', () => {
+  it('purchase-order buckets sum to the total', async () => {
+    const res = await buyer().get('/api/procurement/purchase-orders/stats');
+    expect(res.status).toBe(200);
+    const s = res.body;
+    // follow_up is a SUBSET of pending and is deliberately not a bucket.
+    const buckets = s.draft + s.pending + s.approved + s.partial + s.received + s.cancelled + s.other;
+    expect(buckets, `buckets ${JSON.stringify(s)} do not account for total ${s.total}`).toBe(s.total);
+    expect(s.other, 'an unnamed status appeared — give it a card').toBe(0);
+  });
+
+  it('purchase-request buckets sum to the total', async () => {
+    const res = await buyer().get('/api/procurement/purchase-requests/stats');
+    expect(res.status).toBe(200);
+    const s = res.body;
+    const buckets = s.draft + s.pending_approval + s.approved + s.ordered + s.rejected + s.other;
+    expect(buckets, `buckets ${JSON.stringify(s)} do not account for total ${s.total}`).toBe(s.total);
+    expect(s.other, 'an unnamed status appeared — name it').toBe(0);
+  });
+});
+
+describe('D14 — a hand-booked batch is stock the ledger knows about', () => {
+  const batchBody = () => ({
+    item_id: seed.item.id, warehouse_id: seed.warehouseId,
+    batch_number: `${TAG}-${Date.now()}`,
+    received_date: new Date().toISOString().slice(0, 10),
+    quantity_received: 7, rate: 12.5,
+  });
+
+  it('writes the batch and the ledger entry together', async () => {
+    const body = batchBody();
+    const res = await admin().post('/api/inventory/advanced/batches').send(body);
+    expect(res.status).toBe(201);
+    const { rows: [batch] } = await pool.query('SELECT * FROM inventory_batches WHERE id = $1', [res.body.id]);
+    const { rows: ledger } = await pool.query(
+      `SELECT * FROM stock_ledger WHERE reference_type='inventory_batch' AND reference_id::text = $1::text`, [String(res.body.id)]);
+    expect(batch, 'the batch should exist').toBeTruthy();
+    expect(ledger.length, 'a batch with no ledger row is stock nobody can reconcile').toBe(1);
+    expect(Number(ledger[0].quantity_in)).toBe(7);
+
+    await pool.query(`DELETE FROM stock_ledger WHERE reference_type='inventory_batch' AND reference_id::text = $1::text`, [String(res.body.id)]);
+    await pool.query('DELETE FROM inventory_batches WHERE id = $1', [res.body.id]);
+    await pool.query('UPDATE inventory_items SET current_stock = COALESCE(current_stock,0) - 7 WHERE id = $1', [seed.item.id]);
+  });
+
+  it('refuses another tenant\'s item, and writes nothing', async () => {
+    const before = await pool.query('SELECT COUNT(*)::int n FROM inventory_batches');
+    const res = await tenantB().post('/api/inventory/advanced/batches').send(batchBody());
+    expect(res.status).toBe(404);
+    // The MESSAGE matters, not just the status. There are two tenant guards
+    // here — the item and the warehouse — and the warehouse one alone is
+    // enough to produce a 404, so a status-only assertion stays green when the
+    // ITEM check is removed. Caught exactly that way: the mutation that
+    // stripped the item predicate left this test passing for the wrong reason.
+    // The item is checked first, so its message is what pins that guard.
+    expect(res.body.error).toMatch(/Item not found/);
+    const after = await pool.query('SELECT COUNT(*)::int n FROM inventory_batches');
+    expect(after.rows[0].n).toBe(before.rows[0].n);
+  });
+
+  it('refuses a warehouse the caller does not own', async () => {
+    const { rows: [maxWh] } = await pool.query('SELECT COALESCE(MAX(id),0)+1000 AS id FROM warehouses');
+    const res = await admin().post('/api/inventory/advanced/batches')
+      .send({ ...batchBody(), warehouse_id: maxWh.id });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Warehouse not found/);
+  });
+
+  it('refuses a body with no quantity instead of booking a phantom batch', async () => {
+    const res = await admin().post('/api/inventory/advanced/batches').send({ ...batchBody(), quantity_received: 0 });
+    expect(res.status).toBe(400);
   });
 });
 

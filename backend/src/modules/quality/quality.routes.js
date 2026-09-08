@@ -2,9 +2,10 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
-import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { requirePermission, verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
 import { resolveRange } from '../../shared/dashboardFilters.js';
 import grnService from '../procurement/services/grn.service.js';
+import { rollupQualityStatus } from './services/qualityRollup.service.js';
 
 const router = Router();
 router.use(verifyToken);
@@ -106,7 +107,7 @@ const seedData = async () => {
 setTimeout(seedData, 2000);
 
 /* ── INSPECTION CHECKLISTS ────────────────────────────────────────────────── */
-router.get('/checklists', canView, async (req, res) => {
+router.get('/checklists', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { type } = req.query;
     const params = [];
@@ -118,7 +119,7 @@ router.get('/checklists', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/checklists', canManage, async (req, res) => {
+router.post('/checklists', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { name, type = 'inward', items = [] } = req.body;
     if (!name) return res.status(400).json({ success: false, error: 'name is required' });
@@ -130,7 +131,7 @@ router.post('/checklists', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/checklists/:id', canManage, async (req, res) => {
+router.put('/checklists/:id', requirePermission('quality', 'edit'), canManage, async (req, res) => {
   try {
     const { name, type, items } = req.body;
     const { rows } = await pool.query(
@@ -144,7 +145,7 @@ router.put('/checklists/:id', canManage, async (req, res) => {
 });
 
 /* ── INSPECTIONS (IQC / IPQC / FQC) ─────────────────────────────────────── */
-router.get('/inspect', canView, async (req, res) => {
+router.get('/inspect', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, type, stage, reference_type, grn_id, production_order_id, limit = 50, offset = 0 } = req.query;
     const companyId = cid(req);
@@ -171,7 +172,7 @@ router.get('/inspect', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/inspect/:id', canView, async (req, res) => {
+router.get('/inspect/:id', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT r.*, c.name as checklist_name, c.type as inspection_type, c.type as stage, c.items as checklist_items
@@ -191,7 +192,7 @@ router.get('/inspect/:id', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/inspect/:id', canCreate, async (req, res) => {
+router.put('/inspect/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
   try {
     const { item_results, overall_result, status } = req.body;
     const existing = await pool.query('SELECT * FROM inspection_reports WHERE id=$1', [req.params.id]);
@@ -228,7 +229,7 @@ router.put('/inspect/:id', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/inspect', canCreate, async (req, res) => {
+router.post('/inspect', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const {
       checklist_id, reference_type, reference_id, grn_id,
@@ -280,7 +281,7 @@ router.post('/inspect', canCreate, async (req, res) => {
 });
 
 // Alias used by QualityManagement.jsx → Inspection Reports tab
-router.get('/reports', canView, async (req, res) => {
+router.get('/reports', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, type, limit = 50 } = req.query;
     const companyId = cid(req);
@@ -296,7 +297,7 @@ router.get('/reports', canView, async (req, res) => {
 });
 
 /* ── NCR — UNIFIED (source: quality|procurement|production|service) ──────── */
-router.get('/ncr', canView, async (req, res) => {
+router.get('/ncr', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, severity, source, vendor_id, limit = 100, offset = 0, export: doExport } = req.query;
     const companyId = cid(req);
@@ -332,7 +333,7 @@ router.get('/ncr', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/ncr/:id', canView, async (req, res) => {
+router.get('/ncr/:id', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT n.*, e_app.name as approver_name_resolved, v.name as vendor_name,
@@ -347,7 +348,7 @@ router.get('/ncr/:id', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/ncr', canCreate, async (req, res) => {
+router.post('/ncr', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const {
       title, description, detected_by, reference_type, reference_id,
@@ -375,7 +376,7 @@ router.post('/ncr', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/ncr/:id', canCreate, async (req, res) => {
+router.put('/ncr/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
   try {
     const { rows: [old] } = await pool.query('SELECT * FROM ncr_reports WHERE id=$1', [req.params.id]);
     if (!old) return res.status(404).json({ success: false, error: 'Not found' });
@@ -392,7 +393,7 @@ router.put('/ncr/:id', canCreate, async (req, res) => {
 });
 
 // PATCH /ncr/:id/resolve — moves NCR to 'resolved' status
-router.patch('/ncr/:id/resolve', canCreate, async (req, res) => {
+router.patch('/ncr/:id/resolve', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
   try {
     const { resolution } = req.body;
     const { rows } = await pool.query(
@@ -406,7 +407,7 @@ router.patch('/ncr/:id/resolve', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/ncr/:id/approve', canManage, async (req, res) => {
+router.post('/ncr/:id/approve', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { remarks } = req.body;
     const empRow = await pool.query('SELECT name FROM employees WHERE id=$1', [uid(req)]).catch(() => ({ rows: [] }));
@@ -422,7 +423,7 @@ router.post('/ncr/:id/approve', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/ncr/:id/close', canManage, async (req, res) => {
+router.post('/ncr/:id/close', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { disposition, root_cause } = req.body;
     if (!disposition) return res.status(400).json({ success: false, error: 'disposition required' });
@@ -458,7 +459,7 @@ router.post('/ncr/:id/close', canManage, async (req, res) => {
 });
 
 /* ── CAPA — employee FK, verifier, company scope ─────────────────────────── */
-router.get('/capa', canView, async (req, res) => {
+router.get('/capa', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, ncr_id, overdue, export: doExport } = req.query;
     const companyId = cid(req);
@@ -489,7 +490,7 @@ router.get('/capa', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/capa', canCreate, async (req, res) => {
+router.post('/capa', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const { ncr_id, action_type, description, assigned_to, employee_id, verifier_id, due_date } = req.body;
     if (!ncr_id || !description) return res.status(400).json({ success: false, error: 'ncr_id and description required' });
@@ -509,7 +510,7 @@ router.post('/capa', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/capa/:id', canCreate, async (req, res) => {
+router.put('/capa/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
   try {
     const { status, completion_date, effectiveness_rating, description, due_date } = req.body;
     const { rows } = await pool.query(
@@ -523,7 +524,7 @@ router.put('/capa/:id', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/capa/:id/verify', canManage, async (req, res) => {
+router.post('/capa/:id/verify', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { effectiveness_rating } = req.body;
     const empRow = await pool.query('SELECT name FROM employees WHERE id=$1', [uid(req)]).catch(() => ({ rows: [] }));
@@ -540,7 +541,7 @@ router.post('/capa/:id/verify', canManage, async (req, res) => {
 });
 
 /* ── CALIBRATION EQUIPMENT (ISO 9001 §7.1.5) ────────────────────────────── */
-router.get('/calibration/equipment', canView, async (req, res) => {
+router.get('/calibration/equipment', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, department, due_within_days, export: doExport } = req.query;
     const companyId = cid(req);
@@ -565,7 +566,7 @@ router.get('/calibration/equipment', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/calibration/equipment', canManage, async (req, res) => {
+router.post('/calibration/equipment', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { equipment_id, name, description, make, manufacturer, model, serial_number, location, department, category, range_min, range_max, unit, accuracy_class, calibration_frequency_days = 365, owner_id, notes, next_calibration_date } = req.body;
     if (!name || !equipment_id) return res.status(400).json({ success: false, error: 'name and equipment_id required' });
@@ -579,7 +580,7 @@ router.post('/calibration/equipment', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/calibration/equipment/:id', canManage, async (req, res) => {
+router.put('/calibration/equipment/:id', requirePermission('quality', 'edit'), canManage, async (req, res) => {
   try {
     const f = req.body;
     const { rows } = await pool.query(
@@ -595,7 +596,7 @@ router.put('/calibration/equipment/:id', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.delete('/calibration/equipment/:id', canAdmin, async (req, res) => {
+router.delete('/calibration/equipment/:id', requirePermission('quality', 'delete'), canAdmin, async (req, res) => {
   try {
     await pool.query('UPDATE calibration_equipment SET deleted_at=NOW() WHERE id=$1', [req.params.id]);
     res.json({ success: true });
@@ -603,7 +604,7 @@ router.delete('/calibration/equipment/:id', canAdmin, async (req, res) => {
 });
 
 /* ── CALIBRATION RECORDS ─────────────────────────────────────────────────── */
-router.get('/calibration/records', canView, async (req, res) => {
+router.get('/calibration/records', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { equipment_id, result } = req.query;
     const companyId = cid(req);
@@ -618,7 +619,7 @@ router.get('/calibration/records', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/calibration/records', canCreate, async (req, res) => {
+router.post('/calibration/records', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const { equipment_id, calibration_date, next_due_date, performed_by, performed_by_id, calibrating_lab, certificate_number, certificate_url, standard_used, traceability, result = 'pass', as_found_condition, as_left_condition, remarks } = req.body;
     if (!equipment_id || !calibration_date) return res.status(400).json({ success: false, error: 'equipment_id and calibration_date required' });
@@ -638,7 +639,7 @@ router.post('/calibration/records', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/calibration/due-alerts', canView, async (req, res) => {
+router.get('/calibration/due-alerts', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { days = 30 } = req.query;
     const companyId = cid(req);
@@ -655,7 +656,7 @@ router.get('/calibration/due-alerts', canView, async (req, res) => {
 });
 
 /* ── PUNCH POINTS (FAT/SAT) ──────────────────────────────────────────────── */
-router.get('/punch-points', canView, async (req, res) => {
+router.get('/punch-points', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { test_run_id, status } = req.query;
     const companyId = cid(req);
@@ -669,7 +670,7 @@ router.get('/punch-points', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/punch-points', canCreate, async (req, res) => {
+router.post('/punch-points', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const { test_run_id, description, raised_by, assigned_to, assigned_to_id, severity, due_date } = req.body;
     if (!test_run_id || !description) return res.status(400).json({ success: false, error: 'test_run_id and description required' });
@@ -683,7 +684,7 @@ router.post('/punch-points', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/punch-points/:id', canCreate, async (req, res) => {
+router.put('/punch-points/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
   try {
     const { status, remarks } = req.body;
     const extra = status === 'closed' ? ', closed_at=NOW()' : '';
@@ -697,7 +698,7 @@ router.put('/punch-points/:id', canCreate, async (req, res) => {
 });
 
 /* ── TEST RUNS (FAT / SAT) ───────────────────────────────────────────────── */
-router.get('/test-runs', canView, async (req, res) => {
+router.get('/test-runs', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { test_type, production_order_id, limit = 50 } = req.query;
@@ -717,7 +718,7 @@ router.get('/test-runs', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/test-runs/:id', canView, async (req, res) => {
+router.get('/test-runs/:id', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -733,7 +734,7 @@ router.get('/test-runs/:id', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/test-runs', canCreate, async (req, res) => {
+router.post('/test-runs', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -748,7 +749,7 @@ router.post('/test-runs', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/test-runs/:id', canCreate, async (req, res) => {
+router.put('/test-runs/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, result, measurements, customer_accepted, customer_accepted_at, ncr_id } = req.body;
@@ -772,7 +773,7 @@ router.put('/test-runs/:id', canCreate, async (req, res) => {
 });
 
 /* ── SUPPLIER QUALITY ────────────────────────────────────────────────────── */
-router.get('/supplier-quality', canView, async (req, res) => {
+router.get('/supplier-quality', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -797,7 +798,7 @@ router.get('/supplier-quality', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/supplier-quality/:vendorId', canView, async (req, res) => {
+router.get('/supplier-quality/:vendorId', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { vendorId } = req.params;
@@ -820,7 +821,7 @@ router.get('/supplier-quality/:vendorId', canView, async (req, res) => {
 });
 
 /* ── QUALITY SETTINGS ────────────────────────────────────────────────────── */
-router.get('/settings', canManage, async (req, res) => {
+router.get('/settings', requirePermission('quality', 'view'), canManage, async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query('SELECT * FROM quality_settings WHERE company_id=$1', [companyId]);
@@ -829,7 +830,7 @@ router.get('/settings', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/settings', canAdmin, async (req, res) => {
+router.put('/settings', requirePermission('quality', 'edit'), canAdmin, async (req, res) => {
   try {
     const companyId = cid(req);
     const s = req.body;
@@ -853,7 +854,7 @@ router.put('/settings', canAdmin, async (req, res) => {
 });
 
 /* ── QUALITY DASHBOARD ───────────────────────────────────────────────────── */
-router.get('/dashboard', canView, async (req, res) => {
+router.get('/dashboard', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     // Period filter (?period=… / ?from=&to=). Was hardcoded to MTD for the pass
@@ -904,7 +905,7 @@ router.get('/dashboard', canView, async (req, res) => {
 });
 
 /* ── REPORTS ─────────────────────────────────────────────────────────────── */
-router.get('/reports/ncr-trend', canView, async (req, res) => {
+router.get('/reports/ncr-trend', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { months = 6 } = req.query;
@@ -920,7 +921,7 @@ router.get('/reports/ncr-trend', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/reports/inspection-summary', canView, async (req, res) => {
+router.get('/reports/inspection-summary', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { from, to } = req.query;
@@ -962,39 +963,12 @@ function evaluateTestResult({ actual_value, spec_min, spec_max, expected_value }
   return 'pending'; // recorded but pass/fail decided by inspector via explicit result
 }
 
-// Recompute the parent source's overall quality_status from its tests
-async function rollupQualityStatus({ grn_id, operation_id }) {
-  const bucket = async (idCol, idVal, table, statusCol) => {
-    if (!idVal) return null;
-    const { rows } = await pool.query(
-      `SELECT
-         COUNT(*) FILTER (WHERE result='fail') AS failed,
-         COUNT(*) FILTER (WHERE status='completed') AS done,
-         COUNT(*) AS total
-       FROM quality_tests WHERE ${idCol}=$1`, [idVal]);
-    const r = rows[0];
-    let status;
-    if (parseInt(r.total) === 0)        status = 'not_required';
-    else if (parseInt(r.failed) > 0)    status = 'failed';
-    else if (parseInt(r.done) === parseInt(r.total)) status = 'passed';
-    else if (parseInt(r.done) > 0)      status = 'in_progress';
-    else                                status = 'pending';
-    await pool.query(`UPDATE ${table} SET ${statusCol}=$1 WHERE id=$2`, [status, idVal]).catch(() => {});
-    return status;
-  };
-  const grnStatus = await bucket('grn_id', grn_id, 'goods_receipt_notes', 'quality_status');
-  await bucket('operation_id', operation_id, 'production_operations', 'quality_status');
-  // GRN.service withholds accepted stock from the ledger while IQC is
-  // pending (see grn.service.js createGRN's holdForIqc) — release it now
-  // that every test on this GRN is done and none failed. Idempotent, so a
-  // later edit that keeps the GRN at 'passed' is a safe no-op.
-  if (grn_id && grnStatus === 'passed') {
-    await grnService.releaseGrnStock(grn_id);
-  }
-}
+// Moved to modules/quality/services/qualityRollup.service.js so Procurement's
+// own inspection screen can reach it too — while it was private here, a pass
+// recorded there released nothing. Imported at the top of this file.
 
 // GET /quality/tests — list with source filters
-router.get('/tests', canView, async (req, res) => {
+router.get('/tests', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { source_type, source_id, grn_id, production_order_id, operation_id, status, result, stage, limit = 200 } = req.query;
     const companyId = cid(req);
@@ -1020,7 +994,7 @@ router.get('/tests', canView, async (req, res) => {
 });
 
 // GET /quality/tests/summary — pending/pass/fail counts (Quality dept worklist)
-router.get('/tests/summary', canView, async (req, res) => {
+router.get('/tests/summary', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1056,7 +1030,7 @@ async function insertQualityTest(t, companyId, userId) {
 }
 
 // POST /quality/tests — create one test or a batch { tests: [...] }
-router.post('/tests', canCreate, async (req, res) => {
+router.post('/tests', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -1075,7 +1049,7 @@ router.post('/tests', canCreate, async (req, res) => {
 
 // POST /quality/tests/from-grn/:grnId — link a stores material lot to Quality by
 // seeding one pending test per GRN line item, and flag the GRN for inspection
-router.post('/tests/from-grn/:grnId', canCreate, async (req, res) => {
+router.post('/tests/from-grn/:grnId', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -1109,7 +1083,7 @@ router.post('/tests/from-grn/:grnId', canCreate, async (req, res) => {
 });
 
 // PUT /quality/tests/:id — record a reading / result; auto-evaluate + auto-NCR on fail
-router.put('/tests/:id', canCreate, async (req, res) => {
+router.put('/tests/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -1190,7 +1164,7 @@ router.put('/tests/:id', canCreate, async (req, res) => {
 });
 
 // DELETE /quality/tests/:id
-router.delete('/tests/:id', canManage, async (req, res) => {
+router.delete('/tests/:id', requirePermission('quality', 'delete'), canManage, async (req, res) => {
   try {
     const { rows } = await pool.query('DELETE FROM quality_tests WHERE id=$1 RETURNING grn_id, operation_id', [req.params.id]);
     if (!rows.length) return res.status(404).json({ success: false, error: 'Not found' });
@@ -1202,7 +1176,7 @@ router.delete('/tests/:id', canManage, async (req, res) => {
 /* ── TRACEABILITY ────────────────────────────────────────────────────────── */
 const TRACEABLE_TYPES = ['fat_report','sat_report','commissioning','serial','service_report','qc'];
 
-router.get('/traceability/:entityType/:entityId/documents', canView, async (req, res) => {
+router.get('/traceability/:entityType/:entityId/documents', requirePermission('quality', 'view'), canView, async (req, res) => {
   const { entityType, entityId } = req.params;
   if (!TRACEABLE_TYPES.includes(entityType)) return res.status(400).json({ error: `Unsupported entity type: ${entityType}` });
   try {
@@ -1214,7 +1188,7 @@ router.get('/traceability/:entityType/:entityId/documents', canView, async (req,
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/traceability/:entityType/:entityId/signatures', canView, async (req, res) => {
+router.get('/traceability/:entityType/:entityId/signatures', requirePermission('quality', 'view'), canView, async (req, res) => {
   const { entityType, entityId } = req.params;
   if (!TRACEABLE_TYPES.includes(entityType)) return res.status(400).json({ error: `Unsupported entity type: ${entityType}` });
   try {
