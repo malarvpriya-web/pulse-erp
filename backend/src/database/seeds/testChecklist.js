@@ -6,7 +6,7 @@
  * in the Pulse project root.
  */
 
-import pool from '../../../config/db.js';
+import pool from '../../config/db.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
