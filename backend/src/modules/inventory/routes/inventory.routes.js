@@ -9,6 +9,7 @@ import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { idDimension } from '../../../shared/dashboardFilters.js';
 import purchaseRequestRepo from '../../procurement/repositories/purchaseRequest.repository.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
 import advInventoryRouter from './advancedInventory.routes.js';
 import serialNumbersRouter from './serialNumbers.routes.js';
 import componentCatalogRouter from './componentCatalog.routes.js';
@@ -22,7 +23,7 @@ const router = express.Router();
 // =====================================================
 router.post('/items', requirePermission('inventory', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('inventory', req.body);
+    const { valid, errors } = await validate('inventory', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
     const itemCode = await itemRepo.getNextCode();
     const item = await itemRepo.create({ ...req.body, item_code: itemCode, company_id: req.scope?.company_id ?? null });
@@ -59,7 +60,7 @@ router.get('/items/:id', requirePermission('inventory', 'view'), async (req, res
 router.put('/items/:id', requirePermission('inventory', 'edit'), async (req, res) => {
   try {
     const company_id = req.scope?.company_id ?? null;
-    const { valid, errors } = await validate('inventory', req.body);
+    const { valid, errors } = await validate('inventory', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
     const oldItem = await itemRepo.findById(req.params.id, company_id);
     if (!oldItem) return res.status(404).json({ error: 'Item not found' });
@@ -335,7 +336,7 @@ router.get('/stock/valuation', requirePermission('inventory', 'view'), async (re
 // =====================================================
 router.post('/rm-issues', requirePermission('inventory', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('inventory', req.body);
+    const { valid, errors } = await validate('inventory', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
     const issue = await rmIssueService.createIssue(req.body, req.user?.employee_id ?? null);
     logAudit({ userId: req.user?.userId, module: 'inventory', recordId: issue.id, recordType: 'rm_issue', action: 'create', newData: issue, req });
@@ -752,29 +753,111 @@ router.get('/reorder-alerts', requirePermission('inventory', 'view'), async (req
   }
 });
 
+/**
+ * Raise a requisition for each item that has fallen to its reorder point.
+ *
+ * This is the "Generate PO" button on Inventory Intelligence and the Inventory
+ * Report. It had never created a single requisition. Five faults at once:
+ *
+ *  1. `purchaseRequestRepo.create({…})` was called with ONE argument against a
+ *     `create(client, data)` signature, so `client` silently became the data
+ *     object and `data` was undefined — the destructure threw on every call
+ *     ("Cannot destructure property 'request_number' of 'data'"). The throw was
+ *     caught into `failed[]` and the route still answered **HTTP 200**, so the
+ *     screen reported "0 purchase request(s) created" as a success.
+ *  2. `requested_by_employee_id` fell back to `req.user.userId`, a users.id,
+ *     into a column that FKs employees(id) — the recurring trap employeeOf()
+ *     exists to prevent. Even a bare arity fix would have FK-violated for the
+ *     three active accounts with no employee record.
+ *  3. No `company_id`, so the requisition would have been born NULL-company and
+ *     invisible to every company-scoped user — the exact defect the reorder
+ *     cron was fixed for.
+ *  4. `items` was passed but `create()` does not read it, so no
+ *     purchase_request_items row was written and `total_amount` would have
+ *     stayed 0 — which is the band that auto-approves.
+ *  5. `getNextNumber()` took neither the transaction client nor the company, so
+ *     the number was drawn outside the unit of work and ignored the company's
+ *     configured pr_prefix.
+ *
+ * Now mirrors reorderPr.cron.js's draftPrFromSuggestion() — the same repository
+ * calls in the same transaction — which is why the nightly job worked while the
+ * button beside it did not.
+ */
 router.post('/reorder-alerts/generate-pos', requirePermission('inventory', 'add'), async (req, res) => {
   const { item_ids = [] } = req.body;
+  if (!Array.isArray(item_ids) || item_ids.length === 0) {
+    return res.status(400).json({ error: 'Select at least one item to raise a requisition for.' });
+  }
+
+  const companyId = companyOf(req);
+  const requesterEmployeeId = await employeeOf(req, pool);
   const created = [];
   const failed = [];
+
   for (const id of item_ids) {
+    const client = await pool.connect();
     try {
-      const itemRes = await pool.query(`SELECT * FROM inventory_items WHERE id = $1 AND deleted_at IS NULL`, [id]);
-      const item = itemRes.rows[0];
+      const { rows: [item] } = await client.query(
+        `SELECT id, item_code, item_name, unit_of_measure,
+                COALESCE(reorder_level, 0) AS reorder_level,
+                COALESCE(standard_cost, 0)  AS standard_cost
+           FROM inventory_items
+          WHERE id = $1 AND deleted_at IS NULL
+            AND ($2::INTEGER IS NULL OR company_id = $2)`,
+        [id, companyId]
+      );
       if (!item) { failed.push({ item_id: id, error: 'Item not found' }); continue; }
-      const prNumber = await purchaseRequestRepo.getNextNumber();
-      const pr = await purchaseRequestRepo.create({
+
+      // Order back up to twice the reorder level, as before — but never zero:
+      // an item whose reorder level is unset would otherwise produce a
+      // requisition for no quantity, which create() would reject downstream.
+      const quantity = Number(item.reorder_level) > 0 ? Number(item.reorder_level) * 2 : 1;
+
+      await client.query('BEGIN');
+      const prNumber = await purchaseRequestRepo.getNextNumber(client, companyId);
+      const pr = await purchaseRequestRepo.create(client, {
         request_number: prNumber,
-        requested_by_employee_id: req.user.employee_id ?? req.user.userId ?? req.user.id,
+        requested_by_employee_id: requesterEmployeeId,
         request_date: new Date(),
-        notes: `Auto-generated reorder alert for ${item.item_name}`,
-        items: [{ item_id: item.id, item_name: item.item_name, quantity: item.reorder_level * 2 }],
+        company_id: companyId,
+        // Raised from a stock alert, not typed by a buyer: it lands as a draft
+        // for review rather than straight into the approval queue, matching
+        // what the reorder cron does and what the toast tells the user.
+        status: 'draft',
+        notes: `Reorder alert: ${item.item_code || item.item_name} is at or below its reorder point.`,
       });
-      created.push(pr);
+      await purchaseRequestRepo.createItem(client, {
+        pr_id: pr.id,
+        item_id: item.id,
+        item_name: item.item_name,
+        quantity,
+        // No quote exists yet, so the item's standard cost is the closest
+        // honest estimate. recomputeTotal sums quantity x expected_price and
+        // that total is what approval routing reads — leaving it 0 would put
+        // every reorder in the auto-approve band.
+        expected_price: Number(item.standard_cost) || 0,
+      });
+      await purchaseRequestRepo.recomputeTotal(client, pr.id);
+      await client.query('COMMIT');
+
+      created.push(await purchaseRequestRepo.findById(pr.id, companyId));
     } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
       failed.push({ item_id: id, error: err.message });
+    } finally {
+      client.release();
     }
   }
-  res.json({ purchase_orders: created, count: created.length, failed, failed_count: failed.length });
+
+  res.json({
+    purchase_requests: created,
+    // Deprecated alias: InventoryIntelligence.jsx still reads `purchase_orders`
+    // for its count. These have always been requisitions, never orders.
+    purchase_orders: created,
+    count: created.length,
+    failed,
+    failed_count: failed.length,
+  });
 });
 
 // =====================================================

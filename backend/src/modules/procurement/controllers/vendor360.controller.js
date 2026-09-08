@@ -80,7 +80,8 @@ export const Vendor360Controller = {
       const companyId = requireCompany(req, res);
       if (companyId === false) return;
       const entry = await svc.saveScorecard(
-        vendorId(req), companyId, req.body, req.user?.id
+        // req.user.id is always undefined — the JWT carries `userId`.
+        vendorId(req), companyId, req.body, req.user?.userId
       );
       res.status(201).json(entry);
     } catch (err) {

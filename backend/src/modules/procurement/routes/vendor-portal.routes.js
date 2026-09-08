@@ -5,6 +5,7 @@ import { logAudit } from '../../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { scorecardRisk } from '../../../shared/vendorScore.js';
+import { requireProcurement } from '../procurement.authz.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -18,7 +19,7 @@ const APPROVAL_FLOW = [
 ];
 
 // ── GET /vendor-portal/registrations ─────────────────────────────────────────
-router.get('/registrations', async (req, res) => {
+router.get('/registrations', requireProcurement('view'), async (req, res) => {
   try {
     const { status, search } = req.query;
     const companyId = cid(req);
@@ -36,7 +37,7 @@ router.get('/registrations', async (req, res) => {
 });
 
 // ── GET /vendor-portal/registrations/:id ─────────────────────────────────────
-router.get('/registrations/:id', async (req, res) => {
+router.get('/registrations/:id', requireProcurement('view'), async (req, res) => {
   try {
     const { rows: [vr] } = await pool.query(`SELECT * FROM vendor_registrations WHERE id=$1`, [req.params.id]);
     if (!vr) return res.status(404).json({ error: 'Not found' });
@@ -45,7 +46,7 @@ router.get('/registrations/:id', async (req, res) => {
 });
 
 // ── POST /vendor-portal/registrations (self-registration — no auth required) ──
-router.post('/registrations', async (req, res) => {
+router.post('/registrations', requireProcurement('add'), async (req, res) => {
   try {
     const {
       vendor_name, vendor_type, products_services,
@@ -84,7 +85,7 @@ router.post('/registrations', async (req, res) => {
 });
 
 // ── PUT /vendor-portal/registrations/:id/review (stage-based approval) ───────
-router.put('/registrations/:id/review', allowRoles('admin','super_admin','procurement','finance','manager','quality'), async (req, res) => {
+router.put('/registrations/:id/review', requireProcurement('approve', 'finance', 'finance_manager', 'qc_manager'), async (req, res) => {
   try {
     const { stage, status, remarks } = req.body;
     // stage: 'scm' | 'quality' | 'finance' | 'management'
@@ -137,7 +138,7 @@ router.put('/registrations/:id/review', allowRoles('admin','super_admin','procur
 });
 
 // ── Vendor Scorecard CRUD ─────────────────────────────────────────────────────
-router.get('/scorecards', async (req, res) => {
+router.get('/scorecards', requireProcurement('view', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { vendor_id, year, quarter } = req.query;
     const companyId = cid(req);
@@ -160,7 +161,7 @@ router.get('/scorecards', async (req, res) => {
   } catch { res.json([]); }
 });
 
-router.post('/scorecards', allowRoles('admin','super_admin','procurement','quality','manager'), async (req, res) => {
+router.post('/scorecards', requireProcurement('edit', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const {
       vendor_id, period_year, period_quarter,
@@ -197,7 +198,7 @@ router.post('/scorecards', allowRoles('admin','super_admin','procurement','quali
 });
 
 // ── Top vendors by score (for CEO dashboard) ──────────────────────────────────
-router.get('/scorecards/top', async (req, res) => {
+router.get('/scorecards/top', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cFilter = companyId ? `WHERE vs.company_id=${companyId}` : '';

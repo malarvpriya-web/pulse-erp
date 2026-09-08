@@ -12,6 +12,7 @@ import express from 'express';
 import svc from '../services/sourcingStrategy.service.js';
 import { CHESSBOARD, FORCES, allMethods, MIN_COVERAGE_PCT } from '../engines/sourcingStrategyEngine.js';
 import { companyOf } from '../../../shared/scope.js';
+import { requireProcurement } from '../procurement.authz.js';
 
 const router = express.Router();
 
@@ -27,6 +28,13 @@ const scopeOf = (req) => req.scope?.company_id ?? companyOf(req);
  * 410 other call sites in this codebase.
  */
 const actorUserId = (req) => req.user?.userId ?? req.user?.id ?? null;
+/**
+ * AUTHORIZATION. This router was mounted behind `verifyToken` and NOTHING else,
+ * so every route below was reachable by any authenticated account regardless of
+ * role — including the writes. `requireProcurement(action, ...alsoAllowRoles)`
+ * ORs the role_permissions matrix with named roles, which is how the rest of the
+ * module is gated; the named roles are the documented exceptions, not a bypass.
+ */
 
 const windowOpts = (req) => ({
   months: req.query.months ? Number(req.query.months) : 12,
@@ -46,7 +54,7 @@ const fail = (res, err) => {
  * picker without hard-coding sixty-four strings it would then have to keep in
  * step with the engine.
  */
-router.get('/taxonomy', (req, res) => {
+router.get('/taxonomy', requireProcurement('view'), (req, res) => {
   res.json({
     forces: FORCES,
     quadrants: Object.values(CHESSBOARD).map((q) => ({
@@ -75,7 +83,7 @@ router.get('/taxonomy', (req, res) => {
  * RFx would get a 403 on a dropdown. This one rides the same scope and auth as
  * the rest of the sourcing board.
  */
-router.get('/categories', async (req, res) => {
+router.get('/categories', requireProcurement('view'), async (req, res) => {
   try {
     res.json(await svc.listCategories(scopeOf(req)));
   } catch (err) {
@@ -84,7 +92,7 @@ router.get('/categories', async (req, res) => {
 });
 
 /** The whole board: every category, positioned, with its top plays. */
-router.get('/portfolio', async (req, res) => {
+router.get('/portfolio', requireProcurement('view'), async (req, res) => {
   try {
     res.json(await svc.getPortfolio(scopeOf(req), windowOpts(req)));
   } catch (err) {
@@ -103,7 +111,7 @@ router.get('/portfolio', async (req, res) => {
  * spend whose item carries no category. That bucket is a first-class row, not
  * an error case.
  */
-router.get('/categories/:categoryKey', async (req, res) => {
+router.get('/categories/:categoryKey', requireProcurement('view'), async (req, res) => {
   try {
     const data = await svc.getCategory(scopeOf(req), req.params.categoryKey, windowOpts(req));
     if (!data) return res.status(404).json({ error: 'Category not found on the sourcing board' });
@@ -120,7 +128,7 @@ router.get('/categories/:categoryKey', async (req, res) => {
  * quadrant are resolved from the engine's taxonomy server-side, so a client
  * cannot file a method under a quadrant it does not belong to.
  */
-router.post('/categories/:categoryKey/strategy', async (req, res) => {
+router.post('/categories/:categoryKey/strategy', requireProcurement('approve'), async (req, res) => {
   try {
     // users.id — the JWT's id space. Named on the column for the same reason
     // (`decided_by_user_id`), because employees(id) and users(id) have been

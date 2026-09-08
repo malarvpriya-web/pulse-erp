@@ -3,11 +3,26 @@ import { nextPurchaseOrderNumber } from '../../../shared/docNumber.js';
 
 class PurchaseOrderRepository {
   async create(client, data) {
-    const { po_number, pr_id, supplier_id, order_date, expected_delivery_date, subtotal, tax_amount, total_amount, terms_conditions, notes, created_by, company_id } = data;
+    const {
+      po_number, pr_id, supplier_id, order_date, expected_delivery_date,
+      subtotal, tax_amount, total_amount, terms_conditions, notes,
+      created_by, company_id, currency, exchange_rate, project_id, sales_order_id,
+    } = data;
+    // currency/exchange_rate carry DB defaults ('INR'/1); pass them explicitly so a
+    // foreign-currency PO can be raised, and keep total_amount_inr in step with the
+    // rate rather than leaving it NULL for every row (finance reads the INR column).
+    const rate = exchange_rate == null || exchange_rate === '' ? 1 : parseFloat(exchange_rate);
+    const totalInr = (parseFloat(total_amount) || 0) * (Number.isFinite(rate) && rate > 0 ? rate : 1);
     const result = await client.query(
-      `INSERT INTO purchase_orders (po_number, pr_id, supplier_id, order_date, expected_delivery_date, subtotal, tax_amount, total_amount, terms_conditions, notes, created_by, company_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [po_number, pr_id ?? null, supplier_id, order_date, expected_delivery_date ?? null, subtotal ?? 0, tax_amount ?? 0, total_amount ?? 0, terms_conditions ?? null, notes ?? null, created_by, company_id ?? null]
+      `INSERT INTO purchase_orders (po_number, pr_id, supplier_id, order_date, expected_delivery_date,
+                                    subtotal, tax_amount, total_amount, terms_conditions, notes,
+                                    created_by, company_id, currency, exchange_rate, total_amount_inr,
+                                    project_id, sales_order_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+      [po_number, pr_id ?? null, supplier_id, order_date, expected_delivery_date ?? null,
+       subtotal ?? 0, tax_amount ?? 0, total_amount ?? 0, terms_conditions ?? null, notes ?? null,
+       created_by, company_id ?? null, currency || 'INR', Number.isFinite(rate) && rate > 0 ? rate : 1,
+       totalInr, project_id ?? null, sales_order_id ?? null]
     );
     return result.rows[0];
   }
@@ -78,46 +93,96 @@ class PurchaseOrderRepository {
     };
   }
 
-  async findById(id) {
-    const result = await pool.query(
+  /**
+   * Single-record read, tenant-scoped.
+   *
+   * `companyId` is second because every caller that serves an HTTP request must
+   * pass it: without the predicate this returned any tenant's PO by id, and the
+   * routes built on it (detail drawer, status update, send, approve, cancel)
+   * inherited the hole — a company-1 token could read and cancel a company-2
+   * order. `null` means a genuinely global scope (super admin with no company),
+   * matching companyOf()'s contract; it is never the default.
+   */
+  async findById(id, companyId = null, client = null) {
+    const db = client ?? pool;
+    const result = await db.query(
       `SELECT po.*, COALESCE(v.vendor_name, '') as supplier_name, v.email as supplier_email
        FROM purchase_orders po
        LEFT JOIN vendors v ON po.supplier_id = v.id
-       WHERE po.id = $1 AND po.deleted_at IS NULL`,
-      [id]
+       WHERE po.id = $1 AND po.deleted_at IS NULL
+         AND ($2::int IS NULL OR po.company_id = $2)`,
+      [id, companyId]
     );
     return result.rows[0];
   }
 
-  async getItems(poId) {
-    const result = await pool.query(
-      `SELECT poi.*, ii.item_code, ii.item_name, ii.unit_of_measure 
+  /**
+   * @param {object|null} client  the active transaction client, when reading
+   *   inside one.
+   *
+   * grn.service.createGRN() called this WITHOUT a client to decide whether the
+   * order was now fully received, immediately after incrementing the very
+   * received_quantity values it was about to read. A pool read runs on a
+   * different connection and therefore a different snapshot: under READ
+   * COMMITTED it cannot see the transaction's uncommitted UPDATEs, so it always
+   * returned the PRE-receipt quantities. `allReceived` was consequently false on
+   * the receipt that completed the order, and a fully received PO was left at
+   * status 'partial' forever — which then kept it in the open-order lists, the
+   * pending-receipt count and MRP's inbound supply.
+   */
+  async getItems(poId, companyId = null, client = null) {
+    const db = client ?? pool;
+    // LEFT JOIN, not JOIN: a line whose item was since deleted from the item
+    // master must still appear on its PO — an inner join silently dropped it and
+    // the order read as short-shipped against its own total.
+    const result = await db.query(
+      `SELECT poi.*, ii.item_code, ii.item_name, ii.unit_of_measure
        FROM purchase_order_items poi
-       JOIN inventory_items ii ON poi.item_id = ii.id
-       WHERE poi.po_id = $1 ORDER BY poi.created_at`,
-      [poId]
+       LEFT JOIN inventory_items ii ON poi.item_id = ii.id
+       JOIN purchase_orders po ON po.id = poi.po_id
+       WHERE poi.po_id = $1 AND ($2::int IS NULL OR po.company_id = $2)
+       ORDER BY poi.created_at`,
+      [poId, companyId]
     );
     return result.rows;
   }
 
-  async updateStatus(client, id, status) {
+  async updateStatus(client, id, status, companyId = null) {
     const result = await client.query(
-      'UPDATE purchase_orders SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
-      [status, id]
+      `UPDATE purchase_orders SET status = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2 AND ($3::int IS NULL OR company_id = $3) RETURNING *`,
+      [status, id, companyId]
     );
     return result.rows[0];
   }
 
+  /**
+   * Book accepted quantity against a PO line.
+   *
+   * Writes BOTH receipt columns on purpose. `purchase_order_items` carries
+   * `received_quantity` (what GRN has always written, and what this module and
+   * the GRN screen read) and `received_qty` (added by the 20260426 module-tables
+   * migration and never written by anything). They are not aliases to any
+   * reader: mrpEngine.service.js computes open supply as
+   * `quantity - COALESCE(received_qty, 0)`, so with that column pinned at 0 the
+   * planner counted every fully-received PO line as still inbound forever and
+   * under-ordered against phantom stock. Keeping the pair in step here fixes the
+   * planner without breaking the readers of either name; migration
+   * 20260902000001 backfills the rows that already exist.
+   */
   async updateItemReceived(client, itemId, quantity) {
     const result = await client.query(
-      'UPDATE purchase_order_items SET received_quantity = received_quantity + $1 WHERE id = $2 RETURNING *',
+      `UPDATE purchase_order_items
+          SET received_quantity = COALESCE(received_quantity, 0) + $1,
+              received_qty      = COALESCE(received_quantity, 0) + $1
+        WHERE id = $2 RETURNING *`,
       [quantity, itemId]
     );
     return result.rows[0];
   }
 
-  async getNextNumber(client) {
-    return nextPurchaseOrderNumber(client);
+  async getNextNumber(client, companyId = null) {
+    return nextPurchaseOrderNumber(client, companyId);
   }
 
   async getLateDeliveries(companyId) {

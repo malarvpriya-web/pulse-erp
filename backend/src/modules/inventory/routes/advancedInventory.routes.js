@@ -3,6 +3,7 @@ import pool from '../../shared/db.js';
 import repo from '../repositories/advancedInventory.repository.js';
 import purchaseRequestRepo from '../../procurement/repositories/purchaseRequest.repository.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
 
 const router = express.Router();
 
@@ -179,11 +180,21 @@ router.post('/purchase-suggestions/:id/convert', requirePermission('inventory', 
     if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
 
     await client.query('BEGIN');
-    const prNumber = await purchaseRequestRepo.getNextNumber();
+    // The company and the transaction client both matter: without the company
+    // the number ignores the configured pr_prefix, and without the client it is
+    // drawn on a different connection and is not part of this unit of work.
+    const companyId = companyOf(req);
+    const prNumber = await purchaseRequestRepo.getNextNumber(client, companyId);
     const pr = await purchaseRequestRepo.create(client, {
       request_number: prNumber,
-      requested_by_employee_id: req.user.employee_id ?? req.user.userId ?? req.user.id,
+      // employeeOf(), never req.user.userId: this column FKs employees(id), and
+      // the users.id fallback that used to sit here FK-violates for any account
+      // whose users.id is not coincidentally also an employees.id.
+      requested_by_employee_id: await employeeOf(req, pool),
       request_date: new Date(),
+      // Without this the requisition is born NULL-company and is invisible to
+      // every company-scoped user, including the buyer who converted it.
+      company_id: companyId,
       notes: `Generated from purchase suggestion for item ${suggestion.item_code}`,
     });
     await purchaseRequestRepo.createItem(client, {
@@ -200,7 +211,7 @@ router.post('/purchase-suggestions/:id/convert', requirePermission('inventory', 
     await purchaseRequestRepo.recomputeTotal(client, pr.id);
     await repo.convertSuggestionToPR(req.params.id, pr.id, client);
     await client.query('COMMIT');
-    res.status(201).json(await purchaseRequestRepo.findById(pr.id));
+    res.status(201).json(await purchaseRequestRepo.findById(pr.id, companyId));
   } catch (error) {
     await client.query('ROLLBACK');
     res.status(error.status || 500).json({ error: error.message });

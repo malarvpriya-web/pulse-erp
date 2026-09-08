@@ -266,6 +266,7 @@ import { startWorkflowEscalationCron } from "./src/jobs/workflowEscalation.cron.
 import { startDocumentExpiryCron } from "./src/jobs/documentExpiry.cron.js";
 import { startCustomerHealthRecalcCron } from "./src/jobs/customerHealthRecalc.cron.js";
 import { startVendorHealthRecalcCron } from "./src/jobs/vendorHealthRecalc.cron.js";
+import { startProcurementAlertsCron } from "./src/jobs/procurementAlerts.cron.js";
 import { startDepartmentDigestCron } from "./src/jobs/departmentDigest.cron.js";
 import './src/jobs/attendance.cron.js';
 import './src/jobs/leave.cron.js';
@@ -971,6 +972,7 @@ async function startServer() {
     startDocumentExpiryCron();
     startCustomerHealthRecalcCron();
     startVendorHealthRecalcCron();
+    startProcurementAlertsCron();
   });
 }
 startServer().catch(err => {

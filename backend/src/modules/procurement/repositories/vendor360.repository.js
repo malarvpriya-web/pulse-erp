@@ -1,10 +1,47 @@
 import pool from '../../../config/db.js';
 
-// Swallows DB errors gracefully — every aggregation is non-critical.
-// The caller (service) decides what to do when a section is empty.
-const q  = (sql, params) => pool.query(sql, params).catch(() => ({ rows: [] }));
-const q1 = (sql, params, def = {}) =>
-  pool.query(sql, params).catch(() => ({ rows: [def] }));
+/**
+ * Query helpers for Vendor 360.
+ *
+ * WHAT THESE USED TO BE
+ * ---------------------
+ *   const q  = (sql, params) => pool.query(sql, params).catch(() => ({ rows: [] }));
+ *   const q1 = (sql, params, def = {}) => pool.query(sql, params).catch(() => ({ rows: [def] }));
+ *
+ * Every one of the 27 queries in this file ran through them, so ANY SQL error —
+ * a renamed column, a dropped table, a type mismatch, a permission failure —
+ * became an empty result with no trace. Vendor 360 is a decision surface: spend,
+ * on-time delivery, defect rate, open NCRs, risk, outstanding payables. A broken
+ * query rendered as "this vendor has no history", which is not a smaller version
+ * of the truth, it is a different claim — and it is the claim a buyer uses to
+ * justify awarding them more business.
+ *
+ * This is the same failure the 2026-08-25 Analyse & AI pass found at scale:
+ * nineteen SQL statements failing on every single request, invisible behind
+ * `.catch(() => [])`, for weeks.
+ *
+ * The comment said "every aggregation is non-critical". A number on a supplier
+ * scorecard is not non-critical; what is non-critical is whether ONE PANEL of a
+ * multi-panel page can render when its own query fails. So the failure is still
+ * contained — one panel's error does not blank the page — but it is now LOGGED
+ * with the failing panel named, and the caller can tell an error from an empty
+ * set by the `error` field rather than having to assume.
+ */
+function makeQ(label, emptyValue) {
+  return async (sql, params) => {
+    try {
+      return await pool.query(sql, params);
+    } catch (err) {
+      // Named, with the SQLSTATE, so "vendor 360 shows nothing" is diagnosable
+      // from the log instead of requiring someone to re-run every panel by hand.
+      console.error(`[vendor360] ${label} query failed (${err.code || 'no code'}): ${err.message}`);
+      return { rows: emptyValue, failed: true, error: err.message };
+    }
+  };
+}
+
+const q  = makeQ('panel', []);
+const q1 = (sql, params, def = {}) => makeQ('single-row panel', [def])(sql, params);
 
 export const Vendor360Repo = {
 

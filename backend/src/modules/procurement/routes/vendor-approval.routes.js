@@ -7,11 +7,13 @@ import express from 'express';
 import multer from 'multer';
 import pool from '../../../config/db.js';
 import { verifyToken, allowRoles } from '../../../middlewares/auth.middleware.js';
+import { requireProcurement } from '../procurement.authz.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { dimension } from '../../../shared/dashboardFilters.js';
 import VendorService from '../services/vendor.service.js';
 import { uploadFile } from '../../../services/StorageService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { resolveVendorParty } from '../services/vendorIdentity.service.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -22,10 +24,110 @@ const uid = req => req.user?.userId ?? req.user?.id ?? null;
 // All routes require authentication
 router.use(verifyToken);
 
+/**
+ * AUTHORIZATION AND TENANT SCOPE — what this router had, and what it has now.
+ *
+ * Every route below was reachable by ANY authenticated account. `verifyToken`
+ * was the whole gate on 25 of the 31 routes, and the six that carried
+ * `allowRoles` named FOUR ROLE CODES THAT DO NOT EXIST — `procurement`, `scm`,
+ * `quality` and `director`. `allowRoles` matches on the code, so each phantom
+ * simply never matched: the SCM review was in practice open to
+ * admin/super_admin/manager and closed to the procurement team whose review it
+ * is, and the management review was open to any `manager` — the second-largest
+ * role in this database, 8 accounts, with `can_view = FALSE` on procurement.
+ * Same failure as the `ceo`/`cfo`/`chro` phantoms found in the roles pass.
+ *
+ * The consequences were not theoretical. Ungated and unscoped, these were live:
+ *   POST /vendors/:vendorId/banks     — add bank details to any vendor, in any
+ *                                        company. This is the destination of an
+ *                                        invoice-fraud attempt.
+ *   POST /vendors/:vendorId/contacts   — inject a contact into the vendor master
+ *   DELETE /contacts/:id               — delete another tenant's vendor contact
+ *   PUT  /:id/*-review                 — approve another tenant's vendor
+ *   POST /ncr, /capa, /vendors/:id/risk — write another tenant's quality record
+ *
+ * Gates now come from `requireProcurement(action, ...alsoAllowRoles)`, which ORs
+ * the role_permissions matrix with named roles — the same helper the rest of the
+ * module uses, so the matrix stays the single source of truth and the named
+ * roles are only the documented exceptions (quality works NCR/CAPA, finance
+ * works bank verification).
+ */
+
+/**
+ * Load a vendor registration the caller is allowed to see.
+ *
+ * `vendor_registrations.company_id` exists and NOTHING read it: every query in
+ * this file keyed on the path id alone, so a registration — including its
+ * bank account number, GSTIN and PAN — was readable and approvable by any
+ * tenant. Returns null when the row is absent OR belongs to someone else; both
+ * are a 404 to the caller, which is the correct answer to "does this id exist"
+ * from someone who may not know.
+ */
+async function ownedRegistration(req, id) {
+  const { rows } = await pool.query(
+    `SELECT * FROM vendor_registrations
+      WHERE id = $1 AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)`,
+    [id, cid(req)]
+  );
+  return rows[0] ?? null;
+}
+
+/** The same check for a vendor id appearing in a path. */
+async function ownsVendor(req, vendorId) {
+  const { rows } = await pool.query(
+    `SELECT id FROM vendors
+      WHERE id = $1 AND deleted_at IS NULL
+        AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)`,
+    [vendorId, cid(req)]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Guard for a `:vendorId` path segment. Placed before the handler so a foreign
+ * or non-existent vendor is refused before any query runs against its children.
+ */
+const scopeVendor = async (req, res, next) => {
+  if (!(await ownsVendor(req, req.params.vendorId))) {
+    return res.status(404).json({ error: 'Vendor not found' });
+  }
+  next();
+};
+
+/**
+ * The approval stages, in the order they must happen.
+ *
+ * Nothing enforced the sequence: management-review could be called directly on a
+ * brand-new registration, skipping the SCM, quality and finance reviews
+ * entirely — which is the whole point of a four-stage approval. Each stage
+ * therefore now asserts that the stage before it has recorded a decision.
+ */
+const REVIEW_STAGES = ['scm', 'quality', 'finance', 'mgmt'];
+const STAGE_COLUMN  = { scm: 'scm_reviewed_at', quality: 'quality_reviewed_at', finance: 'finance_reviewed_at', mgmt: 'mgmt_approved_at' };
+const STAGE_LABEL   = { scm: 'SCM', quality: 'Quality', finance: 'Finance', mgmt: 'Management' };
+
+function assertStageOrder(reg, stage) {
+  const idx = REVIEW_STAGES.indexOf(stage);
+  for (let i = 0; i < idx; i++) {
+    const prior = REVIEW_STAGES[i];
+    if (!reg[STAGE_COLUMN[prior]]) {
+      return { status: 409, body: {
+        error: `${STAGE_LABEL[stage]} review cannot be recorded until the ${STAGE_LABEL[prior]} review is done.`,
+        code: 'REVIEW_STAGE_OUT_OF_ORDER',
+        awaiting: prior,
+      } };
+    }
+  }
+  if (reg.status === 'Rejected') {
+    return { status: 409, body: { error: 'This registration was rejected; reopen it before recording another review.', code: 'REGISTRATION_REJECTED' } };
+  }
+  return null;
+}
+
 // ── APPROVAL QUEUE ────────────────────────────────────────────────────────────
 
 // ── GET /vendor-approval/queue ────────────────────────────────────────────────
-router.get('/queue', async (req, res) => {
+router.get('/queue', requireProcurement('view'), async (req, res) => {
   try {
     const { stage, status = 'pending', page = 1, limit = 25 } = req.query;
     const companyId = cid(req);
@@ -68,9 +170,11 @@ router.get('/queue', async (req, res) => {
 });
 
 // ── GET /vendor-approval/:id ──────────────────────────────────────────────────
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireProcurement('view'), async (req, res) => {
   try {
-    const { rows: [reg] } = await pool.query(`SELECT * FROM vendor_registrations WHERE id=$1`, [req.params.id]);
+    // Scoped: this returns the registration's bank account number, GSTIN and
+    // PAN, and keyed on the path id alone it returned any tenant's.
+    const reg = await ownedRegistration(req, req.params.id);
     if (!reg) return res.status(404).json({ error: 'Not found' });
 
     const [{ rows: docs }, { rows: contacts }, { rows: banks }] = await Promise.all([
@@ -84,7 +188,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // ── PUT /vendor-approval/:id/scm-review ──────────────────────────────────────
-router.put('/:id/scm-review', allowRoles('admin', 'super_admin', 'procurement', 'scm', 'manager'), async (req, res) => {
+router.put('/:id/scm-review', requireProcurement('approve'), async (req, res) => {
   try {
     const {
       decision, remarks,
@@ -96,6 +200,17 @@ router.put('/:id/scm-review', allowRoles('admin', 'super_admin', 'procurement', 
       return res.status(400).json({ error: 'decision must be Approve, Reject, or Hold' });
     }
 
+    // Scope FIRST: keyed on the path id alone, this recorded a review against —
+    // and approved — another tenant's vendor registration. Then order: nothing
+    // enforced the SCM -> Quality -> Finance -> Management sequence, so a
+    // brand-new registration could be sent straight to management approval and
+    // promoted into the vendor master having passed none of the checks the
+    // workflow exists to make.
+    const existing = await ownedRegistration(req, req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const order = assertStageOrder(existing, 'scm');
+    if (order) return res.status(order.status).json(order.body);
+
     let newStatus = 'Under Review';
     if (decision === 'Reject')  newStatus = 'Rejected';
     else if (decision === 'Hold') newStatus = 'On Hold';
@@ -105,8 +220,8 @@ router.put('/:id/scm-review', allowRoles('admin', 'super_admin', 'procurement', 
       UPDATE vendor_registrations SET
         scm_reviewed_by=$1, scm_reviewed_at=NOW(), scm_remarks=$2, scm_score=$3,
         status=$4, updated_at=NOW()
-      WHERE id=$5 RETURNING *
-    `, [uid(req), remarks, scm_score || 0, newStatus, req.params.id]);
+      WHERE id=$5 AND ($6::int IS NULL OR company_id = $6 OR company_id IS NULL) RETURNING *
+    `, [uid(req), remarks, scm_score || 0, newStatus, req.params.id, cid(req)]);
 
     if (!reg) return res.status(404).json({ error: 'Not found' });
     logAudit({ userId: uid(req), module: 'vendor_approval', recordId: reg.id, recordType: 'vendor_registration', action: 'scm_review', newData: { decision, remarks, scm_score } });
@@ -115,7 +230,7 @@ router.put('/:id/scm-review', allowRoles('admin', 'super_admin', 'procurement', 
 });
 
 // ── PUT /vendor-approval/:id/quality-review ──────────────────────────────────
-router.put('/:id/quality-review', allowRoles('admin', 'super_admin', 'quality', 'manager'), async (req, res) => {
+router.put('/:id/quality-review', requireProcurement('approve', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const {
       decision, remarks,
@@ -127,6 +242,17 @@ router.put('/:id/quality-review', allowRoles('admin', 'super_admin', 'quality', 
       return res.status(400).json({ error: 'decision must be Approve, Reject, or Hold' });
     }
 
+    // Scope FIRST: keyed on the path id alone, this recorded a review against —
+    // and approved — another tenant's vendor registration. Then order: nothing
+    // enforced the SCM -> Quality -> Finance -> Management sequence, so a
+    // brand-new registration could be sent straight to management approval and
+    // promoted into the vendor master having passed none of the checks the
+    // workflow exists to make.
+    const existing = await ownedRegistration(req, req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const order = assertStageOrder(existing, 'quality');
+    if (order) return res.status(order.status).json(order.body);
+
     let newStatus = 'Pending Finance Review';
     if (decision === 'Reject')  newStatus = 'Rejected';
     else if (decision === 'Hold') newStatus = 'On Hold';
@@ -135,8 +261,8 @@ router.put('/:id/quality-review', allowRoles('admin', 'super_admin', 'quality', 
       UPDATE vendor_registrations SET
         quality_reviewed_by=$1, quality_reviewed_at=NOW(), quality_remarks=$2, scm_quality_score=$3,
         status=$4, updated_at=NOW()
-      WHERE id=$5 RETURNING *
-    `, [uid(req), remarks, quality_score || 0, newStatus, req.params.id]);
+      WHERE id=$5 AND ($6::int IS NULL OR company_id = $6 OR company_id IS NULL) RETURNING *
+    `, [uid(req), remarks, quality_score || 0, newStatus, req.params.id, cid(req)]);
 
     if (!reg) return res.status(404).json({ error: 'Not found' });
     logAudit({ userId: uid(req), module: 'vendor_approval', recordId: reg.id, recordType: 'vendor_registration', action: 'quality_review', newData: { decision, remarks, quality_score } });
@@ -145,7 +271,7 @@ router.put('/:id/quality-review', allowRoles('admin', 'super_admin', 'quality', 
 });
 
 // ── PUT /vendor-approval/:id/finance-review ───────────────────────────────────
-router.put('/:id/finance-review', allowRoles('admin', 'super_admin', 'finance', 'manager'), async (req, res) => {
+router.put('/:id/finance-review', requireProcurement('approve', 'finance', 'finance_manager'), async (req, res) => {
   try {
     const {
       decision, remarks,
@@ -157,6 +283,17 @@ router.put('/:id/finance-review', allowRoles('admin', 'super_admin', 'finance', 
       return res.status(400).json({ error: 'decision must be Approve, Reject, or Hold' });
     }
 
+    // Scope FIRST: keyed on the path id alone, this recorded a review against —
+    // and approved — another tenant's vendor registration. Then order: nothing
+    // enforced the SCM -> Quality -> Finance -> Management sequence, so a
+    // brand-new registration could be sent straight to management approval and
+    // promoted into the vendor master having passed none of the checks the
+    // workflow exists to make.
+    const existing = await ownedRegistration(req, req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const order = assertStageOrder(existing, 'finance');
+    if (order) return res.status(order.status).json(order.body);
+
     let newStatus = 'Pending Management Review';
     if (decision === 'Reject')  newStatus = 'Rejected';
     else if (decision === 'Hold') newStatus = 'On Hold';
@@ -165,8 +302,8 @@ router.put('/:id/finance-review', allowRoles('admin', 'super_admin', 'finance', 
       UPDATE vendor_registrations SET
         finance_reviewed_by=$1, finance_reviewed_at=NOW(), finance_remarks=$2, finance_score=$3,
         status=$4, updated_at=NOW()
-      WHERE id=$5 RETURNING *
-    `, [uid(req), remarks, finance_score || 0, newStatus, req.params.id]);
+      WHERE id=$5 AND ($6::int IS NULL OR company_id = $6 OR company_id IS NULL) RETURNING *
+    `, [uid(req), remarks, finance_score || 0, newStatus, req.params.id, cid(req)]);
 
     if (!reg) return res.status(404).json({ error: 'Not found' });
     logAudit({ userId: uid(req), module: 'vendor_approval', recordId: reg.id, recordType: 'vendor_registration', action: 'finance_review', newData: { decision, remarks, finance_score } });
@@ -175,24 +312,37 @@ router.put('/:id/finance-review', allowRoles('admin', 'super_admin', 'finance', 
 });
 
 // ── PUT /vendor-approval/:id/management-review ───────────────────────────────
-router.put('/:id/management-review', allowRoles('admin', 'super_admin', 'manager', 'director'), async (req, res) => {
+router.put('/:id/management-review', requireProcurement('approve', 'department_head'), async (req, res) => {
   try {
     const { decision, remarks, conditions } = req.body;
     if (!['Approved', 'Conditional Approval', 'Rejected'].includes(decision)) {
       return res.status(400).json({ error: 'decision must be Approved, Conditional Approval, or Rejected' });
     }
 
+    // Scope and order, as for the three reviews before this one. This is the
+    // stage that promotes a registration into the vendor master, so reaching it
+    // without the SCM, quality and finance reviews meant a supplier could be
+    // created having passed none of them.
+    const existing = await ownedRegistration(req, req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const order = assertStageOrder(existing, 'mgmt');
+    if (order) return res.status(order.status).json(order.body);
+
     const newStatus = decision === 'Rejected' ? 'Rejected' : 'Approved';
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
+      // FOR UPDATE: two approvers clicking together would otherwise both pass
+      // the `!vendorId` check below and create TWO vendors for one registration.
+      await client.query('SELECT id FROM vendor_registrations WHERE id=$1 FOR UPDATE', [req.params.id]);
+
       const { rows: [reg] } = await client.query(`
         UPDATE vendor_registrations SET
           mgmt_approved_by=$1, mgmt_approved_at=NOW(), mgmt_remarks=$2,
           status=$3, updated_at=NOW()
-        WHERE id=$4 RETURNING *
-      `, [uid(req), remarks, newStatus, req.params.id]);
+        WHERE id=$4 AND ($5::int IS NULL OR company_id = $5 OR company_id IS NULL) RETURNING *
+      `, [uid(req), remarks, newStatus, req.params.id, cid(req)]);
 
       if (!reg) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
 
@@ -233,6 +383,15 @@ router.put('/:id/management-review', allowRoles('admin', 'super_admin', 'manager
 
         vendorId = vendor.id;
         await client.query(`UPDATE vendor_registrations SET vendor_id=$1, updated_at=NOW() WHERE id=$2`, [vendorId, reg.id]);
+
+        // A vendor without a finance party cannot be paid — every AP document
+        // FKs parties(id). This promotion path created the vendor row and
+        // stopped there, so a supplier that came through the full four-stage
+        // approval was LESS complete than one typed into the internal form,
+        // which binds its party at creation. Same transaction as the vendor
+        // row: committing one without the other is what left 0 of 6 vendors
+        // bound in the first place. See vendorIdentity.service.js.
+        await resolveVendorParty(client, vendorId);
 
         // Migrate contacts to vendor_contacts
         if (reg.contact_details) {
@@ -286,22 +445,27 @@ router.put('/:id/management-review', allowRoles('admin', 'super_admin', 'manager
 // VENDOR CONTACTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/vendors/:vendorId/contacts', async (req, res) => {
+router.get('/vendors/:vendorId/contacts', requireProcurement('view'), scopeVendor, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM vendor_contacts WHERE vendor_id=$1 ORDER BY is_primary DESC, contact_type`,
-      [req.params.vendorId]
+      `SELECT * FROM vendor_contacts WHERE vendor_id=$1
+         AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)
+       ORDER BY is_primary DESC, contact_type`,
+      [req.params.vendorId, cid(req)]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/vendors/:vendorId/contacts', async (req, res) => {
+router.post('/vendors/:vendorId/contacts', requireProcurement('edit'), scopeVendor, async (req, res) => {
   try {
     const { contact_type, name, designation, phone, mobile, email, is_primary } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
     if (is_primary) {
-      await pool.query(`UPDATE vendor_contacts SET is_primary=false WHERE vendor_id=$1`, [req.params.vendorId]);
+      await pool.query(
+        `UPDATE vendor_contacts SET is_primary=false WHERE vendor_id=$1
+          AND ($2::int IS NULL OR company_id = $2)`,
+        [req.params.vendorId, cid(req)]);
     }
     const { rows: [c] } = await pool.query(`
       INSERT INTO vendor_contacts (vendor_id, contact_type, name, designation, phone, mobile, email, is_primary, company_id)
@@ -311,20 +475,26 @@ router.post('/vendors/:vendorId/contacts', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/contacts/:id', async (req, res) => {
+router.put('/contacts/:id', requireProcurement('edit'), async (req, res) => {
   try {
     const { contact_type, name, designation, phone, mobile, email, is_primary } = req.body;
     const { rows: [c] } = await pool.query(`
       UPDATE vendor_contacts SET contact_type=$1, name=$2, designation=$3, phone=$4, mobile=$5, email=$6, is_primary=$7, updated_at=NOW()
-      WHERE id=$8 RETURNING *
-    `, [contact_type, name, designation, phone, mobile, email, is_primary || false, req.params.id]);
+      WHERE id=$8 AND ($9::int IS NULL OR company_id = $9) RETURNING *
+    `, [contact_type, name, designation, phone, mobile, email, is_primary || false, req.params.id, cid(req)]);
+    if (!c) return res.status(404).json({ error: 'Contact not found' });
     res.json(c);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/contacts/:id', async (req, res) => {
+router.delete('/contacts/:id', requireProcurement('delete'), async (req, res) => {
   try {
-    await pool.query(`DELETE FROM vendor_contacts WHERE id=$1`, [req.params.id]);
+    // Reports whether anything was actually deleted. The bare DELETE returned
+    // "Deleted" for an id in another company that it had not touched.
+    const { rowCount } = await pool.query(
+      `DELETE FROM vendor_contacts WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, cid(req)]);
+    if (!rowCount) return res.status(404).json({ error: 'Contact not found' });
     res.json({ message: 'Deleted' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -333,17 +503,19 @@ router.delete('/contacts/:id', async (req, res) => {
 // VENDOR BANK DETAILS
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/vendors/:vendorId/banks', async (req, res) => {
+router.get('/vendors/:vendorId/banks', requireProcurement('view', 'finance', 'finance_manager'), scopeVendor, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM vendor_bank_details WHERE vendor_id=$1 ORDER BY is_primary DESC`,
-      [req.params.vendorId]
+      `SELECT * FROM vendor_bank_details WHERE vendor_id=$1
+         AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)
+       ORDER BY is_primary DESC`,
+      [req.params.vendorId, cid(req)]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/vendors/:vendorId/banks', async (req, res) => {
+router.post('/vendors/:vendorId/banks', requireProcurement('approve', 'finance', 'finance_manager'), scopeVendor, async (req, res) => {
   try {
     const { bank_name, account_number, ifsc, branch, account_type, is_primary } = req.body;
     if (is_primary) {
@@ -357,12 +529,13 @@ router.post('/vendors/:vendorId/banks', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/banks/:id/verify', allowRoles('admin', 'super_admin', 'finance'), async (req, res) => {
+router.put('/banks/:id/verify', requireProcurement('approve', 'finance', 'finance_manager'), async (req, res) => {
   try {
     const { rows: [b] } = await pool.query(`
       UPDATE vendor_bank_details SET finance_verified=true, finance_verified_by=$1, finance_verified_at=NOW(), updated_at=NOW()
-      WHERE id=$2 RETURNING *
-    `, [uid(req), req.params.id]);
+      WHERE id=$2 AND ($3::int IS NULL OR company_id = $3) RETURNING *
+    `, [uid(req), req.params.id, cid(req)]);
+    if (!b) return res.status(404).json({ error: 'Bank detail not found' });
     res.json(b);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -371,7 +544,7 @@ router.put('/banks/:id/verify', allowRoles('admin', 'super_admin', 'finance'), a
 // VENDOR DOCUMENTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/vendors/:vendorId/documents', async (req, res) => {
+router.get('/vendors/:vendorId/documents', requireProcurement('view', 'finance', 'finance_manager', 'qc_manager'), scopeVendor, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT * FROM vendor_documents WHERE vendor_id=$1 ORDER BY doc_type, created_at DESC`,
@@ -381,7 +554,7 @@ router.get('/vendors/:vendorId/documents', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/vendors/:vendorId/documents', upload.single('file'), async (req, res) => {
+router.post('/vendors/:vendorId/documents', requireProcurement('edit', 'qc_manager', 'qc_engineer'), scopeVendor, upload.single('file'), async (req, res) => {
   try {
     const { doc_type, file_name, drive_file_id, drive_file_url, expiry_date, remarks } = req.body;
     let { file_path } = req.body;
@@ -401,12 +574,13 @@ router.post('/vendors/:vendorId/documents', upload.single('file'), async (req, r
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/documents/:id/verify', allowRoles('admin', 'super_admin', 'quality', 'finance'), async (req, res) => {
+router.put('/documents/:id/verify', requireProcurement('approve', 'qc_manager', 'finance', 'finance_manager'), async (req, res) => {
   try {
     const { rows: [doc] } = await pool.query(`
       UPDATE vendor_documents SET verified=true, verified_by=$1, verified_at=NOW(), updated_at=NOW()
-      WHERE id=$2 RETURNING *
-    `, [uid(req), req.params.id]);
+      WHERE id=$2 AND ($3::int IS NULL OR company_id = $3) RETURNING *
+    `, [uid(req), req.params.id, cid(req)]);
+    if (!doc) return res.status(404).json({ error: 'Document not found' });
     res.json(doc);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -415,7 +589,7 @@ router.put('/documents/:id/verify', allowRoles('admin', 'super_admin', 'quality'
 // NCR
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/vendors/:vendorId/ncr', async (req, res) => {
+router.get('/vendors/:vendorId/ncr', requireProcurement('view', 'qc_manager', 'qc_engineer'), scopeVendor, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT * FROM vendor_ncr WHERE vendor_id=$1 ORDER BY ncr_date DESC`,
@@ -425,7 +599,7 @@ router.get('/vendors/:vendorId/ncr', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/ncr', async (req, res) => {
+router.post('/ncr', requireProcurement('add', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { vendor_id, grn_id, po_id, defect_type, description, quantity_rejected, severity } = req.body;
     const companyId = cid(req);
@@ -442,14 +616,21 @@ router.post('/ncr', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/ncr/:id', async (req, res) => {
+router.put('/ncr/:id', requireProcurement('edit', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { status, root_cause, disposition } = req.body;
-    const closed = status === 'Closed' ? `closed_at=NOW(), closed_by=${uid(req)},` : '';
+    // Same interpolated actor id as the CAPA update below, and the same missing
+    // company predicate: any authenticated caller could close any tenant's
+    // non-conformance report.
+    const isClosed = status === 'Closed';
     const { rows: [ncr] } = await pool.query(`
-      UPDATE vendor_ncr SET status=$1, root_cause=$2, disposition=$3, ${closed} updated_at=NOW()
-      WHERE id=$4 RETURNING *
-    `, [status, root_cause, disposition, req.params.id]);
+      UPDATE vendor_ncr SET status=$1, root_cause=$2, disposition=$3,
+             closed_at = CASE WHEN $5::boolean THEN NOW() ELSE closed_at END,
+             closed_by = CASE WHEN $5::boolean THEN $6::int ELSE closed_by END,
+             updated_at=NOW()
+      WHERE id=$4 AND ($7::int IS NULL OR company_id = $7) RETURNING *
+    `, [status, root_cause, disposition, req.params.id, isClosed, uid(req), cid(req)]);
+    if (!ncr) return res.status(404).json({ error: 'NCR not found' });
     res.json(ncr);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -458,17 +639,19 @@ router.put('/ncr/:id', async (req, res) => {
 // CAPA
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/vendors/:vendorId/capa', async (req, res) => {
+router.get('/vendors/:vendorId/capa', requireProcurement('view', 'qc_manager', 'qc_engineer'), scopeVendor, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT c.*, n.ncr_number FROM vendor_capa c LEFT JOIN vendor_ncr n ON n.id=c.ncr_id WHERE c.vendor_id=$1 ORDER BY c.issue_date DESC`,
-      [req.params.vendorId]
+      `SELECT c.*, n.ncr_number FROM vendor_capa c LEFT JOIN vendor_ncr n ON n.id=c.ncr_id
+        WHERE c.vendor_id=$1 AND ($2::int IS NULL OR c.company_id = $2 OR c.company_id IS NULL)
+        ORDER BY c.issue_date DESC`,
+      [req.params.vendorId, cid(req)]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/capa', async (req, res) => {
+router.post('/capa', requireProcurement('add', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { ncr_id, vendor_id, capa_type, due_date, description, root_cause, action_plan, verification_method } = req.body;
     const companyId = cid(req);
@@ -485,14 +668,23 @@ router.post('/capa', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/capa/:id', async (req, res) => {
+router.put('/capa/:id', requireProcurement('edit', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { status, effectiveness_rating, root_cause, action_plan } = req.body;
-    const closed = status === 'Closed' ? `closed_at=NOW(), closed_by=${uid(req)},` : '';
+    // `closed_by=${uid(req)}` interpolated a value straight into the SQL string.
+    // It is an integer from a signed token today, so it was not exploitable —
+    // but an unparameterised value in a SQL string is a habit, not an accident,
+    // and a NULL actor produced the literal text `closed_by=null`. Bound as a
+    // parameter, with the column set unconditionally so the shape is stable.
+    const isClosed = status === 'Closed';
     const { rows: [capa] } = await pool.query(`
-      UPDATE vendor_capa SET status=$1, effectiveness_rating=$2, root_cause=$3, action_plan=$4, ${closed} updated_at=NOW()
-      WHERE id=$5 RETURNING *
-    `, [status, effectiveness_rating || null, root_cause, action_plan, req.params.id]);
+      UPDATE vendor_capa SET status=$1, effectiveness_rating=$2, root_cause=$3, action_plan=$4,
+             closed_at = CASE WHEN $6::boolean THEN NOW() ELSE closed_at END,
+             closed_by = CASE WHEN $6::boolean THEN $7::int ELSE closed_by END,
+             updated_at=NOW()
+      WHERE id=$5 AND ($8::int IS NULL OR company_id = $8) RETURNING *
+    `, [status, effectiveness_rating || null, root_cause, action_plan, req.params.id, isClosed, uid(req), cid(req)]);
+    if (!capa) return res.status(404).json({ error: 'CAPA not found' });
     res.json(capa);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -501,7 +693,7 @@ router.put('/capa/:id', async (req, res) => {
 // RISK ASSESSMENTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/vendors/:vendorId/risk', async (req, res) => {
+router.get('/vendors/:vendorId/risk', requireProcurement('view', 'qc_manager'), scopeVendor, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT * FROM vendor_risk_assessments WHERE vendor_id=$1 ORDER BY assessment_date DESC LIMIT 12`,
@@ -511,7 +703,7 @@ router.get('/vendors/:vendorId/risk', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/vendors/:vendorId/risk', async (req, res) => {
+router.post('/vendors/:vendorId/risk', requireProcurement('edit', 'qc_manager'), scopeVendor, async (req, res) => {
   try {
     const { financial_risk, quality_risk, delivery_risk, compliance_risk, dependency_risk, notes } = req.body;
     const scores = [financial_risk, quality_risk, delivery_risk, compliance_risk, dependency_risk].map(Number);
@@ -537,7 +729,7 @@ router.post('/vendors/:vendorId/risk', async (req, res) => {
 // CEO TRACEABILITY (49C-25)
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/vendors/:vendorId/traceability', async (req, res) => {
+router.get('/vendors/:vendorId/traceability', requireProcurement('view'), scopeVendor, async (req, res) => {
   try {
     const { vendorId } = req.params;
     const companyId = cid(req);
@@ -662,7 +854,7 @@ router.get('/vendors/:vendorId/traceability', async (req, res) => {
 // DASHBOARD (49C-21)
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/dashboard/stats', async (req, res) => {
+router.get('/dashboard/stats', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cf = companyId ? `WHERE (company_id=$1 OR company_id IS NULL)` : '';
@@ -714,7 +906,7 @@ router.get('/dashboard/stats', async (req, res) => {
 
 // Dimension values for the vendor dashboard filter bar. Not narrowed by the
 // active selection, so picking one doesn't empty the other dropdown.
-router.get('/dashboard/filter-options', async (req, res) => {
+router.get('/dashboard/filter-options', requireProcurement('view'), async (req, res) => {
   const companyId = cid(req);
   const distinct = (col) => pool
     .query(`SELECT DISTINCT ${col} AS v FROM vendors
@@ -726,7 +918,7 @@ router.get('/dashboard/filter-options', async (req, res) => {
   res.json({ vendor_types: types.rows.map(r => r.v), risk_ratings: risks.rows.map(r => r.v) });
 });
 
-router.get('/dashboard/charts', async (req, res) => {
+router.get('/dashboard/charts', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cf = companyId ? `(company_id=$1 OR company_id IS NULL)` : 'TRUE';
@@ -773,7 +965,7 @@ router.get('/dashboard/charts', async (req, res) => {
 // REPORTS (49C-20)
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/reports/vendor-master', async (req, res) => {
+router.get('/reports/vendor-master', requireProcurement('export'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cf = companyId ? `WHERE (v.company_id=$1 OR v.company_id IS NULL)` : '';
@@ -789,7 +981,7 @@ router.get('/reports/vendor-master', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get('/reports/approval-status', async (req, res) => {
+router.get('/reports/approval-status', requireProcurement('export'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cf = companyId ? `WHERE (company_id=$1 OR company_id IS NULL)` : '';
@@ -802,7 +994,7 @@ router.get('/reports/approval-status', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get('/reports/ncr-summary', async (req, res) => {
+router.get('/reports/ncr-summary', requireProcurement('export', 'qc_manager'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(`

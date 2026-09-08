@@ -10,6 +10,21 @@ import engine from '../engines/vendorHealthEngine.js';
 // ── Helpers ──────────────────────────────────────────────────────────────────────
 const q = (sql, params) => pool.query(sql, params);
 
+/**
+ * A dashboard panel that is allowed to fail without blanking the page — but not
+ * allowed to fail silently.
+ *
+ * Two panels on the CEO command centre carried a bare `.catch(() => ({ rows: [] }))`.
+ * A broken query there renders as "no top suppliers" and "no delayed suppliers",
+ * which reads as good news. The failure is still contained to its own panel; it
+ * is now named in the log, so "the board is empty" is diagnosable rather than
+ * indistinguishable from "nothing to report".
+ */
+const panel = (label, promise) => promise.catch((err) => {
+  console.error(`[vendorHealth] ${label} panel failed (${err.code || 'no code'}): ${err.message}`);
+  return { rows: [] };
+});
+
 // ── 49G-1  COMPUTE + PERSIST HEALTH SCORE ────────────────────────────────────────
 async function computeAndSave(vendorId, companyId) {
   // Fetch all source data in parallel
@@ -24,11 +39,18 @@ async function computeAndSave(vendorId, companyId) {
     { rows: [projectStats] },
     { rows: [flags] },
   ] = await Promise.all([
-    q(`SELECT * FROM vendors WHERE id = $1`, [vendorId]),
+    // Scoped. Four of the nine reads below already carried company_id and five
+    // did not, so a caller in one tenant could score a vendor belonging to
+    // another — reading that vendor's master record, its latest scorecard and
+    // its document set, and then PERSISTING the resulting score into the
+    // caller's own tenant. `vendor` is checked for existence below, so scoping
+    // it here is what turns the whole call into a 404 for a foreign vendor.
+    q(`SELECT * FROM vendors WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [vendorId, companyId]),
 
     q(`SELECT * FROM vendor_scorecards
-       WHERE vendor_id = $1
-       ORDER BY period_year DESC, period_quarter DESC LIMIT 1`, [vendorId]),
+       WHERE vendor_id = $1 AND ($2::int IS NULL OR company_id = $2)
+       ORDER BY period_year DESC, period_quarter DESC LIMIT 1`, [vendorId, companyId]),
 
     q(`SELECT
          COUNT(*)                                        AS total_ncr,
@@ -81,8 +103,8 @@ async function computeAndSave(vendorId, companyId) {
     // never completed a single run regardless of the GRN/PO fixes above.
     q(`SELECT doc_type, expiry_date, verified, status
        FROM vendor_documents
-       WHERE vendor_id = $1`,
-      [vendorId]),
+       WHERE vendor_id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [vendorId, companyId]),
 
     // purchase_orders has no unit_price/price_increased column, real status values are only
     // 'partial'/'received' (never 'delayed'/'overdue'), and supplier_id is integer — the old
@@ -130,7 +152,8 @@ async function computeAndSave(vendorId, companyId) {
          AND p.status NOT IN ('Completed', 'Cancelled')`,
       [vendorId, companyId]),
 
-    q(`SELECT * FROM vendor_strategic_flags WHERE vendor_id = $1`, [vendorId])
+    q(`SELECT * FROM vendor_strategic_flags
+        WHERE vendor_id = $1 AND ($2::int IS NULL OR company_id = $2)`, [vendorId, companyId])
       .catch(() => ({ rows: [{}] })),
   ]);
 
@@ -574,7 +597,7 @@ async function getCEOCommandCenter(companyId) {
        WHERE v.company_id = $1 AND v.deleted_at IS NULL
        GROUP BY v.id, v.vendor_name, v.vendor_category, vhs.health_score, vhs.health_status
        ORDER BY total_spend DESC LIMIT 10`, [companyId])
-      .catch(() => ({ rows: [] })),
+      .catch((err) => { console.error(`[vendorHealth] top-suppliers panel failed (${err.code || 'no code'}): ${err.message}`); return { rows: [] }; }),
 
     // Highest risk suppliers
     q(`SELECT vhs.vendor_id, v.vendor_name, v.vendor_category,
@@ -623,7 +646,7 @@ async function getCEOCommandCenter(companyId) {
        WHERE v.company_id = $1
        GROUP BY v.id, v.vendor_name, v.vendor_category, vhs.health_score, vhs.health_status, vhs.otd_pct
        ORDER BY delayed_count DESC LIMIT 10`, [companyId])
-      .catch(() => ({ rows: [] })),
+      .catch((err) => { console.error(`[vendorHealth] delayed-suppliers panel failed (${err.code || 'no code'}): ${err.message}`); return { rows: [] }; }),
 
     q(`SELECT
          COUNT(*) AS total,
@@ -653,13 +676,25 @@ async function getCEOCommandCenter(companyId) {
 
 // ── VENDOR DETAIL (49G-19) ────────────────────────────────────────────────────────
 async function getVendorHealth(vendorId, companyId) {
+  // The vendor itself is checked first. Without it this read answered 200 for a
+  // vendor in another tenant — three of its four queries were scoped and looked
+  // empty, but the fourth was not, so the response still carried that company's
+  // strategic flags: is_critical_supplier, is_single_source, is_long_lead,
+  // is_high_spend. That is a map of where a competitor's supply chain breaks.
+  const { rows: [owned] } = await q(
+    `SELECT id FROM vendors WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+    [vendorId, companyId]
+  );
+  if (!owned) throw Object.assign(new Error('Vendor not found'), { status: 404 });
+
   const { rows: [existing] } = await q(
     `SELECT * FROM vendor_health_scores WHERE vendor_id = $1 AND company_id = $2`,
     [vendorId, companyId]
   );
 
   const { rows: [flags] } = await q(
-    `SELECT * FROM vendor_strategic_flags WHERE vendor_id = $1`, [vendorId]
+    `SELECT * FROM vendor_strategic_flags
+      WHERE vendor_id = $1 AND ($2::int IS NULL OR company_id = $2)`, [vendorId, companyId]
   ).catch(() => ({ rows: [{}] }));
 
   const { rows: warnings } = await q(

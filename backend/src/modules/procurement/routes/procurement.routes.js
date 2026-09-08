@@ -7,17 +7,29 @@ import poRepo from '../repositories/purchaseOrder.repository.js';
 import grnService from '../services/grn.service.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
-import { nextRfxNumber, nextPurchaseOrderNumber } from '../../../shared/docNumber.js';
+import { nextRfxNumber, nextPurchaseOrderNumber, nextLocalPurchaseNumber } from '../../../shared/docNumber.js';
 import { uploadFile } from '../../../services/StorageService.js';
 import { checkAndCreateAlerts } from '../../../services/stockAlerts.js';
 import { sendPurchaseOrderToVendor, sendRfqToVendor } from '../../../utils/mailer.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
+import { resolveGstRate } from '../../../shared/gstRate.js';
 import { hasRole, allowRoles } from '../../../middlewares/auth.middleware.js';
-import { requiredBand, assertCanDecideAmount } from '../procurement.authz.js';
+import { requiredBand, assertCanDecideAmount, requireProcurement } from '../procurement.authz.js';
 import { rankOptions, TCO_DEFAULTS } from '../engines/tcoEngine.js';
 import {
   loadTcoParams, loadVendorPerformance, loadAnnualDemand, masterRate, tcoBasis,
 } from '../services/tco.service.js';
+import {
+  loadSpendFacets, loadSpendTrend, loadInvoiceSpend, poSpendInr,
+  resolveLimit as resolveSpendLimit,
+} from '../services/spendAnalytics.service.js';
+import { sqlPoCommitted } from '../../../shared/statusSets.js';
+import { resolveVendorParty } from '../services/vendorIdentity.service.js';
+import {
+  PROC_DEFAULTS, TCO_SETTING_COLS, TCO_RANGES, getProcSettings,
+} from '../services/procurementSettings.service.js';
+import threeWayMatchRoutes, { createThreeWayMatchRecord } from './threeWayMatch.routes.js';
+import { assertTransition, isNoop } from '../procurement.stateMachine.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -35,10 +47,14 @@ const cid = req => companyOf(req);
 // =====================================================
 
 // GET /purchase-requests/stats — must be before /:id route
-router.get('/purchase-requests/stats', async (req, res) => {
+router.get('/purchase-requests/stats', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
-    const cidFilter = companyId ? `AND e.company_id = $1` : '';
+    // Scope on the PR's own company_id — see the note in
+    // purchaseRequest.repository.findAll. Scoping through the requester's
+    // employees row via a LEFT JOIN dropped every PR with a NULL requester,
+    // which was all of them, so these KPIs counted a fraction of the register.
+    const cidFilter = companyId ? `AND pr.company_id = $1` : '';
     const params = companyId ? [companyId] : [];
     const { rows } = await pool.query(`
       SELECT
@@ -48,7 +64,6 @@ router.get('/purchase-requests/stats', async (req, res) => {
         COUNT(*) FILTER (WHERE pr.status = 'converted_to_po')          AS ordered,
         COUNT(*) FILTER (WHERE pr.status = 'rejected')                 AS rejected
       FROM purchase_requests pr
-      LEFT JOIN employees e ON e.id = pr.requested_by_employee_id
       WHERE pr.deleted_at IS NULL ${cidFilter}
     `, params);
     const s = rows[0];
@@ -64,43 +79,65 @@ router.get('/purchase-requests/stats', async (req, res) => {
   }
 });
 
-router.post('/purchase-requests', async (req, res) => {
+router.post('/purchase-requests', requireProcurement('add'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      const prNumber = await prRepo.getNextNumber();
-      const pr = await prRepo.create(client, {
-        ...req.body,
-        company_id: cid(req),
-        request_number: prNumber
-      });
-
-      for (const item of req.body.items) {
-        await prRepo.createItem(client, {
-          pr_id: pr.id,
-          ...item
-        });
-      }
-
-      // Value the header from its line items so approval routing sees a real amount
-      await prRepo.recomputeTotal(client, pr.id);
-
-      await client.query('COMMIT');
-      res.status(201).json(await prRepo.findById(pr.id));
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
+    const b = req.body || {};
+    const items = Array.isArray(b.items) ? b.items.filter(i => String(i.item_name || '').trim() || i.item_id) : [];
+    if (!items.length) return res.status(400).json({ error: 'At least one line item is required.' });
+    if (items.some(i => !(parseFloat(i.quantity) > 0))) {
+      return res.status(400).json({ error: 'Every line item needs a quantity greater than zero.' });
     }
+
+    const companyId = cid(req);
+    // Stamp the raiser from the session. The drawer has no requester field — it
+    // is always "me" — and this route never derived one, so every requisition
+    // the app created stored requested_by_employee_id = NULL. That is what the
+    // approval notification addresses, what the PR list prints in "Requested
+    // by", and (before the scoping fix in the repository) what the list filtered
+    // on, which is how a freshly-raised PR could vanish from the screen that
+    // raised it. employeeOf falls back to the users row when the JWT predates
+    // the employee_id claim.
+    const requesterEmpId = b.requested_by_employee_id ?? await employeeOf(req, pool);
+
+    await client.query('BEGIN');
+
+    const prNumber = await prRepo.getNextNumber(client, companyId);
+    const pr = await prRepo.create(client, {
+      ...b,
+      requested_by_employee_id: requesterEmpId,
+      company_id: companyId,
+      request_number: prNumber,
+    });
+
+    for (const item of items) {
+      await prRepo.createItem(client, { pr_id: pr.id, ...item });
+    }
+
+    // Value the header from its line items so approval routing sees a real amount
+    await prRepo.recomputeTotal(client, pr.id);
+
+    await client.query('COMMIT');
+
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id,
+      module: 'procurement', recordId: pr.id,
+      recordType: 'purchase_request', action: 'create',
+      oldData: null, newData: pr, req,
+    });
+
+    const created = await prRepo.findById(pr.id, companyId);
+    created.items = await prRepo.getItems(pr.id, null, companyId);
+    res.status(201).json(created);
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
-router.get('/purchase-requests', async (req, res) => {
+router.get('/purchase-requests', requireProcurement('view'), async (req, res) => {
   try {
     const prs = await prRepo.findAll({ ...req.query, company_id: cid(req) });
     res.json(prs);
@@ -109,27 +146,36 @@ router.get('/purchase-requests', async (req, res) => {
   }
 });
 
-router.get('/purchase-requests/export', async (req, res) => {
+router.get('/purchase-requests/export', requireProcurement('export'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, from_date, to_date } = req.query;
     const params = [];
     const conditions = ['pr.deleted_at IS NULL'];
-    if (companyId) { params.push(companyId); conditions.push(`e.company_id = $${params.length}`); }
+    if (companyId) { params.push(companyId); conditions.push(`pr.company_id = $${params.length}`); }
     if (status)    { params.push(status);    conditions.push(`pr.status = $${params.length}`); }
     if (from_date) { params.push(from_date); conditions.push(`pr.request_date >= $${params.length}`); }
     if (to_date)   { params.push(to_date);   conditions.push(`pr.request_date <= $${params.length}`); }
+    // total_amount was the literal `0`, so every row of this export reported a
+    // ₹0 requisition regardless of its lines — a spend extract that was wrong on
+    // its only money column. The header total is maintained by recomputeTotal();
+    // fall back to summing the lines when an older row predates it.
     const { rows } = await pool.query(`
       SELECT pr.request_number, pr.request_date, pr.notes AS description,
+             pr.priority,
              COALESCE(e.first_name||' '||e.last_name, '') AS requested_by,
-             0 AS total_amount, pr.status, pr.created_at
+             COALESCE(NULLIF(pr.total_amount, 0), (
+               SELECT COALESCE(SUM(COALESCE(pri.quantity,0) * COALESCE(pri.expected_price,0)), 0)
+               FROM purchase_request_items pri WHERE pri.pr_id = pr.id
+             ), 0) AS total_amount,
+             pr.status, pr.created_at
       FROM purchase_requests pr
       LEFT JOIN employees e ON e.id = pr.requested_by_employee_id
       WHERE ${conditions.join(' AND ')} ORDER BY pr.request_date DESC
     `, params);
-    const header = 'PR No,Date,Description,Requested By,Amount,Status,Created';
+    const header = 'PR No,Date,Description,Priority,Requested By,Amount,Status,Created';
     const csvRows = rows.map(r => [
-      r.request_number||'', r.request_date||'', r.description||'',
+      r.request_number||'', r.request_date||'', r.description||'', r.priority||'',
       r.requested_by||'', r.total_amount||0, r.status||'',
       r.created_at ? new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '',
     ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(','));
@@ -139,25 +185,19 @@ router.get('/purchase-requests/export', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.get('/purchase-requests/:id', async (req, res) => {
+router.get('/purchase-requests/:id', requireProcurement('view'), async (req, res) => {
   try {
-    const pr = await prRepo.findById(req.params.id);
+    const companyId = cid(req);
+    const pr = await prRepo.findById(req.params.id, companyId);
     if (!pr) {
       return res.status(404).json({ error: 'Purchase request not found' });
     }
-    pr.items = await prRepo.getItems(req.params.id);
+    pr.items = await prRepo.getItems(req.params.id, null, companyId);
     res.json(pr);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Helper: load procurement settings for current company
-async function getProcSettings(companyId) {
-  if (!companyId) return PROC_DEFAULTS;
-  const { rows } = await pool.query(`SELECT * FROM procurement_settings WHERE company_id=$1 LIMIT 1`, [companyId]).catch(() => ({ rows: [] }));
-  return rows[0] ? { ...PROC_DEFAULTS, ...rows[0] } : PROC_DEFAULTS;
-}
 
 // requiredApprovalLevel / canApprove moved to ../procurement.authz.js as
 // requiredBand / assertCanDecideAmount. The originals read only the caller's
@@ -165,13 +205,28 @@ async function getProcSettings(companyId) {
 // `cfo`, `finance_head`), omitted `finance`/`finance_manager` entirely, and
 // ignored the configured `cfo_approval_above`. See that file for detail.
 
-router.put('/purchase-requests/:id/approve', async (req, res) => {
+router.put('/purchase-requests/:id/approve', requireProcurement('approve'), async (req, res) => {
   try {
+    const companyId = cid(req);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const oldPr = await prRepo.findById(req.params.id);
-      if (!oldPr) return res.status(404).json({ error: 'PR not found' });
+      // Lock the requisition first: two approvers clicking together would
+      // otherwise both read 'pending_approval', both write 'approved', and both
+      // fire an approval notification for one decision.
+      await client.query('SELECT id FROM purchase_requests WHERE id=$1 FOR UPDATE', [req.params.id]);
+      const oldPr = await prRepo.findById(req.params.id, companyId, client);
+      if (!oldPr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'PR not found' }); }
+
+      // Idempotent, and state-checked: an already-approved requisition is
+      // returned as it stands, and one that was rejected or already converted
+      // cannot be quietly approved on top.
+      if (oldPr.status === 'approved') {
+        await client.query('ROLLBACK');
+        return res.json({ ...oldPr, already_approved: true });
+      }
+      const move = assertTransition('purchase_request', oldPr.status, 'approved');
+      if (move) { await client.query('ROLLBACK'); return res.status(move.status).json(move.body); }
 
       // Enforce approval limits from procurement settings
       const settings = await getProcSettings(cid(req));
@@ -202,7 +257,7 @@ router.put('/purchase-requests/:id/approve', async (req, res) => {
       // accounts (employee_id IS NULL) that are the only ones able to clear
       // high-value requests. NULL is accepted by the column.
       const approverEmpId = req.user?.employee_id ?? null;
-      const pr = await prRepo.updateStatus(client, req.params.id, 'approved', approverEmpId);
+      const pr = await prRepo.updateStatus(client, req.params.id, 'approved', approverEmpId, { companyId });
       await client.query('COMMIT');
 
       logAudit({
@@ -228,15 +283,24 @@ router.put('/purchase-requests/:id/approve', async (req, res) => {
   }
 });
 
-router.put('/purchase-requests/:id/reject', async (req, res) => {
+router.put('/purchase-requests/:id/reject', requireProcurement('approve'), async (req, res) => {
   try {
+    const companyId = cid(req);
     const actorId = req.user.userId ?? req.user.id;
     const { remarks } = req.body;
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const oldPr = await prRepo.findById(req.params.id);
+      await client.query('SELECT id FROM purchase_requests WHERE id=$1 FOR UPDATE', [req.params.id]);
+      const oldPr = await prRepo.findById(req.params.id, companyId, client);
       if (!oldPr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'PR not found' }); }
+
+      if (oldPr.status === 'rejected') {
+        await client.query('ROLLBACK');
+        return res.json({ ...oldPr, already_rejected: true });
+      }
+      const move = assertTransition('purchase_request', oldPr.status, 'rejected');
+      if (move) { await client.query('ROLLBACK'); return res.status(move.status).json(move.body); }
 
       // Rejecting requires the same authority as approving. This route had no
       // check at all, so anyone who could not approve a PR could still reject
@@ -245,7 +309,17 @@ router.put('/purchase-requests/:id/reject', async (req, res) => {
       const decide = assertCanDecideAmount(req, oldPr.total_amount, settings, 'reject');
       if (decide) { await client.query('ROLLBACK'); return res.status(decide.status).json(decide.body); }
 
-      const pr = await prRepo.updateStatus(client, req.params.id, 'rejected', actorId);
+      // `actorId` is a users.id and approved_by FKs employees(id) — passing it
+      // here was the stock_ledger.created_by trap again. It did not surface as a
+      // 500 only because updateStatus quietly ignored the argument on any status
+      // other than 'approved', which meant a rejection recorded neither who made
+      // it nor why: `rejection_reason` is a real column that nothing had ever
+      // written, so the requester saw their PR turn red with no explanation.
+      const rejecterEmpId = req.user?.employee_id ?? null;
+      const pr = await prRepo.updateStatus(client, req.params.id, 'rejected', rejecterEmpId, {
+        reason: (remarks || '').trim() || null,
+        companyId,
+      });
       await client.query('COMMIT');
       logAudit({
         userId: actorId, module: 'procurement', recordId: pr.id,
@@ -265,23 +339,92 @@ router.put('/purchase-requests/:id/reject', async (req, res) => {
 });
 
 // Convert approved PR → new draft PO
-router.patch('/purchase-requests/:id/convert-to-po', async (req, res) => {
+router.patch('/purchase-requests/:id/convert-to-po', requireProcurement('edit'), async (req, res) => {
   try {
+    const companyId = cid(req);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const pr = await prRepo.findById(req.params.id);
-      if (!pr) return res.status(404).json({ error: 'Purchase request not found' });
+      await client.query('SELECT id FROM purchase_requests WHERE id=$1 FOR UPDATE', [req.params.id]);
+      const pr = await prRepo.findById(req.params.id, companyId, client);
+      if (!pr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Purchase request not found' }); }
+
+      // ── Idempotency + authorisation-by-state ───────────────────────────────
+      // Nothing checked the requisition's status, so this route would convert a
+      // PR that was still awaiting approval — creating a purchase order for
+      // spend nobody had signed off — or one that had been REJECTED, or one
+      // already converted. Repeated calls raised a fresh PO every time, so a
+      // double-clicked Convert produced two orders for one requirement, each of
+      // which could then be approved and received.
+      if (pr.status === 'converted_to_po') {
+        const { rows: [existingPo] } = await client.query(
+          `SELECT id, po_number, supplier_id FROM purchase_orders
+            WHERE pr_id = $1 AND deleted_at IS NULL ORDER BY id LIMIT 1`,
+          [pr.id]
+        );
+        await client.query('ROLLBACK');
+        if (existingPo) {
+          return res.status(200).json({
+            po_id: existingPo.id, po_number: existingPo.po_number,
+            supplier_id: existingPo.supplier_id, already_converted: true,
+          });
+        }
+        return res.status(409).json({ error: 'This requisition is already marked as converted but no purchase order was found against it. Investigate before converting again.' });
+      }
+      const move = assertTransition('purchase_request', pr.status, 'converted_to_po');
+      if (move) { await client.query('ROLLBACK'); return res.status(move.status).json(move.body); }
 
       // Carry the requisition's line items onto the PO — a converted PO must not
       // be an empty ₹0 header (which would break GRN receipt and 3-way match).
       // Seed each PO line's rate from the requested expected_price, and derive
       // the header subtotal/total from the lines so the PO is self-consistent.
-      const prItems  = await prRepo.getItems(pr.id, client);
-      const subtotal = prItems.reduce(
-        (s, it) => s + (parseFloat(it.quantity) || 0) * (parseFloat(it.expected_price) || 0),
-        0
-      );
+      const prItems  = await prRepo.getItems(pr.id, client, companyId);
+
+      // ── Tax ────────────────────────────────────────────────────────────────
+      // This route used to write tax_amount 0 on the header AND tax_rate 0 on
+      // every line, while the manual PO drawer computes GST per line from the
+      // rate the buyer picks. So the same two lines keyed by hand produced a
+      // ₹1,180 order and converted from a requisition produced a ₹1,000 one.
+      //
+      // That is not a cosmetic difference. The vendor invoices gross, the
+      // invoice leg of the three-way match compares that gross against
+      // po.total_amount, and the gap is the whole tax — measured live at
+      // "invoice leg differs from the order by 18.00% (tolerance 3%)". With
+      // block_payment_on_mismatch on (its purpose), EVERY requisition-driven
+      // order's invoice was blocked from becoming a payable.
+      //
+      // A requisition line carries no tax rate of its own — purchase_request_items
+      // has quantity and expected_price and nothing else — so the rate comes
+      // from the component master, through the shared resolver.
+      const itemIds = [...new Set(prItems.map(it => it.item_id).filter(x => x != null))];
+      const taxByItem = new Map();
+      if (itemIds.length) {
+        const { rows: taxRows } = await client.query(
+          `SELECT id, gst_rate, default_gst_rate FROM inventory_items WHERE id = ANY($1::int[])`,
+          [itemIds]
+        );
+        for (const r of taxRows) taxByItem.set(String(r.id), resolveGstRate(r));
+      }
+
+      const poLines = prItems.map((it) => {
+        const quantity = parseFloat(it.quantity) || 0;
+        const rate     = parseFloat(it.expected_price) || 0;
+        const taxRate  = taxByItem.get(String(it.item_id)) ?? 0;
+        const taxable  = quantity * rate;
+        const tax      = taxable * taxRate / 100;
+        return {
+          item_id:      it.item_id ?? null,
+          quantity,
+          rate,
+          tax_rate:     taxRate,
+          tax_amount:   Number(tax.toFixed(2)),
+          total_amount: Number((taxable + tax).toFixed(2)),
+          taxable,
+        };
+      });
+
+      const subtotal = Number(poLines.reduce((s, l) => s + l.taxable, 0).toFixed(2));
+      const taxTotal = Number(poLines.reduce((s, l) => s + l.tax_amount, 0).toFixed(2));
 
       // Automation Opportunity Audit §5.2 — a caller-supplied supplier_id
       // always wins; only when the buyer left it blank do we suggest the
@@ -312,15 +455,15 @@ router.patch('/purchase-requests/:id/convert-to-po', async (req, res) => {
         }
       }
 
-      const poNumber = await poRepo.getNextNumber();
+      const poNumber = await poRepo.getNextNumber(client, companyId);
       const po = await poRepo.create(client, {
         po_number:      poNumber,
         pr_id:          pr.id,
         supplier_id:    supplierId,
         order_date:     new Date().toISOString().slice(0, 10),
         subtotal,
-        tax_amount:     0,
-        total_amount:   subtotal,
+        tax_amount:     taxTotal,
+        total_amount:   Number((subtotal + taxTotal).toFixed(2)),
         notes:          pr.notes,
         // purchase_orders.created_by FKs employees(id), not users(id) — same
         // recurring bug as stock_ledger.created_by (project_stock_ledger_created_by_fk).
@@ -330,21 +473,12 @@ router.patch('/purchase-requests/:id/convert-to-po', async (req, res) => {
         company_id:     cid(req),
       });
 
-      for (const it of prItems) {
-        const qty  = parseFloat(it.quantity) || 0;
-        const rate = parseFloat(it.expected_price) || 0;
-        await poRepo.createItem(client, {
-          po_id:        po.id,
-          item_id:      it.item_id ?? null,
-          quantity:     qty,
-          rate,
-          tax_rate:     0,
-          tax_amount:   0,
-          total_amount: qty * rate,
-        });
+      for (const line of poLines) {
+        const { taxable, ...item } = line;   // taxable is a working value, not a column
+        await poRepo.createItem(client, { po_id: po.id, ...item });
       }
 
-      await prRepo.updateStatus(client, pr.id, 'converted_to_po');
+      await prRepo.updateStatus(client, pr.id, 'converted_to_po', null, { companyId });
       await client.query('COMMIT');
 
       logAudit({
@@ -374,7 +508,7 @@ router.patch('/purchase-requests/:id/convert-to-po', async (req, res) => {
 // =====================================================
 
 // GET /purchase-orders/stats — must be before /:id route
-router.get('/purchase-orders/stats', async (req, res) => {
+router.get('/purchase-orders/stats', requireProcurement('view'), async (req, res) => {
   try {
     const stats = await poRepo.getStats(cid(req));
     res.json(stats);
@@ -400,7 +534,7 @@ router.get('/purchase-orders/stats', async (req, res) => {
  * and this route does not know them; it only makes sure the buyer is not
  * unaware of the alternative.
  */
-router.post('/tco/advisory', async (req, res) => {
+router.post('/tco/advisory', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const vendorId  = Number(req.body?.vendor_id);
@@ -534,7 +668,7 @@ async function alternativesForItem(itemId, companyId) {
   const demand = await loadAnnualDemand(itemId, companyId);
   const it = item.rows[0] || {};
   const n = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
-  const itemTax = n(it.gst_rate ?? it.default_gst_rate);
+  const itemTax = resolveGstRate(it);
 
   const byVendor = new Map();
   for (const r of book.rows) {
@@ -584,46 +718,115 @@ async function alternativesForItem(itemId, companyId) {
   }).filter(o => o.unit_price != null && o.unit_price > 0);
 }
 
-router.post('/purchase-orders', async (req, res) => {
+/**
+ * Normalise a purchase-order line from either field vocabulary.
+ *
+ * The PO drawer posts `lines[]` shaped for the buyer's screen — `unit_price`,
+ * `gst_rate`, `taxable_amount`, `gst_amount`, `amount` — while this route read
+ * `req.body.items` with the column names (`rate`, `tax_rate`, `total_amount`).
+ * Nothing bridged them, so `req.body.items` was undefined on every request from
+ * the app and the handler threw "req.body.items is not iterable" → 500. Manual
+ * PO creation had therefore never once succeeded; the only POs in the system
+ * came from convert-to-PO and the RFQ award path, which build their lines
+ * server-side. Accept both vocabularies rather than renaming one side, so the
+ * integrations already posting `items` keep working.
+ *
+ * Money is recomputed here from quantity x rate x tax and never taken from the
+ * client: the drawer's totals are a display convenience, and a PO header that
+ * disagrees with the sum of its own lines breaks three-way match downstream.
+ */
+function normalisePoLine(raw) {
+  const quantity = parseFloat(raw.quantity ?? raw.qty ?? 0) || 0;
+  const rate     = parseFloat(raw.rate ?? raw.unit_price ?? 0) || 0;
+  const taxRate  = parseFloat(raw.tax_rate ?? raw.gst_rate ?? 0) || 0;
+  const taxable  = quantity * rate;
+  const tax      = taxable * taxRate / 100;
+  return {
+    item_id:      raw.item_id ? parseInt(raw.item_id, 10) : null,
+    quantity,
+    rate,
+    tax_rate:     taxRate,
+    tax_amount:   Number(tax.toFixed(2)),
+    total_amount: Number((taxable + tax).toFixed(2)),
+    taxable,
+  };
+}
+
+router.post('/purchase-orders', requireProcurement('add'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      const poNumber = await poRepo.getNextNumber();
-      const po = await poRepo.create(client, {
-        ...req.body,
-        po_number:  poNumber,
-        company_id: cid(req),
-        // Same purchase_orders.created_by FK-to-employees bug as convert-to-po above.
-        created_by: req.user?.employee_id ?? null
-      });
-
-      for (const item of req.body.items) {
-        await poRepo.createItem(client, {
-          po_id: po.id,
-          ...item
-        });
-      }
-
-      if (req.body.pr_id) {
-        await prRepo.updateStatus(client, req.body.pr_id, 'converted_to_po');
-      }
-
-      await client.query('COMMIT');
-      res.status(201).json(await poRepo.findById(po.id));
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
+    const b = req.body || {};
+    const rawLines = Array.isArray(b.items) ? b.items
+                   : Array.isArray(b.lines) ? b.lines
+                   : null;
+    if (!rawLines || !rawLines.length) {
+      return res.status(400).json({ error: 'At least one line item is required.' });
     }
+    if (!b.supplier_id) {
+      return res.status(400).json({ error: 'A supplier is required.' });
+    }
+
+    const lines = rawLines.map(normalisePoLine).filter(l => l.quantity > 0);
+    if (!lines.length) {
+      return res.status(400).json({ error: 'Every line item needs a quantity greater than zero.' });
+    }
+    const missingItem = lines.find(l => !l.item_id);
+    if (missingItem) {
+      return res.status(400).json({ error: 'Every line item must reference a component.' });
+    }
+
+    const subtotal = lines.reduce((s, l) => s + l.taxable, 0);
+    const taxTotal = lines.reduce((s, l) => s + l.tax_amount, 0);
+
+    const companyId = cid(req);
+    await client.query('BEGIN');
+
+    const poNumber = await poRepo.getNextNumber(client, companyId);
+    const po = await poRepo.create(client, {
+      ...b,
+      // The drawer calls it expected_date; the column is expected_delivery_date.
+      // Unmapped, every manually-raised PO would have carried a NULL promise date
+      // — the field the overdue-delivery report and MRP's due dates both read.
+      expected_delivery_date: b.expected_delivery_date || b.expected_date || null,
+      subtotal:     Number(subtotal.toFixed(2)),
+      tax_amount:   Number(taxTotal.toFixed(2)),
+      total_amount: Number((subtotal + taxTotal).toFixed(2)),
+      po_number:    poNumber,
+      company_id:   companyId,
+      // purchase_orders.created_by FKs employees(id), not users(id).
+      created_by:   req.user?.employee_id ?? null,
+    });
+
+    for (const line of lines) {
+      const { taxable, ...item } = line;   // taxable is a working value, not a column
+      await poRepo.createItem(client, { po_id: po.id, ...item });
+    }
+
+    if (b.pr_id) {
+      await prRepo.updateStatus(client, b.pr_id, 'converted_to_po', null, { companyId });
+    }
+
+    await client.query('COMMIT');
+
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id,
+      module: 'procurement', recordId: po.id,
+      recordType: 'purchase_order', action: 'create',
+      oldData: null, newData: po, req,
+    });
+
+    const created = await poRepo.findById(po.id, companyId);
+    created.items = await poRepo.getItems(po.id, companyId);
+    res.status(201).json(created);
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
-router.get('/purchase-orders', async (req, res) => {
+router.get('/purchase-orders', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const pos = await poRepo.findAll({ ...req.query, company_id: companyId });
@@ -633,7 +836,7 @@ router.get('/purchase-orders', async (req, res) => {
   }
 });
 
-router.get('/purchase-orders/export', async (req, res) => {
+router.get('/purchase-orders/export', requireProcurement('export'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const { status } = req.query;
@@ -675,20 +878,21 @@ router.get('/purchase-orders/export', async (req, res) => {
   }
 });
 
-router.get('/purchase-orders/:id', async (req, res) => {
+router.get('/purchase-orders/:id', requireProcurement('view'), async (req, res) => {
   try {
-    const po = await poRepo.findById(req.params.id);
+    const companyId = cid(req);
+    const po = await poRepo.findById(req.params.id, companyId);
     if (!po) {
       return res.status(404).json({ error: 'Purchase order not found' });
     }
-    po.items = await poRepo.getItems(req.params.id);
+    po.items = await poRepo.getItems(req.params.id, companyId);
     res.json(po);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.put('/purchase-orders/:id/status', async (req, res) => {
+router.put('/purchase-orders/:id/status', requireProcurement('edit', 'store_keeper'), async (req, res) => {
   try {
     const { status } = req.body;
     if (!VALID_PO_STATUSES.has(status)) {
@@ -697,8 +901,22 @@ router.put('/purchase-orders/:id/status', async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const oldPo = await poRepo.findById(req.params.id);
-      const po = await poRepo.updateStatus(client, req.params.id, status);
+      const companyId = cid(req);
+      // FOR UPDATE via findById's client is not enough on its own — lock the row
+      // so two concurrent status writes cannot both read the same 'from'.
+      await client.query('SELECT id FROM purchase_orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+      const oldPo = await poRepo.findById(req.params.id, companyId, client);
+      if (!oldPo) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Purchase order not found' }); }
+
+      // Where the order IS decides where it may go. Checking only that the
+      // destination is spelled correctly let a cancelled order be approved, a
+      // draft order be marked received, and a received order be pushed back to
+      // draft — all 200s. See procurement.stateMachine.js.
+      const move = assertTransition('purchase_order', oldPo.status, status);
+      if (move) { await client.query('ROLLBACK'); return res.status(move.status).json(move.body); }
+      if (isNoop(oldPo.status, status)) { await client.query('ROLLBACK'); return res.json(oldPo); }
+
+      const po = await poRepo.updateStatus(client, req.params.id, status, companyId);
       await client.query('COMMIT');
 
       logAudit({
@@ -724,14 +942,26 @@ router.put('/purchase-orders/:id/status', async (req, res) => {
   }
 });
 
-router.patch('/purchase-orders/:id/send', async (req, res) => {
+router.patch('/purchase-orders/:id/send', requireProcurement('edit'), async (req, res) => {
   try {
+    const companyId = cid(req);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const oldPo = await poRepo.findById(req.params.id);
-      if (!oldPo) return res.status(404).json({ error: 'Purchase order not found' });
-      const po = await poRepo.updateStatus(client, req.params.id, 'sent');
+      await client.query('SELECT id FROM purchase_orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+      const oldPo = await poRepo.findById(req.params.id, companyId, client);
+      // ROLLBACK before returning: an early `return` inside an open BEGIN left the
+      // pooled connection idle-in-transaction, and the next request to draw it
+      // inherited the stale transaction.
+      if (!oldPo) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Purchase order not found' }); }
+
+      // Idempotent: re-sending an order already with the vendor returns it
+      // rather than issuing a second copy of the same commitment.
+      if (oldPo.status === 'sent') { await client.query('ROLLBACK'); return res.json(oldPo); }
+      const move = assertTransition('purchase_order', oldPo.status, 'sent');
+      if (move) { await client.query('ROLLBACK'); return res.status(move.status).json(move.body); }
+
+      const po = await poRepo.updateStatus(client, req.params.id, 'sent', companyId);
       await client.query('COMMIT');
       logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: po.id, recordType: 'purchase_order', action: 'send', oldData: oldPo, newData: po, req });
       res.json(po);
@@ -740,13 +970,46 @@ router.patch('/purchase-orders/:id/send', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.patch('/purchase-orders/:id/approve', async (req, res) => {
+router.patch('/purchase-orders/:id/approve', requireProcurement('approve'), async (req, res) => {
   try {
+    const companyId = cid(req);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const oldPo = await poRepo.findById(req.params.id);
-      if (!oldPo) return res.status(404).json({ error: 'Purchase order not found' });
+      // FOR UPDATE serialises two approvers clicking at the same moment: the
+      // second blocks here, then reads status 'approved' and takes the
+      // already-approved branch instead of running the handler a second time.
+      await client.query('SELECT id FROM purchase_orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+      const oldPo = await poRepo.findById(req.params.id, companyId, client);
+      if (!oldPo) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Purchase order not found' }); }
+
+      // ── Idempotency ────────────────────────────────────────────────────────
+      // Nothing checked the current status, so a double-click ran the whole
+      // handler twice: two audit rows, and — because the tail of this route
+      // emails the order to the supplier — A SECOND PURCHASE ORDER SENT TO THE
+      // VENDOR for the same commitment. That is how one order becomes two
+      // deliveries and two invoices.
+      if (oldPo.status === 'approved') {
+        await client.query('ROLLBACK');
+        return res.json({ ...oldPo, already_approved: true });
+      }
+      const move = assertTransition('purchase_order', oldPo.status, 'approved');
+      if (move) { await client.query('ROLLBACK'); return res.status(move.status).json(move.body); }
+
+      // An order with no lines is not an order. Approving one commits the
+      // company to a zero-value document that GRN cannot receive against and
+      // 3-way match cannot value.
+      const { rows: [lineCount] } = await client.query(
+        'SELECT COUNT(*)::int AS n FROM purchase_order_items WHERE po_id = $1', [req.params.id]
+      );
+      if (!lineCount.n) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({ error: 'This purchase order has no line items — there is nothing to approve. Add at least one line first.' });
+      }
+      if (!oldPo.supplier_id) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({ error: 'This purchase order has no supplier. Set the vendor before approving it.' });
+      }
 
       // Enforce PO approval limits
       const settings = await getProcSettings(cid(req));
@@ -783,7 +1046,7 @@ router.patch('/purchase-orders/:id/approve', async (req, res) => {
         }
       }
 
-      const po = await poRepo.updateStatus(client, req.params.id, 'approved');
+      const po = await poRepo.updateStatus(client, req.params.id, 'approved', companyId);
       await client.query('COMMIT');
       logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: po.id, recordType: 'purchase_order', action: 'approve', oldData: oldPo, newData: po, req });
 
@@ -805,9 +1068,9 @@ router.patch('/purchase-orders/:id/approve', async (req, res) => {
       // committed. No PDF pipeline exists for POs, so this sends the same
       // header + line items poRepo.findById/getItems already expose.
       if (po.supplier_id) {
-        poRepo.findById(po.id).then(async (fullPo) => {
+        poRepo.findById(po.id, companyId).then(async (fullPo) => {
           if (!fullPo?.supplier_email) return;
-          const items = await poRepo.getItems(po.id);
+          const items = await poRepo.getItems(po.id, companyId);
           await sendPurchaseOrderToVendor(fullPo.supplier_email, {
             poNumber: fullPo.po_number,
             vendorName: fullPo.supplier_name,
@@ -825,13 +1088,35 @@ router.patch('/purchase-orders/:id/approve', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.patch('/purchase-orders/:id/cancel', async (req, res) => {
+router.patch('/purchase-orders/:id/cancel', requireProcurement('approve'), async (req, res) => {
   try {
+    const companyId = cid(req);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const oldPo = await poRepo.findById(req.params.id);
-      if (!oldPo) return res.status(404).json({ error: 'Purchase order not found' });
+      await client.query('SELECT id FROM purchase_orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+      const oldPo = await poRepo.findById(req.params.id, companyId, client);
+      if (!oldPo) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Purchase order not found' }); }
+
+      if (oldPo.status === 'cancelled') { await client.query('ROLLBACK'); return res.json({ ...oldPo, already_cancelled: true }); }
+
+      // An order with goods already booked against it cannot simply be
+      // cancelled: the stock is in the warehouse and, once matched, payable.
+      // Cancelling it left inventory and an AP liability attached to a document
+      // that says the order never happened. Reverse the receipt (RTV) first.
+      const { rows: [recv] } = await client.query(
+        `SELECT COALESCE(SUM(COALESCE(received_quantity,0)),0)::numeric AS qty
+           FROM purchase_order_items WHERE po_id = $1`, [req.params.id]
+      );
+      if (parseFloat(recv.qty) > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Purchase order ${oldPo.po_number} already has ${recv.qty} unit(s) received against it and cannot be cancelled. Return the goods to the vendor (RTV) first, or close the order short instead.`,
+          code: 'PO_HAS_RECEIPTS',
+        });
+      }
+      const move = assertTransition('purchase_order', oldPo.status, 'cancelled');
+      if (move) { await client.query('ROLLBACK'); return res.status(move.status).json(move.body); }
 
       // Cancelling a live PO is as consequential as approving it — it can halt
       // a delivery already in motion — so it takes the same authority. This
@@ -841,7 +1126,7 @@ router.patch('/purchase-orders/:id/cancel', async (req, res) => {
       const decide = assertCanDecideAmount(req, oldPo.total_amount, settings, 'cancel');
       if (decide) { await client.query('ROLLBACK'); return res.status(decide.status).json(decide.body); }
 
-      const po = await poRepo.updateStatus(client, req.params.id, 'cancelled');
+      const po = await poRepo.updateStatus(client, req.params.id, 'cancelled', companyId);
       await client.query('COMMIT');
       logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: po.id, recordType: 'purchase_order', action: 'cancel', oldData: oldPo, newData: po, req });
       res.json(po);
@@ -853,14 +1138,29 @@ router.patch('/purchase-orders/:id/cancel', async (req, res) => {
 // =====================================================
 // GOODS RECEIPT NOTES
 // =====================================================
-router.post('/grn', async (req, res) => {
+router.post('/grn', requireProcurement('add', 'store_keeper'), async (req, res) => {
   try {
     const grn = await grnService.createGRN(
-      { ...req.body, company_id: cid(req) },
+      {
+        ...req.body,
+        company_id: cid(req),
+        // The audit row needs the ACTOR's users.id; the stock ledger needs the
+        // actor's employees.id. They are different id spaces and were being
+        // conflated — the service was handed only the employee id and then
+        // logged it as a user id, so every GRN audit row named the wrong person
+        // or nobody. Pass both, each labelled.
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+        // An Idempotency-Key header is the standard way a client makes a POST
+        // retry-safe; accept it from the body too so the browser fetch does not
+        // need a custom header.
+        idempotency_key: req.get('Idempotency-Key') || req.body?.idempotency_key || null,
+      },
       // stock_ledger.created_by FKs employees(id), not users(id) — see
       // project_stock_ledger_created_by_fk memory; a users.id here FK-violates
       // for any actor without a matching employees row (e.g. super_admin).
-      req.user.employee_id ?? null
+      // employeeOf() also recovers the link from users.employee_id when the JWT
+      // predates the claim, which req.user.employee_id alone could not.
+      await employeeOf(req, pool)
     );
 
     // Send notification if enabled. This used to call notifyWorkflowEvent('received', ...)
@@ -912,13 +1212,18 @@ router.post('/grn', async (req, res) => {
       }
     }
 
-    res.status(201).json(grn);
+    // A replayed request did not create anything, so it is not a 201.
+    res.status(grn?.idempotent_replay ? 200 : 201).json(grn);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // The service raises 400/404/422 for a bad receipt (over-receipt beyond
+    // tolerance, a line that is not on the PO, a rejected qty above the received
+    // qty). Reporting those as 500 would tell the storekeeper the system broke
+    // when in fact the receipt was refused for a stated reason they can act on.
+    res.status(error.status || 500).json({ error: error.message });
   }
 });
 
-router.get('/grn', async (req, res) => {
+router.get('/grn', requireProcurement('view', 'store_keeper'), async (req, res) => {
   try {
     const grns = await grnService.getGRNs({ ...req.query, company_id: cid(req) });
     res.json(grns);
@@ -930,7 +1235,7 @@ router.get('/grn', async (req, res) => {
 // =====================================================
 // GRN EXPORT
 // =====================================================
-router.get('/grn/export', async (req, res) => {
+router.get('/grn/export', requireProcurement('export', 'store_keeper'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { from_date, to_date, vendor_id } = req.query;
@@ -969,9 +1274,9 @@ router.get('/grn/export', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.get('/grn/:id', async (req, res) => {
+router.get('/grn/:id', requireProcurement('view', 'store_keeper'), async (req, res) => {
   try {
-    const grn = await grnService.getGRNById(req.params.id);
+    const grn = await grnService.getGRNById(req.params.id, cid(req));
     if (!grn) {
       return res.status(404).json({ error: 'GRN not found' });
     }
@@ -981,37 +1286,115 @@ router.get('/grn/:id', async (req, res) => {
   }
 });
 
-router.put('/grn/:id', async (req, res) => {
+// The receipt lifecycle. `goods_receipt_notes.status` is a bare varchar with no
+// check constraint, and this route wrote whatever arrived in the body: a probe
+// set a GRN to the string 'hacked-by-tenant-1' and got a 200 back. Anything
+// outside this set is a client bug or an attack, not a state.
+/**
+ * The statuses a goods receipt may hold.
+ *
+ * Was `draft | received | inspected | rejected | cancelled` — a set that shared
+ * exactly ONE value ('received') with what GoodsReceipt.jsx renders, counts and
+ * filters on. 'draft' was the DB default and therefore what every receipt the
+ * app created actually held, while 'inspected' was written by nothing and read
+ * by nothing. Aligned with the UI's vocabulary and enforced by a CHECK
+ * constraint in migration 20260903000011.
+ */
+const VALID_GRN_STATUSES = new Set(['pending', 'partial', 'received', 'rejected', 'cancelled']);
+
+router.put('/grn/:id', requireProcurement('edit', 'store_keeper'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const { status } = req.body;
-    const { rows } = await pool.query(
-      `UPDATE goods_receipt_notes SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
-      [status, req.params.id]
+    if (!VALID_GRN_STATUSES.has(status)) {
+      return res.status(400).json({ error: `Invalid status. Must be one of: ${[...VALID_GRN_STATUSES].join(', ')}` });
+    }
+    const companyId = cid(req);
+    await client.query('BEGIN');
+    // Scoped: unscoped, a company-1 caller could rewrite a company-2 receipt.
+    const { rows: [oldGrn] } = await client.query(
+      `SELECT * FROM goods_receipt_notes
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)
+        FOR UPDATE`,
+      [req.params.id, companyId]
     );
-    if (!rows[0]) return res.status(404).json({ error: 'GRN not found' });
+    if (!oldGrn) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'GRN not found' }); }
+
+    if (isNoop(oldGrn.status, status)) { await client.query('ROLLBACK'); return res.json(oldGrn); }
+    const move = assertTransition('grn', oldGrn.status, status);
+    if (move) { await client.query('ROLLBACK'); return res.status(move.status).json(move.body); }
+
+    // 'received' means "this receipt is confirmed". Whether the ORDER is
+    // complete is a different question, and the answer decides which of the two
+    // confirmed states this receipt lands in — which is what gives the UI's
+    // Partial tab a writer. Nothing had ever written 'partial', so that tab
+    // could only ever read zero.
+    let effective = status;
+    if (status === 'received' && oldGrn.po_id) {
+      const { rows: [short] } = await client.query(
+        `SELECT COUNT(*)::int AS n FROM purchase_order_items
+          WHERE po_id = $1 AND COALESCE(received_quantity,0) < COALESCE(quantity,0)`,
+        [oldGrn.po_id]
+      );
+      if (short.n > 0) effective = 'partial';
+    }
+
+    const { rows } = await client.query(
+      `UPDATE goods_receipt_notes SET status = $1, updated_at = NOW()
+        WHERE id = $2 AND deleted_at IS NULL AND ($3::int IS NULL OR company_id = $3)
+        RETURNING *`,
+      [effective, req.params.id, companyId]
+    );
+    await client.query('COMMIT');
+
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id,
+      module: 'procurement', recordId: rows[0].id,
+      recordType: 'goods_receipt_note', action: 'update',
+      oldData: oldGrn, newData: rows[0], req,
+    });
     res.json(rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(error.status || 500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
 // =====================================================
 // LOCAL PURCHASE REQUESTS
 // =====================================================
-router.post('/local-purchase', async (req, res) => {
+router.post('/local-purchase', requireProcurement('add'), async (req, res) => {
   try {
+    const amount = parseFloat(req.body.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'A local purchase needs an amount greater than zero.' });
+    }
+    if (!String(req.body.description || '').trim()) {
+      return res.status(400).json({ error: 'A description is required — this is spend outside the PO process and has to say what it was for.' });
+    }
     const result = await pool.query(
-      `INSERT INTO local_purchase_requests (request_number, requested_by_employee_id, request_date, description, vendor_name_text, amount, bill_status, notes) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      `INSERT INTO local_purchase_requests (request_number, requested_by_employee_id, request_date, description, vendor_name_text, amount, bill_status, notes, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [
-        `LPR${Date.now()}`,
-        req.body.requested_by_employee_id,
-        req.body.request_date,
-        req.body.description,
+        // Was `LPR${Date.now()}` — an epoch stamp, not a document number, and
+        // not company-scoped. Local purchases are off-PO spend, which is exactly
+        // the spend a finance review has to be able to find and cite.
+        await nextLocalPurchaseNumber(pool, cid(req)),
+        // requested_by_employee_id FKs employees(id); an unresolvable caller is
+        // NULL rather than a users.id written into an employees column.
+        req.body.requested_by_employee_id ?? await employeeOf(req, pool),
+        req.body.request_date || new Date().toISOString().slice(0, 10),
+        String(req.body.description).trim(),
         req.body.vendor_name_text,
-        req.body.amount,
+        amount,
         req.body.bill_status,
-        req.body.notes
+        req.body.notes,
+        // The row carried NO company_id at all, so every local purchase in the
+        // system was global: invisible to a scoped list and countable in every
+        // tenant's off-PO spend.
+        cid(req),
       ]
     );
     res.status(201).json(result.rows[0]);
@@ -1020,10 +1403,17 @@ router.post('/local-purchase', async (req, res) => {
   }
 });
 
-router.get('/local-purchase', async (req, res) => {
+router.get('/local-purchase', requireProcurement('view'), async (req, res) => {
   try {
+    // Unscoped, this returned every tenant's off-PO spend — description, vendor
+    // and amount — to any caller with procurement view.
+    const companyId = cid(req);
+    const params = [];
+    let where = 'deleted_at IS NULL';
+    if (companyId) { params.push(companyId); where += ` AND company_id = $${params.length}`; }
     const result = await pool.query(
-      `SELECT * FROM local_purchase_requests WHERE deleted_at IS NULL ORDER BY request_date DESC`
+      `SELECT * FROM local_purchase_requests WHERE ${where} ORDER BY request_date DESC`,
+      params
     );
     res.json(result.rows);
   } catch (error) {
@@ -1032,7 +1422,7 @@ router.get('/local-purchase', async (req, res) => {
 });
 
 // ── Vendors: with avg ratings from vendor_ratings ────────────────────────────
-router.get('/vendors', async (req, res) => {
+router.get('/vendors', requireProcurement('view'), async (req, res) => {
   try {
     const { search, category, status } = req.query;
     const companyId = cid(req);
@@ -1080,7 +1470,7 @@ router.get('/vendors', async (req, res) => {
 });
 
 // ── RFQs: with response_count and lowest_quote ────────────────────────────────
-router.get('/rfqs', async (req, res) => {
+router.get('/rfqs', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, search } = req.query;
@@ -1119,9 +1509,17 @@ router.get('/rfqs', async (req, res) => {
 // Full detail incl. real line items + quotes (with vendor name) — the list
 // endpoint above only returns aggregates (item_count/response_count), so
 // per-line/per-quote UI (the Award modal) needs to fetch this first.
-router.get('/rfqs/:id', async (req, res) => {
+router.get('/rfqs/:id', requireProcurement('view'), async (req, res) => {
   try {
-    const { rows: rfqRows } = await pool.query(`SELECT * FROM rfqs WHERE id=$1`, [req.params.id]);
+    // Scoped: unscoped, this answered any tenant with another company's whole
+    // sourcing event — its line items, every vendor's quoted unit price and the
+    // TCO comparison built on them. rfqs.id is a sequential integer, so the
+    // entire quote history was walkable. The list endpoint beside it was
+    // already scoped; this one was the gap.
+    const { rows: rfqRows } = await pool.query(
+      `SELECT * FROM rfqs WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, cid(req)]
+    );
     if (!rfqRows[0]) return res.status(404).json({ error: 'RFQ not found' });
     const { rows: items } = await pool.query(
       `SELECT ri.*, ii.item_code FROM rfq_items ri LEFT JOIN inventory_items ii ON ii.id = ri.item_id WHERE ri.rfq_id=$1 ORDER BY ri.id`,
@@ -1198,7 +1596,7 @@ async function scoreRfqQuotes(rfq, items, quotes, companyId) {
   }
 
   const n = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
-  const itemTax = n(itemRow.gst_rate ?? itemRow.default_gst_rate);
+  const itemTax = resolveGstRate(itemRow);
 
   const ranked = rankOptions(quotes.map((q) => {
     const pf = perf.get(Number(q.vendor_id)) || {};
@@ -1301,7 +1699,7 @@ function parsePaymentTermsDays(text) {
   return Number.isFinite(d) && d >= 0 && d <= 365 ? d : null;
 }
 
-router.post('/rfqs', async (req, res) => {
+router.post('/rfqs', requireProcurement('add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -1364,11 +1762,22 @@ router.post('/rfqs', async (req, res) => {
   }
 });
 
-router.post('/rfqs/:id/send-to-vendors', async (req, res) => {
+router.post('/rfqs/:id/send-to-vendors', requireProcurement('edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const { vendor_ids } = req.body;
+    const companyId = cid(req);
     if (!vendor_ids?.length) return res.status(400).json({ error: 'vendor_ids required' });
+
+    // Confirm the RFQ is ours BEFORE writing rfq_quotes rows against it. The
+    // quote rows were inserted first and unscoped, so a caller could seed
+    // another tenant's RFQ with their own vendors and only then be refused by
+    // the UPDATE — leaving the foreign RFQ polluted with quote rows.
+    const { rows: own } = await pool.query(
+      `SELECT id FROM rfqs WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`, [id, companyId]
+    );
+    if (!own[0]) return res.status(404).json({ error: 'RFQ not found' });
+
     for (const vendor_id of vendor_ids) {
       await pool.query(
         `INSERT INTO rfq_quotes (rfq_id, vendor_id) VALUES ($1,$2) ON CONFLICT (rfq_id, vendor_id) DO NOTHING`,
@@ -1376,8 +1785,8 @@ router.post('/rfqs/:id/send-to-vendors', async (req, res) => {
       );
     }
     const { rows } = await pool.query(
-      `UPDATE rfqs SET status='sent', vendor_ids=$1 WHERE id=$2 RETURNING *`,
-      [JSON.stringify(vendor_ids), id]
+      `UPDATE rfqs SET status='sent', vendor_ids=$1 WHERE id=$2 AND ($3::int IS NULL OR company_id = $3) RETURNING *`,
+      [JSON.stringify(vendor_ids), id, companyId]
     );
     if (!rows[0]) return res.status(404).json({ error: 'RFQ not found' });
 
@@ -1408,9 +1817,44 @@ router.post('/rfqs/:id/send-to-vendors', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/rfqs/:rfqId/responses/:vendorId', async (req, res) => {
+router.post('/rfqs/:rfqId/responses/:vendorId', requireProcurement('edit'), async (req, res) => {
   try {
     const { rfqId, vendorId } = req.params;
+    // A quote may only be recorded against an RFQ in the caller's own company.
+    const { rows: ownRfq } = await pool.query(
+      `SELECT id, rfq_number, status FROM rfqs WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`, [rfqId, cid(req)]
+    );
+    if (!ownRfq[0]) return res.status(404).json({ error: 'RFQ not found' });
+    // A closed event has been awarded; accepting a quote into it would change
+    // the field the award was decided against after the fact.
+    if (ownRfq[0].status === 'closed' || ownRfq[0].status === 'cancelled') {
+      return res.status(409).json({ error: `${ownRfq[0].rfq_number} is ${ownRfq[0].status} and is no longer accepting quotes.` });
+    }
+    // The vendor must exist in this company's master. Unchecked, a quote could
+    // be filed against any integer, and the award route would then try to raise
+    // a purchase order to a supplier that does not exist.
+    const { rows: ownVendor } = await pool.query(
+      `SELECT id FROM vendors WHERE id=$1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)`,
+      [vendorId, cid(req)]
+    );
+    if (!ownVendor[0]) return res.status(404).json({ error: 'Vendor not found' });
+
+    // Prices are money. A negative quote is not a discount, it is a data error
+    // that would win every TCO comparison it entered.
+    for (const [field, value] of Object.entries({
+      unit_price: req.body.unit_price, total_amount: req.body.total_amount,
+      freight_amount: req.body.freight_amount, insurance_amount: req.body.insurance_amount,
+      duty_amount: req.body.duty_amount, packaging_amount: req.body.packaging_amount,
+      other_charges: req.body.other_charges, tooling_cost: req.body.tooling_cost,
+    })) {
+      if (value != null && value !== '' && parseFloat(value) < 0) {
+        return res.status(400).json({ error: `${field.replace(/_/g, ' ')} cannot be negative.` });
+      }
+    }
+    if (req.body.tax_pct != null && req.body.tax_pct !== '' &&
+        (parseFloat(req.body.tax_pct) < 0 || parseFloat(req.body.tax_pct) > 100)) {
+      return res.status(400).json({ error: 'Tax percentage must be between 0 and 100.' });
+    }
     const {
       unit_price, total_amount, delivery_days, payment_terms, notes,
       // TCO adders. Each is optional and each stays NULL when not supplied —
@@ -1445,105 +1889,253 @@ router.post('/rfqs/:rfqId/responses/:vendorId', async (req, res) => {
         nn(other_charges), nn(tooling_cost), nn(tax_pct),
         warranty_months == null || warranty_months === '' ? null : parseInt(warranty_months, 10),
         nn(moq), currency || null, valid_until || null]);
-    await pool.query(`UPDATE rfqs SET status='responses_received' WHERE id=$1 AND status='sent'`, [rfqId]);
+    await pool.query(
+      `UPDATE rfqs SET status='responses_received' WHERE id=$1 AND status='sent' AND ($2::int IS NULL OR company_id = $2)`,
+      [rfqId, cid(req)]
+    );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/rfqs/:rfqId/award/:vendorId', async (req, res) => {
+/**
+ * PATCH /rfqs/:rfqId/award/:vendorId — award the event and raise the order.
+ *
+ * Rewritten. The previous version had five defects at once, all of them
+ * reachable from a single click:
+ *
+ *  1. NO TENANT SCOPE ANYWHERE. `UPDATE rfq_quotes SET is_winner=false WHERE
+ *     rfq_id=$1`, `UPDATE rfqs SET status='closed' WHERE id=$1` and the quote
+ *     read all keyed on the path id alone. Any authenticated buyer could award
+ *     ANOTHER COMPANY'S sourcing event to a vendor of their choosing, and the
+ *     purchase order that followed was created in the caller's own company. The
+ *     404 that should have stopped it was checked AFTER those writes had already
+ *     committed.
+ *
+ *  2. THE WRITES WERE NOT IN THE TRANSACTION. The winner flags and the RFQ
+ *     closure ran on the pool, in autocommit, BEFORE `BEGIN`. Only the purchase
+ *     order was transactional.
+ *
+ *  3. A FAILED PO WAS SWALLOWED. If PO creation threw, the catch logged
+ *     `[award] PO auto-create skipped` and set `po = null` — and the route still
+ *     returned `{ success: true }`. The RFQ was closed, a winner was flagged,
+ *     and no order existed. The buyer was told the award had worked.
+ *
+ *  4. NOT IDEMPOTENT. Nothing looked at the RFQ's status, so awarding twice
+ *     created TWO purchase orders for one event — each approvable, each
+ *     receivable, each payable. A double-clicked Award is a duplicate order.
+ *
+ *  5. CROSS-TENANT READ ON THE CARRY-OVER. `prRepo.getItems(pr_id, client)` was
+ *     called with no companyId, so the requisition lines copied onto the order
+ *     were fetched without a tenant predicate.
+ *
+ * Everything now happens inside one transaction, scoped, with the RFQ row locked
+ * so two awards cannot interleave, and a PO failure rolls the award back rather
+ * than reporting a success that did not happen.
+ */
+router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const { rfqId, vendorId } = req.params;
-    await pool.query(`UPDATE rfq_quotes SET is_winner=false WHERE rfq_id=$1`, [rfqId]);
-    await pool.query(`UPDATE rfq_quotes SET is_winner=true  WHERE rfq_id=$1 AND vendor_id=$2`, [rfqId, vendorId]);
-    const { rows: rfqRows }   = await pool.query(`UPDATE rfqs SET status='closed' WHERE id=$1 RETURNING *`, [rfqId]);
-    const { rows: quoteRows } = await pool.query(
-      `SELECT rq.*, v.vendor_name FROM rfq_quotes rq LEFT JOIN vendors v ON v.id=rq.vendor_id WHERE rq.rfq_id=$1 AND rq.vendor_id=$2`,
+    const companyId = cid(req);
+
+    await client.query('BEGIN');
+
+    const { rows: [rfq] } = await client.query(
+      `SELECT * FROM rfqs
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)
+        FOR UPDATE`,
+      [rfqId, companyId]
+    );
+    if (!rfq) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'RFQ not found' });
+    }
+
+    // ── Idempotency ──────────────────────────────────────────────────────────
+    // A closed event has already been awarded. Return the order it produced
+    // instead of raising a second one for the same requirement.
+    if (rfq.status === 'closed') {
+      const { rows: [winner] } = await client.query(
+        `SELECT rq.*, v.vendor_name FROM rfq_quotes rq
+           LEFT JOIN vendors v ON v.id = rq.vendor_id
+          WHERE rq.rfq_id = $1 AND rq.is_winner = true LIMIT 1`,
+        [rfqId]
+      );
+      const { rows: [existingPo] } = await client.query(
+        `SELECT * FROM purchase_orders
+          WHERE deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)
+            AND notes LIKE $1 ORDER BY id LIMIT 1`,
+        [`%${rfq.rfq_number}%`, companyId]
+      );
+      await client.query('ROLLBACK');
+      if (winner && String(winner.vendor_id) !== String(vendorId)) {
+        return res.status(409).json({
+          error: `${rfq.rfq_number} was already awarded to ${winner.vendor_name || `vendor ${winner.vendor_id}`}. Reopen the event before awarding it to a different vendor.`,
+          code: 'RFQ_ALREADY_AWARDED',
+          awarded_vendor_id: winner.vendor_id,
+        });
+      }
+      // A closed event with neither a winning quote nor an order behind it was
+      // not awarded — something else closed it. Answering 200 here is what let
+      // the preferred-vendor selection silently swallow the award: the buyer
+      // clicked Award, got a success response, and no purchase order existed.
+      // Say so instead, the same way convert-to-po does for its equivalent.
+      if (!winner && !existingPo) {
+        return res.status(409).json({
+          error: `${rfq.rfq_number} is marked closed but has no winning quote and no purchase order against it, so it cannot be awarded. Reopen the event to award it.`,
+          code: 'RFQ_CLOSED_WITHOUT_AWARD',
+        });
+      }
+      return res.json({ success: true, rfq, quote: winner ?? null, po: existingPo ?? null, already_awarded: true });
+    }
+
+    // The vendor must actually have quoted. Awarding to a vendor with no quote
+    // produced a purchase order with a zero total and no price basis at all.
+    const { rows: [quote] } = await client.query(
+      `SELECT rq.*, v.vendor_name FROM rfq_quotes rq
+         LEFT JOIN vendors v ON v.id = rq.vendor_id
+        WHERE rq.rfq_id = $1 AND rq.vendor_id = $2`,
       [rfqId, vendorId]
     );
-    if (!rfqRows[0]) return res.status(404).json({ error: 'RFQ not found' });
-    let po = null;
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const poNum = await nextPurchaseOrderNumber();
-      const { rows: poRows } = await client.query(`
-        INSERT INTO purchase_orders (po_number, supplier_id, pr_id, total_amount, status, order_date, company_id)
-        VALUES ($1,$2,$3,$4,'draft',CURRENT_DATE,$5) RETURNING *
-      `, [poNum, vendorId, rfqRows[0].pr_id || null, quoteRows[0]?.total_amount || 0, cid(req)]);
-      po = poRows[0];
-
-      // Carry real line items onto the PO — an RFQ-award that only writes the
-      // header (no purchase_order_items) ships completely empty and breaks
-      // GRN's 3-way match (nothing to select as "received against"). Prefer the
-      // linked PR's real lines (same carryover convert-to-po uses above); else
-      // fall back to the RFQ's own rfq_items rows — real multi-line data since
-      // the rfq_items table was added, not the old single-scalar-field guess.
-      const prItems = rfqRows[0].pr_id ? await prRepo.getItems(rfqRows[0].pr_id, client) : [];
-      if (prItems.length) {
-        for (const it of prItems) {
-          const qty  = parseFloat(it.quantity) || 0;
-          const rate = parseFloat(it.expected_price) || 0;
-          await poRepo.createItem(client, {
-            po_id: po.id, item_id: it.item_id ?? null,
-            quantity: qty, rate, tax_rate: 0, tax_amount: 0, total_amount: qty * rate,
-          });
-        }
-      } else {
-        const { rows: rfqItemRows } = await client.query(
-          `SELECT * FROM rfq_items WHERE rfq_id=$1 ORDER BY id`, [rfqId]
-        );
-        const lineItems = rfqItemRows.length
-          ? rfqItemRows
-          : [{ item_id: null, item_name: rfqRows[0].item_description, quantity: rfqRows[0].quantity || 1 }];
-        const totalQty  = lineItems.reduce((s, it) => s + (parseFloat(it.quantity) || 0), 0) || 1;
-        const totalAmt  = parseFloat(quoteRows[0]?.total_amount) || 0;
-        const unitPrice = parseFloat(quoteRows[0]?.unit_price) || null;
-        for (const it of lineItems) {
-          const qty = parseFloat(it.quantity) || 0;
-          // A single-line RFQ can use the vendor's quoted unit_price directly.
-          // A genuine multi-line RFQ has no per-line vendor pricing anywhere in
-          // the schema (the vendor quotes one bundle total), so total_amount is
-          // apportioned across lines by a blended per-unit rate — honest given
-          // what was actually quoted, not fabricated per-line precision.
-          const rate = (lineItems.length === 1 && unitPrice) ? unitPrice : (totalQty ? totalAmt / totalQty : 0);
-          let itemId = it.item_id;
-          if (!itemId) {
-            const { rows: matchRows } = await client.query(
-              `SELECT id FROM inventory_items WHERE LOWER(item_name) = LOWER($1) OR LOWER(item_code) = LOWER($1) LIMIT 1`,
-              [it.item_name || '']
-            );
-            itemId = matchRows[0]?.id ?? null;
-          }
-          await poRepo.createItem(client, {
-            po_id: po.id, item_id: itemId,
-            quantity: qty, rate, tax_rate: 0, tax_amount: 0, total_amount: qty * rate,
-          });
-        }
-      }
-      await client.query('COMMIT');
-    } catch (e) {
+    if (!quote) {
       await client.query('ROLLBACK');
-      console.warn('[award] PO auto-create skipped:', e.message);
-      po = null;
-    } finally {
-      client.release();
+      return res.status(422).json({
+        error: `Vendor ${vendorId} has not quoted on ${rfq.rfq_number}, so the event cannot be awarded to them.`,
+      });
     }
+
+    await client.query(`UPDATE rfq_quotes SET is_winner = false WHERE rfq_id = $1`, [rfqId]);
+    await client.query(`UPDATE rfq_quotes SET is_winner = true WHERE rfq_id = $1 AND vendor_id = $2`, [rfqId, vendorId]);
+    const { rows: [closedRfq] } = await client.query(
+      `UPDATE rfqs SET status = 'closed', evaluated_at = NOW()
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) RETURNING *`,
+      [rfqId, companyId]
+    );
+
+    // ── The order ────────────────────────────────────────────────────────────
+    // No longer optional. An award whose purchase order could not be created is
+    // not an award, so a failure here rolls the whole thing back.
+    const poNum = await nextPurchaseOrderNumber(client, companyId);
+    const { rows: [po] } = await client.query(`
+      INSERT INTO purchase_orders (po_number, supplier_id, pr_id, total_amount, subtotal, status,
+                                   order_date, company_id, created_by, notes)
+      VALUES ($1,$2,$3,$4,$4,'draft',CURRENT_DATE,$5,$6,$7) RETURNING *
+    `, [
+      poNum, vendorId,
+      // rfqs.pr_id is varchar while purchase_requests.id is integer — real
+      // schema drift. A non-numeric value is not a requisition id and must not
+      // reach the FK.
+      /^\d+$/.test(String(rfq.pr_id ?? '')) ? parseInt(rfq.pr_id, 10) : null,
+      quote.total_amount || 0,
+      companyId,
+      await employeeOf(req, pool),
+      // The RFQ number is how the idempotency branch above finds this order
+      // again, and how a reviewer traces the price back to the event it was won
+      // on. It was never recorded.
+      `Awarded from ${rfq.rfq_number}${quote.vendor_name ? ` to ${quote.vendor_name}` : ''}`,
+    ]);
+
+    // Carry real line items onto the PO — an RFQ-award that only writes the
+    // header (no purchase_order_items) ships completely empty and breaks
+    // GRN's 3-way match (nothing to select as "received against"). Prefer the
+    // linked PR's real lines (same carryover convert-to-po uses above); else
+    // fall back to the RFQ's own rfq_items rows.
+    const prIdInt = /^\d+$/.test(String(rfq.pr_id ?? '')) ? parseInt(rfq.pr_id, 10) : null;
+    // companyId, not omitted: without it the carry-over read another tenant's
+    // requisition lines whenever the drifted pr_id happened to match.
+    const prItems = prIdInt ? await prRepo.getItems(prIdInt, client, companyId) : [];
+    if (prItems.length) {
+      for (const it of prItems) {
+        const qty  = parseFloat(it.quantity) || 0;
+        const rate = parseFloat(it.expected_price) || 0;
+        await poRepo.createItem(client, {
+          po_id: po.id, item_id: it.item_id ?? null,
+          quantity: qty, rate, tax_rate: 0, tax_amount: 0, total_amount: qty * rate,
+        });
+      }
+    } else {
+      const { rows: rfqItemRows } = await client.query(
+        `SELECT * FROM rfq_items WHERE rfq_id=$1 ORDER BY id`, [rfqId]
+      );
+      const lineItems = rfqItemRows.length
+        ? rfqItemRows
+        : [{ item_id: null, item_name: rfq.item_description, quantity: rfq.quantity || 1 }];
+      const totalQty  = lineItems.reduce((s, it) => s + (parseFloat(it.quantity) || 0), 0) || 1;
+      const totalAmt  = parseFloat(quote.total_amount) || 0;
+      const unitPrice = parseFloat(quote.unit_price) || null;
+      for (const it of lineItems) {
+        const qty = parseFloat(it.quantity) || 0;
+        // A single-line RFQ can use the vendor's quoted unit_price directly.
+        // A genuine multi-line RFQ has no per-line vendor pricing anywhere in
+        // the schema (the vendor quotes one bundle total), so total_amount is
+        // apportioned across lines by a blended per-unit rate — honest given
+        // what was actually quoted, not fabricated per-line precision.
+        const rate = (lineItems.length === 1 && unitPrice) ? unitPrice : (totalQty ? totalAmt / totalQty : 0);
+        let itemId = it.item_id;
+        if (!itemId) {
+          const { rows: matchRows } = await client.query(
+            `SELECT id FROM inventory_items WHERE LOWER(item_name) = LOWER($1) OR LOWER(item_code) = LOWER($1) LIMIT 1`,
+            [it.item_name || '']
+          );
+          itemId = matchRows[0]?.id ?? null;
+        }
+        await poRepo.createItem(client, {
+          po_id: po.id, item_id: itemId,
+          quantity: qty, rate, tax_rate: 0, tax_amount: 0, total_amount: qty * rate,
+        });
+      }
+    }
+
+    // Keep the header in step with the lines that were actually written — the
+    // quote total and the sum of the carried-over PR lines are not always the
+    // same number, and the header is what approval routing and 3-way match read.
+    const { rows: [tot] } = await client.query(
+      `UPDATE purchase_orders po
+          SET subtotal = l.sub, total_amount = l.sub + l.tax, tax_amount = l.tax,
+              total_amount_inr = (l.sub + l.tax) * COALESCE(po.exchange_rate, 1)
+         FROM (SELECT COALESCE(SUM(quantity * rate),0) AS sub, COALESCE(SUM(tax_amount),0) AS tax
+                 FROM purchase_order_items WHERE po_id = $1) l
+        WHERE po.id = $1 RETURNING po.*`,
+      [po.id]
+    );
+
+    // Also move the requisition on, so an awarded requirement does not sit in
+    // the "approved, awaiting conversion" queue forever with an order against it.
+    if (prIdInt) {
+      await client.query(
+        `UPDATE purchase_requests SET status = 'converted_to_po', updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1 AND status = 'approved' AND ($2::int IS NULL OR company_id = $2)`,
+        [prIdInt, companyId]
+      );
+    }
+
+    await client.query('COMMIT');
+
     // Freeze what this award was decided on. The rates behind a TCO can change
     // at any time, and once they do nobody can show what the comparison said on
     // the day — so the figures and the basis are stored, never recomputed.
+    // Deliberately AFTER the commit and non-fatal: this is an audit artefact of
+    // a decision that has already been made, and losing it must not undo the
+    // award. It is reported, never swallowed silently.
     const decision = await recordAwardDecision({
-      rfqId, vendorId, poId: po?.id ?? null, req,
+      rfqId, vendorId, poId: tot?.id ?? po.id, req,
     }).catch((e) => {
-      // A failed audit write must not undo a completed award. It is reported
-      // rather than swallowed, because a silent gap here is exactly the debt
-      // this table exists to remove.
-      console.warn('[award] TCO decision record failed:', e.message);
+      console.error(`[award] TCO decision record failed for RFQ ${rfqId} — the award stands but has no frozen comparison:`, e.message);
       return null;
     });
 
-    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: rfqRows[0].id, recordType: 'rfq', action: 'award', oldData: null, newData: { ...rfqRows[0], awarded_vendor_id: vendorId, quote: quoteRows[0] ?? null, tco_decision: decision }, req });
-    res.json({ success: true, rfq: rfqRows[0], quote: quoteRows[0], po, tco_decision: decision });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id, module: 'procurement',
+      recordId: closedRfq.id, recordType: 'rfq', action: 'award', oldData: rfq,
+      newData: { ...closedRfq, awarded_vendor_id: vendorId, quote, po_id: po.id, tco_decision: decision }, req,
+    });
+    res.json({ success: true, rfq: closedRfq, quote, po: tot ?? po, tco_decision: decision });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(err.status || 500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
 });
 
 /**
@@ -1619,7 +2211,7 @@ async function recordAwardDecision({ rfqId, vendorId, poId, req }) {
  * vendor, which is the list a procurement review actually wants: every one of
  * them is a decision somebody should be able to explain.
  */
-router.get('/award-decisions', async (req, res) => {
+router.get('/award-decisions', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const conds = ['1=1'];
@@ -1662,128 +2254,280 @@ router.get('/award-decisions', async (req, res) => {
 });
 
 // ── 3-Way Match ───────────────────────────────────────────────────────────────
-router.get('/three-way-match', async (req, res) => {
-  try {
-    const companyId = cid(req);
-    const { status, po_id } = req.query;
-    const conditions = ['1=1'];
-    const params = [];
-    let idx = 1;
-    if (companyId) { conditions.push(`twm.company_id = $${idx++}`); params.push(companyId); }
-    if (status)    { conditions.push(`twm.match_status = $${idx++}`); params.push(status); }
-    if (po_id)     { conditions.push(`twm.po_id = $${idx++}`); params.push(po_id); }
-    try {
-      const { rows } = await pool.query(`
-        SELECT twm.*, po.po_number, v.vendor_name
-        FROM three_way_matches twm
-        JOIN purchase_orders po ON po.id = twm.po_id
-        LEFT JOIN vendors v ON v.id = po.supplier_id
-        WHERE ${conditions.join(' AND ')}
-        ORDER BY twm.created_at DESC
-      `, params);
-      res.json({ matches: rows });
-    } catch {
-      // three_way_matches table may not exist yet — return empty list gracefully
-      res.json({ matches: [] });
-    }
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
+// Three-way match (list, create, approve-into-bill, resolve) now lives in
+// ./threeWayMatch.routes.js and is mounted at the bottom of this file at the
+// same paths. It is the one path that turns a receipt into a payable, and it was
+// split across two halves of this file 600 lines apart — see that module's
+// header for what that cost.
 
-// Extracted so §5.6's GRN-creation auto-trigger can run the exact same
-// matching logic as the manual POST below instead of a second
-// re-implementation. Behavior unchanged from the original inline handler.
-async function createThreeWayMatchRecord(companyId, { po_id, grn_id, vendor_invoice_no, vendor_invoice_date, vendor_invoice_amount }) {
-  if (!po_id) throw Object.assign(new Error('po_id is required'), { status: 400 });
-  const { rows: poRows } = await pool.query('SELECT total_amount FROM purchase_orders WHERE id=$1', [po_id]);
-  const po_amount  = parseFloat(poRows[0]?.total_amount || 0);
-  const inv_amount = parseFloat(vendor_invoice_amount  || 0);
-  let grn_amount   = 0;
-  if (grn_id) {
-    // goods_receipt_notes has no value column — derive the GRN leg from its own
-    // lines. Value the ACCEPTED quantity (received - rejected), since that is
-    // what entered stock and what the vendor should be paid for. Errors are no
-    // longer swallowed: a silent catch here is what pinned grn_amount at 0 and
-    // made every 3-way match classify as a discrepancy.
-    const { rows: gr } = await pool.query(
-      `SELECT COALESCE(SUM(
-                GREATEST(COALESCE(gi.quantity_received, 0) - COALESCE(gi.quantity_rejected, 0), 0)
-                * COALESCE(gi.rate, 0)
-              ), 0) AS amt
-       FROM grn_items gi WHERE gi.grn_id = $1`, [grn_id]
-    );
-    grn_amount = parseFloat(gr[0]?.amt || 0);
+// ── Create vendor ─────────────────────────────────────────────────────────────
+/**
+ * The columns the internal vendor form may set.
+ *
+ * The form collected fourteen fields while `vendors` carries the full trading
+ * identity a supplier needs before it can be paid — vendor_type, MSME/Udyam
+ * status, IEC, CIN, website, country/postal code, turnover, headcount, lead time,
+ * credit limit and payment terms. Those were reachable only through the external
+ * vendor-registration flow, so a vendor added by a buyer internally was a
+ * permanently thinner record than the identical vendor who self-registered, and
+ * the gap was invisible until finance needed the MSME flag for payment-terms
+ * compliance. Whitelisted rather than spread from the body: `vendors` also holds
+ * scorecard columns (scm_score, risk_rating, approved_by, classification) that
+ * are computed, and a mass-assign here would let a caller write its own risk
+ * rating.
+ */
+const VENDOR_WRITABLE = [
+  'vendor_name', 'category', 'vendor_type', 'vendor_category', 'vendor_code',
+  'gstin', 'pan', 'udyam_number', 'msme_status', 'iec', 'cin',
+  'bank_name', 'account_number', 'ifsc',
+  'contact_person', 'email', 'phone', 'website',
+  'address', 'city', 'state', 'country', 'postal_code',
+  'year_established', 'employee_count', 'annual_turnover',
+  'lead_time_days', 'credit_limit', 'payment_terms_days',
+  'status',
+];
+
+// Numeric columns must be NULL rather than '' when the form leaves them blank —
+// Postgres rejects '' for numeric/integer and the whole save would 500.
+const VENDOR_NUMERIC = new Set([
+  'year_established', 'employee_count', 'annual_turnover',
+  'lead_time_days', 'credit_limit', 'payment_terms_days',
+]);
+
+/**
+ * Tax-identity formats, mirroring the constraints the FINANCE master already
+ * enforces (`chk_parties_gstin_format`).
+ *
+ * `vendors` has no such constraint, so the two masters disagreed about what a
+ * valid supplier is: this database holds vendor 6 with GSTIN '27AAAABB12C'
+ * (eleven characters where the format is fifteen) and PAN 'AABCT123' (eight
+ * where it is ten). Neither can ever become a payable party — the INSERT into
+ * `parties` is rejected by the check — so a vendor created that way is
+ * permanently unpayable, and the failure surfaces far downstream at the first
+ * attempt to raise a bill. Validate at the write instead, where the person who
+ * typed it is still on the screen.
+ *
+ * Blank is allowed; both are optional on an unregistered or foreign supplier.
+ */
+const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+const PAN_RE   = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+
+function validateVendorTaxIds(fields) {
+  if (fields.gstin && !GSTIN_RE.test(String(fields.gstin).toUpperCase())) {
+    return 'GSTIN must be 15 characters in the format 22AAAAA0000A1Z5. Leave it blank if the supplier is unregistered.';
   }
-  let match_status = 'pending';
-  if (po_amount > 0) {
-    const pct = Math.max(Math.abs(po_amount - inv_amount), Math.abs(po_amount - grn_amount)) / po_amount;
-    match_status = pct <= 0.01 ? 'matched' : 'discrepancy';
+  if (fields.pan && !PAN_RE.test(String(fields.pan).toUpperCase())) {
+    return 'PAN must be 10 characters in the format AAAAA0000A. Leave it blank if it is not known.';
   }
-  const { rows } = await pool.query(`
-    INSERT INTO three_way_matches (company_id, po_id, grn_id, vendor_invoice_no, vendor_invoice_date, vendor_invoice_amount, po_amount, grn_amount, match_status)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
-  `, [companyId, po_id, grn_id || null, vendor_invoice_no || null, vendor_invoice_date || null, inv_amount, po_amount, grn_amount, match_status]);
-  return rows[0];
+  return null;
 }
 
-router.post('/three-way-match', async (req, res) => {
+function vendorFields(body) {
+  const out = {};
+  for (const col of VENDOR_WRITABLE) {
+    if (!(col in body)) continue;
+    let v = body[col];
+    if (v === '' || v === undefined) v = null;
+    if (v !== null && VENDOR_NUMERIC.has(col)) {
+      const n = parseFloat(v);
+      v = Number.isFinite(n) ? n : null;
+    }
+    if (col === 'msme_status' && v !== null) v = v === true || v === 'true';
+    // Tax ids are case-insensitive in law and uppercase by convention; both the
+    // format check above and the GSTIN match in vendorIdentity are exact, so
+    // normalise once here rather than at every comparison.
+    if ((col === 'gstin' || col === 'pan') && v !== null) v = String(v).trim().toUpperCase();
+    out[col] = v;
+  }
+  return out;
+}
+
+router.post('/vendors', requireProcurement('add'), async (req, res) => {
   try {
-    const match = await createThreeWayMatchRecord(cid(req), req.body);
-    res.status(201).json(match);
+    const companyId = cid(req);
+    const body = req.body || {};
+    if (!String(body.vendor_name || '').trim()) {
+      return res.status(400).json({ error: 'Vendor name is required.' });
+    }
+
+    const fields = vendorFields(body);
+    fields.vendor_name = String(body.vendor_name).trim();
+    fields.category    = fields.category || 'Raw Materials';
+    fields.status      = fields.status || 'active';
+
+    const taxErr = validateVendorTaxIds(fields);
+    if (taxErr) return res.status(400).json({ error: taxErr });
+
+    // procurement_settings.default_payment_terms_days had no consumer either:
+    // the Settings screen called it the default payment terms and no vendor,
+    // PO or bill had ever been created with it. It is a DEFAULT, so it applies
+    // only when the form leaves the field blank.
+    if (fields.payment_terms_days == null) {
+      const settings = await getProcSettings(companyId);
+      const dflt = parseInt(settings.default_payment_terms_days, 10);
+      if (Number.isFinite(dflt)) fields.payment_terms_days = dflt;
+    }
+
+    const cols = [...Object.keys(fields), 'company_id'];
+    const vals = [...Object.values(fields), companyId];
+
+    // The vendor row and its finance identity are created in ONE transaction.
+    // A vendor without a party cannot be paid — every AP document FKs
+    // parties(id) — so committing the vendor alone would produce exactly the
+    // half-registered supplier this module used to be full of: 0 of 6 vendors
+    // carried a party_id and the 3-way-match bill path fell back to matching
+    // the name. resolveVendorParty() is what makes the link deterministic; it
+    // belongs to the same commit as the row that needs it.
+    const client = await pool.connect();
+    let created, identity;
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `INSERT INTO vendors (${cols.join(', ')})
+         VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING *`,
+        vals
+      );
+      created = rows[0];
+      identity = await resolveVendorParty(client, created.id);
+      created.party_id = identity.party?.id ?? null;
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally { client.release(); }
+
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id,
+      module: 'procurement', recordId: created.id,
+      recordType: 'vendor', action: 'create',
+      oldData: null, newData: created, req,
+    });
+    res.status(201).json({
+      ...created,
+      // Surfaced so a caller can see whether this vendor joined an existing
+      // finance party or minted one, rather than having to infer it.
+      finance_party: identity.party
+        ? { id: identity.party.id, party_code: identity.party.party_code, matched_on: identity.matchedOn }
+        : null,
+    });
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-// ── Create vendor ─────────────────────────────────────────────────────────────
-router.post('/vendors', async (req, res) => {
-  try {
-    const companyId = cid(req);
-    const { vendor_name, category, gstin, pan, bank_name, account_number, ifsc, contact_person, email, phone, city, state, address, status } = req.body;
-    if (!vendor_name?.trim()) return res.status(400).json({ error: 'Vendor name is required.' });
-    const { rows } = await pool.query(
-      `INSERT INTO vendors (vendor_name, category, gstin, pan, bank_name, account_number, ifsc, contact_person, email, phone, city, state, address, status, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-      [vendor_name.trim(), category || 'Raw Materials', gstin || null, pan || null, bank_name || null, account_number || null, ifsc || null, contact_person || null, email || null, phone || null, city || null, state || null, address || null, status || 'active', companyId]
-    );
-    res.status(201).json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // ── Update vendor ─────────────────────────────────────────────────────────────
-router.put('/vendors/:id', async (req, res) => {
+router.put('/vendors/:id', requireProcurement('edit'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { id } = req.params;
-    const { vendor_name, category, gstin, pan, bank_name, account_number, ifsc, contact_person, email, phone, city, state, address, status } = req.body;
-    if (!vendor_name?.trim()) return res.status(400).json({ error: 'Vendor name is required.' });
-    const cidCond = companyId ? 'AND (company_id = $15 OR company_id IS NULL)' : '';
-    const params = [vendor_name.trim(), category || 'Raw Materials', gstin || null, pan || null, bank_name || null, account_number || null, ifsc || null, contact_person || null, email || null, phone || null, city || null, state || null, address || null, status || 'active', ...(companyId ? [companyId, id] : [id])];
-    const idParam = companyId ? '$16' : '$15';
-    const { rows } = await pool.query(
-      `UPDATE vendors SET vendor_name=$1, category=$2, gstin=$3, pan=$4, bank_name=$5, account_number=$6, ifsc=$7, contact_person=$8, email=$9, phone=$10, city=$11, state=$12, address=$13, status=$14, updated_at=NOW()
-       WHERE id=${idParam} ${cidCond} RETURNING *`,
-      params
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Vendor not found.' });
-    res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const body = req.body || {};
+    if (!String(body.vendor_name || '').trim()) {
+      return res.status(400).json({ error: 'Vendor name is required.' });
+    }
+
+    // Only the keys the caller actually sent are updated, so the wider form does
+    // not blank a column an older client never sends.
+    const fields = vendorFields(body);
+    fields.vendor_name = String(body.vendor_name).trim();
+    if ('category' in fields && !fields.category) fields.category = 'Raw Materials';
+    if ('status'   in fields && !fields.status)   fields.status   = 'active';
+
+    const taxErr = validateVendorTaxIds(fields);
+    if (taxErr) return res.status(400).json({ error: taxErr });
+
+    const cols = Object.keys(fields);
+    const params = Object.values(fields);
+    params.push(id);
+    const idParam = `$${params.length}`;
+    let cidCond = '';
+    if (companyId) {
+      params.push(companyId);
+      cidCond = `AND (company_id = $${params.length} OR company_id IS NULL)`;
+    }
+
+    const client = await pool.connect();
+    let updated, identity;
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `UPDATE vendors SET ${cols.map((c, i) => `${c}=$${i + 1}`).join(', ')}, updated_at=NOW()
+         WHERE id=${idParam} AND deleted_at IS NULL ${cidCond} RETURNING *`,
+        params
+      );
+      if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Vendor not found.' }); }
+      updated = rows[0];
+
+      // Bind on edit too, not only on create: every vendor that predates the
+      // identity service reaches a bound state the first time somebody saves it,
+      // and a vendor whose GSTIN was corrected here can now be matched to the
+      // party that already carries it. resolveVendorParty() is idempotent — an
+      // already-bound vendor is verified and returned unchanged.
+      identity = await resolveVendorParty(client, updated.id);
+      updated.party_id = identity.party?.id ?? null;
+
+      // Keep the finance identity in step with the trading identity. Only the
+      // fields the caller actually sent are pushed, and only onto a party this
+      // vendor exclusively owns (the unique index guarantees that) — a party
+      // shared with pre-existing finance data is never rewritten from here.
+      const syncable = { name: 'vendor_name', email: 'email', phone: 'phone', address: 'address',
+                         city: 'city', state: 'state', website: 'website',
+                         gstin: 'gstin', pan: 'pan', payment_terms: 'payment_terms_days' };
+      const sets = [], vals = [];
+      for (const [partyCol, vendorCol] of Object.entries(syncable)) {
+        if (!(vendorCol in fields)) continue;
+        const v = vendorCol === 'vendor_name' ? updated.vendor_name : fields[vendorCol];
+        if (v == null || v === '') continue;
+        vals.push(v);
+        sets.push(`${partyCol} = $${vals.length}`);
+      }
+      if (sets.length && identity.party?.id) {
+        vals.push(identity.party.id);
+        await client.query(
+          `UPDATE parties SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $${vals.length} AND deleted_at IS NULL`,
+          vals
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally { client.release(); }
+
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id,
+      module: 'procurement', recordId: updated.id,
+      recordType: 'vendor', action: 'update',
+      oldData: null, newData: updated, req,
+    });
+    res.json({
+      ...updated,
+      finance_party: identity.party
+        ? { id: identity.party.id, party_code: identity.party.party_code, matched_on: identity.matchedOn }
+        : null,
+    });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
 // ── Vendor Scorecard & Ratings ────────────────────────────────────────────────
-router.get('/vendors/:id/scorecard', async (req, res) => {
+router.get('/vendors/:id/scorecard', requireProcurement('view'), async (req, res) => {
   try {
+    // Scoped: unscoped, any tenant could read another's supplier performance
+    // history by walking vendor ids.
     const { rows } = await pool.query(`
       SELECT vr.*, po.po_number
       FROM vendor_ratings vr
+      JOIN vendors v ON v.id = vr.vendor_id
       LEFT JOIN purchase_orders po ON po.id = vr.po_id
       WHERE vr.vendor_id = $1
+        AND ($2::int IS NULL OR v.company_id = $2 OR v.company_id IS NULL)
       ORDER BY vr.rated_at DESC
-    `, [req.params.id]);
+    `, [req.params.id, cid(req)]);
     const cnt = rows.length;
     const avg = f => cnt ? parseFloat((rows.reduce((s, r) => s + (+r[f] || 0), 0) / cnt).toFixed(1)) : 0;
     res.json({ ratings: rows, avg_quality: avg('quality_score'), avg_delivery: avg('delivery_score'), avg_price: avg('price_score'), avg_overall: avg('overall_score') });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/vendor-ratings', async (req, res) => {
+router.post('/vendor-ratings', requireProcurement('edit', 'qc_manager'), async (req, res) => {
   try {
     const { vendor_id, po_id, quality_score, delivery_score, price_score, comments } = req.body;
     if (!vendor_id) return res.status(400).json({ error: 'vendor_id is required' });
@@ -1813,7 +2557,7 @@ router.post('/vendor-ratings', async (req, res) => {
 // =====================================================
 // DASHBOARDS & ANALYTICS
 // =====================================================
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cidFilter = companyId ? ` AND company_id = $1` : '';
@@ -1827,18 +2571,18 @@ router.get('/dashboard', async (req, res) => {
     );
     const lateDeliveries = await poRepo.getLateDeliveries(companyId);
     const monthlyPurchase = await pool.query(
-      `SELECT COALESCE(SUM(total_amount), 0) as total
+      `SELECT COALESCE(SUM(${poSpendInr('purchase_orders')}), 0) as total
        FROM purchase_orders
        WHERE order_date >= DATE_TRUNC('month', CURRENT_DATE)
-       AND status != 'cancelled' AND deleted_at IS NULL${cidFilter}`, params
+       AND ${sqlPoCommitted('status')} AND deleted_at IS NULL${cidFilter}`, params
     );
 
     // Additional live KPIs
     const [openRFQs, pendingGRNs, ytdSpend, spendByVendor] = await Promise.all([
       pool.query(`SELECT COUNT(*) AS count FROM rfqs WHERE status NOT IN ('closed','cancelled')${cidFilter}`, params),
       pool.query(`SELECT COUNT(*) AS count FROM goods_receipt_notes WHERE (status IS NULL OR status = 'pending') AND deleted_at IS NULL${cidFilter}`, params),
-      pool.query(`SELECT COALESCE(SUM(total_amount),0) AS total FROM purchase_orders WHERE EXTRACT(year FROM order_date)=EXTRACT(year FROM CURRENT_DATE) AND status!='cancelled' AND deleted_at IS NULL${cidFilter}`, params),
-      companyId ? pool.query(`SELECT COALESCE(v.vendor_name,'Unknown') AS vendor, SUM(po.total_amount) AS spend FROM purchase_orders po LEFT JOIN vendors v ON v.id=po.supplier_id WHERE po.company_id=$1 AND po.status!='cancelled' AND po.deleted_at IS NULL AND po.order_date>=DATE_TRUNC('month',CURRENT_DATE) GROUP BY v.vendor_name ORDER BY spend DESC LIMIT 5`, [companyId]) : Promise.resolve({ rows: [] }),
+      pool.query(`SELECT COALESCE(SUM(${poSpendInr('purchase_orders')}),0) AS total FROM purchase_orders WHERE EXTRACT(year FROM order_date)=EXTRACT(year FROM CURRENT_DATE) AND ${sqlPoCommitted('status')} AND deleted_at IS NULL${cidFilter}`, params),
+      companyId ? pool.query(`SELECT COALESCE(v.vendor_name,'Unknown') AS vendor, SUM(${poSpendInr('po')}) AS spend FROM purchase_orders po LEFT JOIN vendors v ON v.id=po.supplier_id WHERE po.company_id=$1 AND ${sqlPoCommitted('po.status')} AND po.deleted_at IS NULL AND po.order_date>=DATE_TRUNC('month',CURRENT_DATE) GROUP BY v.vendor_name ORDER BY spend DESC LIMIT 5`, [companyId]) : Promise.resolve({ rows: [] }),
     ]);
 
     res.json({
@@ -1858,179 +2602,59 @@ router.get('/dashboard', async (req, res) => {
 });
 
 // ── Enhanced dashboard: spend trend (last 12 months) ─────────────────────────
-router.get('/dashboard/spend-trend', async (req, res) => {
+// Values are INR — see spendAnalytics.service.js for why the raw
+// `total_amount` this used to sum was the wrong column.
+router.get('/dashboard/spend-trend', requireProcurement('view'), async (req, res) => {
   try {
-    const companyId = cid(req);
-    const params = companyId ? [companyId] : [];
-    const cidFilter = companyId ? 'AND company_id = $1' : '';
-    const { rows } = await pool.query(`
-      SELECT TO_CHAR(DATE_TRUNC('month', order_date),'YYYY-MM') AS month,
-             COALESCE(SUM(total_amount),0) AS spend,
-             COUNT(*) AS po_count
-      FROM purchase_orders
-      WHERE order_date >= CURRENT_DATE - INTERVAL '12 months'
-        AND status != 'cancelled' AND deleted_at IS NULL ${cidFilter}
-      GROUP BY DATE_TRUNC('month', order_date)
-      ORDER BY month ASC
-    `, params);
+    const rows = await loadSpendTrend({ companyId: cid(req), months: req.query.months });
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Spend analytics: by vendor, category, department ─────────────────────────
-router.get('/analytics/spend', async (req, res) => {
+// ── Spend analytics: vendor, commodity category, month, supplier type ────────
+// Returns every facet in one response rather than one array chosen by
+// `group_by`: the Procurement Reports page renders all of them side by side,
+// and the old single-array shape meant it read `by_vendor` off an array and
+// rendered "No data" on every panel.
+//
+// `from`/`to` are the documented names. `from_date`/`to_date` are still
+// accepted because that is what the old handler read — the page sent
+// `from`/`to`, so the date filter silently did nothing.
+router.get('/analytics/spend', requireProcurement('view'), async (req, res) => {
   try {
-    const companyId = cid(req);
-    const { from_date, to_date, group_by = 'vendor' } = req.query;
-    const params = [];
-    const conditions = ['po.deleted_at IS NULL', "po.status != 'cancelled'"];
-    if (companyId) { params.push(companyId); conditions.push(`po.company_id = $${params.length}`); }
-    if (from_date) { params.push(from_date); conditions.push(`po.order_date >= $${params.length}`); }
-    if (to_date)   { params.push(to_date);   conditions.push(`po.order_date <= $${params.length}`); }
+    const { from, to, from_date, to_date, limit } = req.query;
+    res.json(await loadSpendFacets({
+      companyId: cid(req),
+      from: from || from_date || null,
+      to: to || to_date || null,
+      limit: resolveSpendLimit(limit),
+    }));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
-    let selectGroup, groupByClause;
-    if (group_by === 'category') {
-      selectGroup = `COALESCE(v.category, 'Uncategorised') AS label`;
-      groupByClause = `v.category`;
-    } else if (group_by === 'month') {
-      selectGroup = `TO_CHAR(DATE_TRUNC('month', po.order_date),'YYYY-MM') AS label`;
-      groupByClause = `DATE_TRUNC('month', po.order_date)`;
-    } else {
-      selectGroup = `COALESCE(v.vendor_name, 'Unknown') AS label`;
-      groupByClause = `v.vendor_name`;
-    }
-
-    const { rows } = await pool.query(`
-      SELECT ${selectGroup},
-             ROUND(SUM(po.total_amount)::NUMERIC, 2) AS spend,
-             COUNT(DISTINCT po.id)::INT              AS po_count
-      FROM purchase_orders po
-      LEFT JOIN vendors v ON v.id = po.supplier_id
-      WHERE ${conditions.join(' AND ')}
-      GROUP BY ${groupByClause}
-      ORDER BY spend DESC
-      LIMIT 20
-    `, params);
-    res.json(rows);
+// ── Invoice spend, non-PO spend and the maverick ratio ───────────────────────
+// The cube above measures what was ORDERED. This measures what was INVOICED,
+// which is where leakage and off-process buying live. Unlocked by bills.po_id
+// (§138) — before that column there was no join from a payable to an order.
+router.get('/analytics/invoice-spend', requireProcurement('view'), async (req, res) => {
+  try {
+    const { from, to, from_date, to_date, limit } = req.query;
+    res.json(await loadInvoiceSpend({
+      companyId: cid(req),
+      from: from || from_date || null,
+      to: to || to_date || null,
+      limit: resolveSpendLimit(limit),
+    }));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── 3-Way Match: approve with proper bill creation ────────────────────────────
 // Releases an invoice for payment once PO/GRN/invoice reconcile — a financial
 // control, so it takes finance or procurement authority rather than any login.
-router.patch('/three-way-match/:id/approve', allowRoles('super_admin','admin','finance','finance_manager','procurement_manager'), async (req, res) => {
-  try {
-    const userId = req.user?.userId ?? req.user?.id ?? null;
-    const companyId = cid(req);
-
-    // "Block payment on 3-way-match mismatch" was written and read only by
-    // Settings' own CRUD — no bill/approval/payment route ever checked it, so
-    // a flagged discrepancy could be freely approved (and the bill this
-    // creates freely paid) regardless of the setting. This is the one place
-    // a discrepancy actually turns into a payable bill, so it's the correct
-    // choke point: block the approval itself unless the discrepancy has
-    // already been cleared via PATCH /three-way-match/:id/resolve.
-    const { rows: existingRows } = await pool.query(
-      `SELECT match_status FROM three_way_matches WHERE id=$1`, [req.params.id]
-    );
-    if (!existingRows[0]) return res.status(404).json({ error: 'Match record not found' });
-    if (existingRows[0].match_status === 'discrepancy') {
-      const settings = await getProcSettings(companyId);
-      if (settings.block_payment_on_mismatch) {
-        return res.status(400).json({
-          error: 'This PO/GRN/invoice match has a flagged discrepancy and payment-blocking is enabled in Procurement Settings. Resolve the discrepancy first (PATCH /three-way-match/:id/resolve) before approving for payment.',
-        });
-      }
-    }
-
-    const { rows } = await pool.query(`
-      UPDATE three_way_matches SET match_status='approved', approved_by=$1, approved_at=NOW()
-      WHERE id=$2 RETURNING *
-    `, [userId, req.params.id]);
-    if (!rows[0]) return res.status(404).json({ error: 'Match record not found' });
-
-    // Bill creation. Procurement's `vendors` (integer PK) and Finance's `parties`
-    // (uuid PK, what bills.supplier_id actually FKs) are separate, unbridged
-    // masters — there is no linking column between them. The previous version
-    // wrote po.supplier_id (a vendors.id integer) into bills.party_id, a dead
-    // legacy integer column SupplierBills.jsx never reads, so these bills always
-    // showed up with a blank vendor and couldn't be filtered by vendor at all.
-    // Best-effort: resolve a real parties.id by name match so linked bills work
-    // when the vendor is already a Finance party; always also store the vendor's
-    // name on party_name so the bill is never blank even when no match is found.
-    const { rows: poRows } = await pool.query(
-      `SELECT v.id AS vendor_id, v.vendor_name
-       FROM purchase_orders po JOIN vendors v ON v.id = po.supplier_id
-       WHERE po.id = $1`,
-      [rows[0].po_id]
-    );
-    const vendorName = poRows[0]?.vendor_name || null;
-    const { rows: partyRows } = vendorName
-      ? await pool.query(`SELECT id FROM parties WHERE LOWER(name) = LOWER($1) AND deleted_at IS NULL LIMIT 1`, [vendorName])
-      : { rows: [] };
-    const matchedPartyId = partyRows[0]?.id ?? null;
-
-    const billRes = await pool.query(`
-      INSERT INTO bills
-        (supplier_id, party_name, bill_number, bill_date, total_amount, subtotal, status, notes, company_id, created_by)
-      VALUES
-        ($1, $2, $3, $4::date, $5::numeric, $5::numeric,
-        'unpaid', 'Auto-created from 3-way match approval', $6, $7)
-      ON CONFLICT (company_id, bill_number) DO NOTHING
-      RETURNING id
-    `, [
-      matchedPartyId,
-      vendorName,
-      rows[0].vendor_invoice_no,
-      rows[0].vendor_invoice_date,
-      rows[0].vendor_invoice_amount,
-      companyId,
-      userId,
-    ]);
-
-    // ON CONFLICT DO NOTHING returns zero rows on a duplicate invoice number —
-    // this used to be swallowed silently, so the match record showed
-    // "approved" with bill_id: null forever and nobody was told a payable
-    // bill was never created. Surface the existing bill instead so the
-    // approval is traceable to a real (possibly pre-existing) bill.
-    let billId = billRes.rows[0]?.id ?? null;
-    let duplicateBill = false;
-    if (!billId) {
-      const { rows: dupRows } = await pool.query(
-        `SELECT id FROM bills WHERE company_id = $1 AND bill_number = $2 AND deleted_at IS NULL LIMIT 1`,
-        [companyId, rows[0].vendor_invoice_no]
-      );
-      billId = dupRows[0]?.id ?? null;
-      duplicateBill = true;
-    }
-
-    logAudit({
-      userId, module: 'procurement', recordId: rows[0].id,
-      recordType: 'three_way_match', action: 'approve',
-      oldData: null, newData: rows[0], req,
-    });
-
-    res.json({ ...rows[0], bill_id: billId, ...(duplicateBill ? { duplicate_invoice: true } : {}) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ── 3-Way Match: resolve discrepancy ─────────────────────────────────────────
-router.patch('/three-way-match/:id/resolve', async (req, res) => {
-  try {
-    const { discrepancy_reason } = req.body;
-    const { rows } = await pool.query(
-      `UPDATE three_way_matches SET match_status='matched', discrepancy_reason=$1 WHERE id=$2 RETURNING *`,
-      [discrepancy_reason || null, req.params.id]
-    );
-    if (!rows[0]) return res.status(404).json({ error: 'Match record not found' });
-    res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // =====================================================
 // EOQ / INVENTORY COST PLANNING
 // =====================================================
-router.get('/analytics/eoq', async (req, res) => {
+router.get('/analytics/eoq', requireProcurement('view'), async (req, res) => {
   try {
     const itemId = parseInt(req.query.item_id, 10);
     if (!Number.isFinite(itemId)) {
@@ -2047,10 +2671,16 @@ router.get('/analytics/eoq', async (req, res) => {
       ? parseInt(req.query.lead_time_days, 10)
       : DEFAULT_LEAD_TIME_DAYS;
 
+    // Every leg below is scoped. Unscoped, this endpoint answered any caller
+    // with another tenant's annual demand for a part and the average rate they
+    // pay for it — the two numbers a competitor would most like to have.
+    const companyId = cid(req);
+
     const itemResult = await pool.query(
       `SELECT id, item_code, item_name, COALESCE(reorder_level, 0) AS reorder_level
-       FROM inventory_items WHERE id = $1`,
-      [itemId]
+       FROM inventory_items
+       WHERE id = $1 AND ($2::INTEGER IS NULL OR company_id = $2)`,
+      [itemId, companyId || null]
     );
     if (!itemResult.rows.length) return res.status(404).json({ error: 'Item not found' });
     const item = itemResult.rows[0];
@@ -2061,8 +2691,9 @@ router.get('/analytics/eoq', async (req, res) => {
        FROM stock_ledger
        WHERE item_id = $1
          AND quantity_out > 0
-         AND transaction_date >= CURRENT_DATE - INTERVAL '12 months'`,
-      [itemId]
+         AND transaction_date >= CURRENT_DATE - INTERVAL '12 months'
+         AND ($2::INTEGER IS NULL OR company_id = $2)`,
+      [itemId, companyId || null]
     );
     const annualDemand = parseFloat(demandResult.rows[0]?.annual_demand || 0);
 
@@ -2074,18 +2705,20 @@ router.get('/analytics/eoq', async (req, res) => {
          FROM purchase_order_items poi
          JOIN purchase_orders po ON po.id = poi.po_id
          WHERE poi.item_id = $1 AND poi.rate > 0
+           AND ($2::INTEGER IS NULL OR po.company_id = $2)
          ORDER BY po.order_date DESC
          LIMIT 20
        ) x`,
-      [itemId]
+      [itemId, companyId || null]
     );
     let unitCost = parseFloat(costResult.rows[0]?.unit_cost || 0);
     if (unitCost <= 0) {
       const fallback = await pool.query(
         `SELECT COALESCE(AVG(rate), 0) AS unit_cost
          FROM stock_ledger
-         WHERE item_id = $1 AND rate > 0`,
-        [itemId]
+         WHERE item_id = $1 AND rate > 0
+           AND ($2::INTEGER IS NULL OR company_id = $2)`,
+        [itemId, companyId || null]
       );
       unitCost = parseFloat(fallback.rows[0]?.unit_cost || 0);
     }
@@ -2136,11 +2769,13 @@ router.get('/analytics/eoq', async (req, res) => {
 // =====================================================
 
 // Items autocomplete — supports ?q= for debounced search
-router.get('/price-history/items', async (req, res) => {
+router.get('/price-history/items', requireProcurement('view'), async (req, res) => {
   try {
     const q = req.query.q?.trim();
-    const params = [];
-    let idx = 1;
+    // This is the component picker behind the Price History and Vendor
+    // Comparison screens, so it must not offer another tenant's part numbers.
+    const params = [cid(req) || null];
+    let idx = 2;
     let qFilter = '';
     if (q) {
       qFilter = `AND (ii.item_name ILIKE $${idx} OR COALESCE(ii.item_code,'') ILIKE $${idx})`;
@@ -2150,7 +2785,9 @@ router.get('/price-history/items', async (req, res) => {
     const { rows } = await pool.query(`
       SELECT id, item_name, COALESCE(item_code,'') AS item_code, COALESCE(unit_of_measure,'') AS uom
       FROM inventory_items ii
-      WHERE is_active = true ${qFilter}
+      WHERE is_active = true
+        AND ($1::INTEGER IS NULL OR ii.company_id = $1)
+        ${qFilter}
       ORDER BY item_name
       LIMIT 80
     `, params);
@@ -2161,7 +2798,7 @@ router.get('/price-history/items', async (req, res) => {
 });
 
 // Time-series price trend for a given item
-router.get('/price-history', async (req, res) => {
+router.get('/price-history', requireProcurement('view'), async (req, res) => {
   try {
     const { item_id, vendor_id, from, to, limit = 200 } = req.query;
     if (!item_id) return res.status(400).json({ error: 'item_id is required' });
@@ -2170,10 +2807,26 @@ router.get('/price-history', async (req, res) => {
     const params = [parseInt(item_id)];
     let idx = 2;
     let cidFilter = '';
+    let phCidFilter = '';
     let vendorFilter = '';
     let dateFilter = '';
 
-    if (companyId) { cidFilter = ` AND po.company_id = $${idx++}`; params.push(companyId); }
+    // Both legs of the union take the tenant predicate, on the same bind. The
+    // manual leg used to carry none — price_history had no company_id column at
+    // all — so scoping the purchase-order leg alone still handed a caller every
+    // tenant's hand-keyed prices. See migration 20260904000001.
+    //
+    // Deliberately NOT `OR company_id IS NULL`, which several other reads in
+    // this module allow. A NULL-company row is the codebase's "global" scope and
+    // stays visible to a super admin (companyId null ⇒ no predicate at all), but
+    // a negotiated unit price nobody could attribute must not become visible to
+    // EVERY tenant — that is a smaller copy of the leak this predicate closes.
+    if (companyId) {
+      const p = idx++;
+      cidFilter   = ` AND po.company_id = $${p}`;
+      phCidFilter = ` AND company_id = $${p}`;
+      params.push(companyId);
+    }
     if (vendor_id) { vendorFilter = ` AND combined.vendor_id = $${idx++}`; params.push(parseInt(vendor_id)); }
     if (from)      { dateFilter  += ` AND combined.price_date >= $${idx++}`; params.push(from); }
     if (to)        { dateFilter  += ` AND combined.price_date <= $${idx++}`; params.push(to); }
@@ -2218,7 +2871,7 @@ router.get('/price-history', async (req, res) => {
           notes,
           'manual'             AS source
         FROM price_history
-        WHERE item_id = $1
+        WHERE item_id = $1 ${phCidFilter}
       ) combined
       LEFT JOIN vendors v ON v.id = combined.vendor_id
       WHERE 1=1 ${vendorFilter} ${dateFilter}
@@ -2246,10 +2899,11 @@ router.get('/price-history', async (req, res) => {
 });
 
 // Vendor comparison for an item
-router.get('/price-history/compare', async (req, res) => {
+router.get('/price-history/compare', requireProcurement('view'), async (req, res) => {
   try {
     const { item_id } = req.query;
     if (!item_id) return res.status(400).json({ error: 'item_id is required' });
+    const companyId = cid(req);
 
     const { rows } = await pool.query(`
       SELECT
@@ -2264,9 +2918,11 @@ router.get('/price-history/compare', async (req, res) => {
             SELECT poi.rate AS unit_price, po.order_date AS price_date
             FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id
             WHERE poi.item_id = $1 AND po.supplier_id = combined.vendor_id AND poi.rate > 0
+              AND ($2::INTEGER IS NULL OR po.company_id = $2)
             UNION ALL
             SELECT unit_price, price_date FROM price_history
             WHERE item_id = $1 AND vendor_id = combined.vendor_id
+              AND ($2::INTEGER IS NULL OR company_id = $2)
           ) sub ORDER BY price_date DESC LIMIT 1
         ) lp )::NUMERIC, 2) AS last_price,
         MAX(combined.price_date) AS last_quoted
@@ -2276,16 +2932,18 @@ router.get('/price-history/compare', async (req, res) => {
         FROM purchase_order_items poi
         JOIN purchase_orders po ON po.id = poi.po_id
         WHERE poi.item_id = $1 AND poi.rate > 0
+          AND ($2::INTEGER IS NULL OR po.company_id = $2)
 
         UNION ALL
 
         SELECT vendor_id, vendor_name_text, unit_price, price_date
         FROM price_history WHERE item_id = $1
+          AND ($2::INTEGER IS NULL OR company_id = $2)
       ) combined
       LEFT JOIN vendors v ON v.id = combined.vendor_id
       GROUP BY combined.vendor_id, v.vendor_name, combined.vendor_name_text
       ORDER BY avg_price ASC
-    `, [parseInt(item_id)]).catch(() => ({ rows: [] }));
+    `, [parseInt(item_id), companyId || null]);
 
     res.json(rows);
   } catch (e) {
@@ -2294,7 +2952,7 @@ router.get('/price-history/compare', async (req, res) => {
 });
 
 // Item-based vendor comparison — returns all vendors who quoted for an item, cheapest first
-router.get('/vendor-comparison', async (req, res) => {
+router.get('/vendor-comparison', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { item_name } = req.query;
@@ -2323,6 +2981,7 @@ router.get('/vendor-comparison', async (req, res) => {
         JOIN inventory_items ii ON ii.id = ph.item_id
         WHERE ph.unit_price > 0
           AND ii.item_name ILIKE $1
+          AND ($2::INTEGER IS NULL OR ph.company_id = $2)
       ) combined
       LEFT JOIN vendors v ON v.id = combined.vendor_id
       WHERE combined.unit_price IS NOT NULL
@@ -2379,14 +3038,23 @@ router.get('/vendor-comparison', async (req, res) => {
 });
 
 // Manual price entry
-router.post('/price-history', async (req, res) => {
+router.post('/price-history', requireProcurement('add'), async (req, res) => {
   try {
     const { item_id, item_name_text, vendor_id, vendor_name_text, unit_price, quantity, price_type, reference_type, reference_number, notes, price_date } = req.body;
     if (!item_id || !unit_price) return res.status(400).json({ error: 'item_id and unit_price are required' });
+
+    // price_history.created_by FKs employees(id), not users(id). This route was
+    // writing req.user.userId — a users.id — so the INSERT raised a foreign key
+    // violation and answered 500 for every one of the 37 active accounts in
+    // this database: the button had never once succeeded. Eighth instance of
+    // the trap employeeOf() exists to prevent (see the stock_ledger.created_by
+    // memory). NULL is accepted and is the honest value for a service account
+    // with no employee record.
+    const companyId = cid(req);
     const { rows } = await pool.query(
-      `INSERT INTO price_history (item_id, item_name_text, vendor_id, vendor_name_text, unit_price, quantity, price_type, reference_type, reference_number, notes, price_date, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [item_id, item_name_text||null, vendor_id||null, vendor_name_text||null, unit_price, quantity||null, price_type||'purchase', reference_type||null, reference_number||null, notes||null, price_date||new Date().toISOString().slice(0,10), req.user?.userId ?? req.user?.id ?? null]
+      `INSERT INTO price_history (item_id, item_name_text, vendor_id, vendor_name_text, unit_price, quantity, price_type, reference_type, reference_number, notes, price_date, created_by, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [item_id, item_name_text||null, vendor_id||null, vendor_name_text||null, unit_price, quantity||null, price_type||'purchase', reference_type||null, reference_number||null, notes||null, price_date||new Date().toISOString().slice(0,10), await employeeOf(req, pool), companyId]
     );
     res.status(201).json(rows[0]);
   } catch (e) {
@@ -2397,55 +3065,7 @@ router.post('/price-history', async (req, res) => {
 // =====================================================
 // PROCUREMENT SETTINGS
 // =====================================================
-const PROC_DEFAULTS = {
-  default_payment_terms_days:  30,
-  auto_approve_below:          5000,
-  grn_qty_tolerance_pct:       5,
-  min_vendor_rating:           3,
-  l1_approval_limit:           25000,
-  l2_approval_limit:           100000,
-  cfo_approval_above:          500000,
-  enforce_3way_match:          false,
-  block_payment_on_mismatch:   false,
-  allowable_price_variance_pct:3,
-  pr_prefix:                   'PR',
-  po_prefix:                   'PO',
-  grn_prefix:                  'GRN',
-  rfq_prefix:                  'RFQ',
-  notify_po_approval:          false,
-  notify_grn_receipt:          false,
-  alert_vendor_rating_drop:    false,
-  alert_overdue_delivery:      false,
-  // TCO costing rates — mirrored from the engine so a company with no settings
-  // row still gets a defensible model rather than zeros (zeros would disable
-  // half the cost drivers and make every vendor look identical).
-  ...TCO_DEFAULTS,
-};
-
-// The TCO rates the settings PUT owns. Kept as a list so the INSERT, the
-// ON CONFLICT SET and the validation cannot drift apart the way the 19
-// hand-written columns above already have to be kept in step by eye.
-const TCO_SETTING_COLS = Object.keys(TCO_DEFAULTS);
-
-// Rates are percentages and per-event costs, not free numbers. A negative
-// carrying rate turns holding cost into a rebate and inverts every ranking on
-// the comparison page, so it is rejected at the door rather than clamped
-// silently — a buyer who typed -18 needs to know it did not take.
-const TCO_RANGES = {
-  cost_of_capital_pct:          [0, 100],
-  inventory_carrying_pct:       [0, 100],
-  rework_cost_pct:              [0, 500],
-  default_freight_pct:          [0, 100],
-  gst_input_credit_pct:         [0, 100],
-  single_source_risk_pct:       [0, 100],
-  service_level_z:              [0, 5],
-  ordering_cost_per_po:         [0, 1e9],
-  inspection_cost_per_receipt:  [0, 1e9],
-  expedite_cost_per_late_order: [0, 1e9],
-  tco_horizon_months:           [1, 120],
-};
-
-router.get('/settings', async (req, res) => {
+router.get('/settings', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -2555,17 +3175,28 @@ router.put('/settings', async (req, res) => {
 // =====================================================
 // RETURN TO VENDOR (RTV)
 // =====================================================
-router.post('/rtv', async (req, res) => {
+router.post('/rtv', requireProcurement('add', 'store_keeper'), async (req, res) => {
   try {
-    const grn = await grnService.createRTV(
-      { ...req.body, company_id: cid(req) },
-      req.user?.employee_id ?? null
+    const rtv = await grnService.createRTV(
+      {
+        ...req.body,
+        company_id: cid(req),
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+      },
+      // return_to_vendor.created_by and stock_ledger.created_by both take an
+      // employees.id.
+      await employeeOf(req, pool)
     );
-    res.status(201).json(grn);
-  } catch (error) { res.status(500).json({ error: error.message }); }
+    res.status(201).json(rtv);
+  } catch (error) {
+    // The service raises 400/404/422 for a return that is refused for a stated
+    // business reason — a quantity above what was received, a receipt belonging
+    // to another tenant, a vendor who did not supply it. Those are not 500s.
+    res.status(error.status || 500).json({ error: error.message });
+  }
 });
 
-router.get('/rtv', async (req, res) => {
+router.get('/rtv', requireProcurement('view', 'store_keeper'), async (req, res) => {
   try {
     const companyId = cid(req);
     const params = [];
@@ -2583,11 +3214,12 @@ router.get('/rtv', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.get('/rtv/:id', async (req, res) => {
+router.get('/rtv/:id', requireProcurement('view', 'store_keeper'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT rtv.*, v.vendor_name FROM return_to_vendor rtv LEFT JOIN vendors v ON v.id=rtv.vendor_id WHERE rtv.id=$1`,
-      [req.params.id]
+      `SELECT rtv.*, v.vendor_name FROM return_to_vendor rtv LEFT JOIN vendors v ON v.id=rtv.vendor_id
+        WHERE rtv.id=$1 AND ($2::int IS NULL OR rtv.company_id = $2)`,
+      [req.params.id, cid(req)]
     );
     if (!rows[0]) return res.status(404).json({ error: 'RTV not found' });
     const { rows: items } = await pool.query(
@@ -2601,7 +3233,7 @@ router.get('/rtv/:id', async (req, res) => {
 // =====================================================
 // APPROVED VENDOR LIST (AVL)
 // =====================================================
-router.get('/avl', async (req, res) => {
+router.get('/avl', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { item_id, vendor_id, status } = req.query;
@@ -2624,7 +3256,7 @@ router.get('/avl', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/avl', async (req, res) => {
+router.post('/avl', requireProcurement('add', 'qc_manager'), async (req, res) => {
   try {
     const { item_id, vendor_id, approved_by_name, valid_from, valid_to, notes, lead_time_days, min_order_qty } = req.body;
     if (!item_id || !vendor_id) return res.status(400).json({ error: 'item_id and vendor_id are required' });
@@ -2642,12 +3274,13 @@ router.post('/avl', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/avl/:id/block', async (req, res) => {
+router.patch('/avl/:id/block', requireProcurement('edit', 'qc_manager'), async (req, res) => {
   try {
     const { reason } = req.body;
     const { rows } = await pool.query(
-      `UPDATE approved_vendor_list SET status='blocked', notes=COALESCE($1,notes), updated_at=NOW() WHERE id=$2 RETURNING *`,
-      [reason||null, req.params.id]
+      `UPDATE approved_vendor_list SET status='blocked', notes=COALESCE($1,notes), updated_at=NOW()
+        WHERE id=$2 AND ($3::int IS NULL OR company_id = $3) RETURNING *`,
+      [reason||null, req.params.id, cid(req)]
     );
     if (!rows[0]) return res.status(404).json({ error: 'AVL entry not found' });
     res.json(rows[0]);
@@ -2657,7 +3290,14 @@ router.patch('/avl/:id/block', async (req, res) => {
 // Removing an approved-vendor-list entry changes who may be bought from at all.
 router.delete('/avl/:id', allowRoles('super_admin','admin','procurement_manager','qc_manager'), async (req, res) => {
   try {
-    await pool.query(`DELETE FROM approved_vendor_list WHERE id=$1`, [req.params.id]);
+    // Reports whether anything was actually removed rather than a blanket ok:
+    // unscoped, this returned { ok: true } for another tenant's id it had not
+    // touched, which reads to the caller as a successful delist.
+    const { rowCount } = await pool.query(
+      `DELETE FROM approved_vendor_list WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, cid(req)]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'AVL entry not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2665,7 +3305,7 @@ router.delete('/avl/:id', allowRoles('super_admin','admin','procurement_manager'
 // =====================================================
 // QUALITY INSPECTION (INCOMING)
 // =====================================================
-router.get('/quality-inspections', async (req, res) => {
+router.get('/quality-inspections', requireProcurement('view', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { grn_id, status } = req.query;
@@ -2687,7 +3327,7 @@ router.get('/quality-inspections', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/quality-inspections', async (req, res) => {
+router.post('/quality-inspections', requireProcurement('add', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { grn_id, inspector_id, inspection_date, overall_result, notes, items } = req.body;
     if (!grn_id) return res.status(400).json({ error: 'grn_id is required' });
@@ -2714,7 +3354,7 @@ router.post('/quality-inspections', async (req, res) => {
 });
 
 // ── NCR (Non-Conformance Report) ─────────────────────────────────────────────
-router.get('/ncr', async (req, res) => {
+router.get('/ncr', requireProcurement('view', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const companyId = cid(req);
     const params = companyId ? [companyId] : [];
@@ -2731,7 +3371,7 @@ router.get('/ncr', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/ncr', async (req, res) => {
+router.post('/ncr', requireProcurement('add', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { grn_id, vendor_id, defect_description, quantity_affected, severity, disposition } = req.body;
     const ncrNumber = `NCR-${Date.now()}`;
@@ -2748,16 +3388,25 @@ router.patch('/ncr/:id/close', allowRoles('super_admin','admin','qc_manager','pr
   try {
     const { capa_action, capa_due_date } = req.body;
     const { rows } = await pool.query(`
-      UPDATE non_conformance_reports SET status='closed', capa_action=$1, capa_due_date=$2, closed_at=NOW() WHERE id=$3 RETURNING *
-    `, [capa_action||null, capa_due_date||null, req.params.id]);
+      UPDATE non_conformance_reports SET status='closed', capa_action=$1, capa_due_date=$2, closed_at=NOW()
+       WHERE id=$3 AND ($4::int IS NULL OR company_id = $4) RETURNING *
+    `, [capa_action||null, capa_due_date||null, req.params.id, cid(req)]);
     if (!rows[0]) return res.status(404).json({ error: 'NCR not found' });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/ncr/:id/attachment', upload.single('file'), async (req, res) => {
+router.patch('/ncr/:id/attachment', requireProcurement('edit', 'qc_manager', 'qc_engineer'), upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file provided' });
+    // Ownership is checked BEFORE the upload: uploading first and scoping after
+    // would push a file into storage on behalf of a record the caller may not
+    // own, and that file stays there whatever the UPDATE then returns.
+    const { rows: own } = await pool.query(
+      `SELECT id FROM non_conformance_reports WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, cid(req)]
+    );
+    if (!own[0]) return res.status(404).json({ error: 'NCR not found' });
     const file_url = await uploadFile(req.file.buffer, req.file.originalname, req.file.mimetype);
     const { rows: [ncr] } = await pool.query(
       `UPDATE non_conformance_reports SET attachment_url=$1 WHERE id=$2 RETURNING id, attachment_url`,
@@ -2768,5 +3417,19 @@ router.patch('/ncr/:id/attachment', upload.single('file'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Mounted at '/' so the paths are exactly what they were before the split —
+// /three-way-match, /three-way-match/:id/approve, /three-way-match/:id/resolve.
+// API compatibility is the point of the mount: no client changes.
+router.use('/', threeWayMatchRoutes);
+
 export default router;
+
+// Exported for integration.procurementIntegrity.test.js. The tax-basis defect
+// this function carried (comparing a tax-exclusive receipt value against a
+// tax-inclusive order total, so every GST-bearing receipt read as a discrepancy)
+// is exactly the kind that only a real PO with real tax can catch, and it is
+// worth a permanent regression test rather than a one-off manual check.
+// Re-exported from its new home so existing importers — the GRN auto-match
+// trigger above, and the integration suites — keep working unchanged.
+export { createThreeWayMatchRecord };
 

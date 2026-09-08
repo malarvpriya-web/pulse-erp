@@ -2,9 +2,28 @@ import pool from '../../shared/db.js';
 
 const advancedInventoryRepository = {
   // ==================== BATCH MANAGEMENT ====================
-  async createBatch(data) {
+  /**
+   * @param {object} data
+   * @param {object|null} client  an open transaction client. REQUIRED whenever
+   *   the batch belongs to a wider unit of work.
+   *
+   * This took no client and always issued its INSERT on the shared pool. The GRN
+   * service calls it from inside a transaction, so every batch it wrote committed
+   * independently of the receipt that caused it: a GRN that rolled back — an
+   * over-receipt rejection, a failing line, a dropped connection — left its
+   * inventory behind as available stock with no receipt to explain it. Four such
+   * rows were live in this database (batches 3-6, pointing at goods_receipt_notes
+   * 2-5, none of which exist), claiming 29 units; migration 20260903000011
+   * soft-deletes them and adds the FK that makes an orphan unrepresentable.
+   *
+   * Defaulting to `pool` keeps the standalone caller
+   * (advancedInventory.routes POST /batches) working unchanged — that one is a
+   * single statement and genuinely has no transaction to join.
+   */
+  async createBatch(data, client = null) {
+    const db = client ?? pool;
     const { item_id, warehouse_id, batch_number, received_date, expiry_date, supplier_id, grn_id, quantity_received, rate } = data;
-    const result = await pool.query(
+    const result = await db.query(
       `INSERT INTO inventory_batches (item_id, warehouse_id, batch_number, received_date, expiry_date, supplier_id, grn_id, quantity_received, quantity_available, rate)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9) RETURNING *`,
       [item_id, warehouse_id, batch_number, received_date, expiry_date, supplier_id, grn_id, quantity_received, rate]

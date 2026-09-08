@@ -34,6 +34,7 @@
 import express from 'express';
 import pool from '../../shared/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
+import { resolveGstRate } from '../../../shared/gstRate.js';
 import { rankOptions } from '../../procurement/engines/tcoEngine.js';
 import {
   loadTcoParams, loadVendorPerformance, loadAnnualDemand, masterRate, tcoBasis,
@@ -362,7 +363,7 @@ router.get('/items/:itemId/sourcing', requirePermission('inventory', 'view'), as
     if (compareQty == null) { compareQty = 1; qtyBasis = 'single unit (no demand or order-size data)'; }
     compareQty = +compareQty.toFixed(3);
 
-    const itemTaxPct = num(item.gst_rate ?? item.default_gst_rate);
+    const itemTaxPct = resolveGstRate(item);
 
     // A company that has switched TCO off gets an empty ranking rather than a
     // computed one it did not ask for. rankOptions([]) returns the same shape
@@ -426,7 +427,7 @@ router.get('/items/:itemId/sourcing', requirePermission('inventory', 'view'), as
         item_type: item.item_type, unit_of_measure: item.unit_of_measure,
         description: item.description, manufacturer: item.manufacturer,
         product_model: item.product_model, hsn_code: item.hsn_code,
-        gst_rate: num(item.gst_rate ?? item.default_gst_rate),
+        gst_rate: resolveGstRate(item),
         category_id: item.category_id, category_name: item.category_name,
         abc_class: item.abc_class, make_or_buy: item.make_or_buy,
         standard_cost: std, current_stock: num(item.current_stock),

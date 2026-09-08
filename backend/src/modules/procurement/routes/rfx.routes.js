@@ -14,6 +14,14 @@ import express from 'express';
 import svc from '../services/rfxScoring.service.js';
 import { RFX_MODELS, RFX_TYPES, MIN_COVERAGE_PCT } from '../engines/rfxScoringEngine.js';
 import { companyOf } from '../../../shared/scope.js';
+import { requireProcurement } from '../procurement.authz.js';
+/**
+ * AUTHORIZATION. This router was mounted behind `verifyToken` and NOTHING else,
+ * so every route below was reachable by any authenticated account regardless of
+ * role — including the writes. `requireProcurement(action, ...alsoAllowRoles)`
+ * ORs the role_permissions matrix with named roles, which is how the rest of the
+ * module is gated; the named roles are the documented exceptions, not a bypass.
+ */
 
 const router = express.Router();
 
@@ -35,7 +43,7 @@ const fail = (res, err) => res.status(err.status || 500).json({ error: err.messa
 // ── Static routes first ───────────────────────────────────────────────────────
 
 /** The three scoring models, so the UI renders criteria it cannot drift from. */
-router.get('/models', (req, res) => {
+router.get('/models', requireProcurement('view'), (req, res) => {
   res.json({
     types: RFX_TYPES,
     models: RFX_MODELS,
@@ -44,7 +52,7 @@ router.get('/models', (req, res) => {
 });
 
 /** RFx events with their invitation / response / scoring counts. */
-router.get('/events', async (req, res) => {
+router.get('/events', requireProcurement('view'), async (req, res) => {
   try {
     const rfxType = req.query.type ? String(req.query.type).toUpperCase() : null;
     if (rfxType && !RFX_TYPES.includes(rfxType)) {
@@ -59,7 +67,7 @@ router.get('/events', async (req, res) => {
 // ── Per-event ─────────────────────────────────────────────────────────────────
 
 /** The full scorecard: model, every bid, per-criterion scores, and the ranking. */
-router.get('/:rfqId/scorecard', async (req, res) => {
+router.get('/:rfqId/scorecard', requireProcurement('view'), async (req, res) => {
   try {
     const card = await svc.getScorecard(scopeOf(req), req.params.rfqId);
     if (!card) return res.status(404).json({ error: 'RFx event not found' });
@@ -76,7 +84,7 @@ router.get('/:rfqId/scorecard', async (req, res) => {
  * against the event's own model, so a score cannot be filed against a criterion
  * the model does not contain.
  */
-router.post('/:rfqId/vendors/:vendorId/scores', async (req, res) => {
+router.post('/:rfqId/vendors/:vendorId/scores', requireProcurement('edit'), async (req, res) => {
   try {
     const scores = Array.isArray(req.body?.scores) ? req.body.scores : [];
     if (!scores.length) return res.status(400).json({ error: 'No scores supplied' });
@@ -99,7 +107,7 @@ router.post('/:rfqId/vendors/:vendorId/scores', async (req, res) => {
  * from", and clicking through either without noticing is the failure this whole
  * scorecard exists to prevent.
  */
-router.post('/:rfqId/preferred-vendor', async (req, res) => {
+router.post('/:rfqId/preferred-vendor', requireProcurement('approve'), async (req, res) => {
   try {
     const userId = actorUserId(req);
     const result = await svc.selectPreferredVendor(

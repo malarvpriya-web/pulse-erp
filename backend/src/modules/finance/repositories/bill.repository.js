@@ -9,6 +9,7 @@ class BillRepository {
       notes, created_by, company_id,
       tds_section, tds_rate, tds_amount,
       currency = 'INR', exchange_rate = 1,
+      po_id = null,
     } = data;
     const net_payable = (parseFloat(total_amount) || 0) - (parseFloat(tds_amount) || 0);
     const result = await client.query(
@@ -17,9 +18,9 @@ class BillRepository {
          subtotal, tax_amount, total_amount, balance,
          notes, created_by, company_id,
          tds_section, tds_rate, tds_amount, net_payable,
-         currency, exchange_rate
+         currency, exchange_rate, po_id
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        RETURNING *`,
       [
         bill_number, supplier_id, bill_date, due_date,
@@ -31,6 +32,9 @@ class BillRepository {
         net_payable,
         currency || 'INR',
         parseFloat(exchange_rate) || 1,
+        // Validated against the caller's company in bill.service.createBill —
+        // the FK proves the PO exists, not that it is the caller's to reference.
+        po_id ?? null,
       ]
     );
     return result.rows[0];

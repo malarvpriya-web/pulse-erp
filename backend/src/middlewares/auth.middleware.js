@@ -223,6 +223,76 @@ const MODULE_ALIASES = {
  * `employee` and `sales_manager` gets sales_manager's rights on crm, not the
  * intersection — which would be the empty set and would lock them out.
  */
+/**
+ * Resolve the caller's effective permission row for a module, or null when the
+ * matrix has no entry for it.
+ *
+ * Extracted from requirePermission so callers that need to COMBINE the matrix
+ * with something else can consult it without re-implementing the user-override
+ * -> role-union precedence (procurement does this: several of its routes are
+ * legitimately reachable by roles that hold no procurement row at all, such as
+ * finance on three-way-match approval). It performs the lookup and nothing
+ * else — deciding what a null or a false means is the caller's job.
+ */
+export const permissionFor = async (req, module) => {
+  if (!req.user) return null;
+  const pool = (await import("../config/db.js")).default;
+  const { userId } = req.user;
+  const heldRoles  = rolesOf(req);
+  const moduleNames = MODULE_ALIASES[module] || [module];
+
+  if (!req._permCache) req._permCache = new Map();
+  const cacheKey = `${userId}:${moduleNames.join('|')}`;
+  if (req._permCache.has(cacheKey)) return req._permCache.get(cacheKey);
+
+  const perm = await (async () => {
+    const { rows: ur } = await pool.query(
+      `SELECT can_view, can_add, can_edit, can_delete, can_approve, can_export
+         FROM permissions
+        WHERE user_id = $1 AND module = ANY($2)
+        ORDER BY CASE WHEN module = $3 THEN 0 ELSE 1 END
+        LIMIT 1`,
+      [userId, moduleNames, module]
+    );
+    if (ur.length) return { source: 'user', ...ur[0] };
+    if (!heldRoles.length) return null;
+    // Pick the best-matching module name first (exact over alias), then
+    // OR that module's flags across every role the user holds.
+    const { rows: rr } = await pool.query(
+      `WITH picked AS (
+         SELECT rp.module
+           FROM role_permissions rp
+           JOIN roles r ON r.id = rp.role_id
+          WHERE LOWER(r.code) = ANY($1) AND rp.module = ANY($2)
+          ORDER BY CASE WHEN rp.module = $3 THEN 0 ELSE 1 END
+          LIMIT 1
+       )
+       SELECT BOOL_OR(rp.can_view)    AS can_view,
+              BOOL_OR(rp.can_add)     AS can_add,
+              BOOL_OR(rp.can_edit)    AS can_edit,
+              BOOL_OR(rp.can_delete)  AS can_delete,
+              BOOL_OR(rp.can_approve) AS can_approve,
+              BOOL_OR(rp.can_export)  AS can_export
+         FROM role_permissions rp
+         JOIN roles r ON r.id = rp.role_id
+        WHERE LOWER(r.code) = ANY($1)
+          AND rp.module = (SELECT module FROM picked)
+       HAVING COUNT(*) > 0`,
+      [heldRoles, moduleNames, module]
+    );
+    return rr.length ? { source: 'role', ...rr[0] } : null;
+  })();
+
+  req._permCache.set(cacheKey, perm);
+  return perm;
+};
+
+/** Map a shorthand action ('add') to its column ('can_add'); null if unknown. */
+export const permissionColumn = (action) => {
+  const col = ACTION_MAP[action] ?? action;
+  return VALID_ACTIONS.has(col) ? col : null;
+};
+
 export const requirePermission = (module, action) => async (req, res, next) => {
   const col = ACTION_MAP[action] ?? action;
   if (!VALID_ACTIONS.has(col))
@@ -231,59 +301,7 @@ export const requirePermission = (module, action) => async (req, res, next) => {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
 
   try {
-    const pool = (await import("../config/db.js")).default;
-    const { userId } = req.user;
-    const heldRoles  = rolesOf(req);
-    const moduleNames = MODULE_ALIASES[module] || [module];
-
-    if (!req._permCache) req._permCache = new Map();
-    const cacheKey = `${userId}:${moduleNames.join('|')}`;
-
-    let perm;
-    if (req._permCache.has(cacheKey)) {
-      perm = req._permCache.get(cacheKey);
-    } else {
-      const { rows: ur } = await pool.query(
-        `SELECT can_view, can_add, can_edit, can_delete, can_approve, can_export
-           FROM permissions
-          WHERE user_id = $1 AND module = ANY($2)
-          ORDER BY CASE WHEN module = $3 THEN 0 ELSE 1 END
-          LIMIT 1`,
-        [userId, moduleNames, module]
-      );
-      if (ur.length) {
-        perm = { source: 'user', ...ur[0] };
-      } else if (!heldRoles.length) {
-        perm = null;
-      } else {
-        // Pick the best-matching module name first (exact over alias), then
-        // OR that module's flags across every role the user holds.
-        const { rows: rr } = await pool.query(
-          `WITH picked AS (
-             SELECT rp.module
-               FROM role_permissions rp
-               JOIN roles r ON r.id = rp.role_id
-              WHERE LOWER(r.code) = ANY($1) AND rp.module = ANY($2)
-              ORDER BY CASE WHEN rp.module = $3 THEN 0 ELSE 1 END
-              LIMIT 1
-           )
-           SELECT BOOL_OR(rp.can_view)    AS can_view,
-                  BOOL_OR(rp.can_add)     AS can_add,
-                  BOOL_OR(rp.can_edit)    AS can_edit,
-                  BOOL_OR(rp.can_delete)  AS can_delete,
-                  BOOL_OR(rp.can_approve) AS can_approve,
-                  BOOL_OR(rp.can_export)  AS can_export
-             FROM role_permissions rp
-             JOIN roles r ON r.id = rp.role_id
-            WHERE LOWER(r.code) = ANY($1)
-              AND rp.module = (SELECT module FROM picked)
-           HAVING COUNT(*) > 0`,
-          [heldRoles, moduleNames, module]
-        );
-        perm = rr.length ? { source: 'role', ...rr[0] } : null;
-      }
-      req._permCache.set(cacheKey, perm);
-    }
+    const perm = await permissionFor(req, module);
 
     // No permission row configured for this (module, role). FAIL CLOSED.
     //

@@ -252,8 +252,73 @@ function stripSqlNoise(sql) {
   return out;
 }
 
+/**
+ * Blank out JavaScript comments before any template literal is extracted.
+ *
+ * A JSDoc block is prose, and prose is full of backticks — this codebase marks
+ * up identifiers as `purchase_orders.total_amount`, `LIMIT 20`, `PO_VOID`.
+ * sqlLiterals() cannot tell an inline-code backtick from a template-literal
+ * delimiter, so the CLOSING backtick of a markup span opens what it believes is
+ * a SQL literal, and everything up to the next backtick in the paragraph gets
+ * scanned as schema.
+ *
+ * That is not hypothetical. spendAnalytics.service.js:24 reads
+ *
+ *     3. SILENT TRUNCATION. A hard `LIMIT 20` with no total and no flag.
+ *
+ * The backtick after "20" is followed by the English word "with", which the
+ * leading-verb alternation happily matched as the SQL keyword WITH. The scan
+ * then ran on into "...share-of-spend computed from it was a share of..." and
+ * reported a missing table named `it`. One prose sentence, one phantom
+ * finding, in a file whose SQL is entirely correct — exactly the "a check that
+ * reports things that are fine is a check people stop reading" failure this
+ * script's own comments warn about.
+ *
+ * Comments cannot contain a real query, so blanking them first costs no
+ * coverage. Strings and template literals are walked over rather than blanked,
+ * so a `//` inside a URL or a SQL body is never mistaken for a comment.
+ *
+ * Replaced with spaces rather than removed so byte offsets — and therefore the
+ * reported line numbers — stay correct, the same convention as stripSqlNoise().
+ */
+function stripJsComments(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === '/' && src[i + 1] === '/') {                  // // line comment
+      const nl = src.indexOf('\n', i);
+      const end = nl === -1 ? src.length : nl;
+      out += ' '.repeat(end - i); i = end;
+    } else if (ch === '/' && src[i + 1] === '*') {           /* block comment */
+      const close = src.indexOf('*/', i + 2);
+      const end = close === -1 ? src.length : close + 2;
+      // Newlines are preserved so a multi-line JSDoc does not collapse the line
+      // numbering of everything after it.
+      out += src.slice(i, end).replace(/[^\n]/g, ' '); i = end;
+    } else if (ch === "'" || ch === '"' || ch === '`') {    // string / template
+      let j = i + 1;
+      while (j < src.length) {
+        if (src[j] === '\\') { j += 2; continue; }           // escaped char
+        if (src[j] === ch) { j++; break; }
+        // An unterminated single/double quote would otherwise swallow the rest
+        // of the file; a real one never spans a line.
+        if (ch !== '`' && src[j] === '\n') break;
+        j++;
+      }
+      out += src.slice(i, j); i = j;
+    } else {
+      out += ch; i++;
+    }
+  }
+  return out;
+}
+
 function sqlLiterals(src) {
-  return [...src.matchAll(/`(\s*(?:--[^\n]*\n\s*)*(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b[^`]*)`/gis)]
+  // Comments first — see stripJsComments(). Offsets are preserved, so `offset`
+  // still maps to the right line in the ORIGINAL source.
+  const code = stripJsComments(src);
+  return [...code.matchAll(/`(\s*(?:--[^\n]*\n\s*)*(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b[^`]*)`/gis)]
     .map(m => ({ raw: m[1], offset: m.index }));
 }
 

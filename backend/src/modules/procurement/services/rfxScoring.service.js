@@ -36,6 +36,7 @@ import pool from '../../shared/db.js';
 import { resolveModel, benchmark, rankBids, RFX_MODELS } from '../engines/rfxScoringEngine.js';
 import { computeTco } from '../engines/tcoEngine.js';
 import { loadTcoParams, loadAnnualDemand } from './tco.service.js';
+import { resolveGstRate } from '../../../shared/gstRate.js';
 
 const num = (v, fallback = null) => {
   if (v == null || v === '') return fallback;
@@ -195,7 +196,7 @@ async function costMeasures(companyId, event, items, bids, model) {
         moq: num(b.moq),
         warranty_months: num(b.warranty_months),
         holding_cost_pct: num(singleItem.holding_cost_pct),
-        gst_rate: num(singleItem.gst_rate) ?? num(singleItem.default_gst_rate),
+        gst_rate: resolveGstRate(singleItem),
         annual_demand_qty: demand?.annual_demand_qty ?? null,
         is_single_source: b.is_single_source === true,
       }, params);
@@ -630,9 +631,28 @@ export async function selectPreferredVendor(companyId, rfqId, vendorId, payload 
       ]
     );
 
+    // Stamp the evaluation, and ONLY the evaluation.
+    //
+    // This used to set `status = 'closed'` as well, which conflated two
+    // different decisions and broke the second one. Selecting a preferred
+    // vendor is a recommendation of record — it writes the AVL, the price book
+    // and the rfx_vendor_selections row above. AWARDING is the commitment: it
+    // is what marks rfq_quotes.is_winner and raises the purchase order.
+    //
+    // 'closed' is the status the award writes and the status both screens read
+    // as "awarded" (VendorManagement hides the Award button on it and badges
+    // the row green). So closing the event here left an RFQ that looked
+    // awarded, had no winning quote and no order, and could never get one:
+    // PATCH /rfqs/:id/award/:vendorId took its already-closed branch, found no
+    // PO to return, and answered 200 with `po: null`. Measured live — award on
+    // a fresh RFQ produced an order; award after a preferred-vendor selection
+    // produced nothing, twice, with a success response both times.
+    //
+    // Also scoped: this UPDATE carried no company predicate.
     await client.query(
-      `UPDATE rfqs SET status = 'closed', evaluated_at = NOW() WHERE id = $1`,
-      [rfqId]
+      `UPDATE rfqs SET evaluated_at = NOW()
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [rfqId, companyId ?? null]
     );
 
     await client.query('COMMIT');

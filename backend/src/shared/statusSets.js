@@ -99,6 +99,23 @@ export const OFFER_DECLINED = ['declined', 'rejected'];
 // total instead of silently disappearing from it.
 export const SALES_ORDER_VOID    = ['draft', 'cancelled', 'rejected'];
 export const SALES_ORDER_INVOICED = ['invoiced'];
+/**
+ * The full lifecycle, DECLARED rather than only described in the comment above.
+ *
+ * Those states have been named there since the module was written, but nothing
+ * in code listed them, so `check-status-literals.mjs` — which asks whether a
+ * literal in SQL names a state this system knows about — could not tell
+ * `'delivered'` (real) from `'completed'` (the value that made the Sales Report
+ * return zero against live confirmed orders).
+ *
+ * Booked revenue is still an EXCLUSION of SALES_ORDER_VOID, deliberately: an
+ * unanticipated status must land IN the total rather than vanish from it. This
+ * list is for recognition, not filtering.
+ */
+export const SALES_ORDER_LIFECYCLE = [
+  'draft', 'pending', 'confirmed', 'picking', 'packed',
+  'dispatched', 'delivered', 'invoiced', 'cancelled', 'rejected',
+];
 
 // ── purchase orders / requests ───────────────────────────────────────────────
 export const PO_CLOSED    = ['completed', 'received', 'closed', 'cancelled', 'rejected'];
@@ -136,6 +153,12 @@ export const AMC_ACTIVE = ['active'];
 // 0% conversion. A lead is "converted" if it produced business — whether that
 // was recorded by the convert-to-opportunity action ('converted') or by closing
 // the enquiry directly ('won'). Both are seeded here so neither path is lost.
+/**
+ * `shelved` is a real pursuit outcome — the Pursuits board and the lead stats
+ * both count it — and it is neither converted nor lost. Declared so a literal
+ * naming it is recognised as a state rather than reported as a typo.
+ */
+export const LEAD_SHELVED   = ['shelved'];
 export const LEAD_CONVERTED = ['converted', 'won'];
 export const LEAD_LOST      = ['lost', 'unqualified', 'disqualified', 'dropped'];
 /** Terminal states — a lead that can no longer move. Used as the conversion denominator's exclusion. */
@@ -158,6 +181,18 @@ export const LEAD_UNWORKED     = ['new', 'open', 'raw', 'untouched', 'not_contac
 export const LEAD_DISQUALIFIED = ['unqualified', 'disqualified', 'junk', 'spam'];
 
 // ── CRM: opportunities ───────────────────────────────────────────────────────
+/**
+ * Stages an opportunity legitimately occupies while OPEN.
+ *
+ * Not used for filtering — `sqlOpportunityOpen()` is an exclusion of won/lost,
+ * so a stage nobody anticipated counts as open rather than disappearing — but
+ * declared so the literal checker can tell a real stage from `closed_won`, a
+ * value this column has never held and which six files filtered on.
+ * `bidding` comes from the tender workspace, which creates opportunities there.
+ */
+export const OPPORTUNITY_OPEN_STAGES = [
+  'prospecting', 'qualification', 'proposal', 'negotiation', 'bidding', 'shelved',
+];
 export const OPPORTUNITY_WON  = ['won'];
 export const OPPORTUNITY_LOST = ['lost'];
 export const OPPORTUNITY_CLOSED = [...OPPORTUNITY_WON, ...OPPORTUNITY_LOST];
@@ -201,6 +236,13 @@ export const sqlSalesOrderBooked = (col = 'order_status') => notIn(col, SALES_OR
 export const sqlPoOpen  = (col = 'status') => notIn(col, PO_CLOSED);
 /** Purchase orders the vendor actually delivered against — numerator of the fulfilment rate. */
 export const sqlPoFulfilled = (col = 'status') => isIn(col, PO_FULFILLED);
+/**
+ * Purchase orders that count as committed spend — everything except
+ * draft/cancelled/rejected. An exclusion, so a status nobody anticipated lands
+ * IN the spend total rather than silently vanishing from it. This is the
+ * predicate the spend cube and the spend trend both use.
+ */
+export const sqlPoCommitted = (col = 'status') => notIn(col, PO_VOID);
 /** Purchase requests still awaiting action. */
 export const sqlPrOpen  = (col = 'status') => notIn(col, PR_CLOSED);
 
@@ -235,15 +277,16 @@ export default {
   OPENING_OPEN, OFFER_EXTENDED, OFFER_ACCEPTED, OFFER_DECLINED,
   VENDOR_BLOCKED, NCR_CLOSED, AMC_ACTIVE,
   SALES_ORDER_VOID, SALES_ORDER_INVOICED,
-  PO_CLOSED, PO_FULFILLED, PR_CLOSED,
+  PO_CLOSED, PO_FULFILLED, PO_VOID, PR_CLOSED,
   ATTENDANCE_PRESENT, ATTENDANCE_ABSENT, ATTENDANCE_LEAVE, ATTENDANCE_OFF,
   LEAD_CONVERTED, LEAD_LOST, LEAD_CLOSED, LEAD_UNWORKED, LEAD_DISQUALIFIED,
-  OPPORTUNITY_WON, OPPORTUNITY_LOST, OPPORTUNITY_CLOSED,
+  OPPORTUNITY_WON, OPPORTUNITY_LOST, OPPORTUNITY_CLOSED, OPPORTUNITY_OPEN_STAGES,
+  LEAD_SHELVED, SALES_ORDER_LIFECYCLE,
   isIn, notIn,
   sqlEmployeeActive, sqlEmployeeExited, sqlTicketOpen, sqlProjectOpen,
   sqlInvoicePaid, sqlInvoiceUnpaid, sqlBillUnpaid,
   sqlInvoiceOutstanding, sqlBillOutstanding,
-  sqlSalesOrderBooked, sqlPoOpen, sqlPoFulfilled, sqlPrOpen,
+  sqlSalesOrderBooked, sqlPoOpen, sqlPoFulfilled, sqlPoCommitted, sqlPrOpen,
   sqlAttendancePresent, sqlAttendanceAbsent, sqlAttendanceLeave, sqlAttendanceOff,
   sqlLeadConverted, sqlLeadLost, sqlLeadOpen, sqlLeadQualified,
   sqlOpportunityWon, sqlOpportunityLost, sqlOpportunityClosed, sqlOpportunityOpen,

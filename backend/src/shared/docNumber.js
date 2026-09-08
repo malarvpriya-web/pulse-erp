@@ -155,27 +155,88 @@ export async function nextSuppPartyCode(client) {
 
 // ── Procurement / Inventory ──────────────────────────────────────────────────
 
-/** PR0001 */
-export async function nextPurchaseRequestNumber(client) {
+/**
+ * Document prefixes configured per company in `procurement_settings`.
+ *
+ * The Settings screen has always offered a Numbering card with pr_prefix /
+ * po_prefix / grn_prefix / rfq_prefix, and PUT /settings persisted all four
+ * faithfully — but every generator below hardcoded its prefix, so a company that
+ * set "REQ" still got PR0001 on every requisition. The card was decorative.
+ *
+ * `companyId` is optional and the lookup is best-effort: numbering must never be
+ * the reason a document fails to be created, so any failure (no settings row, no
+ * company on the caller, a table that is mid-migration) falls back to the
+ * built-in prefix. A prefix is sanitised to the letters/digits the column allows
+ * before it reaches a document number.
+ */
+async function prefixFor(column, fallback, companyId, client) {
+  if (companyId == null) return fallback;
+  try {
+    const db = client || pool;
+    const { rows } = await db.query(
+      `SELECT ${column} AS p FROM procurement_settings WHERE company_id = $1 LIMIT 1`,
+      [companyId]
+    );
+    const raw = String(rows[0]?.p ?? '').trim().toUpperCase();
+    const clean = raw.replace(/[^A-Z0-9-]/g, '').slice(0, 10);
+    return clean || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** PR0001 (prefix from procurement_settings.pr_prefix when a company is known) */
+export async function nextPurchaseRequestNumber(client, companyId = null) {
+  const prefix = await prefixFor('pr_prefix', 'PR', companyId, client);
   const n = await nextval('seq_pr', client);
-  return `PR${String(n).padStart(4, '0')}`;
+  return `${prefix}${String(n).padStart(4, '0')}`;
 }
 
 /** PO0001  (purchase orders — procurement module) */
-export async function nextPurchaseOrderNumber(client) {
+export async function nextPurchaseOrderNumber(client, companyId = null) {
+  const prefix = await prefixFor('po_prefix', 'PO', companyId, client);
   const n = await nextval('seq_po_purch', client);
-  return `PO${String(n).padStart(4, '0')}`;
+  return `${prefix}${String(n).padStart(4, '0')}`;
 }
 
 /** GRN0001 */
-export async function nextGrnNumber(client) {
+export async function nextGrnNumber(client, companyId = null) {
+  const prefix = await prefixFor('grn_prefix', 'GRN', companyId, client);
   const n = await nextval('seq_grn', client);
-  return `GRN${String(n).padStart(4, '0')}`;
+  return `${prefix}${String(n).padStart(4, '0')}`;
+}
+
+/**
+ * RTV0001 — return to vendor.
+ *
+ * grn.service.createRTV() minted `RTV-${Date.now()}`. A wall-clock string is not
+ * a document number: it cannot be read out over the phone, cannot be searched
+ * for, ignores the numbering prefix the company configured, and two returns
+ * raised in the same millisecond collide on return_to_vendor's UNIQUE constraint.
+ * Shares grn_prefix's sibling convention — an RTV is the reverse of a receipt —
+ * but carries its own sequence so the two series never interleave.
+ */
+export async function nextRtvNumber(client, companyId = null) {
+  const prefix = await prefixFor('rtv_prefix', 'RTV', companyId, client);
+  const n = await nextval('seq_rtv', client);
+  return `${prefix}${String(n).padStart(4, '0')}`;
+}
+
+/**
+ * LPR0001 — local (off-PO) purchase.
+ *
+ * Was `LPR${Date.now()}`, with the same problems as the RTV series above. Off-PO
+ * spend is exactly the spend a finance review has to be able to cite by number.
+ */
+export async function nextLocalPurchaseNumber(client, companyId = null) {
+  const prefix = await prefixFor('lpr_prefix', 'LPR', companyId, client);
+  const n = await nextval('seq_lpr', client);
+  return `${prefix}${String(n).padStart(4, '0')}`;
 }
 
 /** RFQ-YYYY-001  (year label comes from JS, counter is global) */
-export async function nextRfqNumber(client) {
-  return nextRfxNumber('RFQ', client);
+export async function nextRfqNumber(client, companyId = null) {
+  return nextRfxNumber('RFQ', client, companyId);
 }
 
 /**
@@ -187,12 +248,16 @@ export async function nextRfqNumber(client) {
  * stage the event is. An unrecognised type falls back to RFQ rather than
  * minting a document with a made-up prefix.
  */
-export async function nextRfxNumber(rfxType, client) {
+export async function nextRfxNumber(rfxType, client, companyId = null) {
   const n = await nextval('seq_rfq', client);
   const year = new Date().getFullYear();
-  const prefix = ['RFI', 'RFP', 'RFQ'].includes(String(rfxType || '').toUpperCase())
-    ? String(rfxType).toUpperCase()
-    : 'RFQ';
+  const type = String(rfxType || '').toUpperCase();
+  // Only the RFQ stage is configurable: rfq_prefix is the one the Settings card
+  // exposes, and RFI/RFP keep their stage labels so the number still says which
+  // stage minted it.
+  const prefix = type === 'RFI' || type === 'RFP'
+    ? type
+    : await prefixFor('rfq_prefix', 'RFQ', companyId, client);
   return `${prefix}-${year}-${String(n).padStart(3, '0')}`;
 }
 
