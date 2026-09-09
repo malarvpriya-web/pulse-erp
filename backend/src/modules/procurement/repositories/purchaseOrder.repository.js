@@ -7,6 +7,11 @@ class PurchaseOrderRepository {
       po_number, pr_id, supplier_id, order_date, expected_delivery_date,
       subtotal, tax_amount, total_amount, terms_conditions, notes,
       created_by, company_id, currency, exchange_rate, project_id, sales_order_id,
+      // Where the spend is charged, and what sourcing decision was in force when
+      // it was raised. `followed_sourcing_strategy` is deliberately nullable —
+      // see sourcingAdvisory.service.js on why "no strategy" must not read as
+      // "did not follow the strategy".
+      cost_center_id, sourcing_strategy_id, followed_sourcing_strategy,
     } = data;
     // currency/exchange_rate carry DB defaults ('INR'/1); pass them explicitly so a
     // foreign-currency PO can be raised, and keep total_amount_inr in step with the
@@ -17,12 +22,15 @@ class PurchaseOrderRepository {
       `INSERT INTO purchase_orders (po_number, pr_id, supplier_id, order_date, expected_delivery_date,
                                     subtotal, tax_amount, total_amount, terms_conditions, notes,
                                     created_by, company_id, currency, exchange_rate, total_amount_inr,
-                                    project_id, sales_order_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+                                    project_id, sales_order_id,
+                                    cost_center_id, sourcing_strategy_id, followed_sourcing_strategy)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
       [po_number, pr_id ?? null, supplier_id, order_date, expected_delivery_date ?? null,
        subtotal ?? 0, tax_amount ?? 0, total_amount ?? 0, terms_conditions ?? null, notes ?? null,
        created_by, company_id ?? null, currency || 'INR', Number.isFinite(rate) && rate > 0 ? rate : 1,
-       totalInr, project_id ?? null, sales_order_id ?? null]
+       totalInr, project_id ?? null, sales_order_id ?? null,
+       cost_center_id ?? null, sourcing_strategy_id ?? null,
+       followed_sourcing_strategy === undefined ? null : followed_sourcing_strategy]
     );
     return result.rows[0];
   }

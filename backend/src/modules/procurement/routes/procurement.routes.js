@@ -14,6 +14,7 @@ import { sendPurchaseOrderToVendor, sendRfqToVendor } from '../../../utils/maile
 import { companyOf, employeeOf } from '../../../shared/scope.js';
 import { resolveGstRate } from '../../../shared/gstRate.js';
 import { rollupQualityStatus } from '../../quality/services/qualityRollup.service.js';
+import { resolveSourcingAdvisory } from '../services/sourcingAdvisory.service.js';
 import { hasRole, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { requiredBand, assertCanDecideAmount, requireProcurement } from '../procurement.authz.js';
 import { rankOptions, TCO_DEFAULTS } from '../engines/tcoEngine.js';
@@ -803,9 +804,39 @@ router.post('/purchase-orders', requireProcurement('add'), async (req, res) => {
     const companyId = cid(req);
     await client.query('BEGIN');
 
+    // Where the spend is charged. Both are optional, and both are checked
+    // against the caller's company when supplied — an unchecked id here would
+    // let one tenant book spend against another's project or cost centre, and
+    // the FK alone only proves the row exists, not that it is theirs.
+    const projectId    = Number.isFinite(parseInt(b.project_id, 10))     ? parseInt(b.project_id, 10)     : null;
+    const costCentreId = Number.isFinite(parseInt(b.cost_center_id, 10)) ? parseInt(b.cost_center_id, 10) : null;
+    if (projectId != null) {
+      const { rows: [p] } = await client.query(
+        `SELECT id FROM projects WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+        [projectId, companyId]);
+      if (!p) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Project not found.' }); }
+    }
+    if (costCentreId != null) {
+      const { rows: [c] } = await client.query(
+        `SELECT id FROM cost_centers WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+        [costCentreId, companyId]);
+      if (!c) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Cost centre not found.' }); }
+    }
+
+    // The sourcing decision in force for what is being bought. Advisory, never
+    // blocking — see sourcingAdvisory.service.js. Recorded on the order so the
+    // strategy and the spend it governs are finally the same record.
+    const advisory = await resolveSourcingAdvisory(client, {
+      companyId, itemIds: lines.map((l) => l.item_id), vendorId: b.supplier_id,
+    });
+
     const poNumber = await poRepo.getNextNumber(client, companyId);
     const po = await poRepo.create(client, {
       ...b,
+      project_id:     projectId,
+      cost_center_id: costCentreId,
+      sourcing_strategy_id:       advisory.strategy?.id ?? null,
+      followed_sourcing_strategy: advisory.followed,
       // The drawer calls it expected_date; the column is expected_delivery_date.
       // Unmapped, every manually-raised PO would have carried a NULL promise date
       // — the field the overdue-delivery report and MRP's due dates both read.
@@ -843,6 +874,9 @@ router.post('/purchase-orders', requireProcurement('add'), async (req, res) => {
 
     const created = await poRepo.findById(po.id, companyId);
     created.items = await poRepo.getItems(po.id, companyId);
+    // Returned as well as stored, so the buyer sees the strategy at the moment
+    // of the decision rather than discovering it in a report afterwards.
+    created.sourcing_advisory = advisory;
     res.status(201).json(created);
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -1496,6 +1530,47 @@ router.get('/vendors', requireProcurement('view'), async (req, res) => {
 });
 
 // ── RFQs: with response_count and lowest_quote ────────────────────────────────
+/**
+ * GET /charge-targets — what a purchase order can be charged to.
+ *
+ * The projects and cost centres of the caller's own company, for the two
+ * selectors on the PO drawer.
+ *
+ * Its own endpoint rather than the existing `/projects` and finance's
+ * cost-centre list, because those are gated on `projects:view` and the finance
+ * module's grant — permissions a buyer has no reason to hold. Borrowing them
+ * would either 403 the dropdown for the people who need it or force those
+ * modules to widen their gates for a lookup. This returns id and name only:
+ * enough to fill a selector, and nothing about a project's budget or a cost
+ * centre's spend that procurement has no business reading.
+ */
+router.get('/charge-targets', requireProcurement('view'), async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const [projects, costCentres] = await Promise.all([
+      pool.query(
+        `SELECT id, project_name AS name, project_code AS code
+           FROM projects
+          WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+            -- LOWER() on both sides: projects.status holds lowercase values
+            -- here ('active', 'planning'), and a capitalised literal against a
+            -- lowercase column excludes nothing at all — the closed projects
+            -- would have stayed in the picker while the filter looked correct.
+            AND LOWER(COALESCE(status, '')) NOT IN ('completed', 'cancelled', 'closed')
+          ORDER BY project_name`, [companyId]),
+      pool.query(
+        `SELECT id, name, code
+           FROM cost_centers
+          WHERE ($1::int IS NULL OR company_id = $1)
+            AND COALESCE(is_active, true) = true
+          ORDER BY name`, [companyId]),
+    ]);
+    res.json({ projects: projects.rows, cost_centres: costCentres.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/rfqs', requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
@@ -2125,6 +2200,21 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
       [po.id]
     );
 
+    // The sourcing decision that was in force for what was just awarded.
+    // Resolved here rather than before the INSERT because the line items — and
+    // therefore the categories — only exist once the carry-over above has run.
+    // Advisory: it records whether the award followed the strategy and never
+    // refuses one. See sourcingAdvisory.service.js on why `followed` is narrow
+    // and why null is not false.
+    const { rows: awardedLines } = await client.query(
+      `SELECT item_id FROM purchase_order_items WHERE po_id = $1 AND item_id IS NOT NULL`, [po.id]);
+    const advisory = await resolveSourcingAdvisory(client, {
+      companyId, itemIds: awardedLines.map((l) => l.item_id), vendorId,
+    });
+    await client.query(
+      `UPDATE purchase_orders SET sourcing_strategy_id = $2, followed_sourcing_strategy = $3 WHERE id = $1`,
+      [po.id, advisory.strategy?.id ?? null, advisory.followed]);
+
     // Also move the requisition on, so an awarded requirement does not sit in
     // the "approved, awaiting conversion" queue forever with an order against it.
     if (prIdInt) {
@@ -2155,7 +2245,7 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
       recordId: closedRfq.id, recordType: 'rfq', action: 'award', oldData: rfq,
       newData: { ...closedRfq, awarded_vendor_id: vendorId, quote, po_id: po.id, tco_decision: decision }, req,
     });
-    res.json({ success: true, rfq: closedRfq, quote, po: tot ?? po, tco_decision: decision });
+    res.json({ success: true, rfq: closedRfq, quote, po: tot ?? po, tco_decision: decision, sourcing_advisory: advisory });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     res.status(err.status || 500).json({ error: err.message });

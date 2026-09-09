@@ -46,12 +46,16 @@ const emptyLine = () => ({ item_id: '', item_name: '', quantity: 1, unit_price: 
 const emptyForm = () => ({
   supplier_id: '', supplier_name: '', order_date: new Date().toISOString().slice(0, 10),
   expected_date: '', notes: '', lines: [emptyLine()],
+  // Where the spend is charged. Both optional: an order can belong to a
+  // project, to a cost centre, to both, or to neither.
+  project_id: '', cost_center_id: '',
 });
 
 export default function PurchaseOrders() {
   const { readOnly } = usePageAccess();
   const [pos,       setPos]       = useState([]);
   const [suppliers, setSuppliers] = useState([]);
+  const [chargeTargets, setChargeTargets] = useState({ projects: [], cost_centres: [] });
   const [invItems,  setInvItems]  = useState([]);
   const [loading,   setLoading]   = useState(false);
   const [search,    setSearch]    = useState('');
@@ -78,10 +82,11 @@ export default function PurchaseOrders() {
     const params = {};
     if (fStatus) params.status = fStatus;
     if (search)  params.search = search;
-    const [posRes, suppRes, itemsRes] = await Promise.allSettled([
+    const [posRes, suppRes, itemsRes, chargeRes] = await Promise.allSettled([
       api.get('/procurement/purchase-orders', { params }),
       api.get('/procurement/vendors'),
       api.get('/inventory/items'),
+      api.get('/procurement/charge-targets'),
     ]);
     if (!isMounted.current) return;
     const rawPos  = posRes.status  === 'fulfilled' ? (posRes.value.data.orders || posRes.value.data) : [];
@@ -92,6 +97,14 @@ export default function PurchaseOrders() {
 
     const rawItems= itemsRes.status=== 'fulfilled' ? (itemsRes.value.data.items || itemsRes.value.data) : [];
     setInvItems(Array.isArray(rawItems) ? rawItems : []);
+
+    // Empty arrays rather than undefined on failure, so the two selectors render
+    // as "Not project work" / "No cost centre" instead of throwing on .map.
+    const charge = chargeRes.status === 'fulfilled' ? chargeRes.value.data : null;
+    setChargeTargets({
+      projects:     Array.isArray(charge?.projects)     ? charge.projects     : [],
+      cost_centres: Array.isArray(charge?.cost_centres) ? charge.cost_centres : [],
+    });
 
     setLoading(false);
   }, [fStatus, search]);
@@ -304,6 +317,31 @@ export default function PurchaseOrders() {
                 <div className="po-field">
                   <label>Order Date</label>
                   <input type="date" value={form.order_date} onChange={e => setForm(f => ({ ...f, order_date: e.target.value }))} />
+                </div>
+              </div>
+              {/* Where the spend is charged. purchase_orders carried project_id
+                  with no screen offering it, and no cost centre at all, so an
+                  order could only be attributed by calling the API directly. */}
+              <div className="po-row2">
+                <div className="po-field">
+                  <label>Project</label>
+                  <select value={form.project_id}
+                    onChange={e => setForm(f => ({ ...f, project_id: e.target.value }))}>
+                    <option value="">Not project work</option>
+                    {chargeTargets.projects.map(p => (
+                      <option key={p.id} value={p.id}>{p.code ? `${p.code} — ${p.name}` : p.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="po-field">
+                  <label>Cost Centre</label>
+                  <select value={form.cost_center_id}
+                    onChange={e => setForm(f => ({ ...f, cost_center_id: e.target.value }))}>
+                    <option value="">No cost centre</option>
+                    {chargeTargets.cost_centres.map(c => (
+                      <option key={c.id} value={c.id}>{c.code ? `${c.code} — ${c.name}` : c.name}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
               <div className="po-row2">

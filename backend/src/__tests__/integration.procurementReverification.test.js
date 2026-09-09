@@ -157,6 +157,16 @@ async function sweep() {
   await pool.query(`DELETE FROM purchase_request_items WHERE pr_id IN (SELECT id FROM purchase_requests WHERE notes LIKE $1)`, like);
   await pool.query(`DELETE FROM purchase_requests WHERE notes LIKE $1`, like);
   await pool.query(`DELETE FROM vendor_health_scores WHERE company_id = $1`, [CO_B]);
+  // Round three: the sourcing strategies this suite records, and tenant B's own
+  // data — B is populated now, so its rows have to come down with everything
+  // else or the next run starts against a tenant that is no longer empty in a
+  // way the tests did not choose.
+  await pool.query(`DELETE FROM sourcing_category_strategies WHERE rationale LIKE $1`, like);
+  await pool.query(`DELETE FROM purchase_order_items WHERE po_id IN (SELECT id FROM purchase_orders WHERE company_id = $1)`, [CO_B]);
+  await pool.query(`DELETE FROM purchase_orders WHERE company_id = $1`, [CO_B]);
+  await pool.query(`DELETE FROM inventory_items WHERE company_id = $1`, [CO_B]);
+  await pool.query(`UPDATE vendors SET party_id = NULL WHERE company_id = $1`, [CO_B]);
+  await pool.query(`DELETE FROM vendors WHERE company_id = $1`, [CO_B]);
 }
 
 beforeAll(async () => {
@@ -691,6 +701,175 @@ describe('D14 — a hand-booked batch is stock the ledger knows about', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The third round: D12, D15, and the sourcing link (item 19).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('D12 — a purchase order can be charged to a project and a cost centre', () => {
+  it('offers both, and stores what it was given', async () => {
+    const targets = await buyer().get('/api/procurement/charge-targets');
+    expect(targets.status).toBe(200);
+    expect(Array.isArray(targets.body.projects)).toBe(true);
+    expect(Array.isArray(targets.body.cost_centres)).toBe(true);
+    // The picker exists to be filled; an empty one is the "API-only" state
+    // this defect was about.
+    expect(targets.body.cost_centres.length, 'no cost centre to charge an order to').toBeGreaterThan(0);
+
+    const project = targets.body.projects[0];
+    const centre  = targets.body.cost_centres[0];
+    const res = await buyer().post('/api/procurement/purchase-orders').send({
+      supplier_id: seed.vendor.id,
+      order_date: new Date().toISOString().slice(0, 10),
+      notes: `${TAG} charged`,
+      project_id: project?.id ?? null,
+      cost_center_id: centre.id,
+      items: [{ item_id: seed.item.id, quantity: 1, rate: 100, gst_rate: 18 }],
+    });
+    expect(res.status).toBe(201);
+    const { rows: [po] } = await pool.query(
+      'SELECT project_id, cost_center_id FROM purchase_orders WHERE id = $1', [res.body.id]);
+    expect(Number(po.cost_center_id)).toBe(Number(centre.id));
+    if (project) expect(Number(po.project_id)).toBe(Number(project.id));
+  });
+
+  it('refuses a project or a cost centre belonging to another company', async () => {
+    const { rows: [centre] } = await pool.query(
+      `SELECT id FROM cost_centers WHERE company_id = $1 ORDER BY id LIMIT 1`, [CO_A]);
+    // The FK proves the row exists; it does not prove it is the caller's.
+    const res = await tenantB().post('/api/procurement/purchase-orders').send({
+      supplier_id: seed.vendor.id,
+      order_date: new Date().toISOString().slice(0, 10),
+      notes: `${TAG} foreign charge`,
+      cost_center_id: centre.id,
+      items: [{ item_id: seed.item.id, quantity: 1, rate: 100 }],
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('does not offer another tenant its projects or cost centres', async () => {
+    const res = await tenantB().get('/api/procurement/charge-targets');
+    expect(res.status).toBe(200);
+    expect(res.body.projects).toHaveLength(0);
+    expect(res.body.cost_centres).toHaveLength(0);
+  });
+});
+
+describe('item 19 — the sourcing strategy reaches the buying decision', () => {
+  /**
+   * A recorded strategy for the bucket the seed item actually falls in.
+   *
+   * ⚠ Not one component in this database carries a `category_id`, so the seed
+   * item is in the UNCATEGORISED bucket — which the sourcing board treats as a
+   * first-class category and which a strategy can be recorded against with
+   * `category_id IS NULL`. An earlier version of this test bailed out with
+   * `if (!strategy) return` when the item had no category, which made every
+   * assertion below unreachable: three mutations to the resolver left the suite
+   * green. A test that silently declines to run is worse than no test, because
+   * it reports a pass. It now records against whichever bucket applies, and
+   * asserts rather than skips.
+   */
+  async function recordStrategy() {
+    const { rows: [item] } = await pool.query(
+      'SELECT category_id FROM inventory_items WHERE id = $1', [seed.item.id]);
+    const { rows: [s] } = await pool.query(
+      `INSERT INTO sourcing_category_strategies
+         (company_id, category_id, quadrant_key, lever_key, method_key, method_label, status, rationale)
+       VALUES ($1,$2,'leverage','commercial','tendering','Competitive tendering','active',$3)
+       RETURNING *`, [CO_A, item.category_id ?? null, `${TAG} strategy`]);
+    return s;
+  }
+
+  it('reports the strategy in force, and whether the order followed it', async () => {
+    const strategy = await recordStrategy();
+    expect(strategy, 'no strategy could be recorded, so nothing below is being tested').toBeTruthy();
+
+    // The vendor is NOT on the approved list for this item, so this order
+    // diverges from the strategy — recorded, never blocked.
+    await pool.query(`DELETE FROM approved_vendor_list WHERE item_id = $1 AND vendor_id = $2`,
+      [seed.item.id, seed.vendor.id]);
+    const diverged = await buyer().post('/api/procurement/purchase-orders').send({
+      supplier_id: seed.vendor.id, order_date: new Date().toISOString().slice(0, 10),
+      notes: `${TAG} diverged`,
+      items: [{ item_id: seed.item.id, quantity: 1, rate: 100 }],
+    });
+    expect(diverged.status, 'an award against the strategy must not be blocked').toBe(201);
+    expect(diverged.body.sourcing_advisory.strategy.id).toBe(strategy.id);
+    expect(diverged.body.sourcing_advisory.followed).toBe(false);
+    const { rows: [poA] } = await pool.query(
+      'SELECT sourcing_strategy_id, followed_sourcing_strategy FROM purchase_orders WHERE id = $1',
+      [diverged.body.id]);
+    expect(poA.sourcing_strategy_id).toBe(strategy.id);
+    expect(poA.followed_sourcing_strategy).toBe(false);
+
+    // Now approve the vendor under the strategy — the same row selectPreferredVendor writes.
+    await pool.query(
+      `INSERT INTO approved_vendor_list (company_id, item_id, vendor_id, status, is_preferred, notes)
+       VALUES ($1,$2,$3,'approved',TRUE,$4)`,
+      [CO_A, seed.item.id, seed.vendor.id, `${TAG} approved`]);
+    const followed = await buyer().post('/api/procurement/purchase-orders').send({
+      supplier_id: seed.vendor.id, order_date: new Date().toISOString().slice(0, 10),
+      notes: `${TAG} followed`,
+      items: [{ item_id: seed.item.id, quantity: 1, rate: 100 }],
+    });
+    expect(followed.body.sourcing_advisory.followed).toBe(true);
+    const { rows: [poB] } = await pool.query(
+      'SELECT followed_sourcing_strategy FROM purchase_orders WHERE id = $1', [followed.body.id]);
+    expect(poB.followed_sourcing_strategy).toBe(true);
+  }, 30_000);
+
+  it('says "not applicable" rather than "not followed" when no strategy exists', async () => {
+    // The distinction that keeps this column honest: a buyer who had no
+    // strategy to follow must not be recorded as having ignored one.
+    await pool.query(`DELETE FROM sourcing_category_strategies WHERE rationale LIKE $1`, [`%${TAG}%`]);
+    const res = await buyer().post('/api/procurement/purchase-orders').send({
+      supplier_id: seed.vendor.id, order_date: new Date().toISOString().slice(0, 10),
+      notes: `${TAG} nostrategy`,
+      items: [{ item_id: seed.item.id, quantity: 1, rate: 100 }],
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.sourcing_advisory.followed).toBeNull();
+    const { rows: [po] } = await pool.query(
+      'SELECT sourcing_strategy_id, followed_sourcing_strategy FROM purchase_orders WHERE id = $1', [res.body.id]);
+    expect(po.sourcing_strategy_id).toBeNull();
+    expect(po.followed_sourcing_strategy).toBeNull();
+  });
+});
+
+describe('D15 — an approved purchase order actually notifies someone', () => {
+  it('delivers a notification when the tenant has the toggle on', async () => {
+    const { rows: [settings] } = await pool.query(
+      'SELECT notify_po_approval FROM procurement_settings WHERE company_id = $1', [CO_A]);
+    expect(settings.notify_po_approval, 'this tenant has PO-approval notifications switched off').toBe(true);
+
+    // Raised by an account that HAS an employee record, so created_by resolves
+    // and there is somebody to address the notification to — which is the whole
+    // of what D9 fixed.
+    const app = request(appAs({
+      roles: ['procurement_manager'],
+      userId: seed.userWithEmployee.id,
+      employeeId: seed.userWithEmployee.employee_id,
+    }));
+    const po = await app.post('/api/procurement/purchase-orders').send({
+      supplier_id: seed.vendor.id, order_date: new Date().toISOString().slice(0, 10),
+      notes: `${TAG} notify`,
+      items: [{ item_id: seed.item.id, quantity: 1, rate: 50, gst_rate: 18 }],
+    });
+    expect(po.status).toBe(201);
+    const { rows: [row] } = await pool.query('SELECT created_by FROM purchase_orders WHERE id = $1', [po.body.id]);
+    expect(row.created_by, 'no recipient, so nothing could be delivered').toBe(seed.userWithEmployee.employee_id);
+
+    const before = await pool.query('SELECT COUNT(*)::int n FROM notifications');
+    const approved = await app.patch(`/api/procurement/purchase-orders/${po.body.id}/approve`).send({});
+    expect(approved.status).toBe(200);
+    // notifyWorkflowEvent is fire-and-forget by design — the approval must not
+    // wait on delivery — so give it a moment before reading the row.
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await pool.query('SELECT COUNT(*)::int n FROM notifications');
+    expect(after.rows[0].n, 'the toggle is on and the recipient resolves, so one must be delivered')
+      .toBeGreaterThan(before.rows[0].n);
+  }, 30_000);
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // The part that matters more: the SHAPES, not the instances.
 // ═════════════════════════════════════════════════════════════════════════════
@@ -703,7 +882,64 @@ describe('the shapes', () => {
    * scoped on neither had no test that could fail. Adding a route to this table
    * is one line; forgetting to is what this sweep exists to catch.
    */
-  it('answers no by-id read with another tenant\'s row', async () => {
+  /**
+   * Give tenant B real data of its own.
+   *
+   * Until this existed, every isolation result in this suite was measured
+   * against an EMPTY second tenant. That proves a foreign caller sees nothing —
+   * but it cannot tell "correctly scoped" apart from "returns nothing to
+   * anybody", and it cannot catch the opposite leak, where tenant B's own rows
+   * bleed into tenant A. The four leaks this suite exists for were all found by
+   * walking ids from a tenant with almost nothing in it, and that method has a
+   * ceiling.
+   *
+   * So B gets its own vendor, item and order, and the sweep now asserts BOTH
+   * directions. Torn down with the rest of the fixtures.
+   */
+  async function populateTenantB() {
+    const { rows: [vendor] } = await pool.query(
+      `INSERT INTO vendors (vendor_name, company_id, email, status)
+       VALUES ($1, $2, 'zzrv-b@example.test', 'active') RETURNING id`,
+      [`${TAG} tenant-B supplier`, CO_B]);
+    const { rows: [item] } = await pool.query(
+      `INSERT INTO inventory_items (item_name, item_code, company_id, is_active, unit_of_measure)
+       VALUES ($1, $2, $3, true, 'Nos') RETURNING id`,
+      [`${TAG} tenant-B component`, `${TAG}-B-${Date.now()}`, CO_B]);
+    const { rows: [po] } = await pool.query(
+      `INSERT INTO purchase_orders (po_number, supplier_id, company_id, order_date, status,
+                                    subtotal, tax_amount, total_amount, notes)
+       VALUES ($1, $2, $3, CURRENT_DATE, 'draft', 500, 0, 500, $4) RETURNING id`,
+      [`${TAG}-B-${Date.now()}`, vendor.id, CO_B, `${TAG} tenant-B order`]);
+    await pool.query(
+      `INSERT INTO purchase_order_items (po_id, item_id, quantity, rate, tax_rate, tax_amount, total_amount)
+       VALUES ($1, $2, 5, 100, 0, 0, 500)`, [po.id, item.id]);
+    return { vendorId: vendor.id, itemId: item.id, poId: po.id };
+  }
+
+  it('answers no by-id read with another tenant\'s row, in either direction', async () => {
+    const b = await populateTenantB();
+
+    // ── B must not see A's ──────────────────────────────────────────────────
+    // (the sweep below), and A must not see B's.
+    const aSeesB = [];
+    for (const [label, url] of [
+      ['purchase order',  `/api/procurement/purchase-orders/${b.poId}`],
+      ['vendor scorecard',`/api/procurement/vendors/${b.vendorId}/scorecard`],
+      ['vendor health',   `/api/vendor-health/${b.vendorId}`],
+      ['price history',   `/api/procurement/price-history?item_id=${b.itemId}`],
+      ['eoq',             `/api/procurement/analytics/eoq?item_id=${b.itemId}`],
+    ]) {
+      const res = await buyer().get(url);
+      if (res.status >= 400) continue;
+      const s = JSON.stringify(res.body ?? {});
+      if (s.includes(TAG) || /"po_number"|"vendor_name"/.test(s)) aSeesB.push(`${label} -> ${res.status} ${s.slice(0, 110)}`);
+    }
+    expect(aSeesB, `company 1 read tenant B's rows:\n  ${aSeesB.join('\n  ')}`).toEqual([]);
+
+    // A's list endpoints must not contain B's rows either.
+    const list = await buyer().get('/api/procurement/purchase-orders');
+    expect(JSON.stringify(list.body)).not.toContain(`${TAG} tenant-B order`);
+
     const ids = {};
     for (const [k, sql] of Object.entries({
       po:  `SELECT id FROM purchase_orders   WHERE company_id = $1 AND deleted_at IS NULL ORDER BY id LIMIT 1`,
