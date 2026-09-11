@@ -15136,3 +15136,214 @@ price"* while the RFQ still reads the TCO basis.
 
 Probe events were deleted afterwards; `seq_rfq` keeps the two consumed numbers,
 which is what a sequence is for.
+
+---
+
+## §170 — The cron nobody could run, and therefore nobody had run (2026-09-11)
+
+**Trigger**: a pass over the §153 Procurement Re-Verification report, looking for what it
+left open rather than for what it claimed.
+
+The report is 30 PASS / 0 PARTIAL / 0 FAIL. Its own check 22 carries the one loose thread:
+all seven procurement crons are registered, "six expose a manual entry point and all six
+were run", and `deliveryFollowup` "is scheduled but has no on-demand entry point". That was
+recorded as a property of the job and left there.
+
+It was not a property. It was the reason the job was never executed during an audit that
+executed everything else — and it was the only one of the seven carrying live defects.
+
+### The three defects, each proven against the database before being fixed
+
+**1. No tenant scoping — the same class as D1/D2/D3, in the place the sweep could not reach.**
+`getReceivers()` selected *every* active admin/manager in the database, and the caller then
+sent each of them a reminder naming a PO number and a supplier name. The re-verification's
+isolation sweep drives HTTP endpoints from a foreign token; a cron has no endpoint, so
+nothing in it could reach this. Check 06 was certified PASS on that sweep.
+
+⚠⚠ **This manual had already written the gap down, twice** — §(campaignLifecycle): "existing
+sibling crons (`amcRenewal`, `deliveryFollowup`) don't company-scope their fallback
+recipients at all (a pre-existing gap)", and §(reorderPr): "a pre-existing gap in those two,
+not touched here". A known gap recorded in prose is not a tracked defect: two later passes
+cited it, neither closed it, and a third certified the dimension it belongs to as PASS.
+
+**2. A phantom role code.** The receiver list named `'procurement'`. The real codes are
+`procurement_manager` and `procurement_exec`; `SELECT code FROM roles` has no `'procurement'`
+row. So the one team this reminder is addressed to never received it, while three unrelated
+roles did. ⚠ Check 05 diffed every role string against `SELECT code FROM roles` and reported
+**zero phantom codes** — it swept route middleware, not cron SQL.
+
+**3. A status literal that matches nothing.** `status NOT IN ('completed', 'cancelled')`.
+`purchase_orders.status` never holds `'completed'` — an arrived order is `'received'`. Both
+live orders in this database are `'received'` and the old predicate excluded neither, so the
+buyer was chased for goods already in stock. Same shape as `closed_won`. Now `sqlPoOpen()`.
+
+⚠ The status-literal gate does scan `src/jobs/`, and passed: it asks whether a literal names
+a state *this system* knows about, and `'completed'` is a real status — of other tables. It
+is not column-aware, which is exactly the gap that let this survive.
+
+### What changed
+
+- `backend/src/jobs/deliveryFollowup.cron.js` — receivers resolved per company from the
+  `user_roles`/`roles` junction through `COALESCE(e.company_id, u.company_id)`, the pattern
+  `reorderPr` already uses; `sqlPoOpen('po.status')` for the status predicate; POs grouped by
+  owning tenant, with a `company_id IS NULL` order counted and skipped rather than broadcast;
+  wrapped in `scheduled()` so it reports counters like the other six; and it now exports
+  `runDeliveryFollowupCheckNow`.
+  ⚠ Until this change the manual's own claim that "**all** procurement jobs run through
+  `jobs/jobRun.js`" (§ procurement crons table) was false for this one. It is now true.
+- `backend/src/__tests__/integration.deliveryFollowupCron.test.js` (new, 6 tests) — seeds
+  **two** populated tenants and asserts both directions of the boundary.
+  ⚠⚠ It asserts `counters.notified > 0` **before** any "did not leak" assertion. Run as-is
+  against this database the job returns `{companies: 0, pos: 0, notified: 0}` and every
+  negative assertion is vacuously true — the same trap the §153 sourcing resolver hit, where
+  three mutations stayed green because `if (!strategy) return` made the body unreachable.
+  A fixture that stops matching now fails loudly instead of going quietly green.
+
+**Mutation-tested 3 for 3.** Dropping the tenant predicate reddens the leak test; restoring
+the phantom role list reddens both the procurement-team test and the leak test (that one
+list carried both halves of the defect); restoring the `'completed'` predicate reddens the
+already-received test. Full suite after: **55 files / 1231 passed / 0 failed**; all four
+`check:schema` gates PASS.
+
+### The same defect, outside Procurement — CLOSED in §171
+
+The sweep that found this found the class. Four other crons still resolve recipients from
+the legacy flat `users.role` column, and **two of them have the identical unscoped
+`getReceivers()`** — no company predicate at any point:
+
+| cron | module | tenant-scoped? |
+|---|---|---|
+| `overdueReminders.cron.js` | finance | was **NO** — overdue invoice/bill detail, every tenant → **fixed §171** |
+| `amcRenewal.cron.js` | service | was **NO** — AMC contract detail, every tenant; ⚠ also sends **WhatsApp** via the real Meta Graph API → **fixed §171** |
+| `campaignLifecycle.cron.js` | marketing | yes (binds `companyId`) |
+| `depreciation.cron.js` | finance | yes (binds `companyId`) |
+
+Both were closed in §171 immediately below, on the instruction to fix them. Recorded here as
+a tracked defect rather than as prose, which is the mistake the first entry in this section
+describes — and this table was edited when they were fixed, so the section cannot end up
+claiming an open defect that is closed two pages later.
+`'superadmin'`, cited by all of these, is not a role code either — harmless, since every one
+of them names the real `super_admin` beside it.
+
+---
+
+## §171 — The same unscoped cron, twice more: finance and service (2026-09-11)
+
+**Trigger**: §170 found the class and named two more instances. This closes them.
+
+`overdueReminders.cron.js` (finance) and `amcRenewal.cron.js` (service) carried the
+**identical** unscoped `getReceivers()` — `SELECT id FROM users WHERE is_active = true AND
+LOWER(role) IN (...)`, no company predicate at any point. What each was disclosing:
+
+- **overdueReminders** — invoice/bill number, customer or vendor name, and the outstanding
+  rupee balance, for every overdue row in every tenant, to every admin/finance user.
+- **amcRenewal** — customer name and contract expiry, and the same values pushed out over
+  **WhatsApp** via the real Meta Graph API. ⚠ In this environment `WHATSAPP_TOKEN` and
+  `WHATSAPP_PHONE_ID` are unset, so `sendWhatsAppMessage()` short-circuits to
+  `skipped_no_config` and returns `simulated: true` — nothing left the building here. **In a
+  configured production tenant it would have.** That is the reason this one is worth
+  treating as more than an in-app annoyance.
+
+### ⚠⚠ A second defect, found only because the job could finally be run
+
+`amcRenewal` queried `service_contracts WHERE status = 'Active'` — capital A, case-sensitive.
+**Every row in that table stores `'active'`.** Measured live:
+
+| predicate | rows matched | in the 30-day renewal window |
+|---|---|---|
+| `status = 'Active'` (what shipped) | **0** | **0** |
+| `LOWER(status) = 'active'` | 5 | **5** |
+
+So that half of the job had **never sent a single reminder**, while five live contracts sat
+inside the window. This is not a leak — it is a business function that has never once run.
+Same class as the vendor-status case drift and as `closed_won`: the read layer lowercases,
+the writer did not, and nothing compares a literal against the column it filters.
+
+⚠ It is also the second time in two sections that **the defect was in the half nobody could
+execute**. §170: no manual entry point, so never run. §171: ran, but matched nothing, so it
+produced no evidence of itself. A job that does nothing and a job that is not called are
+indistinguishable from the outside — both are silent.
+
+### A third, latent, fixed while in there
+
+`LOWER(status) NOT IN ('paid','cancelled')` names two of the three void invoice states;
+`INVOICE_VOID` is `['cancelled','void','draft']`. A draft invoice past its due date with a
+balance would have been chased as a real receivable. No such row exists in this database
+today, so the suite **seeds one** — an untestable fix is one a later edit silently undoes.
+Both AR and AP now use the shared `sqlInvoiceOutstanding()` / `sqlBillOutstanding()`.
+
+### What changed
+
+- `backend/src/jobs/overdueReminders.cron.js` — receivers per company from the
+  `user_roles`/`roles` junction via `COALESCE(e.company_id, u.company_id)`; rows grouped by
+  owning tenant with unattributed rows counted and skipped, never broadcast; shared
+  outstanding predicates; `scheduled()` wrapper; exports `runOverdueCheckNow`.
+- `backend/src/jobs/amcRenewal.cron.js` — the same receiver fix; `LOWER(status) = 'active'`
+  on both contract stores; grouped by tenant; `scheduled()`; exports `runAmcRenewalCheckNow`.
+- `backend/src/__tests__/integration.tenantScopedCrons.test.js` (new, 8 tests) — seeds two
+  populated tenants for each cron and asserts both directions, plus the lowercase-status and
+  draft-invoice cases. Each cron asserts `counters.notified > 0` **before** any negative
+  assertion, so a fixture that stops matching fails loudly instead of passing vacuously.
+  ⚠ It takes a `MAX(id)` high-water mark on `notifications` and `whatsapp_log` first and
+  deletes only above it — this database holds five live contracts the job legitimately
+  notifies about, and the suite must not delete a row that existed before it ran.
+
+**Mutation-tested 4 for 4.** Dropping either tenant predicate reddens that cron's leak test;
+restoring the paid/cancelled-only predicate reddens the draft-invoice test; restoring
+`status = 'Active'` reddens **three** tests at once — did-non-zero-work, finds-lowercase, and
+the leak test — because with it the whole `service_contracts` half goes inert again, which is
+the most direct evidence available that the capital A was load-bearing.
+
+**After**: full suite **56 files / 1239 passed / 0 failed**, all four `check:schema` gates PASS.
+
+### ⚠⚠ The flake: pre-existing mechanism, but these suites made it likely
+
+The first full run after these edits showed `metricRegistry.contract.test.js > committed
+spend matches loadSpendFacets` red: `expected 44180 to be close to 43000, difference 1180`.
+It passes in isolation (69/69). The first instinct — "unrelated, both sides are scoped to
+companyId 1 and my fixtures live in 999907–999912" — was **measured rather than asserted, and
+was wrong on the second half**:
+
+| tree | full-suite runs | failures |
+|---|---|---|
+| with the two new cron suites | 6 | **3** |
+| with them moved aside | 3 | **0** |
+
+So the mechanism is pre-existing and the new suites are what make it fire.
+
+**The mechanism.** The assertion takes TWO reads at two instants — `loadSpendFacets` then
+`buildMetricQuery`. `integration.procurementReverification.test.js` seeds purchase orders
+into **company 1** (`CO_A = 1`), and its D5 GST fixture is `raisePr({ quantity: 2, price: 500 })`
+→ 1000 + 18% = **1180**, the exact reported difference. A row written BETWEEN the two reads
+makes them disagree. ⚠ A row present for BOTH reads is harmless — verified by injecting one
+and watching the test still pass — so this is a timing race, **not** a disagreement about the
+definition. Adding two more DB-heavy suites changes which files run concurrently, which is
+all it takes.
+
+**The fix**: bound both reads to end yesterday. Every real committed PO in company 1 is
+historical (2 rows, both 2026-08-04); only transient fixtures are dated today. Proven with
+the racing row present:
+
+| window | loadSpendFacets | metricRegistry |
+|---|---|---|
+| unbounded | 44180 | 44180 |
+| `to = yesterday` | 43000 | **43000** |
+
+Both implementations agree in both windows — **there is no product defect here** — and the
+bound removes exactly the class of row that races. A shared snapshot would be stronger, but
+`loadSpendFacets` queries the pool internally and accepts no client, so the two reads cannot
+be put in one transaction without changing that service's signature.
+
+⚠⚠ **`to` goes on the QUERY CONFIG, not on `buildMetricQuery`'s second argument.** That
+parameter destructures `{ companyId }` alone and silently drops anything else; `from`/`to` are
+read from `config`, set through `validateQueryConfig({ ..., to })`. Passing it to the wrong
+one filters nothing and looks completely correct. I did exactly that first, watched one side
+return 44180 against the other's 43000, and came within a step of reporting a fabricated
+"the two definitions handle windows differently" product defect. **An API that ignores an
+unknown key silently will let a test claim a bug that is not there.**
+
+⚠ The guard added alongside it matters as much as the bound: `expect(cube.totals.total_spend)
+.toBeGreaterThan(0)`. A window that ends up empty makes the comparison `0 === 0`, which passes
+while proving nothing — the same vacuous-pass trap as §170's fixture and §153's sourcing
+resolver, and the third time in three sections that a bounded test had to be stopped from
+succeeding at nothing.
