@@ -28,7 +28,13 @@
 //   Safety stock = z * sigma_d * sqrt(L)          — classic lead-time demand cover
 //   ROP          = d * L + safety stock
 //   EOQ          = sqrt(2 * D * S / H),  H = unit_cost * holding_rate
-//   ABC          = Pareto on annual consumption value, A <= 70%, B <= 90%
+//   ABC          = Pareto on annual consumption value, A to 70%, B to 90%.
+//                  The band is decided on the cumulative BEFORE the item, so
+//                  the item that crosses a boundary belongs to the class it
+//                  crosses out of. Testing the cumulative after adding it put
+//                  a part holding 80% of all value in B, and a sole part
+//                  holding 100% of it in C — the most important item in the
+//                  business, classified as the tail.
 //
 // WHAT IT REFUSES TO DO
 // ---------------------
@@ -127,6 +133,71 @@ export async function updatePlanningSettings(companyId, patch = {}) {
  * @param {boolean} opts.apply    false = dry run (compute + record, write nothing to items)
  * @returns {Promise<{run, items}>}
  */
+/**
+ * EOQ = sqrt(2DS/H).
+ *
+ * @param annualDemand        D, units per year
+ * @param orderingCost        S, cost of placing one order
+ * @param holdingCostPerUnit  H, annual cost of holding one unit (unit cost x rate)
+ */
+export function calculateEOQ(annualDemand, orderingCost, holdingCostPerUnit) {
+  const D = num(annualDemand), S = num(orderingCost), H = num(holdingCostPerUnit);
+  if (!(D > 0) || !(H > 0)) return 0;
+  return Math.sqrt((2 * D * S) / H);
+}
+
+/**
+ * Safety stock = z * sigma_d * sqrt(L) — cover for demand variability across
+ * the lead time.
+ *
+ * `serviceLevel` is accepted either as a percentage (95) or as a fraction
+ * (0.95); anything at or below 1 is read as a fraction. zForServiceLevel()
+ * clamps below 0.5, so feeding it a raw 0.95 would silently yield z = 0 and a
+ * safety stock of nothing.
+ */
+export function calculateSafetyStock(sigmaDaily, leadTimeDays, serviceLevel = 95) {
+  const sigma = num(sigmaDaily);
+  const L     = Math.max(num(leadTimeDays), 0);
+  const raw   = num(serviceLevel);
+  const pct   = raw > 0 && raw <= 1 ? raw * 100 : raw;
+  return zForServiceLevel(pct) * sigma * Math.sqrt(L);
+}
+
+/** Reorder point = average daily demand x lead time + safety stock. */
+export function calculateDynamicROP(dailyDemand, leadTimeDays, safetyStock = 0) {
+  return num(dailyDemand) * Math.max(num(leadTimeDays), 0) + num(safetyStock);
+}
+
+/**
+ * ABC Pareto classification over annual consumption value.
+ *
+ * Sets `abc_class` on each item and returns them ranked by value, descending.
+ * Items with no consumption value are C — not 'unclassified'. An item nobody
+ * consumes is the definition of a C part.
+ *
+ * The band is decided on the cumulative share BEFORE the item is added, so the
+ * item that carries the running total past 70% is still an A. Deciding it
+ * afterwards — `cum <= 70 ? 'A'` — meant a single part holding 80% of all
+ * consumption value came out as B, and a sole part holding 100% came out as C.
+ */
+// NB: the accessor option is `valueFn`, not `valueOf`. `valueOf` is inherited
+// from Object.prototype, so destructuring it out of a default `{}` yields the
+// built-in method rather than undefined, and the `||` fallback never fires.
+export function classifyABCPareto(items, { valueFn, aPct = 70, bPct = 90 } = {}) {
+  const read = valueFn || (r => num(r.annual_usage_value ?? r.acv ?? r.annual_consumption_value ?? 0));
+  const ranked = [...items].filter(r => read(r) > 0).sort((a, b) => read(b) - read(a));
+  const grand  = ranked.reduce((t, r) => t + read(r), 0);
+
+  let running = 0;
+  for (const r of ranked) {
+    const cumBefore = grand > 0 ? (100 * running) / grand : 0;
+    r.abc_class = cumBefore < aPct ? 'A' : cumBefore < bPct ? 'B' : 'C';
+    running += read(r);
+  }
+  for (const r of items) if (!r.abc_class) r.abc_class = 'C';
+  return ranked;
+}
+
 export async function recomputePlanningParameters({ companyId = null, apply = null, actor = {} } = {}) {
   const settings = await getPlanningSettings(companyId);
   const orderingCost = num(settings.ordering_cost) || 500;
@@ -226,13 +297,15 @@ export async function recomputePlanningParameters({ companyId = null, apply = nu
       const meanPeriod   = totalQty / series.length;
       const cv           = meanPeriod > 0 ? sigmaPeriod / meanPeriod : null;
 
-      const leadDays = parseInt(it.lead_time_days, 10) || 0;
-      const safetyStock = z * sigmaDaily * Math.sqrt(Math.max(leadDays, 0));
-      const rop         = dailyDemand * leadDays + safetyStock;
+      // Through the exported formulas, so the numbers this run persists and the
+      // numbers anything else computes cannot drift apart.
+      const leadDays    = parseInt(it.lead_time_days, 10) || 0;
+      const safetyStock = calculateSafetyStock(sigmaDaily, leadDays, serviceLevel);
+      const rop         = calculateDynamicROP(dailyDemand, leadDays, safetyStock);
 
       const H   = unitCost * holdingRate;
       const eoq = annualDemand > 0 && H > 0
-        ? Math.sqrt((2 * annualDemand * orderingCost) / H)
+        ? calculateEOQ(annualDemand, orderingCost, H)
         : null;
 
       results.push({
@@ -252,17 +325,12 @@ export async function recomputePlanningParameters({ companyId = null, apply = nu
     }
 
     // ── ABC: Pareto over annual consumption value ────────────────────────────
-    const valued = results.filter(r => r.acv > 0).sort((a, b) => b.acv - a.acv);
-    const grand  = valued.reduce((s, r) => s + r.acv, 0);
-    let running = 0;
-    for (const r of valued) {
-      running += r.acv;
-      const cum = grand > 0 ? (100 * running) / grand : 0;
-      r.abc = cum <= 70 ? 'A' : cum <= 90 ? 'B' : 'C';
-    }
-    // Items with no consumption value are C: they are not "unclassified", they
-    // are the tail. An item nobody consumes is the definition of a C part.
-    for (const r of results) if (!r.abc) r.abc = 'C';
+    classifyABCPareto(results, { valueFn: r => r.acv });
+    for (const r of results) r.abc = r.abc_class;
+    // Total annual consumption value across the classified population. The run
+    // record persists it, so it has to survive the extraction of the Pareto
+    // maths into classifyABCPareto().
+    const grand = results.reduce((t, r) => t + (r.acv > 0 ? r.acv : 0), 0);
 
     // ── Persist ──────────────────────────────────────────────────────────────
     const runNo = `IPL-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(Math.random() * 9000 + 1000)}`;
@@ -344,4 +412,8 @@ export async function recomputePlanningParameters({ companyId = null, apply = nu
   }
 }
 
-export default { recomputePlanningParameters, getPlanningSettings, updatePlanningSettings, zForServiceLevel };
+export default {
+  recomputePlanningParameters, getPlanningSettings, updatePlanningSettings,
+  zForServiceLevel, calculateEOQ, calculateSafetyStock, calculateDynamicROP,
+  classifyABCPareto,
+};

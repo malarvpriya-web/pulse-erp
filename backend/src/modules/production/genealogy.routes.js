@@ -316,8 +316,17 @@ router.get('/trace', requirePermission('production', 'view'), async (req, res) =
       }
       const { rows: serials } = await pool.query(
         `SELECT id, serial_number, status FROM serial_numbers WHERE production_order_id = $1 AND deleted_at IS NULL LIMIT 100`, [po.id]);
-      if (serials.length) downstream.push(node('serials', `${serials.length} finished serial(s)`, po.product_name, {},
-        serials.map(s => node('serial', s.serial_number, s.status || '', { id: s.id }))));
+      if (serials.length) {
+        downstream.push(node('serials', `${serials.length} finished serial(s)`, po.product_name, {},
+          serials.map(s => node('serial', s.serial_number, s.status || '', { id: s.id }))));
+      } else if (po.serial_number) {
+        // The serial_numbers registry is not always written, but
+        // production_orders.serial_number names the unit this order built.
+        // Reporting no serials while the order record itself carries one makes
+        // the trace look emptier than the truth.
+        downstream.push(node('serials', '1 finished serial', po.product_name, {},
+          [node('serial', po.serial_number, po.status || '')]));
+      }
       if (po.project_id) {
         const { rows: [prj] } = await pool.query(`SELECT project_code, project_name, customer_name FROM projects WHERE id = $1`, [po.project_id]);
         if (prj) downstream.push(node('project', `Project ${prj.project_code}`, `${prj.project_name} · ${prj.customer_name || ''}`, { project_id: po.project_id }));
@@ -428,8 +437,9 @@ router.get('/where-used/:batchId', requirePermission('production', 'view'), asyn
 
     // 1. Remaining Stock in exact stores / warehouse bins
     const { rows: binStock } = await pool.query(`
-      SELECT wb.id AS bin_id, wb.row_code AS rack, wb.shelf_code AS shelf, wb.bin_code AS bin,
-             w.name AS warehouse_name, wb.current_qty
+      SELECT wb.id AS bin_id, wb.row_code AS rack, wb.row_code AS rack_code,
+             wb.shelf_code AS shelf, wb.bin_code AS bin, wb.bin_code,
+             w.name AS warehouse_name, wb.current_qty, wb.current_qty AS quantity
         FROM warehouse_bins wb
         JOIN warehouses w ON w.id = wb.warehouse_id
        WHERE wb.item_id = $1 AND ($2::int IS NULL OR wb.company_id = $2)
@@ -437,7 +447,8 @@ router.get('/where-used/:batchId', requirePermission('production', 'view'), asyn
 
     // 2. Consumed in Work Orders & Panels
     const { rows: consumedOrders } = await pool.query(`
-      SELECT po.id AS production_order_id, po.production_order_no, po.product_name, po.status AS order_status,
+      SELECT po.id AS production_order_id, po.production_order_no, po.production_order_no AS order_number,
+             po.product_name, po.status AS order_status,
              mil.qty_issued, mil.issued_at, mil.issued_by_name, wc.name AS work_centre_name,
              op.operation AS operation_name, po.project_id, prj.project_code, prj.project_name, prj.customer_name
         FROM material_issue_logs mil
@@ -486,16 +497,24 @@ router.get('/where-used/:batchId', requirePermission('production', 'view'), asyn
         quality_status: b.quality_status || b.grn_quality || 'passed',
       },
       reconciliation: {
-        received_qty: qtyReceived,
-        available_qty: qtyAvailable,
-        consumed_qty: qtyConsumed,
+        // Both names for each figure: the *_qty set this handler shipped with,
+        // and the total_received / store_stock_remaining / consumed_in_wip names
+        // the Where-Used tab and the integration test both read. Only the second
+        // set was ever consumed, so every reconciliation tile rendered 0.
+        received_qty: qtyReceived,      total_received: qtyReceived,
+        available_qty: qtyAvailable,    store_stock_remaining: qtyAvailable,
+        consumed_qty: qtyConsumed,      consumed_in_wip: qtyConsumed,
         reserved_qty: qtyReserved,
         total_accounted: totalAccounted,
         is_reconciled: Math.abs(qtyReceived - totalAccounted) < 0.0001,
       },
-      locations: binStock,
-      consumed_in_orders: consumedOrders,
-      shipped_deliveries: shipments,
+      // GenealogyTrace.jsx reads warehouseStock / customerDispatches, and the
+      // integration test reads consumedOrders. This emitted locations /
+      // consumed_in_orders / shipped_deliveries, so every panel on the
+      // Where-Used tab rendered its empty state no matter what came back.
+      warehouseStock: binStock,
+      consumedOrders,
+      customerDispatches: shipments,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -536,11 +555,21 @@ router.get('/as-built/:productionOrderId', requirePermission('production', 'view
     const { rows: asBuilt } = await pool.query(`
       SELECT mil.id AS issue_log_id, mil.item_id, mil.item_name, ii.item_code, ii.manufacturer,
              mil.batch_id, b.batch_number, sn.serial_number,
-             mil.qty_issued AS qty_consumed, mil.unit, mil.unit_cost, mil.total_cost,
-             mil.issued_at, mil.issued_by_name,
-             wc.name AS work_centre_name, op.operation AS operation_name,
+             mil.qty_issued AS qty_consumed, mil.qty_issued, mil.unit, mil.unit AS uom,
+             mil.unit_cost, mil.total_cost,
+             mil.issued_at, mil.issued_by_name, mil.issued_by_name AS assembler_name,
+             wc.name AS work_centre_name, wc.name AS workstation_name,
+             op.operation AS operation_name,
              v.vendor_name AS supplier_name, po.po_number, g.grn_number, g.received_date AS grn_date,
-             g.quality_status AS iqc_result,
+             g.quality_status AS iqc_result, g.quality_status AS iqc_status,
+             -- A rework replacement is a second issue against an order that the
+             -- issuer marked as rework in the note. material_issue_logs has no
+             -- column for it, so the note is the only signal available; this is
+             -- the weakest link in the as-built picture and wants a real column
+             -- if rework reporting matters. Distinct from is_substitute below,
+             -- which means "not in the planned BOM at all".
+             (mil.notes IS NOT NULL AND mil.notes ILIKE 'REWORK%') AS is_rework_replacement,
+             (CASE WHEN mil.notes ILIKE 'REWORK%' THEN mil.notes ELSE NULL END) AS rework_reason,
              (CASE WHEN order_bom.component_ids IS NOT NULL AND NOT (mil.item_id = ANY(order_bom.component_ids))
                    THEN true ELSE false END) AS is_substitute,
              mil.notes
@@ -587,9 +616,9 @@ router.get('/as-built/:productionOrderId', requirePermission('production', 'view
         actual_start_at: order.actual_start_at,
         actual_end_at: order.actual_end_at,
       },
-      planned_bom: plannedBom,
-      as_built_components: asBuilt,
-      rework_history: reworkReplacements,
+      plannedBom,
+      asBuiltComponents: asBuilt,
+      reworkHistory: reworkReplacements,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -599,6 +628,19 @@ router.get('/qc-history/:productionOrderId', requirePermission('production', 'vi
   try {
     const { productionOrderId } = req.params;
     const cid = companyOf(req);
+
+    // The parent order decides the tenant boundary, the way /where-used does
+    // for its batch. Without it a caller asking for another company's order got
+    // 200 and empty arrays rather than 404 — and worse, every child query here
+    // carries an `OR company_id IS NULL` escape, so any quality row with a null
+    // company was handed to every tenant regardless of whose order it belonged
+    // to. Owning the parent is now the precondition for reaching any of them.
+    const { rows: [owner] } = await pool.query(
+      `SELECT id, company_id FROM production_orders WHERE id = $1`, [productionOrderId]);
+    if (!owner) return res.status(404).json({ error: 'Production order not found' });
+    if (cid != null && owner.company_id != null && owner.company_id !== cid) {
+      return res.status(404).json({ error: 'Production order not found' });
+    }
 
     // 1. In-process Quality Tests
     const { rows: tests } = await pool.query(`
@@ -617,9 +659,26 @@ router.get('/qc-history/:productionOrderId', requirePermission('production', 'vi
        ORDER BY tr.started_at DESC NULLS LAST`, [productionOrderId, cid]);
 
     // 3. FAT / SAT Trackers
+    // sat_trackers has no production_order_id and never did: site acceptance
+    // happens against a project, at a customer site, and the row is keyed on
+    // project_id / commissioning_report_id. Querying it by production order
+    // threw "column production_order_id does not exist" and took the whole
+    // endpoint down with it. The honest link is the serial number the order
+    // built — the SAT certificate for that unit.
     const [fat, sat] = await Promise.all([
-      pool.query(`SELECT * FROM fat_trackers WHERE production_order_id = $1`, [productionOrderId]),
-      pool.query(`SELECT * FROM sat_trackers WHERE production_order_id = $1`, [productionOrderId]),
+      pool.query(
+        `SELECT * FROM fat_trackers
+          WHERE production_order_id = $1
+            AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)`,
+        [productionOrderId, cid]),
+      pool.query(
+        `SELECT st.*
+           FROM sat_trackers st
+           JOIN production_orders po ON po.id = $1
+          WHERE po.serial_number IS NOT NULL
+            AND st.serial_number = po.serial_number
+            AND ($2::int IS NULL OR st.company_id = $2 OR st.company_id IS NULL)`,
+        [productionOrderId, cid]),
     ]);
 
     // 4. NCRs and CAPA
@@ -633,10 +692,14 @@ router.get('/qc-history/:productionOrderId', requirePermission('production', 'vi
        ORDER BY ncr.created_at DESC`, [productionOrderId, cid]);
 
     res.json({
-      in_process_tests: tests,
-      test_runs: testRuns,
-      fat_trackers: fat.rows,
-      sat_trackers: sat.rows,
+      inProcessTests: tests,
+      testRuns,
+      // One list, tagged, because the QC tab renders FAT and SAT together and
+      // keys the card off tracker_type.
+      fatSat: [
+        ...fat.rows.map(r => ({ ...r, tracker_type: 'FAT' })),
+        ...sat.rows.map(r => ({ ...r, tracker_type: 'SAT' })),
+      ],
       ncrs,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }

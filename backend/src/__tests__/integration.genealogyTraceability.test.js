@@ -138,14 +138,12 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
         await pool.query('DELETE FROM goods_receipt_notes WHERE id = ANY($1)', [created.grns]);
       }
       if (created.pos.length) {
-        await pool.query('DELETE FROM purchase_order_items WHERE purchase_order_id = ANY($1)', [created.pos]);
+        await pool.query('DELETE FROM purchase_order_items WHERE po_id = ANY($1)', [created.pos]);
         await pool.query('DELETE FROM purchase_orders WHERE id = ANY($1)', [created.pos]);
       }
-      if (created.suppliers.length) await pool.query('DELETE FROM suppliers WHERE id = ANY($1)', [created.suppliers]);
+      if (created.suppliers.length) await pool.query('DELETE FROM vendors WHERE id = ANY($1)', [created.suppliers]);
       if (created.items.length) {
         await pool.query('DELETE FROM stock_ledger WHERE item_id = ANY($1)', [created.items]);
-        await pool.query('DELETE FROM item_cost_history WHERE item_id = ANY($1)', [created.items]);
-        await pool.query('DELETE FROM item_stock WHERE item_id = ANY($1)', [created.items]);
         await pool.query('DELETE FROM inventory_items WHERE id = ANY($1)', [created.items]);
       }
       if (created.bins.length) await pool.query('DELETE FROM warehouse_bins WHERE id = ANY($1)', [created.bins]);
@@ -175,14 +173,14 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
       created.items.push(itemId);
 
       const suppRes = await pool.query(
-        'INSERT INTO suppliers (company_id, name, code) VALUES ($1, \'Schneider Electric\', $2) RETURNING id',
+        'INSERT INTO vendors (company_id, vendor_name, vendor_code) VALUES ($1, \'Schneider Electric\', $2) RETURNING id',
         [COMPANY_A_ID, `SCH_${TAG.slice(-4)}`]
       );
       const suppId = suppRes.rows[0].id;
       created.suppliers.push(suppId);
 
       const poRes = await pool.query(
-        'INSERT INTO purchase_orders (company_id, po_number, supplier_id, status, total_amount) VALUES ($1, $2, $3, \'ISSUED\', 5000) RETURNING id',
+        'INSERT INTO purchase_orders (company_id, po_number, supplier_id, status, total_amount) VALUES ($1, $2, $3, \'issued\', 5000) RETURNING id',
         [COMPANY_A_ID, `PO_FAIL_${TAG.slice(-4)}`, suppId]
       );
       const poId = poRes.rows[0].id;
@@ -216,7 +214,7 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
 
     beforeAll(async () => {
       const poARes = await pool.query(
-        'INSERT INTO production_orders (company_id, order_number, status, batch_number, serial_number) VALUES ($1, $2, \'COMPLETED\', $3, $4) RETURNING id',
+        'INSERT INTO production_orders (company_id, production_order_no, product_name, quantity_planned, status, batch_number, serial_number) VALUES ($1, $2, \'Traceability Test Assembly\', 1, \'completed\', $3, $4) RETURNING id',
         [COMPANY_A_ID, `WO_TENANT_${TAG.slice(-4)}`, `BATCH_A_${TAG.slice(-4)}`, `SN_A_${TAG.slice(-4)}`]
       );
       orderAId = poARes.rows[0].id;
@@ -306,48 +304,48 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
       created.items.push(rawItemId);
 
       const suppRes = await pool.query(
-        'INSERT INTO suppliers (company_id, name, code) VALUES ($1, \'ABB India Ltd\', $2) RETURNING id',
+        'INSERT INTO vendors (company_id, vendor_name, vendor_code) VALUES ($1, \'ABB India Ltd\', $2) RETURNING id',
         [COMPANY_A_ID, `ABB_${TAG.slice(-4)}`]
       );
       supplierId = suppRes.rows[0].id;
       created.suppliers.push(supplierId);
 
       const poRes = await pool.query(
-        'INSERT INTO purchase_orders (company_id, po_number, supplier_id, status, total_amount) VALUES ($1, $2, $3, \'APPROVED\', 4500) RETURNING id',
+        'INSERT INTO purchase_orders (company_id, po_number, supplier_id, status, total_amount) VALUES ($1, $2, $3, \'approved\', 4500) RETURNING id',
         [COMPANY_A_ID, `PO_ABB_${TAG.slice(-4)}`, supplierId]
       );
       poId = poRes.rows[0].id;
       created.pos.push(poId);
 
       const grnRes = await pool.query(
-        'INSERT INTO goods_receipt_notes (company_id, grn_number, po_id, supplier_id, status, received_date) VALUES ($1, $2, $3, $4, \'ACCEPTED\', NOW()) RETURNING id',
-        [COMPANY_A_ID, `GRN_${TAG.slice(-4)}`, poId, supplierId]
+        'INSERT INTO goods_receipt_notes (company_id, grn_number, po_id, status, received_date) VALUES ($1, $2, $3, \'received\', NOW()) RETURNING id',
+        [COMPANY_A_ID, `GRN_${TAG.slice(-4)}`, poId]
       );
       grnId = grnRes.rows[0].id;
       created.grns.push(grnId);
 
       await pool.query(
-        'INSERT INTO grn_items (grn_id, item_id, received_qty, accepted_qty, rejected_qty, unit_price) VALUES ($1, $2, 100, 95, 5, 45.00)',
+        'INSERT INTO grn_items (grn_id, item_id, quantity_received, quantity_rejected, rate) VALUES ($1, $2, 100, 5, 45.00)',
         [grnId, rawItemId]
       );
 
       const b1Res = await pool.query(
-        'INSERT INTO inventory_batches (company_id, item_id, batch_number, grn_id, warehouse_id, quantity_received, quantity_available, quantity_consumed, status) VALUES ($1, $2, $3, $4, $5, 40, 40, 0, \'ACTIVE\') RETURNING id',
-        [COMPANY_A_ID, rawItemId, `BATCH_LOT_01_${TAG.slice(-4)}`, grnId, WAREHOUSE_A_ID]
+        'INSERT INTO inventory_batches (company_id, item_id, batch_number, grn_id, warehouse_id, supplier_id, quantity_received, quantity_available, quantity_consumed, status) VALUES ($1, $2, $3, $4, $5, $6, 40, 40, 0, \'active\') RETURNING id',
+        [COMPANY_A_ID, rawItemId, `BATCH_LOT_01_${TAG.slice(-4)}`, grnId, WAREHOUSE_A_ID, supplierId]
       );
       batchId1 = b1Res.rows[0].id;
       created.batches.push(batchId1);
 
       const b2Res = await pool.query(
-        'INSERT INTO inventory_batches (company_id, item_id, batch_number, grn_id, warehouse_id, quantity_received, quantity_available, quantity_consumed, status) VALUES ($1, $2, $3, $4, $5, 35, 35, 0, \'ACTIVE\') RETURNING id',
-        [COMPANY_A_ID, rawItemId, `BATCH_LOT_02_${TAG.slice(-4)}`, grnId, WAREHOUSE_A_ID]
+        'INSERT INTO inventory_batches (company_id, item_id, batch_number, grn_id, warehouse_id, supplier_id, quantity_received, quantity_available, quantity_consumed, status) VALUES ($1, $2, $3, $4, $5, $6, 35, 35, 0, \'active\') RETURNING id',
+        [COMPANY_A_ID, rawItemId, `BATCH_LOT_02_${TAG.slice(-4)}`, grnId, WAREHOUSE_A_ID, supplierId]
       );
       batchId2 = b2Res.rows[0].id;
       created.batches.push(batchId2);
 
       const b3Res = await pool.query(
-        'INSERT INTO inventory_batches (company_id, item_id, batch_number, grn_id, warehouse_id, quantity_received, quantity_available, quantity_consumed, status) VALUES ($1, $2, $3, $4, $5, 20, 20, 0, \'ACTIVE\') RETURNING id',
-        [COMPANY_A_ID, rawItemId, `BATCH_LOT_03_${TAG.slice(-4)}`, grnId, WAREHOUSE_A_ID]
+        'INSERT INTO inventory_batches (company_id, item_id, batch_number, grn_id, warehouse_id, supplier_id, quantity_received, quantity_available, quantity_consumed, status) VALUES ($1, $2, $3, $4, $5, $6, 20, 20, 0, \'active\') RETURNING id',
+        [COMPANY_A_ID, rawItemId, `BATCH_LOT_03_${TAG.slice(-4)}`, grnId, WAREHOUSE_A_ID, supplierId]
       );
       batchId3 = b3Res.rows[0].id;
       created.batches.push(batchId3);
@@ -360,14 +358,14 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
       created.sales_orders.push(salesOrderId);
 
       const po1Res = await pool.query(
-        'INSERT INTO production_orders (company_id, order_number, sales_order_id, status, batch_number, serial_number) VALUES ($1, $2, $3, \'IN_PROGRESS\', $4, $5) RETURNING id',
+        'INSERT INTO production_orders (company_id, production_order_no, product_name, quantity_planned, sales_order_id, status, batch_number, serial_number) VALUES ($1, $2, \'Control Panel 400A\', 1, $3, \'in_progress\', $4, $5) RETURNING id',
         [COMPANY_A_ID, `WO_PANEL_01_${TAG.slice(-4)}`, salesOrderId, `BATCH_FG1_${TAG.slice(-4)}`, `SN_PANEL_001_${TAG.slice(-4)}`]
       );
       prodOrderId1 = po1Res.rows[0].id;
       created.production_orders.push(prodOrderId1);
 
       const log1Res = await pool.query(
-        'INSERT INTO material_issue_logs (company_id, production_order_id, item_id, batch_id, qty_issued, issued_by_name) VALUES ($1, $2, $3, $4, 30, \'Vikram Tech\') RETURNING id',
+        'INSERT INTO material_issue_logs (company_id, production_order_id, item_id, item_name, batch_id, qty_issued, issued_by_name) VALUES ($1, $2, $3, (SELECT item_name FROM inventory_items WHERE id = $3), $4, 30, \'Vikram Tech\') RETURNING id',
         [COMPANY_A_ID, prodOrderId1, rawItemId, batchId1]
       );
       created.issue_logs.push(log1Res.rows[0].id);
@@ -375,7 +373,7 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
       await pool.query('UPDATE inventory_batches SET quantity_available = 10, quantity_consumed = 30 WHERE id = $1', [batchId1]);
 
       const logReworkRes = await pool.query(
-        'INSERT INTO material_issue_logs (company_id, production_order_id, item_id, batch_id, qty_issued, notes, issued_by_name) VALUES ($1, $2, $3, $4, 1, \'REWORK: Defective Trip Coil on Bench Test\', \'QC Inspector Rajesh\') RETURNING id',
+        'INSERT INTO material_issue_logs (company_id, production_order_id, item_id, item_name, batch_id, qty_issued, notes, issued_by_name) VALUES ($1, $2, $3, (SELECT item_name FROM inventory_items WHERE id = $3), $4, 1, \'REWORK: Defective Trip Coil on Bench Test\', \'QC Inspector Rajesh\') RETURNING id',
         [COMPANY_A_ID, prodOrderId1, rawItemId, batchId2]
       );
       created.issue_logs.push(logReworkRes.rows[0].id);
@@ -383,18 +381,18 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
       await pool.query('UPDATE inventory_batches SET quantity_available = 34, quantity_consumed = 1 WHERE id = $1', [batchId2]);
 
       const trRes = await pool.query(
-        'INSERT INTO test_runs (company_id, production_order_id, run_number, test_type, overall_result, executed_by_name) VALUES ($1, $2, $3, \'HV Insulation & Dielectric\', \'PASS\', \'Senior QA Engineer Anita\') RETURNING id',
+        'INSERT INTO test_runs (company_id, production_order_id, run_number, test_type, overall_result, executed_by_name) VALUES ($1, $2, $3, \'HV Insulation & Dielectric\', \'pass\', \'Senior QA Engineer Anita\') RETURNING id',
         [COMPANY_A_ID, prodOrderId1, `TR_${TAG.slice(-4)}`]
       );
       const testRunId = trRes.rows[0].id;
       created.test_runs.push(testRunId);
 
       await pool.query(
-        'INSERT INTO test_run_measurements (test_run_id, parameter_name, target_value, min_limit, max_limit, measured_value, unit, result) VALUES ($1, \'Insulation Resistance Phase-Earth\', 100, 50, 500, 220, \'MOhm\', \'PASS\'), ($1, \'Hipot Dielectric Withstand\', 2500, 2000, 3000, 2500, \'VAC\', \'PASS\')',
+        'INSERT INTO test_run_measurements (test_run_id, parameter_name, target_value, min_limit, max_limit, measured_value, unit, result) VALUES ($1, \'Insulation Resistance Phase-Earth\', 100, 50, 500, 220, \'MOhm\', \'pass\'), ($1, \'Hipot Dielectric Withstand\', 2500, 2000, 3000, 2500, \'VAC\', \'pass\')',
         [testRunId]
       );
 
-      await pool.query('UPDATE production_orders SET status = \'COMPLETED\' WHERE id = $1', [prodOrderId1]);
+      await pool.query('UPDATE production_orders SET status = \'completed\' WHERE id = $1', [prodOrderId1]);
     });
 
     it('performs Bidirectional Traceability: Upstream to ABB Supplier and Downstream to L&T Sales Order', async () => {
@@ -461,7 +459,7 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
       expect(res.body.testRuns.length).toBe(1);
       const tr = res.body.testRuns[0];
       expect(tr.test_type).toBe('HV Insulation & Dielectric');
-      expect(tr.overall_result).toBe('PASS');
+      expect(tr.overall_result).toBe('pass');
       expect(tr.measurements.length).toBe(2);
       expect(tr.measurements[0].parameter_name).toContain('Insulation Resistance');
     });
