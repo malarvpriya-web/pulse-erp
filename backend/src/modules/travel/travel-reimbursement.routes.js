@@ -19,6 +19,7 @@ import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.
 import { companyOf } from '../../shared/scope.js';
 import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../shared/managerApprovalAuthz.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -232,7 +233,7 @@ router.post('/claims', async (req, res) => {
 });
 
 // ── PUT /reimbursement/claims/:id ─────────────────────────────────────────────
-router.put('/claims/:id', async (req, res) => {
+router.put('/claims/:id', captureBefore('expense_claims'), async (req, res) => {
   try {
     const {
       expense_date, expense_type, expense_category,

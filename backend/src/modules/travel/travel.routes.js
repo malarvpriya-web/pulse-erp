@@ -7,6 +7,7 @@ import { companyOf } from '../../shared/scope.js';
 import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../shared/managerApprovalAuthz.js';
 import { initiateWorkflow, getWorkflowStatus, advanceWorkflow, cancelWorkflow } from '../../services/WorkflowService.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -1343,7 +1344,7 @@ router.put('/requests/:id/level-approve', async (req, res) => {
 });
 
 // ── Finance: mark posted + payment ───────────────────────────────────────────
-router.put('/requests/:id/finance-post', allowRoles('admin','super_admin','finance'), async (req, res) => {
+router.put('/requests/:id/finance-post', allowRoles('admin','super_admin','finance'), captureBefore('travel_requests'), async (req, res) => {
   try {
     const { payment_ref, payment_date } = req.body;
     await pool.query(
@@ -1411,7 +1412,7 @@ router.post('/expenses/v2', async (req, res) => {
 });
 
 // ── Approve expense reimbursement ─────────────────────────────────────────────
-router.put('/expenses/:id/reimburse', allowRoles('admin','super_admin','hr','finance','manager'), async (req, res) => {
+router.put('/expenses/:id/reimburse', allowRoles('admin','super_admin','hr','finance','manager'), captureBefore('travel_expense_items'), async (req, res) => {
   try {
     const { reimbursement_status } = req.body;
     const { rows: [updated] } = await pool.query(

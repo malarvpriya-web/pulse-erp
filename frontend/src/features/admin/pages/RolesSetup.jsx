@@ -6,22 +6,11 @@ import {
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+// Badge colours are shared with every other role surface — see config/roleCatalog.js.
+import { roleColor } from '@/config/roleCatalog';
 
 const PAGE_SIZES = [10, 25, 50, 100];
 
-const ROLE_COLORS = {
-  super_admin:     { color: '#dc2626', bg: '#fee2e2' },
-  admin:           { color: '#6B3FDB', bg: '#ede9fe' },
-  hr:              { color: '#0369a1', bg: '#e0f2fe' },
-  hr_manager:      { color: '#0369a1', bg: '#e0f2fe' },
-  finance:         { color: '#16a34a', bg: '#dcfce7' },
-  finance_manager: { color: '#16a34a', bg: '#dcfce7' },
-  manager:         { color: '#6d28d9', bg: '#ede9fe' },
-  department_head: { color: '#6d28d9', bg: '#ede9fe' },
-  employee:        { color: '#6b7280', bg: '#f3f4f6' },
-};
-const DEFAULT_ROLE_COLOR = { color: '#4b5563', bg: '#eef2f7' };
-const roleColor = (r) => ROLE_COLORS[r] ?? DEFAULT_ROLE_COLOR;
 
 // Granting these is super_admin-only server-side; warn before asking.
 const PRIVILEGED = new Set(['super_admin', 'admin']);

@@ -2,12 +2,51 @@
 import { Router } from 'express';
 import pool from '../../../config/db.js';
 import { logAudit } from '../../../services/AuditService.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
+import { requirePermission } from '../../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = Router();
 
+/**
+ * Authorization for this router.
+ *
+ * Every route here was previously gated by verifyToken alone. The router is
+ * mounted `v1Router.use("/commissions", verifyToken, commissionRoutes)`, so a
+ * plain `employee` token got 200 on all 16 of them — confirmed live on
+ * 2026-09-03 by reading /leaderboard (every rep's earnings, ranked),
+ * /statements/1 (one named rep's full entry history), and by creating a
+ * commission plan at a 50% rate with POST /plans.
+ *
+ * Commission is compensation, so the split is deliberately not one gate:
+ *   canRead     — 'sales'.'view'    : sees plan structure and their own numbers
+ *   canAdminister — 'sales'.'approve': creates/edits plans, computes, pays out,
+ *                    claws back, and sees other people's statements.
+ * role_permissions already grants sales.approve to sales_manager, admin and
+ * super_admin only, and explicitly denies it to sales_exec, so this needs no
+ * new matrix rows.
+ */
+const canRead        = requirePermission('sales', 'view');
+const canAdminister  = requirePermission('sales', 'approve');
+
+/**
+ * A rep may read their OWN statement; anyone else's needs sales.approve.
+ * commission_entries.rep_id carries an employees.id (there is no FK on the
+ * column, but every writer in this file resolves an employee), so the caller's
+ * identity is resolved through employeeOf() and never taken from the URL.
+ */
+async function canReadStatement(req, res, next) {
+  try {
+    const mine = await employeeOf(req, pool);
+    if (mine != null && String(mine) === String(req.params.repId)) return next();
+    return canAdminister(req, res, next);
+  } catch {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+}
+
 // ── GET /stats — KPI cards ────────────────────────────────────────────────────
-router.get('/stats', async (req, res) => {
+router.get('/stats', canRead, async (req, res) => {
   try {
     const cid = companyOf(req);
     const now = new Date();
@@ -54,7 +93,7 @@ router.get('/stats', async (req, res) => {
 });
 
 // ── GET /plans ────────────────────────────────────────────────────────────────
-router.get('/plans', async (req, res) => {
+router.get('/plans', canRead, async (req, res) => {
   try {
     const cid = companyOf(req);
     const result = await pool.query(
@@ -70,7 +109,7 @@ router.get('/plans', async (req, res) => {
 });
 
 // ── POST /plans ───────────────────────────────────────────────────────────────
-router.post('/plans', async (req, res) => {
+router.post('/plans', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
     const {
@@ -101,7 +140,7 @@ router.post('/plans', async (req, res) => {
 });
 
 // ── PUT /plans/:id ────────────────────────────────────────────────────────────
-router.put('/plans/:id', async (req, res) => {
+router.put('/plans/:id', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
     const { id } = req.params;
@@ -141,7 +180,7 @@ router.put('/plans/:id', async (req, res) => {
 });
 
 // ── POST /plans/:id/assign ────────────────────────────────────────────────────
-router.post('/plans/:id/assign', async (req, res) => {
+router.post('/plans/:id/assign', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
     const { id } = req.params;
@@ -158,7 +197,7 @@ router.post('/plans/:id/assign', async (req, res) => {
 });
 
 // ── DELETE /plans/:id ─────────────────────────────────────────────────────────
-router.delete('/plans/:id', async (req, res) => {
+router.delete('/plans/:id', canAdminister, captureBefore('commission_plans'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -173,7 +212,7 @@ router.delete('/plans/:id', async (req, res) => {
 });
 
 // ── GET /entries ──────────────────────────────────────────────────────────────
-router.get('/entries', async (req, res) => {
+router.get('/entries', canRead, async (req, res) => {
   try {
     const cid = companyOf(req);
     const { rep_id, status, month } = req.query;
@@ -192,7 +231,7 @@ router.get('/entries', async (req, res) => {
 });
 
 // ── POST /compute — calculate commission for a single order ──────────────────
-router.post('/compute', async (req, res) => {
+router.post('/compute', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
     const { order_id, rep_id, rep_name, sale_amount, order_ref, customer_name } = req.body;
@@ -256,12 +295,12 @@ router.post('/compute', async (req, res) => {
 });
 
 // ── POST /compute-all-pending ─────────────────────────────────────────────────
-router.post('/compute-all-pending', (_req, res) => {
+router.post('/compute-all-pending', canAdminister, (_req, res) => {
   res.status(501).json({ error: 'Use POST /commissions/compute with a specific order.' });
 });
 
 // ── POST /entries/:id/clawback ────────────────────────────────────────────────
-router.post('/entries/:id/clawback', async (req, res) => {
+router.post('/entries/:id/clawback', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
     const { clawback_reason } = req.body;
@@ -286,7 +325,7 @@ router.post('/entries/:id/clawback', async (req, res) => {
 });
 
 // ── GET /payouts ──────────────────────────────────────────────────────────────
-router.get('/payouts', async (req, res) => {
+router.get('/payouts', canRead, async (req, res) => {
   try {
     const cid = companyOf(req);
     const result = await pool.query(
@@ -301,7 +340,7 @@ router.get('/payouts', async (req, res) => {
 });
 
 // ── POST /payouts ─────────────────────────────────────────────────────────────
-router.post('/payouts', async (req, res) => {
+router.post('/payouts', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
     const { rep_id, period_from, period_to } = req.body;
@@ -341,7 +380,7 @@ router.post('/payouts', async (req, res) => {
 });
 
 // ── PUT /payouts/:id ──────────────────────────────────────────────────────────
-router.put('/payouts/:id', async (req, res) => {
+router.put('/payouts/:id', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
     const { id } = req.params;
@@ -361,7 +400,7 @@ router.put('/payouts/:id', async (req, res) => {
 });
 
 // ── POST /payouts/:id/approve ─────────────────────────────────────────────────
-router.post('/payouts/:id/approve', async (req, res) => {
+router.post('/payouts/:id/approve', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
     const userId = req.user?.userId ?? req.user?.id;
@@ -382,7 +421,7 @@ router.post('/payouts/:id/approve', async (req, res) => {
 });
 
 // ── GET /statements/:repId ────────────────────────────────────────────────────
-router.get('/statements/:repId', async (req, res) => {
+router.get('/statements/:repId', canReadStatement, async (req, res) => {
   try {
     const cid = companyOf(req);
     const { repId } = req.params;
@@ -444,7 +483,7 @@ router.get('/statements/:repId', async (req, res) => {
 });
 
 // ── GET /leaderboard ──────────────────────────────────────────────────────────
-router.get('/leaderboard', async (req, res) => {
+router.get('/leaderboard', canAdminister, async (req, res) => {
   try {
     const cid = companyOf(req);
 

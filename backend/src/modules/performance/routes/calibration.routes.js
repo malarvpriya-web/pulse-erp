@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -86,7 +87,7 @@ router.post('/sessions', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/sessions/:id', async (req, res) => {
+router.patch('/sessions/:id', captureBefore('calibration_sessions'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   const { session_name, session_date, status, notes, bell_curve_target } = req.body;

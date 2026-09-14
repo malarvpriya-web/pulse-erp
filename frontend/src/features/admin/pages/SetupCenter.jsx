@@ -52,8 +52,8 @@ export default function SetupCenter({ setPage }) {
     }>
 
       <div>
-        {active === 'overview'    && <SetupDashboard setPage={setPage} />}
-        {active === 'first-time'  && <SetupWizard setPage={setPage} />}
+        {active === 'overview'    && <SetupDashboard setPage={setPage} embedded />}
+        {active === 'first-time'  && <SetupWizard setPage={setPage} embedded />}
         {active === 'attendance'  && <AttendanceSetupWizard setPage={setPage} />}
         {active === 'inventory'   && <InventorySetupWizard setPage={setPage} />}
         {active === 'engineering' && <EngineeringSetupWizard setPage={setPage} />}

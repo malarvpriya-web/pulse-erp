@@ -1036,8 +1036,407 @@ function StoresTab() {
   );
 }
 
+/* ── TAB: Zones & Bins ──
+   The zone and bin masters. The "Bin Locations" tab beside this one is a floor
+   VISUALISER — a fixed row/shelf grid you assign stock into — and it has never
+   been able to create the zones or bins it draws. Until this tab existed the
+   only code that had ever inserted either was the development seed block in
+   warehouse.routes.js, so adding a shelf meant writing SQL. */
+const EMPTY_ZONE = { warehouse_id: '', name: '', zone_type: 'storage' };
+const EMPTY_BIN  = { bin_code: '', row_no: '', shelf: '', level: '', max_weight_kg: '' };
+const ZONE_TYPES = ['storage', 'receiving', 'dispatch', 'quarantine', 'staging'];
+
+function ZonesBinsTab() {
+  const toast = useToast();
+  const { readOnly } = usePageAccess();
+
+  const [stores, setStores]   = useState([]);
+  const [zones, setZones]     = useState([]);
+  const [bins, setBins]       = useState([]);
+  const [selZone, setSelZone] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [binsLoading, setBinsLoading] = useState(false);
+
+  const [zoneDrawer, setZoneDrawer] = useState(null);  // null | { id? }
+  const [zoneForm, setZoneForm]     = useState(EMPTY_ZONE);
+  const [binDrawer, setBinDrawer]   = useState(null);  // null | { id? }
+  const [binForm, setBinForm]       = useState(EMPTY_BIN);
+  const [saving, setSaving]         = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null); // { kind, id, label }
+
+  const loadZones = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [zr, sr] = await Promise.all([
+        api.get('/warehouse/zones'),
+        api.get('/inventory/warehouses'),
+      ]);
+      const zoneRows = Array.isArray(zr.data) ? zr.data : [];
+      setZones(zoneRows);
+      setStores(Array.isArray(sr.data) ? sr.data : (sr.data?.warehouses ?? []));
+      // Keep the current selection across a reload; fall back to the first zone
+      // so the bin pane is never pointing at a zone that no longer exists.
+      setSelZone(prev => zoneRows.find(z => z.id === prev?.id) || zoneRows[0] || null);
+    } catch (e) {
+      toast.error(e?.response?.data?.error || 'Could not load zones');
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => { loadZones(); }, [loadZones]);
+
+  const loadBins = useCallback(async (zoneId) => {
+    if (!zoneId) { setBins([]); return; }
+    setBinsLoading(true);
+    try {
+      const res = await api.get('/warehouse/bins', { params: { zone_id: zoneId } });
+      setBins(Array.isArray(res.data) ? res.data : []);
+    } catch (e) {
+      toast.error(e?.response?.data?.error || 'Could not load bins');
+      setBins([]);
+    } finally {
+      setBinsLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => { loadBins(selZone?.id); }, [selZone?.id, loadBins]);
+
+  /* ── zone actions ── */
+  const openNewZone = () => {
+    setZoneForm({ ...EMPTY_ZONE, warehouse_id: selZone?.warehouse_id || stores[0]?.id || '' });
+    setZoneDrawer({});
+  };
+  const openEditZone = (z) => {
+    setZoneForm({ warehouse_id: z.warehouse_id, name: z.name || '', zone_type: z.zone_type || 'storage' });
+    setZoneDrawer({ id: z.id });
+  };
+  const saveZone = async (e) => {
+    e.preventDefault();
+    if (!zoneForm.name.trim()) return toast.error('Zone name is required');
+    if (!zoneDrawer.id && !zoneForm.warehouse_id) return toast.error('Pick a store for this zone');
+    setSaving(true);
+    try {
+      if (zoneDrawer.id) {
+        // warehouse_id is not sent on edit — the server refuses to move a zone
+        // between stores, because its bins carry stock.
+        await api.put(`/warehouse/zones/${zoneDrawer.id}`, { name: zoneForm.name, zone_type: zoneForm.zone_type });
+      } else {
+        await api.post('/warehouse/zones', zoneForm);
+      }
+      toast.success(zoneDrawer.id ? 'Zone updated' : 'Zone created');
+      setZoneDrawer(null);
+      loadZones();
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not save the zone');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /* ── bin actions ── */
+  const openNewBin = () => {
+    if (!selZone) return toast.error('Pick a zone first');
+    setBinForm(EMPTY_BIN);
+    setBinDrawer({});
+  };
+  const openEditBin = (b) => {
+    setBinForm({
+      bin_code: b.bin_code || '', row_no: b.row_no || '', shelf: b.shelf || '',
+      level: b.level || '', max_weight_kg: b.max_weight_kg ?? '',
+    });
+    setBinDrawer({ id: b.id });
+  };
+  const saveBin = async (e) => {
+    e.preventDefault();
+    if (!binForm.bin_code.trim()) return toast.error('Bin code is required');
+    setSaving(true);
+    try {
+      if (binDrawer.id) await api.put(`/warehouse/bins/${binDrawer.id}`, binForm);
+      else              await api.post('/warehouse/bins', { ...binForm, zone_id: selZone.id });
+      toast.success(binDrawer.id ? 'Bin updated' : 'Bin created');
+      setBinDrawer(null);
+      loadBins(selZone.id);
+      loadZones();          // bin_count on the zone row is now stale
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not save the bin');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doDelete = async () => {
+    const target = pendingDelete;
+    setPendingDelete(null);
+    if (!target) return;
+    try {
+      if (target.kind === 'zone') {
+        await api.delete(`/warehouse/zones/${target.id}`);
+        toast.success('Zone deleted');
+        setSelZone(null);
+        loadZones();
+      } else {
+        await api.delete(`/warehouse/bins/${target.id}`);
+        toast.success('Bin deleted');
+        loadBins(selZone?.id);
+        loadZones();
+      }
+    } catch (err) {
+      // A 409 here names what is holding the record — stock in the bin, bins in
+      // the zone, or a pick list referencing it. Show that, not a generic fail.
+      toast.error(err?.response?.data?.error || `Could not delete the ${target.kind}`);
+    }
+  };
+
+  const cell  = { padding: '9px 12px', borderBottom: '1px solid #f0f0f4', fontSize: 13 };
+  const head  = { ...cell, fontWeight: 600, color: '#6b7280' };
+  const input = { width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 };
+  const label = { display: 'grid', gap: 4, fontSize: 12, fontWeight: 600, color: '#374151' };
+  const linkBtn = (color) => ({ background: 'none', border: 'none', cursor: 'pointer', color, fontWeight: 600, fontSize: 12, padding: 0 });
+  const storeName = (id) => {
+    const s = stores.find(x => x.id === id);
+    return s ? (s.warehouse_name || s.name) : '—';
+  };
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 22, alignItems: 'start' }}>
+      {/* ── Zones ── */}
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#4c1d95' }}>
+            Zones {loading ? '' : `(${zones.length})`}
+          </div>
+          {!readOnly && (
+            <button type="button" onClick={openNewZone}
+              style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+              Add Zone
+            </button>
+          )}
+        </div>
+
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: '#faf9fc', textAlign: 'left' }}>
+                <th style={head}>Zone</th>
+                <th style={head}>Store</th>
+                <th style={head}>Type</th>
+                <th style={{ ...head, textAlign: 'right' }}>Bins</th>
+                {!readOnly && <th style={{ ...head, width: 110 }}>Actions</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {zones.map(z => (
+                <tr key={z.id}
+                    onClick={() => setSelZone(z)}
+                    style={{ cursor: 'pointer', background: selZone?.id === z.id ? '#f5f3ff' : 'transparent' }}>
+                  <td style={{ ...cell, fontWeight: 600 }}>{z.name}</td>
+                  <td style={cell}>{z.warehouse_name || storeName(z.warehouse_id)}</td>
+                  <td style={cell}>{z.zone_type || '—'}</td>
+                  <td style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{z.bin_count ?? 0}</td>
+                  {!readOnly && (
+                    <td style={cell}>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); openEditZone(z); }}
+                        style={{ ...linkBtn('#6B3FDB'), marginRight: 12 }}>Edit</button>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setPendingDelete({ kind: 'zone', id: z.id, label: z.name }); }}
+                        style={linkBtn('#dc2626')}>Delete</button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {!loading && zones.length === 0 && (
+                <tr><td colSpan={5} style={{ padding: '28px 16px', textAlign: 'center', color: '#9ca3af' }}>No zones yet</td></tr>
+              )}
+              {loading && (
+                <tr><td colSpan={5} style={{ padding: '28px 16px', textAlign: 'center', color: '#9ca3af' }}>Loading…</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ── Bins in the selected zone ── */}
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#4c1d95' }}>
+            {selZone ? `Bins in ${selZone.name}` : 'Bins'} {selZone && !binsLoading ? `(${bins.length})` : ''}
+          </div>
+          {!readOnly && selZone && (
+            <button type="button" onClick={openNewBin}
+              style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+              Add Bin
+            </button>
+          )}
+        </div>
+
+        {!selZone ? (
+          <div style={{ padding: '28px 16px', textAlign: 'center', color: '#9ca3af', fontSize: 13, border: '1px dashed #e9e4ff', borderRadius: 10 }}>
+            Pick a zone to see its bins
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#faf9fc', textAlign: 'left' }}>
+                  <th style={head}>Bin code</th>
+                  <th style={head}>Row</th>
+                  <th style={head}>Shelf</th>
+                  <th style={head}>Level</th>
+                  <th style={head}>Contents</th>
+                  {!readOnly && <th style={{ ...head, width: 110 }}>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {bins.map(b => (
+                  <tr key={b.id}>
+                    <td style={{ ...cell, fontWeight: 600 }}>{b.bin_code}</td>
+                    <td style={cell}>{b.row_no || '—'}</td>
+                    <td style={cell}>{b.shelf || '—'}</td>
+                    <td style={cell}>{b.level || '—'}</td>
+                    <td style={cell}>
+                      {b.total_qty > 0
+                        ? <span style={{ color: '#4c1d95', fontWeight: 600 }}>{b.item_count} item{b.item_count === 1 ? '' : 's'} · {b.total_qty}</span>
+                        : <span style={{ color: '#9ca3af' }}>Empty</span>}
+                    </td>
+                    {!readOnly && (
+                      <td style={cell}>
+                        <button type="button" onClick={() => openEditBin(b)}
+                          style={{ ...linkBtn('#6B3FDB'), marginRight: 12 }}>Edit</button>
+                        <button type="button" onClick={() => setPendingDelete({ kind: 'bin', id: b.id, label: b.bin_code })}
+                          style={linkBtn('#dc2626')}>Delete</button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+                {!binsLoading && bins.length === 0 && (
+                  <tr><td colSpan={6} style={{ padding: '28px 16px', textAlign: 'center', color: '#9ca3af' }}>No bins in this zone yet</td></tr>
+                )}
+                {binsLoading && (
+                  <tr><td colSpan={6} style={{ padding: '28px 16px', textAlign: 'center', color: '#9ca3af' }}>Loading…</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Zone form ── */}
+      {zoneDrawer && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <form onSubmit={saveZone} style={{ background: '#fff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 460, maxHeight: '90vh', overflowY: 'auto' }}>
+            <h3 style={{ margin: '0 0 16px', color: '#4c1d95', fontSize: 16 }}>{zoneDrawer.id ? 'Edit Zone' : 'Add Zone'}</h3>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <label style={label}>
+                Store *
+                <select
+                  value={zoneForm.warehouse_id}
+                  onChange={e => setZoneForm(f => ({ ...f, warehouse_id: e.target.value }))}
+                  style={input}
+                  disabled={!!zoneDrawer.id}
+                  required
+                >
+                  <option value="">Select a store…</option>
+                  {stores.map(s => <option key={s.id} value={s.id}>{s.warehouse_name || s.name}</option>)}
+                </select>
+                {zoneDrawer.id && (
+                  <span style={{ fontWeight: 400, color: '#9ca3af', fontSize: 11 }}>
+                    A zone cannot move between stores — its bins hold stock.
+                  </span>
+                )}
+              </label>
+              <label style={label}>
+                Zone name *
+                <input value={zoneForm.name} onChange={e => setZoneForm(f => ({ ...f, name: e.target.value }))} style={input} required />
+              </label>
+              <label style={label}>
+                Type
+                <select value={zoneForm.zone_type} onChange={e => setZoneForm(f => ({ ...f, zone_type: e.target.value }))} style={input}>
+                  {ZONE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </label>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+              <button type="button" onClick={() => setZoneDrawer(null)}
+                style={{ background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                Cancel
+              </button>
+              <button type="submit" disabled={saving}
+                style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 13 }}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ── Bin form ── */}
+      {binDrawer && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <form onSubmit={saveBin} style={{ background: '#fff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 460, maxHeight: '90vh', overflowY: 'auto' }}>
+            <h3 style={{ margin: '0 0 4px', color: '#4c1d95', fontSize: 16 }}>{binDrawer.id ? 'Edit Bin' : 'Add Bin'}</h3>
+            <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 16 }}>in {selZone?.name}</div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <label style={label}>
+                Bin code *
+                <input value={binForm.bin_code} onChange={e => setBinForm(f => ({ ...f, bin_code: e.target.value }))} style={input} placeholder="R1-S2-L1" required />
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                <label style={label}>
+                  Row
+                  <input value={binForm.row_no} onChange={e => setBinForm(f => ({ ...f, row_no: e.target.value }))} style={input} placeholder="R1" />
+                </label>
+                <label style={label}>
+                  Shelf
+                  <input value={binForm.shelf} onChange={e => setBinForm(f => ({ ...f, shelf: e.target.value }))} style={input} placeholder="S2" />
+                </label>
+                <label style={label}>
+                  Level
+                  <input value={binForm.level} onChange={e => setBinForm(f => ({ ...f, level: e.target.value }))} style={input} placeholder="1" />
+                </label>
+              </div>
+              <label style={label}>
+                Max weight (kg)
+                <input type="number" min="0" step="any" value={binForm.max_weight_kg}
+                  onChange={e => setBinForm(f => ({ ...f, max_weight_kg: e.target.value }))} style={input} placeholder="500" />
+              </label>
+              <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                Row, shelf and level are what the Bin Locations grid draws — a bin with
+                a row of <b>R1</b> and a shelf of <b>S2</b> appears in that cell.
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+              <button type="button" onClick={() => setBinDrawer(null)}
+                style={{ background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                Cancel
+              </button>
+              <button type="submit" disabled={saving}
+                style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 13 }}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={pendingDelete?.kind === 'zone' ? 'Delete zone' : 'Delete bin'}
+        message={
+          pendingDelete?.kind === 'zone'
+            ? `Delete "${pendingDelete?.label}"? This cannot be undone, and a zone that still has bins will be refused.`
+            : `Delete bin "${pendingDelete?.label}"? This cannot be undone, and a bin holding stock will be refused.`
+        }
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={doDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
+    </div>
+  );
+}
+
 /* ── MAIN ── */
-const TABS = ['Stores', 'Bin Locations', 'Pick-Pack-Ship', 'Inward QC', 'Cycle Count'];
+const TABS = ['Stores', 'Zones & Bins', 'Bin Locations', 'Pick-Pack-Ship', 'Inward QC', 'Cycle Count'];
 
 export default function WarehouseManagement() {
   const { readOnly } = usePageAccess();
@@ -1072,6 +1471,7 @@ export default function WarehouseManagement() {
       {readOnly && <ReadOnlyBanner />}
       <ContentCard>
         {tab === 'Stores'         && <StoresTab />}
+        {tab === 'Zones & Bins'   && <ZonesBinsTab />}
         {tab === 'Bin Locations'  && <BinsTab />}
         {tab === 'Pick-Pack-Ship' && <PickPackTab />}
         {tab === 'Inward QC'      && <InwardQCTab />}

@@ -3,6 +3,7 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 router.use(requirePermission('finance', 'view'));
@@ -93,7 +94,7 @@ router.post('/deductees', async (req, res) => {
 });
 
 // ── PUT /deductees/:id ────────────────────────────────────────────────────────
-router.put('/deductees/:id', async (req, res) => {
+router.put('/deductees/:id', captureBefore('tds_deductees'), async (req, res) => {
   const { party_name, pan, deductee_type, section, threshold_limit, rate_with_pan, rate_without_pan, is_active } = req.body;
   const companyId = companyOf(req) ?? req.scope?.company_id ?? null;
   try {

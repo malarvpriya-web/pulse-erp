@@ -2,6 +2,8 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -18,7 +20,12 @@ function cidWhere(companyId, alias = '') {
 }
 
 /* ── GET /programs ──────────────────────────────────────────── */
-router.get('/programs', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied training in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/programs', requirePermission('training', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { category, status, is_mandatory } = req.query;
@@ -50,7 +57,7 @@ router.get('/programs', async (req, res) => {
 });
 
 /* ── POST /programs ──────────────────────────────────────────── */
-router.post('/programs', async (req, res) => {
+router.post('/programs', requirePermission('training', 'add'), async (req, res) => {
   if (!MGR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const {
     title, description, category, trainer, trainer_id, mode = 'offline',
@@ -77,7 +84,7 @@ router.post('/programs', async (req, res) => {
 });
 
 /* ── GET /programs/:id ───────────────────────────────────────── */
-router.get('/programs/:id', async (req, res) => {
+router.get('/programs/:id', requirePermission('training', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const [progRes, enrollRes, costRes, sessionRes] = await Promise.all([
@@ -98,7 +105,7 @@ router.get('/programs/:id', async (req, res) => {
 });
 
 /* ── PUT /programs/:id ───────────────────────────────────────── */
-router.put('/programs/:id', async (req, res) => {
+router.put('/programs/:id', requirePermission('training', 'edit'), captureBefore('training_programs'), async (req, res) => {
   if (!MGR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const {
     title,description,category,trainer,trainer_id,mode,duration_hours,
@@ -135,7 +142,7 @@ router.put('/programs/:id', async (req, res) => {
 });
 
 /* ── DELETE /programs/:id ────────────────────────────────────── */
-router.delete('/programs/:id', async (req, res) => {
+router.delete('/programs/:id', requirePermission('training', 'delete'), captureBefore('training_programs'), async (req, res) => {
   if (!HR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     const { rows } = await pool.query(
@@ -148,7 +155,7 @@ router.delete('/programs/:id', async (req, res) => {
 });
 
 /* ── POST /programs/:id/enroll ───────────────────────────────── */
-router.post('/programs/:id/enroll', async (req, res) => {
+router.post('/programs/:id/enroll', requirePermission('training', 'add'), async (req, res) => {
   const { employee_ids = [] } = req.body;
   if (!employee_ids.length) return res.status(400).json({ error: 'employee_ids required' });
   const companyId = cid(req);
@@ -167,7 +174,7 @@ router.post('/programs/:id/enroll', async (req, res) => {
 });
 
 /* ── PUT /enrollments/:id/complete ──────────────────────────── */
-router.put('/enrollments/:id/complete', async (req, res) => {
+router.put('/enrollments/:id/complete', requirePermission('training', 'edit'), captureBefore('training_enrollments'), async (req, res) => {
   const { score, certificate_url, feedback_rating } = req.body;
   const client = await pool.connect();
   try {
@@ -213,7 +220,7 @@ router.put('/enrollments/:id/complete', async (req, res) => {
 });
 
 /* ── GET /employee/:id/history ───────────────────────────────── */
-router.get('/employee/:id/history', async (req, res) => {
+router.get('/employee/:id/history', requirePermission('training', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT te.*, tp.title, tp.category, tp.trainer, tp.mode,
@@ -236,7 +243,7 @@ router.get('/employee/:id/history', async (req, res) => {
 });
 
 /* ── GET /skills ──────────────────────────────────────────────── */
-router.get('/skills', async (req, res) => {
+router.get('/skills', requirePermission('training', 'view'), async (req, res) => {
   try {
     const { employee_id, category } = req.query;
     const companyId = cid(req);
@@ -253,7 +260,7 @@ router.get('/skills', async (req, res) => {
 });
 
 /* ── POST /skills ────────────────────────────────────────────── */
-router.post('/skills', async (req, res) => {
+router.post('/skills', requirePermission('training', 'add'), async (req, res) => {
   const { employee_id, skill_name, category, proficiency_level=1,
           certified=false, certification_name, expiry_date } = req.body;
   if (!employee_id || !skill_name) return res.status(400).json({ error: 'employee_id and skill_name required' });
@@ -273,7 +280,7 @@ router.post('/skills', async (req, res) => {
 });
 
 /* ── PUT /skills/:id ─────────────────────────────────────────── */
-router.put('/skills/:id', async (req, res) => {
+router.put('/skills/:id', requirePermission('training', 'edit'), captureBefore('skill_matrix'), async (req, res) => {
   const { proficiency_level, certified, certification_name, expiry_date, category } = req.body;
   try {
     const { rows } = await pool.query(`
@@ -293,7 +300,7 @@ router.put('/skills/:id', async (req, res) => {
 });
 
 /* ── GET /skills/matrix ──────────────────────────────────────── */
-router.get('/skills/matrix', async (req, res) => {
+router.get('/skills/matrix', requirePermission('training', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { department } = req.query;
@@ -339,7 +346,7 @@ router.get('/skills/matrix', async (req, res) => {
 });
 
 /* ── GET /dashboard ──────────────────────────────────────────── */
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND company_id=${companyId}` : '';
   // training_costs has no company_id of its own (see /cost-by-type) — scope via
@@ -412,7 +419,7 @@ router.get('/dashboard', async (req, res) => {
 
 /* ── GET /dashboard/filter-options ───────────────────────────── */
 // Departments that actually appear on training programmes, for the filter bar.
-router.get('/dashboard/filter-options', async (req, res) => {
+router.get('/dashboard/filter-options', requirePermission('training', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT DISTINCT target_department AS v FROM training_programs
@@ -427,7 +434,7 @@ router.get('/dashboard/filter-options', async (req, res) => {
 });
 
 /* ── GET /certifications/expiring ────────────────────────────── */
-router.get('/certifications/expiring', async (req, res) => {
+router.get('/certifications/expiring', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const days = parseInt(req.query.days || 30);
   const sc   = companyId != null ? ` AND (sm.company_id IS NULL OR sm.company_id=${companyId})` : '';
@@ -446,7 +453,7 @@ router.get('/certifications/expiring', async (req, res) => {
 });
 
 /* ── GET /cost-trend ─────────────────────────────────────────── */
-router.get('/cost-trend', async (req, res) => {
+router.get('/cost-trend', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   try {
     const { rows } = await pool.query(`
@@ -470,7 +477,7 @@ router.get('/cost-trend', async (req, res) => {
 // tenant anchor is the parent program, same join the /cost-trend handler
 // above already uses. Filtering on a bare `company_id` 500'd unconditionally
 // for any scoped caller (every non-super_admin role).
-router.get('/cost-by-type', async (req, res) => {
+router.get('/cost-by-type', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND (tp.company_id IS NULL OR tp.company_id=${companyId})` : '';
   try {
@@ -489,7 +496,7 @@ router.get('/cost-by-type', async (req, res) => {
 // training_costs has no company_id column of its own (see /cost-by-type above) —
 // inserting one 500'd unconditionally for every caller with "column company_id
 // does not exist". Tenant anchor is the parent program, not this row.
-router.post('/programs/:id/costs', async (req, res) => {
+router.post('/programs/:id/costs', requirePermission('training', 'add'), async (req, res) => {
   if (!MGR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { cost_type, amount, description } = req.body;
   if (!cost_type || !amount) return res.status(400).json({ error: 'cost_type and amount required' });
@@ -504,7 +511,7 @@ router.post('/programs/:id/costs', async (req, res) => {
 });
 
 /* ── DELETE /skills/:id ──────────────────────────────────────── */
-router.delete('/skills/:id', async (req, res) => {
+router.delete('/skills/:id', requirePermission('training', 'delete'), captureBefore('skill_matrix'), async (req, res) => {
   try {
     const { rows } = await pool.query(`DELETE FROM skill_matrix WHERE id=$1 RETURNING id`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -513,7 +520,7 @@ router.delete('/skills/:id', async (req, res) => {
 });
 
 /* ── GET /mandatory-compliance ───────────────────────────────── */
-router.get('/mandatory-compliance', async (req, res) => {
+router.get('/mandatory-compliance', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND e.company_id=${companyId}` : '';
   const psc = companyId != null ? ` AND p.company_id=${companyId}` : '';

@@ -416,3 +416,26 @@ button.pl-kpi { border: 1px solid var(--color-border-tertiary, #f0f0f4); }
 @media (max-width: 480px) {
   .pl-kpis { grid-template-columns: 1fr; }
 }
+
+/* ── LoadError ────────────────────────────────────────────────────────────────
+   Deliberately NOT the empty state's palette. An empty list is a neutral fact;
+   a failed load is a problem, and the two must not look alike — telling them
+   apart at a glance is the whole point of the component. */
+.pl-load-error .pl-load-error-icon {
+  background: var(--color-danger-bg, #fee2e2);
+  color: var(--color-danger, #b91c1c);
+}
+.pl-load-error .pl-empty-title { color: var(--color-danger, #b91c1c); }
+.pl-load-error .pl-empty-subtitle {
+  max-width: 46ch;
+  margin-left: auto;
+  margin-right: auto;
+  word-break: break-word;
+}
+.pl-load-error-retry {
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+

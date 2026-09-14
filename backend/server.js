@@ -39,6 +39,8 @@ import vendorRoutes           from "./src/modules/procurement/routes/vendor.rout
 import inventoryRoutes        from "./src/modules/inventory/routes/inventory.routes.js";
 import warehouseRoutes        from "./src/modules/warehouse/warehouse.routes.js";
 import logisticsRoutes        from "./src/modules/logistics/logistics.routes.js";
+import serviceLevelRoutes    from "./src/modules/logistics/serviceLevel.routes.js";
+import scmPlanningRoutes    from "./src/modules/logistics/scmPlanning.routes.js";
 import qualityRoutes          from "./src/modules/quality/quality.routes.js";
 import testHistorianRoutes    from "./src/modules/engineering/testHistorian.routes.js";
 
@@ -91,6 +93,10 @@ import trainersRoutes         from "./src/modules/hr/trainers.routes.js";
 import lndReportingRoutes     from "./src/modules/hr/lnd-reporting.routes.js";
 import competencyRoutes       from "./src/modules/hr/competency.routes.js";
 import knowledgeRoutes        from "./src/modules/hr/knowledge.routes.js";
+import journeyRoutes          from "./src/modules/crm/routes/journey.routes.js";
+import dealRegistrationRoutes from "./src/modules/sales/routes/dealRegistration.routes.js";
+import { ingestRouter as supportMailIngestRouter, adminRouter as supportMailAdminRouter }
+  from "./src/modules/servicedesk/routes/emailToCase.routes.js";
 import lndSettingsRoutes      from "./src/modules/hr/lnd-settings.routes.js";
 import successionRoutes       from "./src/modules/hr/succession.routes.js";
 import biometricRoutes        from "./src/modules/hr/biometric.routes.js";
@@ -104,11 +110,14 @@ import onboardingRoutes       from "./src/modules/hr/onboarding.routes.js";
 
 // ── CRM & Sales ──────────────────────────────────────────────────────────────
 import crmRoutes              from "./src/modules/crm/routes/index.js";
+import { trackOpenRouter }    from "./src/modules/crm/routes/email.routes.js";
+import { publicRouter as webLeadPublicRoutes } from "./src/modules/crm/routes/webToLead.routes.js";
 import salesRoutes            from "./src/modules/sales/routes/sales.routes.js";
 import salesPartnersRoutes    from "./src/modules/sales/routes/partners.routes.js";
 import salesCommandCenterRoutes from "./src/modules/sales/routes/sales-command-center.routes.js";
 import pricingRoutes          from "./src/modules/sales/routes/pricing.routes.js";
 import commissionRoutes       from "./src/modules/sales/routes/commission.routes.js";
+import salesForecastRoutes    from "./src/modules/sales/routes/forecast.routes.js";
 import fulfilmentRoutes       from "./src/modules/sales/fulfilment.routes.js";
 import marketingRoutes        from "./src/modules/marketing/routes/marketing.routes.js";
 
@@ -148,6 +157,7 @@ import vendorRegistrationRoutes   from "./src/modules/procurement/routes/vendor-
 import vendorApprovalRoutes       from "./src/modules/procurement/routes/vendor-approval.routes.js";
 // ── Phase 49G — Vendor Health Score Engine ────────────────────────────────────
 import vendorHealthRoutes         from "./src/modules/procurement/routes/vendorHealth.routes.js";
+import supplierDevelopmentRoutes  from "./src/modules/procurement/routes/supplierDevelopment.routes.js";
 // §136 — Sourcing Strategy (Porter's Five Forces + Purchasing Chessboard)
 import sourcingStrategyRoutes    from "./src/modules/procurement/routes/sourcing.routes.js";
 import rfxRoutes                 from "./src/modules/procurement/routes/rfx.routes.js";
@@ -226,6 +236,8 @@ import { sanitizeErrorResponse } from "./src/middlewares/errorSanitizer.js";
 import { requestId }     from "./src/middlewares/requestId.js";
 import { requestLogger } from "./src/middlewares/requestLogger.js";
 import { memoryRateLimit } from "./src/middlewares/rateLimit.js";
+import { auditMutations } from "./src/middlewares/auditMutations.js";
+import { applyFieldPermissions } from "./src/middlewares/auth.middleware.js";
 import { responseCap } from "./src/middlewares/responseCap.js";
 import { denialLogger } from "./src/middlewares/denialLogger.js";
 import { errorHandler }  from "./src/middlewares/errorHandler.js";
@@ -248,6 +260,7 @@ import { startQuotationExpiryCron } from "./src/jobs/quotationExpiry.cron.js";
 import { startCrmFollowupCron } from "./src/jobs/crmFollowup.cron.js";
 import { startTenderDeadlineCron } from "./src/jobs/tenderDeadline.cron.js";
 import { startCampaignLifecycleCron } from "./src/jobs/campaignLifecycle.cron.js";
+import { startMarketingJourneyCron } from "./src/jobs/marketingJourney.cron.js";
 import { startReorderPrCron } from "./src/jobs/reorderPr.cron.js";
 import { startDepreciationCron } from "./src/jobs/depreciation.cron.js";
 import { startFnfAutoTriggerCron } from "./src/jobs/fnfAutoTrigger.cron.js";
@@ -397,10 +410,42 @@ const corsOrigin = process.env.FRONTEND_URL
       callback(new Error(`CORS: origin not allowed — ${origin}`));
     };
 
-app.use(cors({
-  origin: corsOrigin,
-  credentials: true,
-  exposedHeaders: ['X-Request-ID'],
+// The web-to-lead capture endpoint is the one route on this server that is
+// POSTed by a form on a CUSTOMER'S OWN website, so its origin is unknown by
+// definition and cannot be in any allow-list we keep. Running it through the
+// app allow-list threw `CORS: origin not allowed` before the handler — a 500,
+// no `web_lead_submissions` row, and the enquiry lost — while every server-side
+// test passed, because curl and fetch send no Origin header and only a browser
+// does. It also made `web_lead_forms.allowed_origins` dead code: the per-form
+// allow-list could never be consulted, since the global gate answered first and
+// knows nothing about that table. Reflecting the origin here is what hands the
+// decision back to the route, which then honours the form's own list and logs a
+// `rejected` row for an origin it turns away.
+//
+// `credentials: false` is the load-bearing half. A public endpoint that
+// reflected an arbitrary origin AND allowed credentials would let any website
+// make authenticated cross-origin calls with a logged-in user's cookies. This
+// route takes no session at all, so it needs none — and the exemption is scoped
+// to that single path rather than the whole /public prefix, so a future public
+// route has to opt in deliberately.
+const PUBLIC_CAPTURE_RE = /^\/api(?:\/v1)?\/public\/web-lead\//;
+
+app.use(cors((req, callback) => {
+  if (req.method === 'OPTIONS' || req.method === 'POST') {
+    if (PUBLIC_CAPTURE_RE.test(req.path)) {
+      return callback(null, {
+        origin: true,
+        credentials: false,
+        methods: ['POST', 'OPTIONS'],
+        exposedHeaders: ['X-Request-ID'],
+      });
+    }
+  }
+  callback(null, {
+    origin: corsOrigin,
+    credentials: true,
+    exposedHeaders: ['X-Request-ID'],
+  });
 }));
 // ── Global rate limit ─────────────────────────────────────────────────────────
 // Backstop only — deliberately generous so it never trips for a human at a
@@ -494,32 +539,36 @@ v1Router.use(auditLogger);
 // announcements has one intentionally public route (/active) for the login screen.
 v1Router.use("/auth",            authRoutes);
 v1Router.use("/home",            homeRoutes);
-v1Router.use("/employees",       employeeRoutes);
-v1Router.use("/notes",           noteRoutes);
-v1Router.use("/announcements",   announcementRoutes);
-v1Router.use("/probation",       probationRoutes);
-v1Router.use("/leaves",          verifyToken, leavesNewRoutes);
-v1Router.use("/comp-off",        verifyToken, compOffRoutes);
-v1Router.use("/leave-encashment", verifyToken, encashmentRoutes);
-v1Router.use("/leave-accrual",   verifyToken, accrualRoutes);
+// verifyToken for /employees is applied globally at the app level (see the
+// employeeUpload mount above), so it is absent here — which is why the
+// automatic pass missed this router. It carries the field rules that matter
+// most: aadhaar_number, pan_number, bank details and basic_salary.
+v1Router.use("/employees",       applyFieldPermissions('employees'), auditMutations('employees'), employeeRoutes);
+v1Router.use("/notes",           auditMutations('admin'), noteRoutes);
+v1Router.use("/announcements",   auditMutations('announcements'), announcementRoutes);
+v1Router.use("/probation",       auditMutations('hr'), probationRoutes);
+v1Router.use("/leaves",          verifyToken, auditMutations('leaves'), leavesNewRoutes);
+v1Router.use("/comp-off",        verifyToken, auditMutations('leaves'), compOffRoutes);
+v1Router.use("/leave-encashment", verifyToken, auditMutations('leaves'), encashmentRoutes);
+v1Router.use("/leave-accrual",   verifyToken, auditMutations('leaves'), accrualRoutes);
 
 // FINANCE
-v1Router.use("/finance",         verifyToken, financeRoutes);
-v1Router.use("/finance",         verifyToken, extendedFinanceRoutes);
+v1Router.use("/finance",         verifyToken, applyFieldPermissions('finance'), auditMutations('finance'), financeRoutes);
+v1Router.use("/finance",         verifyToken, applyFieldPermissions('finance'), auditMutations('finance'), extendedFinanceRoutes);
 v1Router.use("/statements",      verifyToken, statementsRoutes);
-v1Router.use("/accounting",      verifyToken, accountingRoutes);
-v1Router.use("/gst",             verifyToken, gstRoutes);
-v1Router.use("/tds",             verifyToken, tdsRoutes);
-v1Router.use("/tcs",             verifyToken, tcsRoutes);
-v1Router.use("/budgets",         verifyToken, budgetRoutes);
-v1Router.use("/fixed-assets",    verifyToken, assetsRoutes);
-v1Router.use("/forex",           verifyToken, forexRoutes);
-v1Router.use("/finance/credit-notes", verifyToken, creditNotesRoutes);
-v1Router.use("/finance/debit-notes",  verifyToken, debitNotesRoutes);
-v1Router.use("/finance/cost-centers", verifyToken, costCentersRoutes);
+v1Router.use("/accounting",      verifyToken, auditMutations('finance'), accountingRoutes);
+v1Router.use("/gst",             verifyToken, auditMutations('finance'), gstRoutes);
+v1Router.use("/tds",             verifyToken, auditMutations('finance'), tdsRoutes);
+v1Router.use("/tcs",             verifyToken, auditMutations('finance'), tcsRoutes);
+v1Router.use("/budgets",         verifyToken, auditMutations('finance'), budgetRoutes);
+v1Router.use("/fixed-assets",    verifyToken, auditMutations('finance'), assetsRoutes);
+v1Router.use("/forex",           verifyToken, auditMutations('finance'), forexRoutes);
+v1Router.use("/finance/credit-notes", verifyToken, auditMutations('finance'), creditNotesRoutes);
+v1Router.use("/finance/debit-notes",  verifyToken, auditMutations('finance'), debitNotesRoutes);
+v1Router.use("/finance/cost-centers", verifyToken, auditMutations('finance'), costCentersRoutes);
 
 // PROCUREMENT & INVENTORY
-v1Router.use("/procurement",     verifyToken, procurementRoutes);
+v1Router.use("/procurement",     verifyToken, auditMutations('procurement'), procurementRoutes);
 // vendorRoutes defines explicit top-level paths (/vendors, /rfqs, /three-way-match).
 // Scope verifyToken to those prefixes — mounting it bare at "/" alongside the router
 // makes verifyToken a GLOBAL auth gate that also 401s public routes registered later
@@ -527,126 +576,168 @@ v1Router.use("/procurement",     verifyToken, procurementRoutes);
 // only matches its own paths and falls through otherwise.
 v1Router.use(["/vendors", "/rfqs", "/three-way-match"], verifyToken);
 v1Router.use("/",                vendorRoutes);
-v1Router.use("/inventory",       verifyToken, inventoryRoutes);
-v1Router.use("/warehouse",       verifyToken, warehouseRoutes);
-v1Router.use("/logistics",       verifyToken, logisticsRoutes);
-v1Router.use("/quality",                    verifyToken, qualityRoutes);
-v1Router.use("/engineering/tests",          verifyToken, testHistorianRoutes);
-v1Router.use("/quality/disturbance-events", verifyToken, disturbanceRoutes);
+v1Router.use("/inventory",       verifyToken, auditMutations('inventory'), inventoryRoutes);
+v1Router.use("/warehouse",       verifyToken, auditMutations('warehouse'), warehouseRoutes);
+v1Router.use("/logistics",       verifyToken, auditMutations('logistics'), logisticsRoutes);
+v1Router.use("/service-level",   verifyToken, serviceLevelRoutes);
+v1Router.use("/scm",             verifyToken, auditMutations('inventory'), scmPlanningRoutes);
+v1Router.use("/quality",                    verifyToken, auditMutations('quality'), qualityRoutes);
+v1Router.use("/engineering/tests",          verifyToken, auditMutations('engineering'), testHistorianRoutes);
+v1Router.use("/quality/disturbance-events", verifyToken, auditMutations('quality'), disturbanceRoutes);
 
 // PRODUCTION
-v1Router.use("/bom",             verifyToken, bomRoutes);
-v1Router.use("/production",      verifyToken, productionExecutionRoutes);
-v1Router.use("/imr",             verifyToken, imrRoutes);
-v1Router.use("/mrp",             verifyToken, mrpRoutes);
-v1Router.use("/crp",             verifyToken, crpRoutes);
-v1Router.use("/subcontracting",  verifyToken, subcontractingRoutes);
+v1Router.use("/bom",             verifyToken, auditMutations('bom'), bomRoutes);
+v1Router.use("/production",      verifyToken, auditMutations('production'), productionExecutionRoutes);
+v1Router.use("/imr",             verifyToken, auditMutations('production'), imrRoutes);
+v1Router.use("/mrp",             verifyToken, auditMutations('production'), mrpRoutes);
+v1Router.use("/crp",             verifyToken, auditMutations('production'), crpRoutes);
+v1Router.use("/subcontracting",  verifyToken, auditMutations('production'), subcontractingRoutes);
 v1Router.use("/genealogy",       verifyToken, genealogyRoutes);
-v1Router.use("/mfg",             verifyToken, bomModelingRoutes);
+v1Router.use("/mfg",             verifyToken, auditMutations('bom'), bomModelingRoutes);
 v1Router.use("/sop",             verifyToken, sopRoutes);
 
 // PROJECTS
-v1Router.use("/projects",        verifyToken, projectRoutes);
-v1Router.use("/projects",        verifyToken, orderHistoryRoutes); // CEO full-history traceability
-v1Router.use("/project-members", projectMembersRoutes);
+v1Router.use("/projects",        verifyToken, auditMutations('projects'), projectRoutes);
+v1Router.use("/projects",        verifyToken, auditMutations('projects'), orderHistoryRoutes); // CEO full-history traceability
+v1Router.use("/project-members", auditMutations('projects'), projectMembersRoutes);
 v1Router.use("/tasks",           verifyToken, taskRoutes);
-v1Router.use("/gantt",           verifyToken, ganttRoutes);
+v1Router.use("/gantt",           verifyToken, auditMutations('projects'), ganttRoutes);
 
 // HR & PAYROLL
-v1Router.use("/timesheets",      verifyToken, timesheetRoutes);
-v1Router.use("/performance",              verifyToken, performanceRoutes);
-v1Router.use("/performance/cycles",       verifyToken, perfCyclesRoutes);
-v1Router.use("/performance/kras",         verifyToken, perfKRARoutes);
-v1Router.use("/performance/feedback",     verifyToken, perfFeedback360Routes);
-v1Router.use("/performance/calibration",  verifyToken, perfCalibRoutes);
-v1Router.use("/performance/increments",   verifyToken, perfIncRoutes);
-v1Router.use("/performance/promotions",   verifyToken, perfPromoRoutes);
+v1Router.use("/timesheets",      verifyToken, auditMutations('timesheets'), timesheetRoutes);
+v1Router.use("/performance",              verifyToken, auditMutations('performance'), performanceRoutes);
+v1Router.use("/performance/cycles",       verifyToken, auditMutations('performance'), perfCyclesRoutes);
+v1Router.use("/performance/kras",         verifyToken, auditMutations('performance'), perfKRARoutes);
+v1Router.use("/performance/feedback",     verifyToken, auditMutations('performance'), perfFeedback360Routes);
+v1Router.use("/performance/calibration",  verifyToken, auditMutations('performance'), perfCalibRoutes);
+v1Router.use("/performance/increments",   verifyToken, auditMutations('performance'), perfIncRoutes);
+v1Router.use("/performance/promotions",   verifyToken, auditMutations('performance'), perfPromoRoutes);
 v1Router.use("/performance/reports",      verifyToken, perfReportsRoutes);
-v1Router.use("/performance/okr",          verifyToken, perfOKRRoutes);
-v1Router.use("/recruitment",     verifyToken, recruitmentRoutes);
-v1Router.use("/talent",          verifyToken, talentRoutes);
-v1Router.use("/leaves-new",      verifyToken, leavesNewRoutes); // backward-compat alias
-v1Router.use("/attendance",         verifyToken, attendanceRoutes);
-v1Router.use("/attendance/offline", verifyToken, offlineSyncRoutes); // PWA offline punch sync
-v1Router.use("/holidays",           verifyToken, holidaysRoutes);
-v1Router.use("/payroll",         verifyToken, payrollRoutes);
-v1Router.use("/salary-structures", verifyToken, salaryRoutes);
-v1Router.use("/hr",              verifyToken, hrRoutes);
-v1Router.use("/training",        verifyToken, trainingRoutes);
-v1Router.use("/certifications",  verifyToken, certificationsRoutes);
-v1Router.use("/learning-paths",  verifyToken, learningPathsRoutes);
-v1Router.use("/assessments",     verifyToken, assessmentsRoutes);
-v1Router.use("/trainers",        verifyToken, trainersRoutes);
+v1Router.use("/performance/okr",          verifyToken, auditMutations('performance'), perfOKRRoutes);
+v1Router.use("/recruitment",     verifyToken, auditMutations('recruitment'), recruitmentRoutes);
+v1Router.use("/talent",          verifyToken, auditMutations('hr'), talentRoutes);
+v1Router.use("/leaves-new",      verifyToken, auditMutations('leaves'), leavesNewRoutes); // backward-compat alias
+v1Router.use("/attendance",         verifyToken, auditMutations('attendance'), attendanceRoutes);
+v1Router.use("/attendance/offline", verifyToken, auditMutations('attendance'), offlineSyncRoutes); // PWA offline punch sync
+v1Router.use("/holidays",           verifyToken, auditMutations('leaves'), holidaysRoutes);
+v1Router.use("/payroll",         verifyToken, applyFieldPermissions('payroll'), auditMutations('payroll'), payrollRoutes);
+v1Router.use("/salary-structures", verifyToken, auditMutations('payroll'), salaryRoutes);
+v1Router.use("/hr",              verifyToken, applyFieldPermissions('hr'), auditMutations('hr'), hrRoutes);
+v1Router.use("/training",        verifyToken, auditMutations('training'), trainingRoutes);
+v1Router.use("/certifications",  verifyToken, auditMutations('hr'), certificationsRoutes);
+v1Router.use("/learning-paths",  verifyToken, auditMutations('training'), learningPathsRoutes);
+v1Router.use("/assessments",     verifyToken, auditMutations('training'), assessmentsRoutes);
+v1Router.use("/trainers",        verifyToken, auditMutations('training'), trainersRoutes);
 v1Router.use("/lnd-reports",     verifyToken, lndReportingRoutes);
-v1Router.use("/competencies",    verifyToken, competencyRoutes);
-v1Router.use("/knowledge",       verifyToken, knowledgeRoutes);
-v1Router.use("/lnd-settings",    verifyToken, lndSettingsRoutes);
-v1Router.use("/succession",      verifyToken, successionRoutes);
+v1Router.use("/competencies",    verifyToken, auditMutations('training'), competencyRoutes);
+v1Router.use("/knowledge",       verifyToken, auditMutations('training'), knowledgeRoutes);
+v1Router.use("/lnd-settings",    verifyToken, auditMutations('training'), lndSettingsRoutes);
+v1Router.use("/succession",      verifyToken, auditMutations('hr'), successionRoutes);
 // biometric.routes.js defines full paths (/biometric/*, /gate-passes, /visitors).
 // Scope verifyToken to those prefixes — a bare use(verifyToken, ...) mounts the guard
 // at "/" and turns it into a global auth gate that blocks public routes registered later.
 v1Router.use(["/biometric", "/gate-passes", "/visitors"], verifyToken);
 v1Router.use(biometricRoutes);
-v1Router.use("/self-service",    verifyToken, selfServiceRoutes);
-v1Router.use("/employee-assets", employeeAssetsRoutes);
-v1Router.use("/employee-skills", employeeSkillsRoutes);
-v1Router.use("/hr-master",       hrMasterDataRoutes);
+v1Router.use("/self-service",    verifyToken, auditMutations('employees'), selfServiceRoutes);
+v1Router.use("/employee-assets", auditMutations('assets'), employeeAssetsRoutes);
+v1Router.use("/employee-skills", auditMutations('hr'), employeeSkillsRoutes);
+v1Router.use("/hr-master",       auditMutations('hr'), hrMasterDataRoutes);
 v1Router.use("/hr-widgets",      hrWidgetsRoutes);
-v1Router.use("/onboarding",      verifyToken, onboardingRoutes);
-v1Router.use("/exit",            verifyToken, exitRoutes);
+v1Router.use("/onboarding",      verifyToken, auditMutations('hr'), onboardingRoutes);
+v1Router.use("/exit",            verifyToken, auditMutations('hr'), exitRoutes);
 
 // CRM & SALES
-v1Router.use("/crm",             verifyToken, crmRoutes);
+// The email open-tracking pixel is fetched by the RECIPIENT's mail client,
+// which carries no session token. Mounted here, ahead of the authenticated
+// /crm mount, so Express matches it first for that one path; everything else
+// under /crm still requires a token. Inside the authenticated router it was
+// unreachable by the only caller it has.
+// auditMutations() is the FLOOR for audit coverage, not a replacement for
+// logAudit(). A scan on 2026-09-04 found only 26% of the 1,304 mutating
+// handlers writing an audit row — entire files wrote none. Mounted per router
+// it records every successful POST/PUT/PATCH/DELETE, including routes added
+// later. Handlers that call logAudit() themselves mark the request and this
+// stands down, so a write with a proper before-image is not counted twice.
+// Web-to-lead capture is posted to by a website form with no session at
+// all, so it is mounted OUTSIDE verifyToken and kept to a single route
+// under its own /public prefix — a public write path hidden among
+// authenticated ones is how a missing gate goes unnoticed. Its defences
+// (per-form key, origin allowlist, hourly cap counted from the table,
+// honeypot, duplicate suppression) live in webToLead.routes.js.
+// applyFieldPermissions enforces `field_permissions` in BOTH directions —
+// invisible fields stripped from responses, non-editable ones stripped from
+// request bodies. The table held ten correct rules (an `employee` may not see
+// aadhaar_number, pan_number, bank details, basic_salary, gross, net_pay) and
+// the middleware that reads them was mounted NOWHERE until 2026-09-04.
+// Mounted AFTER verifyToken so roles are known, and after the audit floor so
+// what gets logged is what the handler received.
+v1Router.use("/public",          auditMutations('crm'), webLeadPublicRoutes);
+v1Router.use("/crm",             auditMutations('crm'), trackOpenRouter);
+// Journeys mount BEFORE the main crm router: /crm/journeys/* would otherwise
+// fall through to crmRoutes and 404 on a path it has never heard of.
+v1Router.use("/crm/journeys",    verifyToken, auditMutations('crm'), journeyRoutes);
+v1Router.use("/crm",             verifyToken, applyFieldPermissions('crm'), auditMutations('crm'), crmRoutes);
 // /sales/partners is mounted FIRST: Express matches in registration order, and
 // the general sales router would otherwise shadow it.
-v1Router.use("/sales/partners",         verifyToken, salesPartnersRoutes);
-v1Router.use("/sales",                  verifyToken, salesRoutes);
-v1Router.use("/sales-command-center",   verifyToken, salesCommandCenterRoutes);
-v1Router.use("/pricing",                verifyToken, pricingRoutes);
-v1Router.use("/commissions",     verifyToken, commissionRoutes);
-v1Router.use("/delivery",        verifyToken, fulfilmentRoutes);
-v1Router.use("/marketing",       verifyToken, marketingRoutes);
+v1Router.use("/sales/forecasting",      verifyToken, auditMutations('sales'), salesForecastRoutes);
+v1Router.use("/sales/partners",         verifyToken, auditMutations('sales'), salesPartnersRoutes);
+// Mounts BEFORE the main sales router, same reason as /crm/journeys: a
+// sub-path would otherwise fall through to salesRoutes and 404.
+v1Router.use("/sales/deal-registrations", verifyToken, auditMutations('sales'), dealRegistrationRoutes);
+
+// Email-to-case. The INGEST router is mounted WITHOUT verifyToken on purpose:
+// a mail provider's webhook has no ERP login. It is not open — it authenticates
+// with a per-mailbox shared secret and refuses any mailbox that has none.
+v1Router.use("/support-mail",    auditMutations('servicedesk'), supportMailIngestRouter);
+v1Router.use("/support-mail",    verifyToken, auditMutations('service'), supportMailAdminRouter);
+v1Router.use("/sales",                  verifyToken, applyFieldPermissions('sales'), auditMutations('sales'), salesRoutes);
+v1Router.use("/sales-command-center",   verifyToken, auditMutations('sales'), salesCommandCenterRoutes);
+v1Router.use("/pricing",                verifyToken, auditMutations('sales'), pricingRoutes);
+v1Router.use("/commissions",     verifyToken, applyFieldPermissions('sales'), auditMutations('sales'), commissionRoutes);
+v1Router.use("/delivery",        verifyToken, auditMutations('sales'), fulfilmentRoutes);
+v1Router.use("/marketing",       verifyToken, auditMutations('marketing'), marketingRoutes);
 
 // MASTER DATA
-v1Router.use("/master",          verifyToken, masterRoutes);
-v1Router.use("/admin/config",    verifyToken, masterRoutes);
-v1Router.use("/wizard",          verifyToken, wizardRoutes);
+v1Router.use("/master",          verifyToken, auditMutations('master'), masterRoutes);
+v1Router.use("/admin/config",    verifyToken, auditMutations('master'), masterRoutes);
+v1Router.use("/wizard",          verifyToken, auditMutations('admin'), wizardRoutes);
 
 // OPERATIONS & ADMIN
-v1Router.use("/operations",      verifyToken, operationsRoutes);
-v1Router.use("/lifecycle",       verifyToken, lifecycleRoutes);
-v1Router.use("/maintenance",     verifyToken, maintenanceRoutes);
-v1Router.use("/workflows",       verifyToken, workflowRoutes);
-v1Router.use("/security",        verifyToken, securityRoutes);
-v1Router.use("/admin",           verifyToken, adminRoutes);
-v1Router.use("/settings",        verifyToken, settingsStatusRoutes);
+v1Router.use("/operations",      verifyToken, auditMutations('admin'), operationsRoutes);
+v1Router.use("/lifecycle",       verifyToken, auditMutations('lifecycle'), lifecycleRoutes);
+v1Router.use("/maintenance",     verifyToken, auditMutations('maintenance'), maintenanceRoutes);
+v1Router.use("/workflows",       verifyToken, auditMutations('admin'), workflowRoutes);
+v1Router.use("/security",        verifyToken, auditMutations('security'), securityRoutes);
+v1Router.use("/admin",           verifyToken, auditMutations('admin'), adminRoutes);
+v1Router.use("/settings",        verifyToken, auditMutations('settings'), settingsStatusRoutes);
 v1Router.use("/system-health",   verifyToken, allowRoles('admin', 'super_admin'), systemHealthRoutes);   // live DB table introspection — admin-only diagnostic
-v1Router.use("/company-profile", verifyToken, companyProfileRoutes);
-v1Router.use("/branches",        verifyToken, branchManagementRoutes);
-v1Router.use("/travel",               verifyToken, travelRoutes);
-v1Router.use("/customer-visits",      verifyToken, customerVisitsRoutes);
-v1Router.use("/reimbursement",        verifyToken, travelReimbursementRoutes);
-v1Router.use("/travel-policy",        verifyToken, travelPolicyRoutes);
+v1Router.use("/company-profile", verifyToken, auditMutations('company_profile'), companyProfileRoutes);
+v1Router.use("/branches",        verifyToken, auditMutations('branches'), branchManagementRoutes);
+v1Router.use("/travel",               verifyToken, auditMutations('travel'), travelRoutes);
+v1Router.use("/customer-visits",      verifyToken, auditMutations('crm'), customerVisitsRoutes);
+v1Router.use("/reimbursement",        verifyToken, auditMutations('reimbursement'), travelReimbursementRoutes);
+v1Router.use("/travel-policy",        verifyToken, auditMutations('travel'), travelPolicyRoutes);
 v1Router.use("/travel-audit",         verifyToken, travelAuditRoutes);
-v1Router.use("/visit-reports",        verifyToken, visitReportsRoutes);
+v1Router.use("/visit-reports",        verifyToken, auditMutations('travel'), visitReportsRoutes);
 
 // Phase X — Commercial, Travel & Vendor Ecosystem
-v1Router.use("/vendor-portal",        verifyToken, vendorPortalRoutes);
-v1Router.use("/vendor-360",           verifyToken, vendor360Routes);
+v1Router.use("/vendor-portal",        verifyToken, auditMutations('procurement'), vendorPortalRoutes);
+v1Router.use("/vendor-360",           verifyToken, auditMutations('procurement'), vendor360Routes);
 // Phase 49C — Vendor Registration Portal (mixed auth — public submit inside the router)
-v1Router.use("/vendor-registration",  vendorRegistrationRoutes);
-v1Router.use("/vendor-approval",      verifyToken, vendorApprovalRoutes);
-v1Router.use("/vendor-health",        verifyToken, vendorHealthRoutes);
+v1Router.use("/vendor-registration",  auditMutations('procurement'), vendorRegistrationRoutes);
+v1Router.use("/vendor-approval",      verifyToken, auditMutations('vendor_approval'), vendorApprovalRoutes);
+v1Router.use("/vendor-health",        verifyToken, auditMutations('procurement'), vendorHealthRoutes);
+v1Router.use("/supplier-development", verifyToken, auditMutations('procurement'), supplierDevelopmentRoutes);
 // Mounted on its own path, not under /procurement: procurement.routes.js already
 // owns a /:id parameter route, and a literal segment added after one is
 // unreachable (a defect class this repo has hit before).
-v1Router.use("/sourcing-strategy",    verifyToken, sourcingStrategyRoutes);
-v1Router.use("/rfx",                  verifyToken, rfxRoutes);   // §136 RFI/RFP/RFQ scoring + preferred-vendor selection
-v1Router.use("/project-profitability",verifyToken, projectProfitabilityRoutes);
-v1Router.use("/project-360",          verifyToken, project360Routes);
+v1Router.use("/sourcing-strategy",    verifyToken, auditMutations('inventory'), sourcingStrategyRoutes);
+v1Router.use("/rfx",                  verifyToken, auditMutations('procurement'), rfxRoutes);   // §136 RFI/RFP/RFQ scoring + preferred-vendor selection
+v1Router.use("/project-profitability",verifyToken, auditMutations('projects'), projectProfitabilityRoutes);
+v1Router.use("/project-360",          verifyToken, auditMutations('projects'), project360Routes);
 v1Router.use("/delivery-tracker",     verifyToken, deliveryTrackerRoutes); // IPM<->IPP production/fulfilment grid
 // Phase 46 — Project Cost & Profitability Engine
-v1Router.use("/project-cost-engine",  verifyToken, projectCostEngineRoutes);
+v1Router.use("/project-cost-engine",  verifyToken, auditMutations('projects'), projectCostEngineRoutes);
 v1Router.use("/sales-funnel",         verifyToken, salesFunnelRoutes);
 
 // SUPPORT
@@ -655,51 +746,51 @@ v1Router.use("/sales-funnel",         verifyToken, salesFunnelRoutes);
 // router previously carried verifyToken alone: every authenticated user could
 // read leave-encashment liability (salary-derived, per named employee), the AR
 // ledger, the GST summary and payroll totals.
-v1Router.use("/reports",         verifyToken, reportsPolicy, reportsRoutes);
-v1Router.use("/documents",       verifyToken, documentsRoutes);
-v1Router.use("/signatures",      verifyToken, signaturesRoutes);
+v1Router.use("/reports",         verifyToken, reportsPolicy, auditMutations('reports'), reportsRoutes);
+v1Router.use("/documents",       verifyToken, auditMutations('documents'), documentsRoutes);
+v1Router.use("/signatures",      verifyToken, auditMutations('documents'), signaturesRoutes);
 // Public no-login signing surface — token-gated inside the router (like customer-portal)
-v1Router.use("/sign",            publicSignRoutes);
-v1Router.use("/document-master", verifyToken, documentMasterRoutes);
-v1Router.use("/qr-codes",        verifyToken, qrShareRoutes);
+v1Router.use("/sign",            auditMutations('documents'), publicSignRoutes);
+v1Router.use("/document-master", verifyToken, auditMutations('documents'), documentMasterRoutes);
+v1Router.use("/qr-codes",        verifyToken, auditMutations('documents'), qrShareRoutes);
 // Public QR resolution — token-gated inside the router (QR images encode /api/v1/q/:token)
-v1Router.use("/q",               publicQrRoutes);
-v1Router.use("/notifications",   verifyToken, notificationsRoutes);
+v1Router.use("/q",               auditMutations('documents'), publicQrRoutes);
+v1Router.use("/notifications",   verifyToken, auditMutations('notifications'), notificationsRoutes);
 v1Router.use("/audit",           verifyToken, auditRoutes);
-v1Router.use("/orgchart",        orgChartRoutes);
-v1Router.use("/approvals",       verifyToken, approvalsRoutes);
+v1Router.use("/orgchart",        auditMutations('orgchart'), orgChartRoutes);
+v1Router.use("/approvals",       verifyToken, auditMutations('approvals'), approvalsRoutes);
 // Analytics & AI read surface — see src/shared/analyticsAuthz.js.
 // These three routers previously carried verifyToken and nothing else, leaving
 // 72 endpoints (full P&L, salary bands, named performance ratings) readable by
 // any authenticated user. Each mount now applies a path-prefix permission policy
 // that denies by default, so new routes inherit a guard instead of shipping open.
-v1Router.use("/dashboard",       verifyToken, withOpenPaths(dashboardPolicy, DASHBOARD_PUBLIC_PATHS), dashboardRoutes);
+v1Router.use("/dashboard",       verifyToken, withOpenPaths(dashboardPolicy, DASHBOARD_PUBLIC_PATHS), auditMutations('dashboard'), dashboardRoutes);
 // IPS (Service Master) is mounted ahead of the general servicedesk router so its
 // /ips/* paths resolve here rather than falling through that router first.
-v1Router.use("/servicedesk/ips", verifyToken, ipsRoutes);
-v1Router.use("/servicedesk",     verifyToken, servicedeskRoutes);
-v1Router.use("/complaints",      verifyToken, complaintsRoutes);
+v1Router.use("/servicedesk/ips", verifyToken, auditMutations('servicedesk'), ipsRoutes);
+v1Router.use("/servicedesk",     verifyToken, auditMutations('servicedesk'), servicedeskRoutes);
+v1Router.use("/complaints",      verifyToken, auditMutations('servicedesk'), complaintsRoutes);
 
 // Phase 51 — Customer Portal (mixed auth), Commissioning, Service/Failure Analytics, VOC
-v1Router.use("/customer-portal",    customerPortalRoutes);      // mixed: /auth/login public, /portal/* portal-token, /accounts/* verifyToken
-v1Router.use("/commissioning",      verifyToken, commissioningRoutes);
-v1Router.use("/installation-requests", verifyToken, installationRoutes);
+v1Router.use("/customer-portal",    auditMutations('servicedesk'), customerPortalRoutes);      // mixed: /auth/login public, /portal/* portal-token, /accounts/* verifyToken
+v1Router.use("/commissioning",      verifyToken, auditMutations('commissioning'), commissioningRoutes);
+v1Router.use("/installation-requests", verifyToken, auditMutations('servicedesk'), installationRoutes);
 v1Router.use("/service-analytics",  verifyToken, serviceAnalyticsRoutes);
-v1Router.use("/failure-analytics",  verifyToken, failureAnalyticsRoutes);
-v1Router.use("/voc",                vocRoutes);                  // POST /responses is public (portal submit)
+v1Router.use("/failure-analytics",  verifyToken, auditMutations('servicedesk'), failureAnalyticsRoutes);
+v1Router.use("/voc",                auditMutations('servicedesk'), vocRoutes);                  // POST /responses is public (portal submit)
 
 // IoT / Device Telemetry (Phase 1) — device-token auth inside the router, NOT verifyToken
-v1Router.use("/iot",                iotIngestRoutes);            // POST /iot/ingest is device-token-gated
-v1Router.use("/iot",                verifyToken, iotDevicesRoutes); // fleet API — falls through from ingest, user-authed
-v1Router.use("/compliance",         verifyToken, complianceRoutes);
-v1Router.use("/assets",             verifyToken, unifiedAssetsRoutes); // read-only consolidation over fixed_assets/assets_register/allocations
-v1Router.use("/rd",                 verifyToken, rdRoutes); // R&D artifact repo + patents + product lifecycle (PLM)
-v1Router.use("/tenders",            verifyToken, tenderRoutes); // Government tender workspace over opportunities
+v1Router.use("/iot",                auditMutations('iot'), iotIngestRoutes);            // POST /iot/ingest is device-token-gated
+v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotDevicesRoutes); // fleet API — falls through from ingest, user-authed
+v1Router.use("/compliance",         verifyToken, auditMutations('compliance'), complianceRoutes);
+v1Router.use("/assets",             verifyToken, auditMutations('assets'), unifiedAssetsRoutes); // read-only consolidation over fixed_assets/assets_register/allocations
+v1Router.use("/rd",                 verifyToken, auditMutations('rd'), rdRoutes); // R&D artifact repo + patents + product lifecycle (PLM)
+v1Router.use("/tenders",            verifyToken, auditMutations('crm'), tenderRoutes); // Government tender workspace over opportunities
 
 // INTEGRATIONS
-v1Router.use("/integrations/tally",    verifyToken, tallyRoutes);
-v1Router.use("/integrations/whatsapp", verifyToken, whatsappRoutes);
-v1Router.use("/payments",              verifyToken, paymentGWRoutes);
+v1Router.use("/integrations/tally",    verifyToken, auditMutations('finance'), tallyRoutes);
+v1Router.use("/integrations/whatsapp", verifyToken, auditMutations('admin'), whatsappRoutes);
+v1Router.use("/payments",              verifyToken, auditMutations('finance'), paymentGWRoutes);
 
 // GLOBAL SEARCH (Phase 35F)
 v1Router.use("/global-search",   verifyToken, globalSearchRoutes);
@@ -710,18 +801,18 @@ v1Router.use("/files",           secureFilesRoutes); // verifyToken is inside th
 // ENGINEERING
 // /development is mounted FIRST: Express matches in registration order, and the
 // general engineering router would otherwise shadow it.
-v1Router.use("/engineering/development", verifyToken, engDevelopmentRoutes);
-v1Router.use("/engineering",     verifyToken, engineeringRoutes);
-v1Router.use("/engineering/ecn", verifyToken, ecnRoutes);
+v1Router.use("/engineering/development", verifyToken, auditMutations('engineering'), engDevelopmentRoutes);
+v1Router.use("/engineering",     verifyToken, auditMutations('engineering'), engineeringRoutes);
+v1Router.use("/engineering/ecn", verifyToken, auditMutations('engineering'), ecnRoutes);
 
 // AI — combined router (aiRoutes: /ceo-insights, /llm-chat, /chat, /anomalies, /predictions, /smart-search
 //       aiPayrollRoutes: /payroll/trends, /payroll/departments, /payroll/anomalies, /cashflow/forecast, /query)
 const aiCombined = express.Router();
 aiCombined.use(aiRoutes);
 aiCombined.use(aiPayrollRoutes);
-v1Router.use("/ai",              verifyToken, aiPolicy, aiCombined);
-v1Router.use("/intelligence",      verifyToken, intelligencePolicy, intelligenceRoutes);
-v1Router.use("/ceo-intelligence",  verifyToken, ceoIntelligenceRoutes);
+v1Router.use("/ai",              verifyToken, aiPolicy, auditMutations('analytics'), aiCombined);
+v1Router.use("/intelligence",      verifyToken, intelligencePolicy, auditMutations('analytics'), intelligenceRoutes);
+v1Router.use("/ceo-intelligence",  verifyToken, auditMutations('crm'), ceoIntelligenceRoutes);
 v1Router.use("/analytics",       verifyToken, analyticsPolicy, analyticsRoutes);
 v1Router.use("/user-dashboard",  verifyToken, userDashboardRoutes);
 // Manager / Ops dashboard aggregates (budget vs actual, team capacity, OKR targets).
@@ -737,25 +828,25 @@ v1Router.use("/user-dashboard",  verifyToken, userDashboardRoutes);
 // would 403 exactly the managerial roles this dashboard exists for and rebuild
 // the empty cards it was written to fix.
 v1Router.use("/manager",         verifyToken, managerRoutes);
-v1Router.use("/meetings",        verifyToken, meetingsRoutes);
+v1Router.use("/meetings",        verifyToken, auditMutations('hr'), meetingsRoutes);
 
 // INTEGRATIONS (additions)
-v1Router.use("/integrations/zoho-sign",  verifyToken, zohoSignRoutes);
+v1Router.use("/integrations/zoho-sign",  verifyToken, auditMutations('documents'), zohoSignRoutes);
 v1Router.use("/integrations/zoho-books", verifyToken, zohoBooksRoutes);
-v1Router.use("/integrations/config",     verifyToken, integrationsConfigRoutes);
+v1Router.use("/integrations/config",     verifyToken, auditMutations('admin'), integrationsConfigRoutes);
 v1Router.use("/integrations",            verifyToken, emailIntegrationRoutes);
 
 // ── Frontend URL alias mounts — additional path prefixes expected by frontend ──
 // These mirror existing routers at the URL patterns the UI actually uses.
-v1Router.use("/hr/succession",                   verifyToken, successionRoutes);
-v1Router.use("/succession/succession",           verifyToken, successionRoutes);   // /succession/succession/assessments
-v1Router.use("/payroll/salary-structures",       verifyToken, salaryRoutes);
-v1Router.use("/salary-structures/salary-structures", verifyToken, salaryRoutes);  // /salary-structures/salary-structures
-v1Router.use("/payroll",                         verifyToken, selfServiceRoutes);  // /payroll/it-declarations, etc.
-v1Router.use("/employees/self-service",          verifyToken, selfServiceRoutes);
-v1Router.use("/self-service/self-service",       verifyToken, selfServiceRoutes);  // /self-service/self-service/it-declarations
-v1Router.use("/finance/accounting",        verifyToken, accountingRoutes);
-v1Router.use("/projects",                  verifyToken, timesheetRoutes); // /projects/timesheets alias
+v1Router.use("/hr/succession",                   verifyToken, auditMutations('hr'), successionRoutes);
+v1Router.use("/succession/succession",           verifyToken, auditMutations('hr'), successionRoutes);   // /succession/succession/assessments
+v1Router.use("/payroll/salary-structures",       verifyToken, auditMutations('payroll'), salaryRoutes);
+v1Router.use("/salary-structures/salary-structures", verifyToken, auditMutations('payroll'), salaryRoutes);  // /salary-structures/salary-structures
+v1Router.use("/payroll",                         verifyToken, applyFieldPermissions('payroll'), auditMutations('payroll'), selfServiceRoutes);  // /payroll/it-declarations, etc.
+v1Router.use("/employees/self-service",          verifyToken, auditMutations('employees'), selfServiceRoutes);
+v1Router.use("/self-service/self-service",       verifyToken, auditMutations('employees'), selfServiceRoutes);  // /self-service/self-service/it-declarations
+v1Router.use("/finance/accounting",        verifyToken, auditMutations('finance'), accountingRoutes);
+v1Router.use("/projects",                  verifyToken, auditMutations('projects'), timesheetRoutes); // /projects/timesheets alias
 
 // ── HEALTH / METRICS — registered BEFORE v1Router so v1Router's "/" catch-all
 // (vendorRoutes) does not intercept these public/lightly-guarded endpoints. ──
@@ -782,15 +873,23 @@ app.get("/api/health", async (req, res) => {
     // "warn"    = only orphaned DB records (files deleted after apply) — informational only
     // "ok"      = schema is fully up to date with no pending migrations
     const hasPending = mv.missing.length > 0;
-    const hasOrphans = mv.tamperWarnings.some(w => w.includes('missing from disk'));
-    const hasModified = mv.tamperWarnings.some(w => w.includes('Checksum mismatch') || w.includes('was modified'));
+    // detectTamperedMigrations returns real warnings and informational
+    // supersession lines in one array, the ℹ️ ones last. Counting the whole
+    // array as `tamper_warnings` reported 6 on a completely healthy schema —
+    // a number that reads as tampering next to a status of "ok". Split them:
+    // an explained supersession is not a warning about anything.
+    const superseded = mv.tamperWarnings.filter(w => w.includes('Superseded:'));
+    const realWarnings = mv.tamperWarnings.filter(w => !w.includes('Superseded:'));
+    const hasOrphans = realWarnings.some(w => w.includes('missing from disk'));
+    const hasModified = realWarnings.some(w => w.includes('Checksum mismatch') || w.includes('was modified'));
     migrations = {
       status:  hasPending ? "pending" : (hasModified ? "warn" : "ok"),
       applied: mv.applied,
       total:   mv.total,
       pending: mv.missing.length,
-      ...(mv.missing.length        && { missing_files:    mv.missing }),
-      ...(mv.tamperWarnings.length && { tamper_warnings:  mv.tamperWarnings.length }),
+      ...(mv.missing.length   && { missing_files:   mv.missing }),
+      ...(realWarnings.length && { tamper_warnings: realWarnings.length }),
+      ...(superseded.length   && { superseded:      superseded.length }),
       ...(hasOrphans && !hasModified && { info: "Some applied migrations have no corresponding file on disk (orphaned records — schema changes already applied)" }),
     };
   } catch (e) {
@@ -954,6 +1053,9 @@ async function startServer() {
     startCrmFollowupCron();
     startTenderDeadlineCron();
     startCampaignLifecycleCron();
+    // Reads sequence_enrollments.next_send_at, which nothing read before —
+    // every enrolment sat at step 0 while the screen called it active.
+    startMarketingJourneyCron();
     startReorderPrCron();
     startDepreciationCron();
     startFnfAutoTriggerCron();

@@ -112,9 +112,11 @@ describe('auto-discovered orphan groups', () => {
     expect(between.length).toBeGreaterThan(0);
     for (const label of between) expect(label).not.toContain('· More');
 
-    // Administration itself holds only the three admin menus.
+    // Administration holds two menus. 'User Management' was removed: Users,
+    // Roles and Approver Chains are tabs of Settings → Access Control, and the
+    // group mounted those same three components a second time.
     const admin = rows.slice(adminBand + 1).map(li => li.textContent);
-    expect(admin).toEqual(['User Management', 'Settings', 'Audit Logs']);
+    expect(admin).toEqual(['Settings', 'Audit Logs']);
   });
 });
 

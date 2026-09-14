@@ -4,12 +4,21 @@ import {
   Trash2, ArrowRight, ClipboardList,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './PurchaseRequest.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   draft:             { bg: '#f3f4f6', color: '#6b7280', label: 'Draft'            },
   pending_approval:  { bg: '#ede9fe', color: '#5b21b6', label: 'Pending Approval' },
+  // `pending` is the pre-repair spelling: purchase_requests.status defaulted to
+  // it and the create route never overrode the default, so requisitions raised
+  // before migration 20260902000003 carry it. It has no entry here, so `sm()`
+  // fell through to the `draft` fallback and painted a request that was waiting
+  // on an approver with the grey "Draft" chip. Aliased rather than dropped —
+  // an unrecognised status must never silently read as a different one.
+  pending:           { bg: '#ede9fe', color: '#5b21b6', label: 'Pending Approval' },
   approved:          { bg: '#dcfce7', color: '#15803d', label: 'Approved'         },
   rejected:          { bg: '#fee2e2', color: '#dc2626', label: 'Rejected'         },
   converted_to_po:   { bg: '#dbeafe', color: '#1d4ed8', label: 'Ordered'          },
@@ -40,6 +49,12 @@ const emptyForm = () => ({
 const STATUSES = ['pending_approval', 'approved', 'converted_to_po', 'received', 'draft', 'rejected'];
 
 export default function PurchaseRequest() {
+  // This page had no access check at all while its sibling Purchase Orders page
+  // had one, so a role granted View on Procurement still saw live Approve,
+  // Reject and Convert-to-PO buttons here. They now fail server-side with a 403
+  // rather than silently succeeding, but offering an action that cannot work is
+  // still the wrong screen — hide them, as Purchase Orders does.
+  const { readOnly } = usePageAccess();
   const [prs,         setPRs]         = useState([]);
   const [departments, setDepartments] = useState([]);
   const [loading,     setLoading]     = useState(false);
@@ -118,17 +133,24 @@ export default function PurchaseRequest() {
     } finally { if (isMounted.current) setActioningId(null); }
   };
 
+  // Rejecting asks for a reason and sends it. The backend has always accepted
+  // `remarks` on this route and persists it to purchase_requests.rejection_reason;
+  // this screen sent no body at all, so every rejection reached the requester as
+  // a bare red chip with no explanation and no way to ask for one.
   const handleReject = async (id) => {
     if (actioningId) return;
+    const reason = window.prompt('Why is this request being rejected? The requester will see this.');
+    if (reason === null) return;            // cancelled — not a rejection
+    if (!reason.trim()) return showToast('A reason is required to reject', 'error');
     setActioningId(id);
     try {
-      await api.put(`/procurement/purchase-requests/${id}/reject`);
+      await api.put(`/procurement/purchase-requests/${id}/reject`, { remarks: reason.trim() });
       if (!isMounted.current) return;
       showToast('Purchase request rejected');
       load();
-    } catch {
+    } catch (e) {
       if (!isMounted.current) return;
-      showToast('Failed to reject', 'error');
+      showToast(e.response?.data?.error || 'Failed to reject', 'error');
     } finally { if (isMounted.current) setActioningId(null); }
   };
 
@@ -186,13 +208,17 @@ export default function PurchaseRequest() {
             }}>
             ↓ Export
           </button>
-          <button className="plh-cta" onClick={() => { setForm(emptyForm()); setDrawer(true); }}>
-            <Plus size={14} /> New Request
-          </button>
+          {!readOnly && (
+            <button className="plh-cta" onClick={() => { setForm(emptyForm()); setDrawer(true); }}>
+              <Plus size={14} /> New Request
+            </button>
+          )}
         </>}
       />
     }>
       {toast && <div className={`pr-toast pr-toast-${toast.type}`}>{toast.msg}</div>}
+
+      {readOnly && <ReadOnlyBanner />}
 
 
       <div className="pr-filters">
@@ -219,7 +245,7 @@ export default function PurchaseRequest() {
         <div className="pr-empty">
           <ShoppingCart size={40} color="#d1d5db" />
           <p>No purchase requests found</p>
-          <button className="pr-btn-primary" onClick={() => setDrawer(true)}><Plus size={14} /> New Request</button>
+          {!readOnly && <button className="pr-btn-primary" onClick={() => setDrawer(true)}><Plus size={14} /> New Request</button>}
         </div>
       ) : (
         <div className="pr-table-wrap">
@@ -264,13 +290,13 @@ export default function PurchaseRequest() {
                     <td><span className="pr-badge" style={{ background: s.bg, color: s.color }}>{s.label}</span></td>
                     <td>
                       <div className="pr-row-actions">
-                        {pr.status === 'pending_approval' && (
+                        {!readOnly && pr.status === 'pending_approval' && (
                           <>
                             <button className="pr-approve-btn" title="Approve" disabled={!!actioningId} onClick={() => handleApprove(pr.id)}><CheckCircle size={14} /></button>
                             <button className="pr-reject-btn" title="Reject"  disabled={!!actioningId} onClick={() => handleReject(pr.id)}><XCircle size={14} /></button>
                           </>
                         )}
-                        {pr.status === 'approved' && (
+                        {!readOnly && pr.status === 'approved' && (
                           <button className="pr-convert-btn" title="Convert to PO" disabled={!!actioningId} onClick={() => handleConvertToPO(pr.id)}>
                             <ArrowRight size={14} /> To PO
                           </button>

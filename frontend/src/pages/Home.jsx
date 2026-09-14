@@ -7,7 +7,10 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
-import FaceClockModal, { getLocationString } from '@/components/attendance/FaceClockModal';
+import CameraClockModal from '@/components/attendance/CameraClockModal';
+import PunchModeNotice from '@/components/attendance/PunchModeNotice';
+import { getLocationString } from '@/components/attendance/geo';
+import usePunchMode from '@/hooks/usePunchMode';
 import './Home.css';
 
 const CelebrationsBoard = lazy(() => import('@/components/dashboard/CelebrationsBoard'));
@@ -189,11 +192,14 @@ export default function Home({ setPage }) {
 
   // ── attendance / quick clock-in ───────────────────────────────────────────
   const [attendance, setAttendance] = useState(null);
-  const [faceOpen, setFaceOpen]     = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [clockLoading, setClockLoading] = useState(false);
   const [now, setNow]     = useState(new Date());
   const [toast, setToast] = useState(null);
   const empId = authUser?.employee_id;
+  // Only field employees punch from the app; everyone else uses the office
+  // face/biometric device and sees a notice instead of a button.
+  const punch = usePunchMode(empId);
 
   // Anyone linked to an employee record punches in from Home — managers, HR and
   // finance staff clock in too. Employee logins that HR never linked still get
@@ -250,7 +256,7 @@ export default function Home({ setPage }) {
   const clockedIn = !!attendance?.check_in && !attendance?.check_out;
   const clockDone = !!attendance?.check_in && !!attendance?.check_out;
 
-  const handleClockAction = useCallback(async (faceData = null) => {
+  const handleClockAction = useCallback(async (proof = null) => {
     if (!empId) {
       showToast('Your login is not linked to an employee record — ask HR to link it.', 'err');
       return;
@@ -259,13 +265,16 @@ export default function Home({ setPage }) {
     try {
       const isClockIn = !attendance?.check_in;
       const time = new Date().toTimeString().slice(0, 5); // "HH:MM"
-      const location = isClockIn ? await getLocationString() : null;
+      // Clock-in carries the selfie + GPS the camera modal just captured; a
+      // clock-out re-reads GPS only (attendance_records holds ONE selfie_url,
+      // so sending a second photo would overwrite the arrival proof).
+      const location = proof?.location ?? (isClockIn ? await getLocationString() : null);
       const { data } = await api.post('/attendance/clock', {
         employee_id: empId,
         action: isClockIn ? 'in' : 'out',
         time,
         ...(location ? { location } : {}),
-        ...(faceData?.face_token ? { face_token: faceData.face_token } : {}),
+        ...(proof?.selfie_url ? { selfie_url: proof.selfie_url } : {}),
       });
       setAttendance(normalizeAttendance(data));
       showToast(isClockIn ? 'Clocked in successfully!' : 'Clocked out successfully!');
@@ -276,11 +285,11 @@ export default function Home({ setPage }) {
     }
   }, [attendance, empId]);
 
-  // Clock-in runs the face flow (geo/shift policy enforced server-side); clock-out
-  // punches directly — mirrors the EmployeeDashboard clock behaviour.
+  // Clock-in opens the camera (selfie + GPS are mandatory server-side for field
+  // staff); clock-out punches directly — mirrors the EmployeeDashboard behaviour.
   const onClockClick = () => {
     if (clockedIn || !empId) handleClockAction();
-    else setFaceOpen(true);
+    else setCameraOpen(true);
   };
 
   useEffect(() => {
@@ -394,17 +403,22 @@ export default function Home({ setPage }) {
             </div>
           </div>
           <div className="hm-att-right">
-            {!clockedIn && !clockDone && (
-              <span className="hm-att-geo"><MapPin size={11} /> location & face verified</span>
+            {!clockedIn && !clockDone && punch.canPunch && (
+              <span className="hm-att-geo"><MapPin size={11} /> selfie & location required</span>
             )}
             {clockDone ? (
               <span className="hm-att-done-badge"><CheckCheck size={14} /> Day complete</span>
+            ) : punch.loading ? (
+              <span className="hm-att-geo">Checking your attendance setup…</span>
+            ) : !punch.canPunch ? (
+              /* Non-field staff punch on the office face/biometric device — show
+                 the reason rather than a button the server would reject. */
+              <PunchModeNotice reason={punch.reason} message={punch.message} compact />
             ) : (
               <button
                 className={`hm-att-btn ${clockedIn ? 'hm-att-btn--out' : 'hm-att-btn--in'}`}
                 onClick={onClockClick}
-                disabled={clockLoading || !empId}
-                title={!empId ? 'Your login is not linked to an employee record' : undefined}
+                disabled={clockLoading}
               >
                 {clockedIn ? <LogOut size={15} /> : <LogIn size={15} />}
                 {clockLoading ? 'Please wait…' : clockedIn ? 'Clock Out' : 'Clock In'}
@@ -519,13 +533,13 @@ export default function Home({ setPage }) {
         </div>
       </div>
 
-      {/* Face-recognition clock-in (geo/shift policy enforced server-side) */}
-      {faceOpen && empId && (
-        <FaceClockModal
+      {/* Camera clock-in for field staff — selfie + GPS, both enforced server-side */}
+      {cameraOpen && empId && punch.canPunch && (
+        <CameraClockModal
           employeeId={empId}
           action={clockedIn ? 'out' : 'in'}
-          onVerified={(fd) => { setFaceOpen(false); handleClockAction(fd); }}
-          onClose={() => setFaceOpen(false)}
+          onCaptured={(proof) => { setCameraOpen(false); handleClockAction(proof); }}
+          onClose={() => setCameraOpen(false)}
         />
       )}
 

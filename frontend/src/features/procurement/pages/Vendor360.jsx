@@ -1047,7 +1047,11 @@ export default function Vendor360() {
                         <ComplianceRow doc="Bank Details"                   done={!!(reg.bank_name)} />
                         <ComplianceRow doc="MSME / Udyam Registration"     done={!!docs.compliance.msme_status} />
                         <ComplianceRow doc="ISO Certification"              done={!!(docs.compliance.iso_certificates)} />
-                        <ComplianceRow doc="Vendor Agreement Signed"        done={v.status === 'Active' || v.status === 'approved'} />
+                        {/* Case-insensitive: the approval flow used to write 'Active' while the
+              column default and every other writer use 'active'. The writer is
+              fixed and the rows normalised, but a reader that hard-codes one
+              spelling is how that drift stayed invisible for so long. */}
+          <ComplianceRow doc="Vendor Agreement Signed"        done={['active', 'approved'].includes(String(v.status || '').toLowerCase())} />
                       </div>
                     </SectionCard>
                   )}

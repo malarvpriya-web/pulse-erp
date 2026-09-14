@@ -143,6 +143,66 @@ router.get('/setup-progress', async (req, res) => {
   }
 });
 
+// ⚠ Express matches in definition order, so these two literal /tally routes
+// MUST stay above the /:module handlers below. When they sat after them,
+// /:module swallowed both: GET returned {} from company_settings instead of
+// the tally_config row, and POST wrote the Tally form into company_settings,
+// so the integration (which reads tally_config) never saw a saved config.
+/* ── GET /settings/tally — retrieve saved Tally config for the company ── */
+router.get('/tally', async (req, res) => {
+  try {
+    const company_id = companyOf(req);
+    const row = await safeRow(`SELECT * FROM tally_config WHERE company_id = $1`, [company_id]);
+    res.json({
+      tally_url:    row?.tally_url    || process.env.TALLY_GATEWAY_URL || 'http://localhost:9000',
+      company_name: row?.company_name || '',
+      fy_start:     row?.fy_start     || null,
+      fy_end:       row?.fy_end       || null,
+      sync_ledgers:  row?.sync_ledgers  ?? true,
+      sync_invoices: row?.sync_invoices ?? true,
+      sync_payments: row?.sync_payments ?? true,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /settings/tally — save Tally config scoped by company_id ── */
+router.post('/tally', async (req, res) => {
+  try {
+    const { tally_url, company, company_name, fy_start, fy_end, sync_ledgers, sync_invoices, sync_payments } = req.body;
+    const company_id = companyOf(req);
+
+    await pool.query(`
+      INSERT INTO tally_config
+        (company_id, tally_url, company_name, fy_start, fy_end, sync_ledgers, sync_invoices, sync_payments, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+      ON CONFLICT (company_id) DO UPDATE SET
+        tally_url     = EXCLUDED.tally_url,
+        company_name  = EXCLUDED.company_name,
+        fy_start      = EXCLUDED.fy_start,
+        fy_end        = EXCLUDED.fy_end,
+        sync_ledgers  = EXCLUDED.sync_ledgers,
+        sync_invoices = EXCLUDED.sync_invoices,
+        sync_payments = EXCLUDED.sync_payments,
+        updated_at    = NOW()
+    `, [
+      company_id,
+      tally_url    || 'http://localhost:9000',
+      company_name || company || null,
+      fy_start     || null,
+      fy_end       || null,
+      sync_ledgers  ?? true,
+      sync_invoices ?? true,
+      sync_payments ?? true,
+    ]);
+
+    res.json({ success: true, message: 'Tally configuration saved' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /settings/:module — read module settings (falls back to {} if not saved)
 router.get('/:module', async (req, res) => {
   const { module } = req.params;
@@ -213,61 +273,6 @@ router.post('/:module', async (req, res) => {
     }
 
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ── GET /settings/tally — retrieve saved Tally config for the company ── */
-router.get('/tally', async (req, res) => {
-  try {
-    const company_id = companyOf(req);
-    const row = await safeRow(`SELECT * FROM tally_config WHERE company_id = $1`, [company_id]);
-    res.json({
-      tally_url:    row?.tally_url    || process.env.TALLY_GATEWAY_URL || 'http://localhost:9000',
-      company_name: row?.company_name || '',
-      fy_start:     row?.fy_start     || null,
-      fy_end:       row?.fy_end       || null,
-      sync_ledgers:  row?.sync_ledgers  ?? true,
-      sync_invoices: row?.sync_invoices ?? true,
-      sync_payments: row?.sync_payments ?? true,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ── POST /settings/tally — save Tally config scoped by company_id ── */
-router.post('/tally', async (req, res) => {
-  try {
-    const { tally_url, company, company_name, fy_start, fy_end, sync_ledgers, sync_invoices, sync_payments } = req.body;
-    const company_id = companyOf(req);
-
-    await pool.query(`
-      INSERT INTO tally_config
-        (company_id, tally_url, company_name, fy_start, fy_end, sync_ledgers, sync_invoices, sync_payments, updated_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
-      ON CONFLICT (company_id) DO UPDATE SET
-        tally_url     = EXCLUDED.tally_url,
-        company_name  = EXCLUDED.company_name,
-        fy_start      = EXCLUDED.fy_start,
-        fy_end        = EXCLUDED.fy_end,
-        sync_ledgers  = EXCLUDED.sync_ledgers,
-        sync_invoices = EXCLUDED.sync_invoices,
-        sync_payments = EXCLUDED.sync_payments,
-        updated_at    = NOW()
-    `, [
-      company_id,
-      tally_url    || 'http://localhost:9000',
-      company_name || company || null,
-      fy_start     || null,
-      fy_end       || null,
-      sync_ledgers  ?? true,
-      sync_invoices ?? true,
-      sync_payments ?? true,
-    ]);
-
-    res.json({ success: true, message: 'Tally configuration saved' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

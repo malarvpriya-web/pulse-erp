@@ -76,6 +76,15 @@ export default defineConfig({
       dependencies: ['setup'],
       use: { storageState: AUTH_FILE },
     },
+    // The 2026-09-03 hardening pass, checked in a browser: the goods-receipt
+    // status vocabulary (which decided whether the Confirm button rendered at
+    // all), the failed-load state, and the removed shadow endpoints.
+    {
+      name: 'procurement-hardening',
+      testMatch: '**/03-crud/procurement-hardening.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: AUTH_FILE },
+    },
     {
       name: 'dashboard',
       testMatch: '**/04-dashboard.spec.ts',
@@ -98,6 +107,16 @@ export default defineConfig({
     {
       name: 'sales-conversion',
       testMatch: '**/suites/sales-conversion.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: AUTH_FILE },
+    },
+    // Role/department consolidation pass. Every page here either lost a
+    // duplicate role or department editor or was rewired onto the shared
+    // roleCatalog / useDepartments source — and an emptied page still builds,
+    // so each one is opened for real.
+    {
+      name: 'consolidation',
+      testMatch: '**/suites/consolidation-render.spec.ts',
       dependencies: ['setup'],
       use: { storageState: AUTH_FILE },
     },

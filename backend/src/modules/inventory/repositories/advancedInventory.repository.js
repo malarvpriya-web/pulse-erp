@@ -85,17 +85,87 @@ const advancedInventoryRepository = {
   },
 
   // ==================== RESERVATIONS ====================
+  // A reservation is a claim on stock that exists. This used to insert
+  // unconditionally: you could reserve a million units of an item with three on
+  // hand, and two concurrent requests for the last unit both succeeded because
+  // nothing serialised them. Both are checked here, inside one transaction.
+  //
+  // `available` is on-hand MINUS what is already spoken for, derived live from
+  // the reservation rows rather than from a stored counter. That is deliberate:
+  // inventory_batches.quantity_reserved exists for this and is written by
+  // nothing, and a second hand-maintained quantity column is how
+  // inventory_items.current_stock drifted away from stock_ledger in the first
+  // place.
   async createReservation(data) {
-    const { item_id, warehouse_id, batch_id, reservation_type, reference_type, reference_id, reference_number, quantity_reserved, reserved_date, expiry_date, reserved_by, notes } = data;
-    const result = await pool.query(
-      `INSERT INTO inventory_reservations 
-       (item_id, warehouse_id, batch_id, reservation_type, reference_type, reference_id, reference_number, quantity_reserved, quantity_remaining, reserved_date, expiry_date, reserved_by, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12) RETURNING *`,
-      [item_id, warehouse_id, batch_id, reservation_type, reference_type, reference_id, reference_number, quantity_reserved, reserved_date, expiry_date, reserved_by, notes]
-    );
-    return result.rows[0];
+    const { item_id, warehouse_id, batch_id, reservation_type, reference_type, reference_id,
+            reference_number, quantity_reserved, reserved_date, expiry_date, reserved_by, notes } = data;
+
+    const qty = parseFloat(quantity_reserved);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      throw Object.assign(new Error('quantity_reserved must be a positive number'), { status: 422 });
+    }
+    if (!item_id || !warehouse_id) {
+      throw Object.assign(new Error('item_id and warehouse_id are required'), { status: 422 });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Serialises concurrent reservations of the same item. Without it two
+      // callers both read the same availability and both succeed.
+      const { rows: [item] } = await client.query(
+        `SELECT id FROM inventory_items WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+        [item_id]);
+      if (!item) {
+        throw Object.assign(new Error(`Item ${item_id} not found`), { status: 404 });
+      }
+
+      const { rows: [bal] } = await client.query(
+        `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS on_hand
+           FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
+        [item_id, warehouse_id]);
+
+      // Only open reservations hold stock. cancelled / fully_consumed / expired
+      // rows have released their claim and must not count against availability.
+      const { rows: [res] } = await client.query(
+        `SELECT COALESCE(SUM(quantity_remaining), 0) AS reserved
+           FROM inventory_reservations
+          WHERE item_id = $1 AND warehouse_id = $2
+            AND status IN ('active', 'partially_consumed')`,
+        [item_id, warehouse_id]);
+
+      const onHand    = parseFloat(bal.on_hand);
+      const reserved  = parseFloat(res.reserved);
+      const available = onHand - reserved;
+
+      if (qty > available) {
+        throw Object.assign(new Error(
+          `Cannot reserve ${qty}: only ${available} available ` +
+          `(${onHand} on hand, ${reserved} already reserved).`), { status: 422 });
+      }
+
+      const result = await client.query(
+        `INSERT INTO inventory_reservations
+         (item_id, warehouse_id, batch_id, reservation_type, reference_type, reference_id,
+          reference_number, quantity_reserved, quantity_remaining, reserved_date, expiry_date, reserved_by, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12) RETURNING *`,
+        [item_id, warehouse_id, batch_id, reservation_type, reference_type, reference_id,
+         reference_number, qty, reserved_date, expiry_date, reserved_by, notes]);
+
+      await client.query('COMMIT');
+      return result.rows[0];
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   },
 
+  // Scoped through inventory_items.company_id — inventory_reservations carries
+  // no company_id of its own, and this listed every tenant's reservations to any
+  // authenticated caller.
   async getReservations(filters = {}) {
     let query = `
       SELECT ir.*, ii.item_code, ii.item_name, w.warehouse_name, ib.batch_number
@@ -103,29 +173,24 @@ const advancedInventoryRepository = {
       JOIN inventory_items ii ON ir.item_id = ii.id
       JOIN warehouses w ON ir.warehouse_id = w.id
       LEFT JOIN inventory_batches ib ON ir.batch_id = ib.id
-      WHERE 1=1`;
-    const params = [];
-    let paramCount = 1;
+      WHERE ($1::INTEGER IS NULL OR ii.company_id = $1)`;
+    const params = [filters.company_id ?? null];
 
     if (filters.item_id) {
-      query += ` AND ir.item_id = $${paramCount}`;
       params.push(filters.item_id);
-      paramCount++;
+      query += ` AND ir.item_id = $${params.length}`;
     }
     if (filters.reference_type) {
-      query += ` AND ir.reference_type = $${paramCount}`;
       params.push(filters.reference_type);
-      paramCount++;
+      query += ` AND ir.reference_type = $${params.length}`;
     }
     if (filters.reference_id) {
-      query += ` AND ir.reference_id = $${paramCount}`;
       params.push(filters.reference_id);
-      paramCount++;
+      query += ` AND ir.reference_id = $${params.length}`;
     }
     if (filters.status) {
-      query += ` AND ir.status = $${paramCount}`;
       params.push(filters.status);
-      paramCount++;
+      query += ` AND ir.status = $${params.length}`;
     }
 
     query += ` ORDER BY ir.reserved_date DESC`;
@@ -420,32 +485,41 @@ const advancedInventoryRepository = {
     };
   },
 
-  async getReservedVsAvailableStock(warehouse_id = null) {
-    let query = `
-      SELECT 
-        ii.item_code,
-        ii.item_name,
-        w.warehouse_name,
-        SUM(ib.quantity_available) as total_stock,
-        SUM(ib.quantity_reserved) as reserved_stock,
-        SUM(ib.quantity_available - ib.quantity_reserved) as available_stock
-      FROM inventory_batches ib
-      JOIN inventory_items ii ON ib.item_id = ii.id
-      JOIN warehouses w ON ib.warehouse_id = w.id
-      WHERE ib.status = 'active'`;
-    
-    const params = [];
-    if (warehouse_id) {
-      query += ` AND ib.warehouse_id = $1`;
-      params.push(warehouse_id);
-    }
-    
-    query += ` GROUP BY ii.item_code, ii.item_name, w.warehouse_name
-               HAVING SUM(ib.quantity_reserved) > 0
-               ORDER BY reserved_stock DESC`;
-    
-    const result = await pool.query(query, params);
-    return result.rows;
+  // Was: SUM(inventory_batches.quantity_reserved) with a
+  // `HAVING SUM(quantity_reserved) > 0`. Nothing in the codebase has ever
+  // written that column, so the predicate could never pass and this returned an
+  // empty array however many reservations existed.
+  //
+  // Both sides are now derived from the rows that actually record the facts:
+  // on-hand from stock_ledger, reserved from the open reservations.
+  async getReservedVsAvailableStock(warehouse_id = null, company_id = null) {
+    const { rows } = await pool.query(`
+      WITH on_hand AS (
+        SELECT item_id, warehouse_id, SUM(quantity_in - quantity_out) AS qty
+          FROM stock_ledger GROUP BY item_id, warehouse_id
+      ),
+      reserved AS (
+        SELECT item_id, warehouse_id, SUM(quantity_remaining) AS qty
+          FROM inventory_reservations
+         WHERE status IN ('active', 'partially_consumed')
+         GROUP BY item_id, warehouse_id
+      )
+      SELECT ii.item_code,
+             ii.item_name,
+             w.warehouse_name,
+             COALESCE(o.qty, 0)                        AS total_stock,
+             COALESCE(r.qty, 0)                        AS reserved_stock,
+             COALESCE(o.qty, 0) - COALESCE(r.qty, 0)   AS available_stock
+        FROM reserved r
+        JOIN inventory_items ii ON ii.id = r.item_id AND ii.deleted_at IS NULL
+        JOIN warehouses w       ON w.id = r.warehouse_id AND w.deleted_at IS NULL
+        LEFT JOIN on_hand o     ON o.item_id = r.item_id AND o.warehouse_id = r.warehouse_id
+       WHERE COALESCE(r.qty, 0) > 0
+         AND ($1::INTEGER IS NULL OR w.id = $1)
+         AND ($2::INTEGER IS NULL OR ii.company_id = $2)
+       ORDER BY reserved_stock DESC`,
+      [warehouse_id || null, company_id ?? null]);
+    return rows;
   }
 };
 

@@ -16,7 +16,7 @@ import {
 import {
   EMPLOYEE_ACTIVE, EMPLOYEE_EXITED, EMPLOYEE_VOLUNTARY_EXIT,
   INVOICE_PAID, AMC_ACTIVE, LEAVE_APPROVED,
-  isIn,
+  isIn, sqlOpportunityOpen, sqlOpportunityWon,
 } from '../../shared/statusSets.js';
 
 // Indian financial year — 1 April to 31 March. Revenue windows MUST use this, not
@@ -253,14 +253,20 @@ export const computeRevenueMetrics = cached('revenue', (company_id) => safeQuery
 export const computeSalesKPIs = cached('sales-kpis', (company_id) => safeQuery(async () => {
   const { and, params } = scopeFrags(company_id);
   const [pipR, wonR] = await Promise.all([
+    // The stage vocabulary is 'won'/'lost' — that is what crm_pipeline_stages
+    // (the per-company stage master, is_won/is_lost flags) defines and what every
+    // row in opportunities holds. The 'closed_won'/'closed won' literals here
+    // matched ZERO rows, so `won` was structurally 0 (win rate always 0%) and the
+    // pipeline total counted closed deals as open. Verified 2026-09-03: the
+    // literals returned won=0 against a true 2, and open=8 against a true 5.
     sq(`SELECT COALESCE(SUM(expected_value),0) AS pipeline
         FROM opportunities
         WHERE deleted_at IS NULL
-          AND LOWER(stage) NOT IN ('closed_won','closed_lost','closed won','closed lost') ${and}`, params),
+          AND ${sqlOpportunityOpen('stage')} ${and}`, params),
     sq(`SELECT
           COUNT(*) AS total,
-          COUNT(CASE WHEN LOWER(stage) IN ('closed_won','closed won') THEN 1 END) AS won,
-          COALESCE(SUM(CASE WHEN LOWER(stage) IN ('closed_won','closed won') THEN COALESCE(expected_value,0) ELSE 0 END),0) AS won_value
+          COUNT(CASE WHEN ${sqlOpportunityWon('stage')} THEN 1 END) AS won,
+          COALESCE(SUM(CASE WHEN ${sqlOpportunityWon('stage')} THEN COALESCE(expected_value,0) ELSE 0 END),0) AS won_value
         FROM opportunities
         WHERE deleted_at IS NULL ${and}`, params),
   ]);

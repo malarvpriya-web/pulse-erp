@@ -289,11 +289,11 @@ async function loadNewApprovals(companyId, win) {
 async function loadOpenNcrs(companyId, win) {
   const { rows } = await pool.query(
     `SELECT ii.category_id, COUNT(DISTINCT n.id)::int AS open_ncrs
-       FROM vendor_ncr n
+       FROM ncr_reports n
        JOIN purchase_order_items poi ON poi.po_id = n.po_id
        LEFT JOIN inventory_items ii  ON ii.id = poi.item_id
       WHERE LOWER(COALESCE(n.status,'')) NOT IN ('closed', 'cancelled')
-        AND n.ncr_date >= $2::date
+        AND n.created_at >= $2::date
         AND ($1::int IS NULL OR n.company_id = $1)
       GROUP BY ii.category_id`,
     [companyId ?? null, win.from]

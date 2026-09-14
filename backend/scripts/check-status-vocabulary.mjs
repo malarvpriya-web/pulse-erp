@@ -101,7 +101,62 @@ for (const c of CHECKS) {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Case drift — the same state stored under more than one spelling.
+
+   The check above lowercases both sides before comparing, so it passes a column
+   holding 'Qualification' AND 'qualification' without a word: both are covered
+   by the vocabulary. Every FILTER in the backend lowercases too, so totals stay
+   right. A GROUP BY key does not: `getPipelineValue()`, `/dashboard/sales` and
+   `/sales/forecast` grouped on the raw column, so one stage came back as two
+   rows and the pipeline drew it twice with its value split across them —
+   reproduced live by converting a single lead, ₹5,00,000 and ₹2,20,000 sitting
+   in two "Qualification" buckets.
+
+   Swept across every state-shaped column rather than the CHECKS list above,
+   because the drift was also in `opportunity_stage_history.to_stage`, which
+   that list does not mention. Migration 20260910000005 normalises the columns
+   that had drifted and installs triggers to hold them there; this is what
+   notices the next column to slip.
+   ───────────────────────────────────────────────────────────────────────────── */
+const { rows: stateColumns } = await pool.query(`
+  SELECT c.table_name, c.column_name
+    FROM information_schema.columns c
+    JOIN information_schema.tables t
+      ON t.table_name = c.table_name
+     AND t.table_schema = c.table_schema
+     AND t.table_type = 'BASE TABLE'
+   WHERE c.table_schema = 'public'
+     AND c.data_type IN ('character varying', 'text', 'character')
+     AND (c.column_name IN ('status','stage','state','priority','severity')
+          OR c.column_name LIKE '%\\_status'
+          OR c.column_name LIKE '%\\_stage'
+          OR c.column_name LIKE '%\\_state')
+   ORDER BY c.table_name, c.column_name`);
+
+const caseDrift = [];
+for (const { table_name, column_name } of stateColumns) {
+  const col = `"${column_name}"`;
+  try {
+    const { rows } = await pool.query(
+      `SELECT LOWER(TRIM(${col})) AS canonical,
+              STRING_AGG(DISTINCT ${col}, ' | ' ORDER BY ${col}) AS spellings,
+              COUNT(*)::int AS rows
+         FROM "${table_name}"
+        WHERE ${col} IS NOT NULL
+        GROUP BY 1
+       HAVING COUNT(DISTINCT ${col}) > 1`);
+    for (const r of rows) {
+      caseDrift.push({ table: table_name, column: column_name, ...r });
+    }
+  } catch {
+    // A column the checking role cannot read is not evidence of drift.
+  }
+}
+
 await pool.end();
+
+const failures = unmapped.length + caseDrift.length;
 
 if (JSON_OUT) {
   // Fenced so callers can extract the payload deterministically. dotenv v17
@@ -110,7 +165,7 @@ if (JSON_OUT) {
   // banner instead of the report — an intermittent failure that looked like a
   // schema problem. Same sentinel convention as e2e-mint-token.mjs.
   console.log('---REPORT_BEGIN---');
-  console.log(JSON.stringify({ unmapped, observed, skipped }));
+  console.log(JSON.stringify({ unmapped, caseDrift, observed, skipped }));
   console.log('---REPORT_END---');
 } else {
   console.log('\nStatus vocabulary check\n' + '='.repeat(60));
@@ -122,11 +177,31 @@ if (JSON_OUT) {
     }
   }
   if (skipped.length) console.log('\nSkipped: ' + skipped.join(', '));
+
+  console.log(`\nCase drift (one state, more than one spelling) — ${stateColumns.length} column(s) swept`);
+  if (caseDrift.length === 0) {
+    console.log('     ok   every state is stored under a single spelling');
+  } else {
+    for (const d of caseDrift) {
+      console.log(`  DRIFT  ${d.table}.${d.column}: ${d.spellings}  (${d.rows} row(s))`);
+    }
+  }
+
   console.log('\n' + '='.repeat(60));
-  console.log(unmapped.length === 0
-    ? 'PASS — every status value in the database is covered by statusSets.js'
-    : `FAIL — ${unmapped.length} value(s) present in the database but absent from statusSets.js.\n` +
-      'Any query filtering on these columns is silently skipping those rows.');
+  if (failures === 0) {
+    console.log('PASS — every status value is covered by statusSets.js, and each is stored one way');
+  } else {
+    if (unmapped.length) {
+      console.log(`FAIL — ${unmapped.length} value(s) present in the database but absent from statusSets.js.\n` +
+        'Any query filtering on these columns is silently skipping those rows.');
+    }
+    if (caseDrift.length) {
+      console.log(`FAIL — ${caseDrift.length} column(s) hold one state under several spellings.\n` +
+        'Filters lowercase and stay correct; GROUP BY does not, so the state is\n' +
+        'reported twice with its rows and its value split between the spellings.\n' +
+        'Normalise the column and canonicalise the writer — see statusSets.canonicalState().');
+    }
+  }
 }
 
-process.exit(unmapped.length === 0 ? 0 : 1);
+process.exit(failures === 0 ? 0 : 1);

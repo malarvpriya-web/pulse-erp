@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -113,7 +114,7 @@ router.post('/', allowRoles(...ADMIN_ROLES), async (req, res) => {
 });
 
 // PUT /branches/:id — admin only
-router.put('/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
+router.put('/:id', allowRoles(...ADMIN_ROLES), captureBefore('branches'), async (req, res) => {
   const { name, code, city, state, address, phone, email, branch_type, is_active } = req.body;
 
   try {
@@ -143,7 +144,7 @@ router.put('/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
 });
 
 // DELETE /branches/:id — admin only
-router.delete('/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
+router.delete('/:id', allowRoles(...ADMIN_ROLES), captureBefore('branches'), async (req, res) => {
   try {
     // Check if branch has employees
     const empCheck = await pool.query(

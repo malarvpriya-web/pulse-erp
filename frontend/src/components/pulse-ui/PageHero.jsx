@@ -18,17 +18,31 @@ import './pulse-hero.css';
  * what makes `top: 0` dock flush (manual §115) and what removes the doubled
  * 44px of dead space at the top of every page.
  *
+ * ── `embedded` ──────────────────────────────────────────────────────────────
+ * Every geometry trick above assumes this shell is a DIRECT child of
+ * `.page-content`: the -20px margin cancels that one container's padding, and
+ * the dock's -20px `top` is calibrated against that one constraint rect. Mount
+ * a shell page as a TAB PANEL inside another page and both assumptions break —
+ * the -20px margin pulls the panel 20px wider than the host on each side, and
+ * the sticky dock (opaque, `z-index: 20`) freezes over the host's tab strip and
+ * eats its pointer events, so the tabs render half-covered and stop clicking.
+ * Pass `embedded` when the shell is nested: the dock renders in flow and the
+ * root pays no gutters, letting the HOST page own the page geometry.
+ *
  * @param {object} props
  * @param {React.ReactNode} props.dock frozen strip — hero, filter bar
  * @param {React.ReactNode} props.children scrolling page body
  * @param {string} [props.className] extra class(es) on the root
+ * @param {boolean} [props.embedded=false] nested inside another page (a tab
+ *   panel) — drop the negative gutters and un-freeze the dock.
  * @param {object} [rest] anything else lands on the root element. Pages that
  *   put a click-away `onClick` on their page root need it to survive the
  *   conversion — without this passthrough it was silently dropped.
  */
-export function PageShell({ dock, children, className = '', ...rest }) {
+export function PageShell({ dock, children, className = '', embedded = false, ...rest }) {
+  const embed = embedded ? ' plh-page--embed' : '';
   return (
-    <div className={`plh-page${className ? ` ${className}` : ''}`} {...rest}>
+    <div className={`plh-page${embed}${className ? ` ${className}` : ''}`} {...rest}>
       {dock && <div className="plh-dock">{dock}</div>}
       <div className="plh-body">{children}</div>
     </div>

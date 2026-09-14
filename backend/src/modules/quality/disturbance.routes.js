@@ -15,6 +15,8 @@
 
 import { Router } from 'express';
 import pool from '../../config/db.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -73,7 +75,7 @@ const EVENT_LABELS = {
 
 /* ── GET / — paginated event list ────────────────────────────────────────────
    Query params: event_type, severity, site_name, from, to, resolved, page, limit */
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('quality', 'view'), async (req, res) => {
   try {
     const {
       event_type, severity, site_name, from, to,
@@ -129,7 +131,7 @@ router.get('/', async (req, res) => {
 /* ── POST / — log a disturbance event ───────────────────────────────────────
    Body: event_type*, severity, site_name, measured_value, threshold_value,
          unit, duration_ms, waveform_ref, event_ts, notes                    */
-router.post('/', async (req, res) => {
+router.post('/', requirePermission('quality', 'add'), async (req, res) => {
   try {
     const {
       event_type, severity = 'warning', site_name,
@@ -175,7 +177,7 @@ router.post('/', async (req, res) => {
 
 /* ── GET /summary — aggregated counts + IST monthly trend ───────────────────
    Returns: totals, by_type, by_severity, monthly (last 6 months, IST bounds) */
-router.get('/summary', async (req, res) => {
+router.get('/summary', requirePermission('quality', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const scope     = [`($1::int IS NULL OR company_id = $1)`];
@@ -239,7 +241,7 @@ router.get('/summary', async (req, res) => {
 
 /* ── PUT /:id/resolve — mark event resolved ──────────────────────────────────
    Body: notes (optional)                                                     */
-router.put('/:id/resolve', async (req, res) => {
+router.put('/:id/resolve', requirePermission('quality', 'edit'), captureBefore('disturbance_events'), async (req, res) => {
   try {
     const { notes } = req.body;
     const a = actor(req);
@@ -262,7 +264,7 @@ router.put('/:id/resolve', async (req, res) => {
 
 /* ── GET /export — CSV export ────────────────────────────────────────────────
    Query params: days (default 90, max 365)                                   */
-router.get('/export', async (req, res) => {
+router.get('/export', requirePermission('quality', 'view'), async (req, res) => {
   try {
     const days      = Math.min(parseInt(req.query.days || 90), 365);
     const companyId = cid(req);

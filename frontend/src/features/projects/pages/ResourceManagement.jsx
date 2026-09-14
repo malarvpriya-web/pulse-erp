@@ -108,9 +108,12 @@ export default function ResourceManagement({ setPage } = {}) {
     try { await api.post(`/projects/projects/${assignForm.project_id}/resources`, assignForm); setShowAssign(false); load(); } catch (_) { setShowAssign(false); }
   };
 
+  // One entry per week. Keyed on the full week-start date — slicing to 'YYYY-MM'
+  // collapsed 8 columns into ~3 duplicate keys and mislabelled every column.
   const weeks = Array.from({ length: 8 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() + (i - 2) * 7);
-    return d.toISOString().split('T')[0].slice(0, 7);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return { key: iso, label: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) };
   });
 
   const _riskMatrix = Array.from({ length: 4 }, (_, y) => Array.from({ length: 4 }, (_, x) => ({ x: x + 1, y: y + 1, risks: risks.filter(r => RISK_PROB[r.probability] === (y + 1) && RISK_IMP[r.impact] === (x + 1)) })));
@@ -203,7 +206,7 @@ export default function ResourceManagement({ setPage } = {}) {
                 <tr>
                   <th style={{ ...thStyle, minWidth: 200 }}>Employee</th>
                   <th style={{ ...thStyle, minWidth: 100 }}>Total %</th>
-                  {weeks.map(w => <th key={w} style={{ ...thStyle, textAlign: 'center', minWidth: 90 }}>{w}</th>)}
+                  {weeks.map(w => <th key={w.key} style={{ ...thStyle, textAlign: 'center', minWidth: 90 }}>{w.label}</th>)}
                 </tr>
               </thead>
               <tbody>
@@ -223,7 +226,7 @@ export default function ResourceManagement({ setPage } = {}) {
                       const bg = ALLOC_COLOR(allocForWeek, utilizationTarget);
                       const textColor = allocForWeek > 50 ? '#fff' : '#374151';
                       return (
-                        <td key={w} style={{ ...tdStyle, textAlign: 'center', padding: 4 }}>
+                        <td key={w.key} style={{ ...tdStyle, textAlign: 'center', padding: 4 }}>
                           <div style={{ background: bg, color: textColor, borderRadius: 6, padding: '6px 4px', fontSize: 11, fontWeight: 500, cursor: 'pointer' }}
                             title={(emp?.projects ?? []).map(p => `${p?.project_name ?? ''}: ${p?.allocation_pct ?? 0}%`).join('\n')}>
                             {allocForWeek > 0 ? `${allocForWeek}%` : '-'}
@@ -426,7 +429,7 @@ export default function ResourceManagement({ setPage } = {}) {
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead><tr>{['Risk', 'Category', 'Probability', 'Impact', 'Score', 'Owner', 'Status', 'Mitigation'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {risks.sort((a, b) => b.risk_score - a.risk_score).map((r, i) => (
+                  {[...risks].sort((a, b) => b.risk_score - a.risk_score).map((r, i) => (
                     <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
                       <td style={{ ...tdStyle, fontWeight: 600, maxWidth: 160 }}>{r.title}</td>
                       <td style={tdStyle}><span style={{ padding: '2px 6px', background: '#f0ebff', color: '#6B3FDB', borderRadius: 4, fontSize: 11 }}>{r.category}</span></td>

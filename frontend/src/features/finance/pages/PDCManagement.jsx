@@ -775,7 +775,7 @@ function HistoryTab() {
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
-export default function PDCManagement() {
+export default function PDCManagement({ embedded = false }) {
   const [tab, setTab] = useState(() => {
     const p = new URLSearchParams(window.location.search);
     return p.get('tab') === 'history' ? 'history' : 'outstanding';
@@ -794,7 +794,7 @@ export default function PDCManagement() {
   });
 
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={
       <PageHero
         icon={IndianRupee}
         eyebrow="Finance"

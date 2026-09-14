@@ -10,6 +10,7 @@ import pool from '../shared/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -87,7 +88,7 @@ router.post('/', allowRoles('admin', 'super_admin', 'hr'), async (req, res) => {
 });
 
 // ── PUT /travel-policy/:id ────────────────────────────────────────────────────
-router.put('/:id', allowRoles('admin', 'super_admin', 'hr'), async (req, res) => {
+router.put('/:id', allowRoles('admin', 'super_admin', 'hr'), captureBefore('travel_policy_rules'), async (req, res) => {
   try {
     const {
       rule_name, rule_type, grade, role, department,
@@ -124,7 +125,7 @@ router.put('/:id', allowRoles('admin', 'super_admin', 'hr'), async (req, res) =>
 });
 
 // ── DELETE /travel-policy/:id ─────────────────────────────────────────────────
-router.delete('/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/:id', allowRoles('admin', 'super_admin'), captureBefore('travel_policy_rules'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM travel_policy_rules WHERE id=$1`, [req.params.id]);
     res.json({ message: 'Policy rule deleted' });

@@ -555,17 +555,28 @@ export const getDashboardSalesPipeline = async (req, res) => {
     // opportunities carries company_id; the pipeline summed every tenant's deals.
     const cid = req.scope?.company_id ?? null;
     const rows = await safeQuery(`
-      SELECT stage, COUNT(*) AS count, COALESCE(SUM(expected_value),0)::numeric AS value
+      -- Grouped on LOWER(stage): the ORDER BY below already lowercased because
+      -- "the stored casing is mixed", but the GROUP BY did not, so the two
+      -- spellings of one stage stayed two rows — sorted adjacently by the
+      -- CASE, which made them look like a duplicated stage in the chart.
+      SELECT LOWER(stage) AS stage, COUNT(*) AS count, COALESCE(SUM(expected_value),0)::numeric AS value
       FROM opportunities
       WHERE deleted_at IS NULL ${cidClause(cid, 1)}
-      GROUP BY stage
-      ORDER BY CASE stage
+      GROUP BY LOWER(stage)
+      -- Stage order comes from the stored vocabulary, which is
+      -- prospecting/qualification/proposal/negotiation/won/lost (see
+      -- crm_pipeline_stages, the per-company stage master). 'closed_won' is not
+      -- a value this column ever holds, so Won and Lost both fell into the
+      -- ELSE bucket and the pipeline chart ordered them arbitrarily.
+      -- LOWER() because the stored casing is mixed ('Won' and 'proposal' both occur).
+      ORDER BY CASE LOWER(stage)
         WHEN 'prospecting'   THEN 1
         WHEN 'qualification' THEN 2
         WHEN 'proposal'      THEN 3
         WHEN 'negotiation'   THEN 4
-        WHEN 'closed_won'    THEN 5
-        ELSE 6 END
+        WHEN 'won'           THEN 5
+        WHEN 'lost'          THEN 6
+        ELSE 7 END
     `, cidParams(cid));
     res.json({ stages: rows.map(r => ({ stage: r.stage, count: safeInt(r.count), value: safeFloat(r.value) })) });
   } catch (err) {

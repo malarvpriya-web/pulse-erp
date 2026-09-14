@@ -3,6 +3,7 @@ import pool from '../shared/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { computeFnf } from './fnf.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -153,7 +154,7 @@ router.post('/requests', requireHRWrite, async (req, res) => {
 // completely bypassing computeClearanceBlockers and the F&F pay gate that
 // 'closed' is supposed to mean. Only POST /fnf/:id/pay may set 'closed' now;
 // other statuses (pending/active/rejected/cancelled) are untouched.
-router.put('/requests/:id', requireHRWrite, async (req, res) => {
+router.put('/requests/:id', requireHRWrite, captureBefore('exit_requests'), async (req, res) => {
   try {
     const { status, remarks } = req.body;
     if (status === 'closed') {
@@ -484,7 +485,7 @@ router.get('/clearance/:employee_id/status', async (req, res) => {
 });
 
 // ── PUT /clearance/:employee_id ───────────────────────────────────────────────
-router.put('/clearance/:employee_id', requireHRWrite, async (req, res) => {
+router.put('/clearance/:employee_id', requireHRWrite, captureBefore('exit_clearance', { param: 'employee_id', column: 'employee_id' }), async (req, res) => {
   try {
     const {
       it_assets_returned, access_revoked, documents_collected, exit_interview_done,

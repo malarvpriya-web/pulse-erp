@@ -80,13 +80,18 @@ function VendorCard({ vendor, color, isWinner }) {
         <div className="vc-sc-section-title">Performance</div>
         <div className="vc-stat-row">
           <span className="vc-stat-lbl">On-time %</span>
-          <span className={`vc-stat-val ${parseFloat(vendor.on_time_pct || 0) >= 90 ? 'green' : parseFloat(vendor.on_time_pct || 0) >= 70 ? 'amber' : 'red'}`}>
+          {/* `|| 0` on a NULL is the worst reading of no data for OTD (red) and the
+              best for defect rate (green) — the same value, coloured two opposite
+              lies. vendorHealth publishes NULL when a supplier has no receipts, or
+              when its OTD could only be measured against a due date we derived
+              rather than one it committed to. Unmeasured is neutral. */}
+          <span className={`vc-stat-val ${vendor.on_time_pct == null ? '' : parseFloat(vendor.on_time_pct) >= 90 ? 'green' : parseFloat(vendor.on_time_pct) >= 70 ? 'amber' : 'red'}`}>
             {pct(vendor.on_time_pct)}
           </span>
         </div>
         <div className="vc-stat-row">
           <span className="vc-stat-lbl">Defect rate</span>
-          <span className={`vc-stat-val ${parseFloat(vendor.defect_rate || 0) <= 1 ? 'green' : parseFloat(vendor.defect_rate || 0) <= 5 ? 'amber' : 'red'}`}>
+          <span className={`vc-stat-val ${vendor.defect_rate == null ? '' : parseFloat(vendor.defect_rate) <= 1 ? 'green' : parseFloat(vendor.defect_rate) <= 5 ? 'amber' : 'red'}`}>
             {pct(vendor.defect_rate)}
           </span>
         </div>

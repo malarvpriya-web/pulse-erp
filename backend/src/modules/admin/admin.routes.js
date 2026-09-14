@@ -8,6 +8,7 @@ import { getMenuOverrides, setMenuOverrides, getUserMenuOverrides, setUserMenuOv
 import { syncPrimaryRole } from '../../services/userRoles.js';
 import { companyOf } from '../../shared/scope.js';
 import { respondError } from '../../shared/pgErrors.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -217,7 +218,7 @@ router.post('/users/bulk-deactivate', allowRoles('admin', 'super_admin'), async 
 });
 
 // Update user (status, role, department) — admin only
-router.put('/users/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.put('/users/:id', allowRoles('admin', 'super_admin'), captureBefore('users'), async (req, res) => {
   const cid = req.scope?.company_id;
   const { status, role, department } = req.body;
   // Only super_admin may promote someone to super_admin
@@ -251,7 +252,7 @@ router.put('/users/:id', allowRoles('admin', 'super_admin'), async (req, res) =>
 });
 
 // Deactivate (soft-delete) user — admin only
-router.delete('/users/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/users/:id', allowRoles('admin', 'super_admin'), captureBefore('users'), async (req, res) => {
   const cid = req.scope?.company_id;
   try {
     const { rows: before } = await pool.query(
@@ -769,7 +770,7 @@ router.post('/document-setup', allowRoles('admin', 'super_admin'), async (req, r
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/document-setup/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.put('/document-setup/:id', allowRoles('admin', 'super_admin'), captureBefore('document_types'), async (req, res) => {
   const { doc_type, doc_name, max_size_mb } = req.body;
   if (!doc_type?.trim() || !doc_name?.trim())
     return res.status(400).json({ error: 'doc_type and doc_name are required' });
@@ -784,7 +785,7 @@ router.put('/document-setup/:id', allowRoles('admin', 'super_admin'), async (req
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/document-setup/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/document-setup/:id', allowRoles('admin', 'super_admin'), captureBefore('document_types'), async (req, res) => {
   try {
     const { rowCount } = await pool.query(
       `UPDATE document_types SET is_active=FALSE WHERE id=$1`, [req.params.id]
@@ -833,7 +834,7 @@ router.post('/company-documents', allowRoles('admin', 'super_admin'), async (req
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/company-documents/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.put('/company-documents/:id', allowRoles('admin', 'super_admin'), captureBefore('company_documents'), async (req, res) => {
   const { title, description, file_url, is_active } = req.body;
   if (!title?.trim() || !file_url?.trim())
     return res.status(400).json({ error: 'title and file_url are required' });
@@ -852,7 +853,7 @@ router.put('/company-documents/:id', allowRoles('admin', 'super_admin'), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/company-documents/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/company-documents/:id', allowRoles('admin', 'super_admin'), captureBefore('company_documents'), async (req, res) => {
   try {
     const { rowCount } = await pool.query(
       `UPDATE company_documents SET is_active = FALSE, updated_at = NOW()
@@ -942,7 +943,7 @@ router.post('/products', allowRoles('admin', 'super_admin'), async (req, res) =>
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/products/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.put('/products/:id', allowRoles('admin', 'super_admin'), captureBefore('products'), async (req, res) => {
   const errors = validateProduct(req.body);
   if (errors.length) return res.status(400).json({ error: errors[0], errors });
 
@@ -978,7 +979,7 @@ router.put('/products/:id', allowRoles('admin', 'super_admin'), async (req, res)
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/products/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/products/:id', allowRoles('admin', 'super_admin'), captureBefore('products'), async (req, res) => {
   try {
     const { rowCount } = await pool.query(
       `UPDATE products SET is_active=FALSE, updated_at=NOW() WHERE id=$1`, [req.params.id]
@@ -1102,7 +1103,7 @@ router.post('/product-lines', allowRoles('admin', 'super_admin'), async (req, re
   }
 });
 
-router.put('/product-lines/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.put('/product-lines/:id', allowRoles('admin', 'super_admin'), captureBefore('product_lines'), async (req, res) => {
   const errors = validateProductLine(req.body);
   if (errors.length) return res.status(400).json({ error: errors[0], errors });
 
@@ -1133,7 +1134,7 @@ router.put('/product-lines/:id', allowRoles('admin', 'super_admin'), async (req,
 // Soft delete: projects.product_line_id keeps pointing at the row, so a delivered
 // project does not lose what was built for it. The partial unique indexes ignore
 // deleted rows, so the same code can be created again afterwards.
-router.delete('/product-lines/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/product-lines/:id', allowRoles('admin', 'super_admin'), captureBefore('product_lines'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
     const { rowCount } = await pool.query(
@@ -1204,7 +1205,7 @@ router.post('/product-lines/:id/ratings', allowRoles('admin', 'super_admin'), as
   }
 });
 
-router.put('/product-ratings/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.put('/product-ratings/:id', allowRoles('admin', 'super_admin'), captureBefore('product_ratings'), async (req, res) => {
   const errors = validateRating(req.body);
   if (errors.length) return res.status(400).json({ error: errors[0], errors });
 
@@ -1226,7 +1227,7 @@ router.put('/product-ratings/:id', allowRoles('admin', 'super_admin'), async (re
   }
 });
 
-router.delete('/product-ratings/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/product-ratings/:id', allowRoles('admin', 'super_admin'), captureBefore('product_ratings'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
     const { rowCount } = await pool.query(
@@ -1294,7 +1295,7 @@ router.post('/approver-setup', allowRoles('admin', 'super_admin'), async (req, r
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/approver-setup/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.put('/approver-setup/:id', allowRoles('admin', 'super_admin'), captureBefore('approver_config'), async (req, res) => {
   const cid = req.scope?.company_id ?? null;
   const { module, approver_role, approver_email, sequence } = req.body;
   if (!module?.trim() || !approver_role?.trim())
@@ -1312,7 +1313,7 @@ router.put('/approver-setup/:id', allowRoles('admin', 'super_admin'), async (req
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/approver-setup/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/approver-setup/:id', allowRoles('admin', 'super_admin'), captureBefore('approver_config'), async (req, res) => {
   const cid = req.scope?.company_id ?? null;
   try {
     const { rowCount } = await pool.query(
@@ -1358,7 +1359,7 @@ router.post('/notification-rules', allowRoles('admin', 'super_admin'), async (re
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/notification-rules/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.put('/notification-rules/:id', allowRoles('admin', 'super_admin'), captureBefore('notification_rules'), async (req, res) => {
   const cid = companyOf(req);
   const { event_key, title, channel, recipient_roles, enabled } = req.body;
   if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
@@ -1386,7 +1387,7 @@ router.put('/notification-rules/:id', allowRoles('admin', 'super_admin'), async 
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/notification-rules/:id/toggle', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.patch('/notification-rules/:id/toggle', allowRoles('admin', 'super_admin'), captureBefore('notification_rules'), async (req, res) => {
   const cid = companyOf(req);
   try {
     const { rows } = await pool.query(
@@ -1400,7 +1401,7 @@ router.patch('/notification-rules/:id/toggle', allowRoles('admin', 'super_admin'
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/notification-rules/:id', allowRoles('admin', 'super_admin'), async (req, res) => {
+router.delete('/notification-rules/:id', allowRoles('admin', 'super_admin'), captureBefore('notification_rules'), async (req, res) => {
   const cid = companyOf(req);
   try {
     const { rows } = await pool.query(

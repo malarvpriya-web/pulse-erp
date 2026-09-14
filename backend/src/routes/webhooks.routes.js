@@ -3,6 +3,22 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import pool from '../modules/shared/db.js';
+import { auditMutations } from '../middlewares/auditMutations.js';
+
+/*
+ * The audit floor is mounted PER ROUTE here, not on the router, because the
+ * two handlers belong to different modules: zoho-sign settles a signature and
+ * razorpay settles money. Labelling both the same would file a payment under
+ * `documents` and break every audit query that trusts the label — §8c's rule
+ * that a wrong module label is worse than no label at all.
+ *
+ * These run without a JWT (a payment provider has no ERP login), so the floor
+ * records userId null. That is the honest actor: the row still carries the
+ * route, the payload and the resulting status, which is what makes an
+ * externally-triggered change reconstructable at all. Request bodies pass
+ * through the middleware's redact(), so a provider signature in the payload
+ * is stored as [REDACTED].
+ */
 
 const router = Router();
 
@@ -13,7 +29,7 @@ const router = Router();
 //
 // Optional: set ZOHO_SIGN_WEBHOOK_SECRET env var to the "Notification Secret"
 // from Zoho Sign — enables HMAC-SHA256 signature verification.
-router.post('/zoho-sign', async (req, res) => {
+router.post('/zoho-sign', auditMutations('documents'), async (req, res) => {
   try {
     const secret = process.env.ZOHO_SIGN_WEBHOOK_SECRET;
     if (secret) {
@@ -89,7 +105,7 @@ router.post('/zoho-sign', async (req, res) => {
 //   payment.failed       → update order status to failed
 //   payment.link.paid    → mark invoice paid via payment link
 //   refund.created       → log refund (future: create credit note)
-router.post('/razorpay', async (req, res) => {
+router.post('/razorpay', auditMutations('finance'), async (req, res) => {
   try {
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
 

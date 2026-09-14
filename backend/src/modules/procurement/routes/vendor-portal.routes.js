@@ -6,6 +6,7 @@ import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationServi
 import { companyOf } from '../../../shared/scope.js';
 import { scorecardRisk } from '../../../shared/vendorScore.js';
 import { requireProcurement } from '../procurement.authz.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -85,7 +86,7 @@ router.post('/registrations', requireProcurement('add'), async (req, res) => {
 });
 
 // ── PUT /vendor-portal/registrations/:id/review (stage-based approval) ───────
-router.put('/registrations/:id/review', requireProcurement('approve', 'finance', 'finance_manager', 'qc_manager'), async (req, res) => {
+router.put('/registrations/:id/review', requireProcurement('approve', 'finance', 'finance_manager', 'qc_manager'), captureBefore('vendor_registrations'), async (req, res) => {
   try {
     const { stage, status, remarks } = req.body;
     // stage: 'scm' | 'quality' | 'finance' | 'management'

@@ -7,11 +7,12 @@ import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import { useRoleCatalog, roleColor } from '@/config/roleCatalog';
-import useDepartments from '@/hooks/useDepartments';
+import MasterSelect from '@/components/core/MasterSelect';
 
 // Roles and departments both come from their single source of truth — the
-// `roles` registry via config/roleCatalog.js, and Master Setup → Departments
-// via hooks/useDepartments.js. This page used to hardcode a 7-role array that
+// `roles` registry via config/roleCatalog.js, and the departments master via
+// <MasterSelect>, which can also add to it in place. This page used to hardcode
+// a 7-role array that
 // omitted 19 seeded roles (every *_manager / *_exec / *_engineer code), so a
 // user who needed `qc_manager` simply could not be given it here.
 
@@ -59,7 +60,7 @@ function RoleBadge({ role }) {
 const EMPTY_FORM = { name: '', email: '', password: '', role: 'employee', department: '' };
 
 export default function UserSetup() {
-  const roles = useRoleCatalog();
+  const roles    = useRoleCatalog();
   const [users,               setUsers]               = useState([]);
   const [loading,             setLoading]             = useState(false);
   const [showCreate,          setShowCreate]          = useState(false);
@@ -69,7 +70,6 @@ export default function UserSetup() {
   const [form,                setForm]                = useState(EMPTY_FORM);
   const [pendingDeactivate,   setPendingDeactivate]   = useState(null);
   const [msg,                 setMsg]                 = useState(null);
-  const [deptList,            setDeptList]            = useState([]);
   // Seed audit state
   const [showSeedAudit,       setShowSeedAudit]       = useState(false);
   const [selectedSeeds,       setSelectedSeeds]       = useState(new Set());
@@ -97,9 +97,6 @@ export default function UserSetup() {
   useEffect(() => {
     isMounted.current = true;
     load();
-    api.get('/admin/config/departments')
-      .then(r => setDeptList(Array.isArray(r.data) ? r.data.map(d => d.name || d) : []))
-      .catch(() => setDeptList([]));
     return () => { isMounted.current = false; };
   }, [load]);
 
@@ -351,13 +348,13 @@ export default function UserSetup() {
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Department</span>
-              <select
+              <MasterSelect
+                endpoint="/master/departments"
+                label="Department"
                 value={form.department}
-                onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
-                style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, background: '#fff', outline: 'none' }}>
-                <option value="">-- Select Department --</option>
-                {deptList.map(d => <option key={d} value={d}>{d}</option>)}
-              </select>
+                onChange={v => setForm(f => ({ ...f, department: v }))}
+                selectStyle={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, background: '#fff', outline: 'none' }}
+              />
             </label>
           </div>
           <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -437,11 +434,14 @@ export default function UserSetup() {
 
                       <td style={{ padding: '10px 14px', color: '#6b7280' }}>
                         {isEditing ? (
-                          <select value={editUser.department ?? ''} onChange={e => setEditUser(x => ({ ...x, department: e.target.value }))}
-                            style={{ padding: '5px 8px', border: '1px solid #a78bfa', borderRadius: 6, fontSize: 12, width: 110, outline: 'none', background: '#fff' }}>
-                            <option value="">— Dept —</option>
-                            {deptList.map(d => <option key={d} value={d}>{d}</option>)}
-                          </select>
+                          <MasterSelect
+                            endpoint="/master/departments"
+                            label="Department"
+                            value={editUser.department ?? ''}
+                            onChange={v => setEditUser(x => ({ ...x, department: v }))}
+                            placeholder="— Dept —"
+                            selectStyle={{ padding: '5px 8px', border: '1px solid #a78bfa', borderRadius: 6, fontSize: 12, width: 110, outline: 'none', background: '#fff' }}
+                          />
                         ) : (u?.department ?? '—')}
                       </td>
 

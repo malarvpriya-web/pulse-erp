@@ -177,7 +177,7 @@ export default function KanbanBoard() {
         icon={FolderKanban}
         eyebrow="Projects"
         title="Task Board"
-        subtitle="Could not load projects"
+        subtitle="Track every project task by status, from To Do through Done"
       />
     }>
       {toast && <div className={`kb-toast kb-toast-${toast.type}`}>{toast.msg}</div>}

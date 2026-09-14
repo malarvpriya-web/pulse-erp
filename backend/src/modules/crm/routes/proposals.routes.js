@@ -31,6 +31,7 @@ import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import * as drive from '../../../services/googleDrive.service.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -143,7 +144,7 @@ router.post('/technical-proposals', requirePermission('crm', 'add'), async (req,
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/technical-proposals/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/technical-proposals/:id', requirePermission('crm', 'edit'), captureBefore('technical_proposals'), async (req, res) => {
   try {
     const {
       title, scope_of_work, technical_specs, deliverables,
@@ -250,7 +251,7 @@ router.post('/technical-proposals/:id/revise', requirePermission('crm', 'edit'),
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/technical-proposals/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/technical-proposals/:id', requirePermission('crm', 'delete'), captureBefore('technical_proposals'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE technical_proposals SET deleted_at=NOW() WHERE id=$1 AND ($2::int IS NULL OR company_id=$2) RETURNING id`,
@@ -366,7 +367,7 @@ router.post('/commercial-proposals', requirePermission('crm', 'add'), async (req
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/commercial-proposals/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/commercial-proposals/:id', requirePermission('crm', 'edit'), captureBefore('commercial_proposals'), async (req, res) => {
   try {
     const {
       title, equipment_cost, installation_cost, civil_cost, commissioning_cost, amc_cost,
@@ -595,7 +596,7 @@ router.post('/commercial-proposals/:id/create-quotation', requirePermission('sal
   } finally { client.release(); }
 });
 
-router.delete('/commercial-proposals/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/commercial-proposals/:id', requirePermission('crm', 'delete'), captureBefore('commercial_proposals'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE commercial_proposals SET deleted_at=NOW() WHERE id=$1 AND ($2::int IS NULL OR company_id=$2) RETURNING id`,

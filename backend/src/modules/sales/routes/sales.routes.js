@@ -1,6 +1,6 @@
 import express from 'express';
 const router = express.Router();
-import { verifyToken, requirePermission } from '../../../middlewares/auth.middleware.js';
+import { verifyToken, requirePermission, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import quotationsRepository from '../repositories/quotations.repository.js';
@@ -11,10 +11,14 @@ import { nextLifecycleNumber } from '../../../shared/docNumber.js';
 import * as drive from '../../../services/googleDrive.service.js';
 import { calculateCommission } from '../../../services/commissionService.js';
 import { companyOf } from '../../../shared/scope.js';
+import orderPromising from '../services/orderPromising.service.js';
+import { sqlEmployeeActive } from '../../../shared/statusSets.js';
+import { employeeOf } from '../../../shared/scope.js';
 import invoiceService from '../../finance/services/invoice.service.js';
 import { createProductionOrderFromSalesOrder } from '../../operations/lifecycle.routes.js';
 import { requiresRenewalApproval, isAuthorizedRenewalApprover, RENEWAL_APPROVAL_THRESHOLD } from '../../../shared/renewalApproval.js';
 import { createInstallationRequest } from '../../servicedesk/routes/installation.routes.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
   const client = await pool.connect();
@@ -312,7 +316,7 @@ router.post('/quotations/:id/items', requirePermission('sales', 'edit'), async (
 });
 
 // Status transitions
-router.patch('/quotations/:id/send', requirePermission('sales', 'edit'), async (req, res) => {
+router.patch('/quotations/:id/send', requirePermission('sales', 'edit'), captureBefore('quotations'), async (req, res) => {
   try {
     const quotation = await quotationsRepository.update(req.params.id, { status: 'sent' });
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'quotation', action: 'update', newData: { status: 'sent' }, req });
@@ -630,7 +634,7 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
           if (quotation.opportunity_id) {
             await client.query(
               `UPDATE opportunities
-               SET stage = 'Won', closed_date = NOW(), probability_percentage = 100, updated_at = NOW()
+               SET stage = 'won', closed_date = NOW(), probability_percentage = 100, updated_at = NOW()
                WHERE id = $1 AND LOWER(stage) NOT IN ('won','lost')`,
               [quotation.opportunity_id]
             ).catch(() => {});
@@ -809,6 +813,20 @@ router.post('/orders', requirePermission('sales', 'add'), async (req, res) => {
       await quotationsRepository.update(req.body.quotation_id, { status: 'accepted' });
     }
 
+    // Promise the order: ATP check, allocate what exists, backorder the rest and
+    // consume the forecast it was planned against. Advisory — a promising
+    // failure must never lose an order that has already been written, so the
+    // result is attached and any error is surfaced rather than thrown.
+    try {
+      order.promise = await orderPromising.promiseOrder({
+        orderId: order.id, companyId,
+        actor: { id: userId, name: req.user?.name || req.user?.username },
+      });
+    } catch (e) {
+      console.error('[orders/promise]', e);
+      order.warning = 'Order created, but availability could not be checked — review allocation manually.';
+    }
+
     res.status(201).json({ data: order });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -867,7 +885,7 @@ router.get('/orders/:id/linked-invoice', requirePermission('sales', 'view'), asy
 
 // ── PATCH status transitions ─────────────────────────────────────────────────
 
-router.patch('/orders/:id/confirm', requirePermission('sales', 'edit'), async (req, res) => {
+router.patch('/orders/:id/confirm', requirePermission('sales', 'edit'), captureBefore('sales_orders'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE sales_orders SET order_status='confirmed', updated_at=NOW()
@@ -961,7 +979,7 @@ router.patch('/orders/:id/invoice', requirePermission('sales', 'edit'), async (r
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/orders/:id/cancel', requirePermission('sales', 'edit'), async (req, res) => {
+router.patch('/orders/:id/cancel', requirePermission('sales', 'edit'), captureBefore('sales_orders'), async (req, res) => {
   try {
     const { reason } = req.body;
     if (!reason) return res.status(400).json({ error: 'reason is required to cancel an order' });
@@ -1080,7 +1098,7 @@ router.put('/orders/:id/status', requirePermission('sales', 'edit'), async (req,
   }
 });
 
-router.put('/orders/:id/dispatch', requirePermission('sales', 'edit'), async (req, res) => {
+router.put('/orders/:id/dispatch', requirePermission('sales', 'edit'), captureBefore('sales_orders'), async (req, res) => {
   try {
     const { carrier, tracking_number, dispatch_date, force } = req.body;
 
@@ -1141,7 +1159,7 @@ router.put('/orders/:id/dispatch', requirePermission('sales', 'edit'), async (re
   }
 });
 
-router.put('/orders/:id/deliver', requirePermission('sales', 'edit'), async (req, res) => {
+router.put('/orders/:id/deliver', requirePermission('sales', 'edit'), captureBefore('sales_orders'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE sales_orders
@@ -1215,79 +1233,129 @@ router.get('/fulfilment/credit-control', requirePermission('sales', 'view'), asy
   try {
     const cid = companyOf(req);
     const { rows } = await pool.query(
-      `SELECT
-         p.id,
-         p.name AS customer,
-         COALESCE(ccs.credit_limit, 0)::numeric                                  AS credit_limit,
-         COALESCE(ccs.credit_terms_days, 30)                                      AS credit_terms_days,
-         COALESCE(ccs.is_blocked, false)                                          AS is_blocked,
-         ccs.block_reason,
-         COALESCE(SUM(so.total_amount) FILTER (
-           WHERE so.order_status NOT IN ('cancelled','invoiced')
-         ), 0)::numeric                                                            AS open_orders_value,
-         COALESCE(SUM(inv.balance) FILTER (
-           WHERE inv.status IN ('sent','overdue','Sent','Overdue')
-         ), 0)::numeric                                                            AS outstanding_invoices,
-         COALESCE(ccs.credit_limit, 0) -
-           COALESCE(SUM(so.total_amount) FILTER (
-             WHERE so.order_status NOT IN ('cancelled','invoiced')
-           ), 0) -
-           COALESCE(SUM(inv.balance) FILTER (
-             WHERE inv.status IN ('sent','overdue','Sent','Overdue')
-           ), 0)                                                                   AS available_credit,
-         CASE
-           WHEN COALESCE(ccs.credit_limit, 0) = 0 THEN 'no_limit'
-           WHEN (
-             COALESCE(SUM(so.total_amount) FILTER (
-               WHERE so.order_status NOT IN ('cancelled','invoiced')
-             ), 0) +
-             COALESCE(SUM(inv.balance) FILTER (
-               WHERE inv.status IN ('sent','overdue','Sent','Overdue')
-             ), 0)
-           ) > COALESCE(ccs.credit_limit, 0) THEN 'exceeded'
-           ELSE 'ok'
-         END AS credit_status
-       FROM parties p
-       -- credit settings hang off accounts.id (integer), not parties.id (uuid);
-       -- joining them directly raised: operator does not exist: integer = uuid.
-       LEFT JOIN accounts a ON a.party_id = p.id
-       LEFT JOIN customer_credit_settings ccs
-         ON ccs.account_id = a.id AND ($1::int IS NULL OR ccs.company_id = $1)
-       LEFT JOIN sales_orders so
-         ON so.customer_id = p.id
-         AND so.deleted_at IS NULL
-         AND ($1::int IS NULL OR so.company_id = $1)
-       LEFT JOIN invoices inv ON inv.customer_id = p.id
-       WHERE p.deleted_at IS NULL
-         AND ($1::int IS NULL OR p.company_id = $1)
-         AND p.party_type IN ('customer','Customer')
-       GROUP BY p.id, p.name, ccs.credit_limit, ccs.credit_terms_days, ccs.is_blocked, ccs.block_reason
-       ORDER BY credit_status DESC, p.name`,
+      // credit_limit NULL is the "never configured" state and is what drives the
+      // no_limit status. A limit of 0 is a real, deliberate limit — a customer
+      // held to cash-only — and must read as exceeded the moment they owe
+      // anything, not as unconfigured.
+      `WITH scored AS (
+         SELECT
+           p.id,
+           p.name AS customer,
+           ccs.credit_limit::numeric                AS credit_limit,
+           COALESCE(ccs.credit_terms_days, 30)      AS credit_terms_days,
+           COALESCE(ccs.is_blocked, false)          AS is_blocked,
+           ccs.block_reason,
+           o.open_orders_value,
+           v.outstanding_invoices,
+           CASE WHEN ccs.credit_limit IS NULL THEN NULL
+                ELSE ccs.credit_limit - o.open_orders_value - v.outstanding_invoices
+           END AS available_credit,
+           CASE
+             WHEN ccs.credit_limit IS NULL THEN 'no_limit'
+             WHEN (o.open_orders_value + v.outstanding_invoices) > ccs.credit_limit THEN 'exceeded'
+             ELSE 'ok'
+           END AS credit_status
+         FROM parties p
+         -- Settings hang off the party, which is what this screen lists. They used
+         -- to hang off accounts.id, an integer no row on this screen carries.
+         LEFT JOIN customer_credit_settings ccs
+           ON ccs.party_id = p.id AND ($1::int IS NULL OR ccs.company_id = $1)
+         -- Aggregated in LATERAL rather than joined: orders and invoices are two
+         -- independent child tables, so joining both and SUMming multiplied each
+         -- total by the other's row count. A customer with 6 orders and 3 invoices
+         -- reported 3x its open orders and 6x its outstanding invoices, which then
+         -- fed available_credit and the Exceeded badge.
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(SUM(so.total_amount), 0)::numeric AS open_orders_value
+             FROM sales_orders so
+            WHERE so.customer_id = p.id
+              AND so.deleted_at IS NULL
+              AND ($1::int IS NULL OR so.company_id = $1)
+              AND so.order_status NOT IN ('cancelled','invoiced')
+         ) o
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(SUM(inv.balance), 0)::numeric AS outstanding_invoices
+             FROM invoices inv
+            WHERE inv.customer_id = p.id
+              AND inv.deleted_at IS NULL
+              AND ($1::int IS NULL OR inv.company_id = $1)
+              AND inv.status IN ('sent','overdue','Sent','Overdue')
+         ) v
+         WHERE p.deleted_at IS NULL
+           AND ($1::int IS NULL OR p.company_id = $1)
+           AND p.party_type IN ('customer','Customer')
+       )
+       SELECT * FROM scored
+       -- Trouble first. Plain "ORDER BY credit_status DESC" sorted alphabetically,
+       -- which put 'ok' at the top and buried 'exceeded' at the bottom of the list.
+       ORDER BY CASE credit_status
+                  WHEN 'exceeded' THEN 0
+                  WHEN 'no_limit' THEN 1
+                  ELSE 2
+                END,
+                customer`,
       [cid]
     );
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/fulfilment/credit-control/:accountId', requirePermission('sales', 'edit'), async (req, res) => {
+router.patch('/fulfilment/credit-control/:partyId', requirePermission('sales', 'edit'), async (req, res) => {
   try {
     const cid = companyOf(req);
-    const { accountId } = req.params;
+    const { partyId } = req.params;
     const { credit_limit, credit_terms_days, is_blocked, block_reason } = req.body;
+
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(partyId)) {
+      return res.status(400).json({ error: 'Invalid customer id.' });
+    }
+
+    // Resolve the party inside the caller's tenant before writing anything: this
+    // is the write's authorisation check, and it also supplies company_id for a
+    // super admin, whose companyOf() is NULL against a NOT NULL column.
+    const { rows: [party] } = await pool.query(
+      `SELECT p.id, p.company_id,
+              (SELECT a.id FROM accounts a WHERE a.party_id = p.id ORDER BY a.id LIMIT 1) AS account_id
+         FROM parties p
+        WHERE p.id = $1
+          AND p.deleted_at IS NULL
+          AND ($2::int IS NULL OR p.company_id = $2)`,
+      [partyId, cid]
+    );
+    if (!party)             return res.status(404).json({ error: 'Customer not found.' });
+    if (!party.company_id)  return res.status(400).json({ error: 'Customer is not assigned to a company.' });
+
+    const limit = Number(credit_limit);
+    const terms = Number(credit_terms_days);
+    if (credit_limit != null && (!Number.isFinite(limit) || limit < 0)) {
+      return res.status(400).json({ error: 'Credit limit must be zero or more.' });
+    }
+    if (credit_terms_days != null && (!Number.isInteger(terms) || terms < 0)) {
+      return res.status(400).json({ error: 'Payment terms must be a whole number of days.' });
+    }
+
+    // A genuine PATCH: an omitted field keeps its stored value. The Block button
+    // sends only the block fields, so blocking a customer who has no limit set no
+    // longer writes a 0 limit over that — which, now that 0 is a real limit and
+    // NULL is "unset", would have flipped them straight to Exceeded.
     const { rows } = await pool.query(
       `INSERT INTO customer_credit_settings
-         (company_id, account_id, credit_limit, credit_terms_days, is_blocked, block_reason, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (company_id, account_id) DO UPDATE SET
-         credit_limit      = EXCLUDED.credit_limit,
-         credit_terms_days = EXCLUDED.credit_terms_days,
-         is_blocked        = EXCLUDED.is_blocked,
-         block_reason      = EXCLUDED.block_reason,
+         (company_id, party_id, account_id, credit_limit, credit_terms_days, is_blocked, block_reason, updated_at)
+       VALUES ($1, $2, $3, $4::numeric, COALESCE($5::int, 30), COALESCE($6::boolean, false), $7, NOW())
+       ON CONFLICT (company_id, party_id) WHERE party_id IS NOT NULL DO UPDATE SET
+         account_id        = EXCLUDED.account_id,
+         credit_limit      = COALESCE($4::numeric, customer_credit_settings.credit_limit),
+         credit_terms_days = COALESCE($5::int,     customer_credit_settings.credit_terms_days),
+         is_blocked        = COALESCE($6::boolean, customer_credit_settings.is_blocked),
+         block_reason      = CASE WHEN $6::boolean IS NOT NULL
+                                  THEN $7
+                                  ELSE customer_credit_settings.block_reason END,
          updated_at        = NOW()
        RETURNING *`,
-      [cid, accountId, credit_limit ?? 0, credit_terms_days ?? 30, is_blocked ?? false, block_reason ?? null]
+      [party.company_id, partyId, party.account_id,
+       credit_limit ?? null, credit_terms_days ?? null, is_blocked ?? null, block_reason ?? null]
     );
-    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: accountId, recordType: 'credit_settings', action: 'upsert', newData: rows[0], req });
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: partyId, recordType: 'credit_settings', action: 'upsert', newData: rows[0], req });
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1358,7 +1426,7 @@ router.get('/fulfilment/analytics', requirePermission('sales', 'view'), async (r
 });
 
 // ── Legacy Fulfilment KPIs
-router.get('/fulfilment-rate', async (req, res) => {
+router.get('/fulfilment-rate', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const r = await pool.query(`
       SELECT
@@ -1386,7 +1454,7 @@ router.get('/fulfilment-rate', async (req, res) => {
   }
 });
 
-router.get('/delivery-performance', async (req, res) => {
+router.get('/delivery-performance', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const r = await pool.query(`
       SELECT
@@ -1440,7 +1508,7 @@ router.post('/credit-limits', requirePermission('sales', 'edit'), async (req, re
   }
 });
 
-router.put('/credit-limits/:id/release-hold', requirePermission('sales', 'edit'), async (req, res) => {
+router.put('/credit-limits/:id/release-hold', requirePermission('sales', 'edit'), captureBefore('credit_limits'), async (req, res) => {
   try {
     const r = await pool.query(
       `UPDATE credit_limits SET credit_hold=false, hold_reason=NULL, updated_at=NOW()
@@ -1520,7 +1588,7 @@ router.post('/targets', requirePermission('sales', 'add'), async (req, res) => {
   }
 });
 
-router.put('/targets/:id', requirePermission('sales', 'edit'), async (req, res) => {
+router.put('/targets/:id', requirePermission('sales', 'edit'), captureBefore('sales_targets'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { owner_id, period_type, period_year, period_value, target_amount, notes } = req.body;
@@ -1596,25 +1664,37 @@ router.get('/forecasts/by-month', requirePermission('sales', 'view'), async (req
     const cid  = companyOf(req);
     const year = parseInt(req.query.period_year) || new Date().getFullYear();
     const { rows } = await pool.query(`
+      WITH opp AS (
+        SELECT EXTRACT(MONTH FROM expected_closing_date)::int AS month,
+               SUM(expected_value * probability_percentage / 100.0) AS forecasted
+          FROM opportunities
+         WHERE company_id = $1 AND deleted_at IS NULL
+           AND LOWER(stage) NOT IN ('won','lost')
+           AND EXTRACT(YEAR FROM expected_closing_date) = $2
+         GROUP BY 1
+      ), ord AS (
+        SELECT EXTRACT(MONTH FROM created_at)::int AS month,
+               SUM(total_amount) AS achieved
+          FROM sales_orders
+         WHERE company_id = $1 AND deleted_at IS NULL
+           AND order_status IN ('confirmed','dispatched','delivered','invoiced')
+           AND EXTRACT(YEAR FROM created_at) = $2
+         GROUP BY 1
+      ), tgt AS (
+        SELECT period_value::int AS month, SUM(target_amount) AS target
+          FROM sales_targets
+         WHERE company_id = $1 AND period_type = 'monthly' AND period_year = $2
+         GROUP BY 1
+      )
       SELECT m.month,
-        COALESCE(SUM(o.expected_value * o.probability_percentage / 100.0), 0) AS forecasted,
-        COALESCE(SUM(so.total_amount), 0)                                      AS achieved,
-        COALESCE(SUM(st.target_amount), 0)                                     AS target
-      FROM generate_series(1, 12) AS m(month)
-      LEFT JOIN opportunities o ON
-        EXTRACT(MONTH FROM o.expected_closing_date) = m.month
-        AND EXTRACT(YEAR FROM o.expected_closing_date) = $2
-        AND o.company_id = $1 AND o.deleted_at IS NULL
-        AND LOWER(o.stage) NOT IN ('won','lost')
-      LEFT JOIN sales_orders so ON
-        EXTRACT(MONTH FROM so.created_at) = m.month
-        AND EXTRACT(YEAR FROM so.created_at) = $2
-        AND so.company_id = $1 AND so.deleted_at IS NULL
-        AND so.order_status IN ('confirmed','dispatched','delivered','invoiced')
-      LEFT JOIN sales_targets st ON
-        st.period_type='monthly' AND st.period_value=m.month
-        AND st.period_year=$2 AND st.company_id=$1
-      GROUP BY m.month ORDER BY m.month
+             COALESCE(opp.forecasted, 0) AS forecasted,
+             COALESCE(ord.achieved,   0) AS achieved,
+             COALESCE(tgt.target,     0) AS target
+        FROM generate_series(1, 12) AS m(month)
+        LEFT JOIN opp ON opp.month = m.month
+        LEFT JOIN ord ON ord.month = m.month
+        LEFT JOIN tgt ON tgt.month = m.month
+       ORDER BY m.month
     `, [cid, year]);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1631,25 +1711,50 @@ router.get('/forecasts/by-rep', requirePermission('sales', 'view'), async (req, 
     );
     const pf = (col) => `($2='annual' OR ($2='monthly' AND EXTRACT(MONTH FROM ${col})=$4) OR ($2='quarterly' AND CEIL(EXTRACT(MONTH FROM ${col})/3.0)=$4))`;
     const { rows } = await pool.query(`
+      WITH opp AS (
+        SELECT assigned_to AS employee_id,
+               SUM(expected_value * probability_percentage / 100.0) AS forecasted
+          FROM opportunities
+         WHERE company_id = $1 AND deleted_at IS NULL
+           AND LOWER(stage) NOT IN ('won','lost')
+           AND EXTRACT(YEAR FROM expected_closing_date) = $3
+           AND ${pf('expected_closing_date')}
+         GROUP BY 1
+      ), ord AS (
+        -- sales_orders.created_by is a users.id; employees.id is reached through
+        -- users.employee_id. Joining the two id spaces directly matched nobody.
+        SELECT u.employee_id, SUM(so.total_amount) AS achieved
+          FROM sales_orders so
+          JOIN users u ON u.id = so.created_by
+         WHERE so.company_id = $1 AND so.deleted_at IS NULL
+           AND so.order_status IN ('confirmed','dispatched','delivered','invoiced')
+           AND EXTRACT(YEAR FROM so.created_at) = $3
+           AND ${pf('so.created_at')}
+           AND u.employee_id IS NOT NULL
+         GROUP BY 1
+      ), tgt AS (
+        SELECT owner_id AS employee_id, SUM(target_amount) AS target
+          FROM sales_targets
+         WHERE company_id = $1 AND period_type = $2 AND period_year = $3
+           AND ($2 = 'annual' OR period_value = $4)
+           AND owner_id IS NOT NULL
+         GROUP BY 1
+      )
       SELECT e.id,
         COALESCE(e.name, e.first_name || ' ' || e.last_name) AS name,
         e.designation,
-        COALESCE(SUM(o.expected_value * o.probability_percentage / 100.0), 0) AS forecasted,
-        COALESCE(SUM(so.total_amount), 0)                                      AS achieved,
-        COALESCE(MAX(st.target_amount), 0)                                     AS target
+        COALESCE(opp.forecasted, 0) AS forecasted,
+        COALESCE(ord.achieved,   0) AS achieved,
+        COALESCE(tgt.target,     0) AS target
       FROM employees e
-      LEFT JOIN opportunities o ON o.assigned_to=e.id AND o.company_id=$1 AND o.deleted_at IS NULL
-        AND LOWER(o.stage) NOT IN ('won','lost')
-        AND EXTRACT(YEAR FROM o.expected_closing_date)=$3 AND ${pf('o.expected_closing_date')}
-      LEFT JOIN sales_orders so ON so.created_by=e.id AND so.company_id=$1 AND so.deleted_at IS NULL
-        AND so.order_status IN ('confirmed','dispatched','delivered','invoiced')
-        AND EXTRACT(YEAR FROM so.created_at)=$3 AND ${pf('so.created_at')}
-      LEFT JOIN sales_targets st ON st.owner_id=e.id AND st.company_id=$1
-        AND st.period_type=$2 AND st.period_year=$3 AND ($2='annual' OR st.period_value=$4)
-      WHERE e.company_id=$1 AND e.status IN ('active','probation')
-      GROUP BY e.id, e.name, e.first_name, e.last_name, e.designation
-      HAVING COALESCE(SUM(o.expected_value * o.probability_percentage / 100.0), 0) > 0
-          OR COALESCE(SUM(so.total_amount), 0) > 0
+      LEFT JOIN opp ON opp.employee_id = e.id
+      LEFT JOIN ord ON ord.employee_id = e.id
+      LEFT JOIN tgt ON tgt.employee_id = e.id
+      WHERE e.company_id = $1 AND ${sqlEmployeeActive('e.status')}
+        AND (COALESCE(opp.forecasted, 0) > 0
+             OR COALESCE(ord.achieved, 0) > 0
+             OR COALESCE(tgt.target,   0) > 0)
+      ORDER BY forecasted DESC, achieved DESC
     `, [cid, period_type, year, pval]);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1665,7 +1770,10 @@ router.get('/forecasts/pipeline-breakdown', requirePermission('sales', 'view'), 
       period_type === 'quarterly' ? Math.ceil((now.getMonth() + 1) / 3) : (now.getMonth() + 1)
     );
     const { rows } = await pool.query(`
-      SELECT stage,
+      -- LOWER() in the GROUP BY as well as the filter: grouping on the raw
+      -- column split a stage stored in two casings into two forecast rows,
+      -- each carrying part of the weighted value.
+      SELECT LOWER(stage) AS stage,
         COUNT(*)::int                                                      AS deal_count,
         COALESCE(SUM(expected_value), 0)                                   AS gross_value,
         COALESCE(SUM(expected_value * probability_percentage / 100.0), 0) AS weighted_value,
@@ -1676,7 +1784,10 @@ router.get('/forecasts/pipeline-breakdown', requirePermission('sales', 'view'), 
         AND ($2='annual'
              OR ($2='monthly'   AND EXTRACT(MONTH FROM expected_closing_date)=$4)
              OR ($2='quarterly' AND CEIL(EXTRACT(MONTH FROM expected_closing_date)/3.0)=$4))
-      GROUP BY stage ORDER BY weighted_value DESC
+      -- GROUP BY the expression, not "stage": an output alias that collides
+      -- with a real input column binds the COLUMN in Postgres, so "GROUP BY
+      -- stage" here would silently group on the raw casing again.
+      GROUP BY LOWER(stage) ORDER BY weighted_value DESC
     `, [cid, period_type, year, pval]);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1783,15 +1894,34 @@ router.post('/documents', requirePermission('sales', 'add'), async (req, res) =>
   } catch (e) { console.error('[sales] territories migration:', e.message); }
 })();
 
+// The four matching dimensions are jsonb arrays. A form sends '' for an empty
+// multi-select and a bare string for a single pick; both must become [].
+const asJsonArray = (v) => {
+  if (Array.isArray(v)) return JSON.stringify(v.map(String).filter((s) => s.trim() !== ''));
+  if (v == null || String(v).trim() === '') return '[]';
+  return JSON.stringify([String(v)]);
+};
+
 router.get('/territories', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const limit = Math.min(parseInt(req.query.limit) || 100, 500);
     const { rows } = await pool.query(
-      `SELECT t.*, e.first_name || ' ' || e.last_name AS assigned_to_name
+      `SELECT t.*,
+              COALESCE(e.name, NULLIF(TRIM(CONCAT_WS(' ', e.first_name, e.last_name)), '')) AS assigned_to_name,
+              (SELECT COUNT(*) FROM leads l
+                WHERE l.territory_id = t.id AND l.deleted_at IS NULL)::int          AS lead_count,
+              (SELECT COUNT(*) FROM opportunities o
+                WHERE o.territory_id = t.id AND o.deleted_at IS NULL)::int          AS opportunity_count,
+              (SELECT COALESCE(SUM(o.expected_value), 0) FROM opportunities o
+                WHERE o.territory_id = t.id AND o.deleted_at IS NULL
+                  AND LOWER(o.stage) NOT IN ('won','lost'))                        AS open_pipeline,
+              (SELECT COALESCE(SUM(o.expected_value), 0) FROM opportunities o
+                WHERE o.territory_id = t.id AND o.deleted_at IS NULL
+                  AND LOWER(o.stage) = 'won')                                      AS won_value
        FROM sales_territories t
        LEFT JOIN employees e ON e.id = t.assigned_to
-       WHERE ($1::int IS NULL OR t.company_id=$1) ORDER BY t.name LIMIT $2`,
+       WHERE ($1::int IS NULL OR t.company_id=$1) ORDER BY t.priority ASC, t.name LIMIT $2`,
       [cid, limit]
     );
     res.json(rows);
@@ -1801,38 +1931,59 @@ router.get('/territories', requirePermission('sales', 'view'), async (req, res) 
 router.post('/territories', requirePermission('sales', 'add'), async (req, res) => {
   try {
     const cid = companyOf(req);
-    const { name, region, assigned_to, target_revenue, states } = req.body;
+    const { name, region, assigned_to, target_revenue, states,
+            zones, cities, industries, priority } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
-    const statesJson = JSON.stringify(Array.isArray(states) ? states : (states ? [states] : []));
     const { rows } = await pool.query(
-      `INSERT INTO sales_territories (company_id, name, region, assigned_to, target_revenue, states)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [cid, name, region || null, assigned_to || null, target_revenue || 0, statesJson]
+      `INSERT INTO sales_territories
+         (company_id, name, region, assigned_to, target_revenue, states,
+          zones, cities, industries, priority)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [cid, name, region || null, assigned_to || null, target_revenue || 0,
+       asJsonArray(states), asJsonArray(zones), asJsonArray(cities), asJsonArray(industries),
+       Number.isFinite(Number(priority)) ? Number(priority) : 100]
     );
     res.status(201).json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/territories/:id', requirePermission('sales', 'edit'), async (req, res) => {
+router.put('/territories/:id', requirePermission('sales', 'edit'), captureBefore('sales_territories'), async (req, res) => {
   try {
     const cid = companyOf(req);
-    const { name, region, assigned_to, target_revenue, status, states } = req.body;
-    const statesJson = JSON.stringify(Array.isArray(states) ? states : (states ? [states] : []));
+    const { name, region, assigned_to, target_revenue, status, states,
+            zones, cities, industries, priority } = req.body;
     const { rows } = await pool.query(
-      `UPDATE sales_territories SET name=$1, region=$2, assigned_to=$3, target_revenue=$4, status=$5, states=$6
-       WHERE id=$7 AND ($8::int IS NULL OR company_id=$8) RETURNING *`,
-      [name, region || null, assigned_to || null, target_revenue || 0, status || 'active', statesJson, req.params.id, cid]
+      `UPDATE sales_territories
+          SET name=$1, region=$2, assigned_to=$3, target_revenue=$4, status=$5, states=$6,
+              zones=$7, cities=$8, industries=$9, priority=$10
+        WHERE id=$11 AND ($12::int IS NULL OR company_id=$12) RETURNING *`,
+      [name, region || null, assigned_to || null, target_revenue || 0, status || 'active',
+       asJsonArray(states), asJsonArray(zones), asJsonArray(cities), asJsonArray(industries),
+       Number.isFinite(Number(priority)) ? Number(priority) : 100,
+       req.params.id, cid]
     );
     if (!rows.length) return res.status(404).json({ error: 'Territory not found' });
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/territories/:id', requirePermission('sales', 'delete'), async (req, res) => {
+router.delete('/territories/:id', requirePermission('sales', 'delete'), captureBefore('sales_territories'), async (req, res) => {
   try {
     const cid = companyOf(req);
-    await pool.query(`DELETE FROM sales_territories WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`, [req.params.id, cid]);
-    res.json({ success: true });
+    // leads.territory_id / opportunities.territory_id are ON DELETE SET NULL, so
+    // the records survive but lose their territory stamp — and territory revenue
+    // history goes with it. Report what was detached rather than deleting silently.
+    const { rows: [impact] } = await pool.query(
+      `SELECT (SELECT COUNT(*) FROM leads WHERE territory_id = $1)::int         AS leads,
+              (SELECT COUNT(*) FROM opportunities WHERE territory_id = $1)::int AS opportunities`,
+      [req.params.id]
+    );
+    const { rowCount } = await pool.query(
+      `DELETE FROM sales_territories WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`,
+      [req.params.id, cid]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'Territory not found' });
+    res.json({ success: true, detached: impact });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1888,13 +2039,15 @@ router.post('/playbooks', requirePermission('sales', 'add'), async (req, res) =>
     const { rows } = await pool.query(
       `INSERT INTO sales_playbooks (company_id, name, description, category, applicable_stage, created_by)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [cid, name, description || null, category || null, applicable_stage || null, req.user?.id || null]
+      // created_by FKs employees(id). req.user.id does not exist — the JWT
+      // carries `userId` — so this silently wrote NULL on every create.
+      [cid, name, description || null, category || null, applicable_stage || null, await employeeOf(req, pool)]
     );
     res.status(201).json({ success: true, data: rows[0] });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/playbooks/:id', requirePermission('sales', 'edit'), async (req, res) => {
+router.put('/playbooks/:id', requirePermission('sales', 'edit'), captureBefore('sales_playbooks'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { name, description, category, applicable_stage, is_active } = req.body;
@@ -1915,7 +2068,7 @@ router.put('/playbooks/:id', requirePermission('sales', 'edit'), async (req, res
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/playbooks/:id', requirePermission('sales', 'delete'), async (req, res) => {
+router.delete('/playbooks/:id', requirePermission('sales', 'delete'), captureBefore('sales_playbooks'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -2102,7 +2255,7 @@ router.post('/calendar/events', requirePermission('sales', 'add'), async (req, r
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/calendar/events/:id', requirePermission('sales', 'edit'), async (req, res) => {
+router.patch('/calendar/events/:id', requirePermission('sales', 'edit'), captureBefore('sales_events'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const { title, type, start_at, end_at, all_day, account_id, opportunity_id, notes } = req.body;
@@ -2121,7 +2274,7 @@ router.patch('/calendar/events/:id', requirePermission('sales', 'edit'), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/calendar/events/:id', requirePermission('sales', 'delete'), async (req, res) => {
+router.delete('/calendar/events/:id', requirePermission('sales', 'delete'), captureBefore('sales_events'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     await pool.query(`DELETE FROM sales_events WHERE id=$1 AND company_id=$2`, [req.params.id, companyId]);
@@ -2130,7 +2283,7 @@ router.delete('/calendar/events/:id', requirePermission('sales', 'delete'), asyn
 });
 
 // ── Documents DELETE ───────────────────────────────────────────────────────────
-router.delete('/documents/:id', async (req, res) => {
+router.delete('/documents/:id', requirePermission('sales', 'delete'), captureBefore('sales_documents'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     await pool.query(`DELETE FROM sales_documents WHERE id=$1 AND company_id=$2`, [req.params.id, companyId]);
@@ -2182,7 +2335,7 @@ router.delete('/documents/:id', async (req, res) => {
   } catch (e) { console.error('[subscriptions] init error:', e.message); }
 })();
 
-router.get('/subscriptions/stats', async (req, res) => {
+router.get('/subscriptions/stats', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -2222,7 +2375,7 @@ router.get('/subscriptions/stats', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/subscriptions', async (req, res) => {
+router.get('/subscriptions', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -2243,7 +2396,7 @@ router.get('/subscriptions', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/subscriptions', async (req, res) => {
+router.post('/subscriptions', requirePermission('sales', 'add'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { customer_id, customer_name, plan_name, amount, currency, billing_cycle, start_date, next_billing_date, end_date, auto_renew } = req.body;
@@ -2283,7 +2436,7 @@ router.post('/subscriptions', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/subscriptions/:id/pause', async (req, res) => {
+router.patch('/subscriptions/:id/pause', requirePermission('sales', 'edit'), captureBefore('subscriptions'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { rows } = await pool.query(
@@ -2295,7 +2448,7 @@ router.patch('/subscriptions/:id/pause', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/subscriptions/:id/cancel', async (req, res) => {
+router.patch('/subscriptions/:id/cancel', requirePermission('sales', 'edit'), captureBefore('subscriptions'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { rows } = await pool.query(
@@ -2314,7 +2467,7 @@ router.patch('/subscriptions/:id/cancel', async (req, res) => {
 // invoice via invoiceService, same GL-posting path Sales Order/Project
 // invoicing use) -> Renewal (next_billing_date genuinely advances by one
 // billing cycle, not just a status flip).
-router.patch('/subscriptions/:id/renew', async (req, res) => {
+router.patch('/subscriptions/:id/renew', requirePermission('sales', 'edit'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { rows: subRows } = await pool.query(
@@ -2403,7 +2556,7 @@ router.patch('/subscriptions/:id/renew', async (req, res) => {
   } catch (e) { console.error('[competitors] init error:', e.message); }
 })();
 
-router.get('/competitors', async (req, res) => {
+router.get('/competitors', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const limit = Math.min(parseInt(req.query.limit) || 100, 500);
@@ -2415,7 +2568,7 @@ router.get('/competitors', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/competitors', async (req, res) => {
+router.post('/competitors', requirePermission('sales', 'add'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { name, website, strengths, weaknesses, win_rate, notes } = req.body;
@@ -2429,7 +2582,7 @@ router.post('/competitors', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/competitors/:id', async (req, res) => {
+router.put('/competitors/:id', requirePermission('sales', 'edit'), captureBefore('competitors'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { name, website, strengths, weaknesses, win_rate, notes } = req.body;
@@ -2444,7 +2597,7 @@ router.put('/competitors/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/competitors/:id', async (req, res) => {
+router.delete('/competitors/:id', requirePermission('sales', 'delete'), captureBefore('competitors'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -2485,7 +2638,7 @@ router.delete('/competitors/:id', async (req, res) => {
   } catch (e) { console.error('[sales_settings] init error:', e.message); }
 })();
 
-router.get('/settings', async (req, res) => {
+router.get('/settings', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const { rows } = await pool.query(`SELECT * FROM sales_settings WHERE company_id=$1 LIMIT 1`, [cid]);
@@ -2504,13 +2657,11 @@ router.get('/settings', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/settings', async (req, res) => {
+router.put('/settings', allowRoles('admin', 'super_admin'), async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? companyOf(req);
-    const role = req.user?.role || '';
-    if (!['admin','super_admin'].includes(role.toLowerCase())) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    // Was an inline check on req.user.role — the legacy flat column. Roles are
+    // many-to-many (user_roles); allowRoles() above reads the whole set.
+    const cid = companyOf(req);
     const { default_currency, quotation_validity_days, order_prefix, quotation_prefix,
             default_tax_rate, default_place_of_supply, auto_invoice_on_delivery,
             require_approval_above, fiscal_year_start } = req.body;
@@ -2660,6 +2811,57 @@ ${quotation.notes ? `<div style="margin-top:20px;padding:10px;background:#f8f9fa
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ORDER PROMISING / BACKORDERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/* POST /sales/orders/:id/promise — re-run availability for an order.
+   ?check_only=true evaluates without writing allocations or backorders. */
+router.post('/orders/:id/promise', requirePermission('sales', 'edit'), async (req, res) => {
+  try {
+    const result = await orderPromising.promiseOrder({
+      orderId: req.params.id,
+      companyId: companyOf(req),
+      allocate: String(req.query.check_only) !== 'true',
+      actor: { id: req.user?.userId ?? req.user?.id, name: req.user?.name || req.user?.username },
+    });
+    if (!result) return res.status(404).json({ error: 'Order not found' });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /sales/backorders */
+router.get('/backorders', requirePermission('sales', 'view'), async (req, res) => {
+  try {
+    const vals = [companyOf(req)];
+    let where = '($1::int IS NULL OR b.company_id = $1)';
+    if (req.query.status) { vals.push(req.query.status); where += ` AND b.status = $${vals.length}`; }
+    else where += " AND b.status IN ('open','partial')";
+    const { rows } = await pool.query(`
+      SELECT b.*, ii.item_code, so.customer_name
+        FROM backorders b
+        LEFT JOIN inventory_items ii ON ii.id = b.item_id
+        LEFT JOIN sales_orders so ON so.id = b.sales_order_id
+       WHERE ${where}
+       ORDER BY CASE LOWER(COALESCE(b.priority,'normal'))
+                  WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                b.promised_date NULLS LAST`, vals);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /sales/backorders/release — allocate newly-arrived stock to what is
+   waiting, highest priority and oldest promise first. */
+router.post('/backorders/release', requirePermission('sales', 'edit'), async (req, res) => {
+  try {
+    res.json(await orderPromising.releaseBackorders({
+      companyId: companyOf(req),
+      itemId: req.body?.item_id ? parseInt(req.body.item_id, 10) : null,
+    }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

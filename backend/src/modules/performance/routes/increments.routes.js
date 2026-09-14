@@ -3,6 +3,7 @@ import pool from '../../../config/db.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -55,7 +56,7 @@ router.post('/bands', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/bands/:id', async (req, res) => {
+router.patch('/bands/:id', captureBefore('increment_bands'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   const {
@@ -83,7 +84,7 @@ router.patch('/bands/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/bands/:id', async (req, res) => {
+router.delete('/bands/:id', captureBefore('increment_bands'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   try {
@@ -181,7 +182,7 @@ router.post('/recommendations', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/recommendations/:id/approve', async (req, res) => {
+router.patch('/recommendations/:id/approve', captureBefore('increment_recommendations'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const { final_increment_pct, final_new_ctc, effective_date } = req.body;
   const cid = getCid(req);
@@ -210,7 +211,7 @@ router.patch('/recommendations/:id/approve', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/recommendations/:id/reject', async (req, res) => {
+router.patch('/recommendations/:id/reject', captureBefore('increment_recommendations'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const { rejection_reason } = req.body;
   const cid = getCid(req);

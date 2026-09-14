@@ -1,6 +1,6 @@
 import pool from '../../shared/db.js';
 import {
-  sqlOpportunityWon, sqlOpportunityOpen,
+  sqlOpportunityWon, sqlOpportunityOpen, sqlEmployeeActive,
 } from '../../../shared/statusSets.js';
 
 // Whitelist of columns that can be written to the opportunities table.
@@ -9,6 +9,12 @@ const OPP_COLUMNS = new Set([
   'lead_id', 'opportunity_name', 'expected_value', 'probability_percentage',
   'expected_closing_date', 'stage', 'assigned_to', 'notes',
   'estimate_value', 'held_by', 'follow_up_date',
+  // Close attribution. Omitting these meant the only moment a deal could ever
+  // be tagged was the instant it was closed through PATCH /:id/stage — a deal
+  // already sitting in Lost could never be given a competitor or a reason, so
+  // the historical backlog was permanently untaggable and the Sales Command
+  // Center's Top Competitors panel could only ever describe future closes.
+  'competitor', 'lost_reason', 'close_reason', 'product_line',
 ]);
 
 // Columns the Pursuits grid may sort on. Whitelisted so the client-supplied
@@ -64,7 +70,7 @@ const opportunitiesRepository = {
       FROM opportunities o
       LEFT JOIN leads l ON o.lead_id = l.id
       LEFT JOIN employees e ON e.id = o.assigned_to
-        AND e.status IN ('active','probation')
+        AND ${sqlEmployeeActive('e.status')}
       LEFT JOIN employees h ON h.id = o.held_by
       WHERE o.deleted_at IS NULL
     `;
@@ -78,7 +84,12 @@ const opportunitiesRepository = {
     }
 
     if (filters.stage) {
-      query += ` AND o.stage = $${paramCount}`;
+      // Compared case-insensitively. The Kanban and the Pursuits filter send a
+      // display label ('Proposal'); rows store the canonical key ('proposal').
+      // As `o.stage = $n` this filter returned an empty list for every stage
+      // whose label is capitalised — a filter that silently selects nothing
+      // looks exactly like a stage with no deals in it.
+      query += ` AND LOWER(o.stage) = LOWER($${paramCount})`;
       params.push(filters.stage);
       paramCount++;
     }
@@ -146,6 +157,9 @@ const opportunitiesRepository = {
     const NULLABLE = new Set([
       'estimate_value', 'held_by', 'follow_up_date', 'assigned_to',
       'expected_value', 'expected_closing_date', 'lead_id',
+      // Clearing a mis-typed competitor has to reach the column as NULL, not
+      // as '' — an empty string is a tag, and would group as its own row.
+      'competitor', 'lost_reason', 'close_reason', 'product_line',
     ]);
 
     Object.keys(data).forEach(key => {
@@ -197,18 +211,37 @@ const opportunitiesRepository = {
     const cw = company_id != null ? 'AND company_id = $1' : '';
     const params = company_id != null ? [company_id] : [];
     const result = await pool.query(`
-      SELECT o.stage,
+      -- Grouped on LOWER(stage), not the raw column. The filter above has
+      -- always been case-insensitive, but the grouping key was not: a stage
+      -- stored as both 'Qualification' and 'qualification' came back as two
+      -- rows and the pipeline drew the stage twice with its value split
+      -- between them. The trigger from 20260910000005 keeps new rows canonical;
+      -- this keeps the chart right for anything written before it, or by a
+      -- path that reaches the table without passing through Postgres triggers
+      -- (a restore, a COPY, a replica).
+      -- GROUP BY the EXPRESSION, never the output alias — "... AS stage" would
+      -- bind the raw column again and re-split the very rows this collapses.
+      --
+      -- The sort order comes from a LATERAL join rather than the correlated
+      -- subquery this used to carry in ORDER BY. Postgres does not recognise
+      -- LOWER(o.stage) inside a subquery as the grouped expression, so that
+      -- form fails outright with 42803 "subquery uses ungrouped column". Taken
+      -- as MIN() it needs no second grouping key, so the sort can never split
+      -- a stage either.
+      SELECT LOWER(o.stage) AS stage,
         COUNT(*) AS count,
         COALESCE(SUM(o.expected_value), 0) AS total_value,
         COALESCE(AVG(o.expected_value), 0) AS avg_value,
         COALESCE(SUM(o.expected_value * o.probability_percentage / 100.0), 0) AS weighted_value
       FROM opportunities o
+      LEFT JOIN LATERAL (
+        SELECT ps.sort_order FROM crm_pipeline_stages ps
+         WHERE LOWER(ps.stage_key) = LOWER(o.stage) OR LOWER(ps.name) = LOWER(o.stage)
+         LIMIT 1
+      ) ord ON TRUE
       WHERE o.deleted_at IS NULL AND ${sqlOpportunityOpen('o.stage')} ${cw ? cw.replace('company_id', 'o.company_id') : ''}
-      GROUP BY o.stage
-      ORDER BY COALESCE(
-        (SELECT ps.sort_order FROM crm_pipeline_stages ps
-          WHERE LOWER(ps.stage_key) = LOWER(o.stage) OR LOWER(ps.name) = LOWER(o.stage)
-          LIMIT 1), 999)
+      GROUP BY LOWER(o.stage)
+      ORDER BY COALESCE(MIN(ord.sort_order), 999)
     `, params);
     return result.rows;
   },
@@ -231,7 +264,7 @@ const opportunitiesRepository = {
       FROM opportunities o
       LEFT JOIN leads l ON o.lead_id = l.id
       LEFT JOIN employees e ON e.id = o.assigned_to
-        AND e.status IN ('active','probation')
+        AND ${sqlEmployeeActive('e.status')}
       WHERE o.deleted_at IS NULL${cidClause}
       ORDER BY o.expected_closing_date ASC NULLS LAST
     `, params);

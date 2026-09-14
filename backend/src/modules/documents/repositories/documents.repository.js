@@ -100,10 +100,48 @@ const documentsRepository = {
     return result.rows[0];
   },
 
+  /**
+   * @param {object} filters
+   *   company_id  — tenant scope. The query had NO company predicate at all, so
+   *                 every tenant's generated documents were returned to anyone.
+   *   self_only   — narrow to documents ABOUT the caller (employee_id) or made
+   *                 BY them (generated_by). Set by the route for callers who are
+   *                 not document approvers; `documents`.`view` is granted to 24
+   *                 of 26 roles, so the permission gate cannot do this.
+   *
+   * ⚠ These keys used to be accepted and silently dropped — the route could pass
+   * a scope and the repository would ignore it, which is worse than no scope at
+   * all because the call site looks correct.
+   */
   async findGeneratedDocuments(filters = {}) {
     let query = `SELECT * FROM generated_documents WHERE deleted_at IS NULL`;
     const params = [];
     let paramCount = 1;
+
+    if (filters.company_id != null) {
+      query += ` AND company_id = $${paramCount}`;
+      params.push(filters.company_id);
+      paramCount++;
+    }
+
+    if (filters.self_only) {
+      // OR, not AND: a document is the caller's business if it is about them or
+      // if they produced it.
+      const clauses = [];
+      if (filters.employee_id != null) {
+        clauses.push(`employee_id = $${paramCount}`);
+        params.push(filters.employee_id);
+        paramCount++;
+      }
+      if (filters.generated_by != null) {
+        clauses.push(`generated_by = $${paramCount}`);
+        params.push(filters.generated_by);
+        paramCount++;
+      }
+      // No identity resolved means nothing of the caller's own to show. FALSE
+      // rather than an open query — the fail-open here is the whole defect.
+      query += ` AND (${clauses.length ? clauses.join(' OR ') : 'FALSE'})`;
+    }
 
     if (filters.reference_id && filters.reference_type) {
       query += ` AND reference_id = $${paramCount} AND reference_type = $${paramCount + 1}`;

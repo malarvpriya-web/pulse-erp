@@ -8,7 +8,7 @@ import {
 import api from '@/services/api/client';
 import { fmt, fmtFull, today } from '../financeUtils';
 import './PaymentBatch.css';
-import { PageHero } from '@/components/pulse-ui';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PaymentGatewayPanel = lazy(() => import('@/components/finance/PaymentGatewayPanel'));
 const BankAccountsPanel   = lazy(() => import('@/features/finance/pages/BankAccounts'));
@@ -444,24 +444,31 @@ export default function PaymentBatch() {
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="pb-root">
-
-      {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, borderBottom: '2px solid #e9e4ff', paddingTop: 4, flexWrap: 'wrap' }}>
+    /* This page is the PageShell — the tab strip is the frozen dock and every
+       tab's content scrolls under it. The four sub-tabs are shell pages in
+       their own right, so they mount `embedded`: a nested shell keeps its own
+       negative gutters and sticky dock, which used to render 40px wider than
+       the strip and freeze on top of it, covering the tabs and swallowing
+       their clicks. */
+    <PageShell className="pb-root" dock={
+      <div className="pb-tabs" role="tablist">
         {PAGE_TABS.map(t => (
-          <button key={t.key} onClick={() => setPageTab(t.key)} style={{
-            padding: '8px 20px', border: 'none', cursor: 'pointer',
-            borderRadius: '6px 6px 0 0', fontWeight: 600, fontSize: 14,
-            background: pageTab === t.key ? '#6B3FDB' : '#e9e4ff',
-            color:      pageTab === t.key ? '#fff'    : '#6B3FDB',
-          }}>{t.label}</button>
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={pageTab === t.key}
+            className={`pb-tab${pageTab === t.key ? ' active' : ''}`}
+            onClick={() => setPageTab(t.key)}
+          >{t.label}</button>
         ))}
       </div>
+    }>
 
-      {pageTab === 'bank'    && <TabSuspense><BankAccountsPanel /></TabSuspense>}
-      {pageTab === 'pdc'     && <TabSuspense><PDCPanel /></TabSuspense>}
-      {pageTab === 'forex'   && <TabSuspense><ForexPanel /></TabSuspense>}
-      {pageTab === 'gateway' && <TabSuspense><PaymentGatewayPanel /></TabSuspense>}
+      {pageTab === 'bank'    && <TabSuspense><BankAccountsPanel     embedded /></TabSuspense>}
+      {pageTab === 'pdc'     && <TabSuspense><PDCPanel              embedded /></TabSuspense>}
+      {pageTab === 'forex'   && <TabSuspense><ForexPanel            embedded /></TabSuspense>}
+      {pageTab === 'gateway' && <TabSuspense><PaymentGatewayPanel   embedded /></TabSuspense>}
 
       {/* ══════════════════════════════════════════════════════════════════════
           AP PAYMENT BATCHES TAB
@@ -1082,6 +1089,6 @@ export default function PaymentBatch() {
         </div>
       )}{/* end batches tab */}
 
-    </div>
+    </PageShell>
   );
 }

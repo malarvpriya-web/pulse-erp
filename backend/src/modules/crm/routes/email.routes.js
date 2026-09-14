@@ -5,6 +5,7 @@ import nodemailer from 'nodemailer';
 import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -119,7 +120,7 @@ router.post('/email-accounts/connect-smtp', requirePermission('crm', 'add'), asy
 });
 
 // DELETE /crm/email-accounts/:id — disconnect account
-router.delete('/email-accounts/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/email-accounts/:id', requirePermission('crm', 'delete'), captureBefore('crm_email_accounts'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const userId = req.user?.employee_id || req.user?.id;
@@ -207,6 +208,31 @@ router.post('/emails/send', requirePermission('crm', 'add'), async (req, res) =>
       if (rows.length) accountRow = rows[0];
     }
 
+    // ORDER MATTERS. The row is inserted BEFORE the message is sent, because the
+    // open-tracking pixel has to carry this email's id and that id does not exist
+    // until the row does. The original order — send, then insert — is why nothing
+    // in the codebase ever embedded the pixel: there was no id to put in it, and
+    // the tracking endpoint therefore had no caller at all.
+    const msgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@pulsetech.in>`;
+    const { rows: [emailRow] } = await pool.query(
+      `INSERT INTO crm_emails
+         (company_id, account_id, lead_id, contact_id, opportunity_id,
+          direction, subject, body_html, body_text, from_email,
+          to_emails, cc_emails, is_read, is_draft, sent_at, message_id)
+       VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8,$9,$10,$11,true,false,NULL,$12)
+       RETURNING *`,
+      [
+        companyId, account_id || null, lead_id || null, contact_id || null, opportunity_id || null,
+        subject, body_html || '', body_text || '',
+        accountRow ? accountRow.email_address : 'sales@pulsetech.in',
+        JSON.stringify(Array.isArray(to_emails) ? to_emails : [to_emails]),
+        JSON.stringify(Array.isArray(cc_emails) ? cc_emails : (cc_emails ? [cc_emails] : [])),
+        msgId,
+      ]
+    );
+
+    const { html: outboundHtml, tracking } = await buildTrackedHtml(body_html || '', emailRow.id, companyId);
+
     let sendError = null;
     if (accountRow?.smtp_host) {
       try {
@@ -222,7 +248,7 @@ router.post('/emails/send', requirePermission('crm', 'add'), async (req, res) =>
           to: Array.isArray(to_emails) ? to_emails.join(',') : to_emails,
           cc: Array.isArray(cc_emails) ? cc_emails.join(',') : (cc_emails || ''),
           subject,
-          html: body_html,
+          html: outboundHtml,
           text: body_text,
         });
       } catch (e) {
@@ -230,37 +256,85 @@ router.post('/emails/send', requirePermission('crm', 'add'), async (req, res) =>
       }
     }
 
-    const msgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@pulsetech.in>`;
+    // sent_at is stamped only on a successful send. Stamping it unconditionally
+    // would report a message as sent when SMTP rejected it.
     const { rows } = await pool.query(
-      `INSERT INTO crm_emails
-         (company_id, account_id, lead_id, contact_id, opportunity_id,
-          direction, subject, body_html, body_text, from_email,
-          to_emails, cc_emails, is_read, is_draft, sent_at, message_id)
-       VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8,$9,$10,$11,true,false,NOW(),$12)
-       RETURNING *`,
-      [
-        companyId, account_id || null, lead_id || null, contact_id || null, opportunity_id || null,
-        subject, body_html || '', body_text || '',
-        accountRow ? accountRow.email_address : 'sales@pulsetech.in',
-        JSON.stringify(Array.isArray(to_emails) ? to_emails : [to_emails]),
-        JSON.stringify(Array.isArray(cc_emails) ? cc_emails : (cc_emails ? [cc_emails] : [])),
-        msgId,
-      ]
+      `UPDATE crm_emails
+          SET body_html = $1,
+              sent_at   = CASE WHEN $2::boolean THEN NOW() ELSE NULL END
+        WHERE id = $3 RETURNING *`,
+      [outboundHtml, !sendError && !!accountRow?.smtp_host, emailRow.id]
     );
-    res.json({ success: true, data: rows[0], send_error: sendError || undefined });
+
+    res.json({
+      success: true,
+      data: rows[0] || emailRow,
+      open_tracking: tracking,
+      send_error: sendError || undefined,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Pixel tracker (no auth — called by email clients)
-router.post('/emails/:id/track-open', async (req, res) => {
+/**
+ * Append the open-tracking pixel to an outgoing message, when the company has
+ * asked for it AND a public URL exists to point at.
+ *
+ * Two guards, both deliberate:
+ *
+ *  - `crm_settings.email_open_tracking` is opt-IN and defaults false. Tracking
+ *    whether a customer opened a message without the company having switched it
+ *    on is not a decision this code gets to make.
+ *  - PUBLIC_BASE_URL must be set. Without it the only URL available is
+ *    http://localhost:5000, and embedding that in a customer's inbox produces a
+ *    broken image in every message and records nothing. Skipping is the correct
+ *    failure: the caller is told `tracking: 'no_public_base_url'` rather than
+ *    the message silently going out damaged.
+ */
+async function buildTrackedHtml(html, emailId, companyId) {
+  const base = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+  if (!base) return { html, tracking: 'no_public_base_url' };
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT email_open_tracking FROM crm_settings WHERE company_id = $1`, [companyId]
+    );
+    if (!rows[0]?.email_open_tracking) return { html, tracking: 'disabled' };
+  } catch {
+    // A settings read that fails must not be read as consent.
+    return { html, tracking: 'settings_unavailable' };
+  }
+
+  const pixel = `<img src="${base}/api/crm/emails/${emailId}/track-open" width="1" height="1" alt="" style="display:none" />`;
+  return { html: `${html}${pixel}`, tracking: 'enabled' };
+}
+
+/**
+ * The tracking pixel itself.
+ *
+ * GET, not POST: an <img> in an email issues a GET, so the original POST route
+ * could never have been reached by a mail client even if it had been public.
+ * It is exported separately and mounted WITHOUT verifyToken ahead of the
+ * authenticated /crm mount (see server.js) — mounted inside this router it sat
+ * behind the token gate, which no email client carries.
+ *
+ * Always returns the GIF, including for an unknown id: a tracker that 404s tells
+ * the recipient's client something is wrong with the message.
+ */
+export const trackOpenRouter = express.Router();
+trackOpenRouter.get('/emails/:id/track-open', async (req, res) => {
   try {
     await pool.query(
       `UPDATE crm_emails SET opened_at = NOW() WHERE id = $1 AND opened_at IS NULL`,
       [req.params.id]
     );
-  } catch (_) {}
+  } catch (err) {
+    console.warn(JSON.stringify({
+      ts: new Date().toISOString(), level: 'WARN', event: 'email_open_track_failed',
+      emailId: req.params.id, message: err.message,
+    }));
+  }
   const GIF_1x1 = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
   res.set({ 'Content-Type': 'image/gif', 'Content-Length': GIF_1x1.length, 'Cache-Control': 'no-cache, no-store' });
   res.end(GIF_1x1);
@@ -308,7 +382,7 @@ router.post('/email-templates', requirePermission('crm', 'add'), async (req, res
   }
 });
 
-router.put('/email-templates/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/email-templates/:id', requirePermission('crm', 'edit'), captureBefore('email_templates'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const { name, category, stage_trigger, subject, body_html, variables } = req.body;
@@ -325,7 +399,7 @@ router.put('/email-templates/:id', requirePermission('crm', 'edit'), async (req,
   }
 });
 
-router.delete('/email-templates/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/email-templates/:id', requirePermission('crm', 'delete'), captureBefore('email_templates'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const { rows } = await pool.query(
@@ -459,9 +533,31 @@ router.put('/email-sequences/:id', requirePermission('crm', 'edit'), async (req,
   }
 });
 
-router.delete('/email-sequences/:id', requirePermission('crm', 'delete'), async (req, res) => {
+/**
+ * Delete a sequence.
+ *
+ * Refuses while people are still enrolled. `sequence_enrollments` now cascades
+ * on delete (migration 20260909000001), so without this check removing a journey
+ * would silently take its enrolments and their event history with it — and
+ * before that FK existed it did something worse, stranding them as orphans
+ * pointing at a journey that no longer exists. Deactivating stops a journey
+ * sending without destroying what it did.
+ */
+router.delete('/email-sequences/:id', requirePermission('crm', 'delete'), captureBefore('email_sequences'), async (req, res) => {
   try {
     const companyId = companyOf(req);
+    const { rows: [live] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM sequence_enrollments
+        WHERE sequence_id = $1 AND status IN ('active','paused')`,
+      [req.params.id]
+    );
+    if (live.n > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `${live.n} ${live.n === 1 ? 'person is' : 'people are'} still enrolled in this journey. Deactivate it to stop it sending, or stop the enrolments first.`,
+        enrolled: live.n,
+      });
+    }
     const { rowCount } = await pool.query(
       `DELETE FROM email_sequences WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)`,
       [req.params.id, companyId]

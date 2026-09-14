@@ -5,7 +5,7 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { respondError } from '../../shared/pgErrors.js';
-import { companyOf } from '../../shared/scope.js';
+import { companyOf, employeeOf } from '../../shared/scope.js';
 import { resolveRange } from '../../shared/dashboardFilters.js';
 import { classifyVendorScore, vendorScoreColor } from '../../shared/vendorScore.js';
 import {
@@ -13,6 +13,7 @@ import {
   INVOICE_PAID, INVOICE_VOID, PROJECT_CLOSED, PROJECT_ACTIVE,
   AMC_ACTIVE, NCR_CLOSED, VENDOR_BLOCKED,
   isIn, notIn, sqlInvoiceOutstanding, sqlBillOutstanding,
+  sqlOpportunityOpen, sqlOpportunityWon, sqlOpportunityClosed,
 } from '../../shared/statusSets.js';
 
 const router = express.Router();
@@ -177,7 +178,7 @@ router.get('/executive-summary', requirePermission('crm', 'view'), async (req, r
       // dropped every invoice in any other unpaid state — 'Sent' invoices in this
       // database — so the two pages reported different receivables for the same day.
       pool.query(`SELECT COALESCE(SUM(total_amount),0) AS v FROM invoices WHERE ${sqlInvoiceOutstanding()} ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
-      pool.query(`SELECT COALESCE(SUM(expected_value),0) AS v FROM opportunities WHERE deleted_at IS NULL AND LOWER(stage) NOT IN ('closed won','closed lost','closed_won','closed_lost') ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
+      pool.query(`SELECT COALESCE(SUM(expected_value),0) AS v FROM opportunities WHERE deleted_at IS NULL AND ${sqlOpportunityOpen('stage')} ${cw}`).catch(() => ({ rows: [{ v: 0 }] })),
       // 'delayed' is never a stored status (projects_status_check doesn't allow it) — it's a
       // derived condition (past end_date, not yet completed/cancelled), same logic the
       // /projects endpoint below already computes per-row as `isDelayed`.
@@ -213,8 +214,8 @@ router.get('/executive-summary', requirePermission('crm', 'view'), async (req, r
     // which case `forecast_basis` says so, so the UI can label the number
     // instead of presenting an assumption as a calculation.
     const winRate = await pool.query(`
-      SELECT COUNT(*) FILTER (WHERE LOWER(stage) IN ('closed_won','closed won'))::float AS won,
-             COUNT(*) FILTER (WHERE LOWER(stage) IN ('closed_won','closed won','closed_lost','closed lost'))::float AS closed
+      SELECT COUNT(*) FILTER (WHERE ${sqlOpportunityWon('stage')})::float AS won,
+             COUNT(*) FILTER (WHERE ${sqlOpportunityClosed('stage')})::float AS closed
       FROM opportunities WHERE deleted_at IS NULL ${cw}
     `).catch(() => ({ rows: [{ won: 0, closed: 0 }] }));
     const closedCount = parseFloat(winRate.rows[0]?.closed || 0);
@@ -587,7 +588,13 @@ router.post('/customers/:partyId/convert-upsell', requirePermission('crm', 'add'
     const { partyId } = req.params;
     const { reason, expected_value, assigned_to } = req.body;
     const companyId = cid(req);
-    const actorUserId = req.user?.userId ?? req.user?.id ?? null;
+    const actorUserId = req.user?.userId ?? null;
+    // opportunities.assigned_to FKs employees(id). The fallback below used to be
+    // actorUserId — a users.id — so whenever the account had no owner the INSERT
+    // raised 23503 and this endpoint returned 400 'Assigned to refers to a record
+    // that does not exist.' No account in this database has an owner, so the
+    // upsell conversion had never once succeeded (confirmed live 2026-09-03).
+    const actorEmployeeId = await employeeOf(req, pool);
 
     await client.query('BEGIN');
 
@@ -634,15 +641,20 @@ router.post('/customers/:partyId/convert-upsell', requirePermission('crm', 'add'
     // Assign Salesperson — the account's existing owner if known, else whoever
     // triggered the conversion (there's no reliable territory/round-robin
     // signal for an AI-detected upsell the way there is for inbound leads).
-    const assignedTo = assigned_to || account.assigned_to || actorUserId;
+    const assignedTo = assigned_to || account.assigned_to || actorEmployeeId;
     const label = reason || 'Account Growth';
     const followUpDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+    const now = new Date();
+    const quarterEndMonth = (Math.floor(now.getMonth() / 3) + 1) * 3;      // 3, 6, 9 or 12
+    const expectedCloseDate = new Date(Date.UTC(now.getFullYear(), quarterEndMonth, 0))
+      .toISOString().split('T')[0];
 
     const { rows: [opp] } = await client.query(
       `INSERT INTO opportunities
          (opportunity_name, account_id, stage, expected_value, probability_percentage,
-          assigned_to, created_by, company_id, notes, next_step, follow_up_date)
-       VALUES ($1,$2,'Qualification',$3,30,$4,$5,$6,$7,$8,$9)
+          assigned_to, created_by, company_id, notes, next_step, follow_up_date,
+          expected_closing_date)
+       VALUES ($1,$2,'Qualification',$3,30,$4,$5,$6,$7,$8,$9,$10)
        RETURNING *`,
       [
         `Upsell: ${label} — ${party.name}`,
@@ -654,6 +666,7 @@ router.post('/customers/:partyId/convert-upsell', requirePermission('crm', 'add'
         `Auto-created from CEO Intelligence upsell signal (${label}).`,
         `Follow up with ${party.name} regarding ${label.toLowerCase()}`,
         followUpDate,
+        expectedCloseDate,
       ]
     );
 
@@ -763,7 +776,12 @@ router.get('/vendors', requirePermission('procurement', 'view'), async (req, res
         SELECT po.supplier_id AS vendor_id, COUNT(DISTINCT p.id)::int AS project_count
         FROM purchase_orders po
         JOIN projects p ON p.id = po.project_id
-        WHERE p.status IN ('active','in_progress') ${cwP}
+        -- 'in_progress' was listed here too and can never match:
+        -- projects_status_check permits planning | active | on_hold |
+        -- completed | cancelled. 'planning' is the state that was actually
+        -- missing, so a vendor supplying only not-yet-started projects
+        -- counted as supplying none.
+        WHERE p.status IN ('active','planning') ${cwP}
         GROUP BY po.supplier_id
       `).catch(() => ({ rows: [] })),
 
@@ -1503,7 +1521,7 @@ router.get('/manifest', requirePermission('projects', 'view'), async (req, res) 
                COUNT(*)::int                        AS opp_count
         FROM opportunities
         WHERE deleted_at IS NULL
-          AND LOWER(stage) NOT IN ('closed won','closed lost','closed_won','closed_lost')
+          AND ${sqlOpportunityOpen('stage')}
           ${cc(companyId)}
         GROUP BY COALESCE(product_line, 'Unassigned')
       `).catch(() => ({ rows: [] })),
@@ -1537,8 +1555,8 @@ router.get('/manifest', requirePermission('projects', 'view'), async (req, res) 
     ]);
 
     const winRateRow = await pool.query(`
-      SELECT COUNT(*) FILTER (WHERE LOWER(stage) IN ('closed_won','closed won'))::float AS won,
-             COUNT(*) FILTER (WHERE LOWER(stage) IN ('closed_won','closed won','closed_lost','closed lost'))::float AS closed
+      SELECT COUNT(*) FILTER (WHERE ${sqlOpportunityWon('stage')})::float AS won,
+             COUNT(*) FILTER (WHERE ${sqlOpportunityClosed('stage')})::float AS closed
       FROM opportunities WHERE deleted_at IS NULL ${cc(companyId)}
     `).catch(() => ({ rows: [{ won: 0, closed: 0 }] }));
     const closed = parseFloat(winRateRow.rows[0]?.closed || 0);

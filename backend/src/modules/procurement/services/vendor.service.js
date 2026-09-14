@@ -38,9 +38,9 @@ class VendorService {
       pool.query(`
         SELECT
           COUNT(*) AS total_ncr,
-          COUNT(*) FILTER (WHERE ncr_date > NOW() - INTERVAL '12 months') AS ncr_12m,
-          COUNT(*) FILTER (WHERE status='Open') AS open_ncr
-        FROM vendor_ncr WHERE vendor_id=$1
+          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '12 months') AS ncr_12m,
+          COUNT(*) FILTER (WHERE LOWER(status) <> 'closed') AS open_ncr
+        FROM ncr_reports WHERE vendor_id=$1
       `, [vendorId]),
       pool.query(`
         SELECT

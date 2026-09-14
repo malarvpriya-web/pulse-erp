@@ -4,11 +4,13 @@
  */
 import express from 'express';
 import pool from '../../../config/db.js';
+import { deriveResponseFields } from '../services/voc.service.js';
 import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { dependencyBlocked } from '../../../shared/workflowDependency.js';
 import { emitEvent } from '../../../shared/eventBus.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -177,7 +179,7 @@ router.get('/:id', verifyToken, async (req, res) => {
 });
 
 // PUT /commissioning/:id — update workflow fields
-router.put('/:id', verifyToken, async (req, res) => {
+router.put('/:id', verifyToken, captureBefore('commissioning_workflows'), async (req, res) => {
   try {
     const { customer_name, site_name, site_address, engineer_id, engineer_name,
             fat_reference, sat_reference, scheduled_date, notes, status } = req.body;
@@ -382,12 +384,17 @@ router.post('/:id/signoff', verifyToken, async (req, res) => {
     if (customer_rating) {
       try {
         await pool.query(
+          // sentiment and classification are DERIVED here. Writing only the
+          // rating left this response out of the NPS band counts, the sentiment
+          // breakdown and the top-complaints list entirely.
           `INSERT INTO voc_responses
              (company_id, trigger_event, trigger_ref_id, customer_name, project_id,
-              commissioning_id, rating, suggestions, submitted_at)
-           VALUES ($1,'commissioning',$2,$3,$4,$5,$6,$7,NOW())`,
+              commissioning_id, rating, suggestions, sentiment, classification, submitted_at)
+           VALUES ($1,'commissioning',$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
           [cid(req), rows[0].id, rows[0].customer_name || customer_sign_name,
-           rows[0].project_id, rows[0].id, customer_rating, customer_feedback || null]
+           rows[0].project_id, rows[0].id, customer_rating, customer_feedback || null,
+           ...(({ sentiment, classification }) => [sentiment, classification])(
+             deriveResponseFields({ rating: customer_rating, suggestions: customer_feedback }))]
         );
       } catch (e) {
         console.error('[commissioning/:id/signoff] voc_responses mirror failed:', e.message);

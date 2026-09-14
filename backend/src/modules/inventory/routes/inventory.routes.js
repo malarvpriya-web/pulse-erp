@@ -14,7 +14,11 @@ import advInventoryRouter from './advancedInventory.routes.js';
 import serialNumbersRouter from './serialNumbers.routes.js';
 import componentCatalogRouter from './componentCatalog.routes.js';
 import itemSourcingRouter from './itemSourcing.routes.js';
+import planningRouter from './planning.routes.js';
+import scmOpsRouter from './scmOperations.routes.js';
 import { postStock } from '../../production/subcontracting.routes.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { authorizeIssue } from '../services/stockAvailability.service.js';
 
 const router = express.Router();
 
@@ -244,7 +248,7 @@ router.get('/stock/low-stock', requirePermission('inventory', 'view'), async (re
 
 // Stock Add / Remove — single-item transactional stock movement
 router.post('/stock/movement', requirePermission('inventory', 'add'), async (req, res) => {
-  const { item_id, warehouse_id, movement_type, quantity, rate = 0, reference, notes } = req.body;
+  const { item_id, warehouse_id, movement_type, quantity, rate = 0, reference, notes, reservation_id = null } = req.body;
   if (!item_id || !warehouse_id || !movement_type || !quantity) {
     return res.status(422).json({ error: 'item_id, warehouse_id, movement_type, and quantity are required' });
   }
@@ -258,14 +262,14 @@ router.post('/stock/movement', requirePermission('inventory', 'add'), async (req
     await client.query('BEGIN');
 
     if (!isIN) {
-      const balRes = await client.query(
-        `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-        [item_id, warehouse_id]
-      );
-      const balance = parseFloat(balRes.rows[0].balance);
-      if (balance < qty) {
+      // Free stock only, unless the caller names the reservation they are
+      // drawing on. Checking the raw ledger balance here let one order's
+      // reserved stock be issued to another.
+      try {
+        await authorizeIssue(client, { itemId: item_id, warehouseId: warehouse_id, qty, reservationId: reservation_id });
+      } catch (err) {
         await client.query('ROLLBACK');
-        return res.status(422).json({ error: `Insufficient stock. Available: ${balance}, Requested: ${qty}` });
+        return res.status(err.status || 422).json({ error: err.message });
       }
     }
 
@@ -324,7 +328,7 @@ router.get('/stock/valuation', requirePermission('inventory', 'view'), async (re
       valuationMethod = cfg?.settings?.valuation_method || 'Weighted Average';
     } catch { /* use default */ }
 
-    const valuation = await stockLedgerRepo.getInventoryValuation(req.query.warehouse_id, valuationMethod);
+    const valuation = await stockLedgerRepo.getInventoryValuation(req.query.warehouse_id, valuationMethod, companyId);
     res.json({ valuation_method: valuationMethod, items: valuation });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -736,17 +740,29 @@ router.get('/reorder-alerts', requirePermission('inventory', 'view'), async (req
           ii.reorder_level
         )                                                                             AS reorder_qty
       FROM inventory_items ii
-      CROSS JOIN warehouses w
+      -- Was CROSS JOIN warehouses: every item was tested against every store, so
+      -- a store that has never carried an item read 0, which is "below reorder
+      -- point", and alerted. With five stores that is four false alerts per item.
+      -- reorder_level is an item-level attribute and Pulse has no item x warehouse
+      -- planning row, so the honest proxy for "this store carries this item" is
+      -- that the store has ledger history for it. An item never stocked anywhere
+      -- raises no alert now, which is correct: you cannot be below a reorder point
+      -- at a location that does not hold the item.
+      JOIN (SELECT DISTINCT item_id, warehouse_id FROM stock_ledger) carried
+        ON carried.item_id = ii.id
+      JOIN warehouses w ON w.id = carried.warehouse_id AND w.deleted_at IS NULL
       LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
       LEFT JOIN vendors v ON v.id = ii.preferred_vendor_id
-      WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL AND ii.is_active = true
+      WHERE ii.deleted_at IS NULL AND ii.is_active = true
         AND ii.reorder_level > 0
+        AND ($1::INTEGER IS NULL OR ii.company_id = $1)
+        AND ($1::INTEGER IS NULL OR w.company_id = $1)
       GROUP BY ii.id, ii.item_code, ii.item_name, ii.unit_of_measure,
                ii.reorder_level, ii.safety_stock, ii.lead_time_days,
                ii.preferred_vendor_id, v.vendor_name, w.id, w.warehouse_name
       HAVING COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) <= ii.reorder_level
       ORDER BY shortfall DESC
-    `);
+    `, [companyId]);
     res.json(result.rows.map(r => ({ ...r, auto_create_po: autoCreatePo })));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -865,7 +881,13 @@ router.post('/reorder-alerts/generate-pos', requirePermission('inventory', 'add'
 // =====================================================
 router.get('/abc-analysis', requirePermission('inventory', 'view'), async (req, res) => {
   try {
-    const cached = await pool.query(`SELECT * FROM abc_analysis_cache ORDER BY computed_at DESC LIMIT 1`);
+    // abc_analysis_cache carries a company_id; this read ignored it and handed
+    // whichever tenant computed last to whoever asked.
+    const cached = await pool.query(
+      `SELECT * FROM abc_analysis_cache
+        WHERE ($1::INTEGER IS NULL OR company_id = $1)
+        ORDER BY computed_at DESC LIMIT 1`,
+      [companyOf(req)]);
     if (cached.rows.length === 0) return res.json(null);
     const row = cached.rows[0];
     res.json({ last_computed: row.computed_at, stats: row.stats, items: row.items });
@@ -876,6 +898,7 @@ router.get('/abc-analysis', requirePermission('inventory', 'view'), async (req, 
 
 router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (req, res) => {
   try {
+    const abcCompanyId = companyOf(req);
     const result = await pool.query(`
       WITH item_values AS (
         SELECT
@@ -889,6 +912,7 @@ router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (
           AND sl.transaction_date >= CURRENT_DATE - INTERVAL '12 months'
           AND sl.quantity_out > 0
         WHERE ii.deleted_at IS NULL
+          AND ($1::INTEGER IS NULL OR ii.company_id = $1)
         GROUP BY ii.id, ii.item_code, ii.item_name
       ),
       total AS (SELECT NULLIF(SUM(annual_consumption_value), 0) AS grand_total FROM item_values),
@@ -911,7 +935,7 @@ router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (
         END AS category
       FROM ranked
       ORDER BY annual_consumption_value DESC
-    `);
+    `, [abcCompanyId]);
 
     const items = result.rows;
     const stats = { A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 } };
@@ -920,9 +944,10 @@ router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (
       stats[r.category].value += parseFloat(r.annual_consumption_value);
     });
 
-    await pool.query(`INSERT INTO abc_analysis_cache (stats, items) VALUES ($1, $2)`, [
+    await pool.query(`INSERT INTO abc_analysis_cache (stats, items, company_id) VALUES ($1, $2, $3)`, [
       JSON.stringify(stats),
       JSON.stringify(items),
+      abcCompanyId,
     ]);
 
     res.json({ last_computed: new Date(), stats, items });
@@ -961,6 +986,7 @@ router.get('/slow-movers', requirePermission('inventory', 'view'), async (req, r
       FROM inventory_items ii
       LEFT JOIN stock_ledger sl ON ii.id = sl.item_id
       WHERE ii.deleted_at IS NULL AND ii.is_active = true
+        AND ($2::INTEGER IS NULL OR ii.company_id = $2)
       GROUP BY ii.id, ii.item_code, ii.item_name
       HAVING
         COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) > 0
@@ -969,7 +995,7 @@ router.get('/slow-movers', requirePermission('inventory', 'view'), async (req, r
           OR MAX(CASE WHEN sl.quantity_out > 0 THEN sl.transaction_date END) < CURRENT_DATE - ($1 || ' days')::INTERVAL
         )
       ORDER BY stock_value DESC
-    `, [slowMoverDays]);
+    `, [slowMoverDays, companyId]);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1022,7 +1048,7 @@ router.post('/warehouse-transfers', requirePermission('inventory', 'add'), async
   }
 });
 
-router.put('/warehouse-transfers/:id/dispatch', requirePermission('inventory', 'edit'), async (req, res) => {
+router.put('/warehouse-transfers/:id/dispatch', requirePermission('inventory', 'edit'), captureBefore('warehouse_transfers'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1039,18 +1065,13 @@ router.put('/warehouse-transfers/:id/dispatch', requirePermission('inventory', '
     for (const item of items) {
       const qty = parseFloat(item.qty || item.quantity || 0);
       if (!item.item_id || !qty) continue;
-      // Guard: sufficient stock in source warehouse
-      const balRes = await client.query(
-        `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-        [item.item_id, tx.from_warehouse_id]
-      );
-      const available = parseFloat(balRes.rows[0].balance);
-      if (available < qty) {
-        throw Object.assign(
-          new Error(`Insufficient stock for item ${item.item_id}. Available: ${available}, Requested: ${qty}`),
-          { status: 422 }
-        );
-      }
+      // Guard: sufficient UNRESERVED stock in the source warehouse. A transfer
+      // moves stock out of the location the reservation was made against, so
+      // there is no reservation to draw on here — release the claim first if
+      // the stock really is to be moved.
+      await authorizeIssue(client, {
+        itemId: item.item_id, warehouseId: tx.from_warehouse_id, qty, reservationId: null,
+      });
       // Deduct from source warehouse on dispatch
       await stockLedgerRepo.createEntry(client, {
         item_id: item.item_id,
@@ -1081,7 +1102,7 @@ router.put('/warehouse-transfers/:id/dispatch', requirePermission('inventory', '
   }
 });
 
-router.put('/warehouse-transfers/:id/receive', requirePermission('inventory', 'edit'), async (req, res) => {
+router.put('/warehouse-transfers/:id/receive', requirePermission('inventory', 'edit'), captureBefore('warehouse_transfers'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1668,15 +1689,15 @@ router.post('/consumption', requirePermission('inventory', 'add'), async (req, r
   try {
     await client.query('BEGIN');
 
-    // Guard: sufficient stock
-    const balRes = await client.query(
-      `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-      [item_id, warehouse_id]
-    );
-    const available = parseFloat(balRes.rows[0].balance);
-    if (available < qty) {
+    // Guard: sufficient UNRESERVED stock, or an explicit reservation to spend.
+    try {
+      await authorizeIssue(client, {
+        itemId: item_id, warehouseId: warehouse_id, qty,
+        reservationId: req.body.reservation_id ?? null,
+      });
+    } catch (err) {
       await client.query('ROLLBACK');
-      return res.status(422).json({ error: `Insufficient stock. Available: ${available}, Requested: ${qty}` });
+      return res.status(err.status || 422).json({ error: err.message });
     }
 
     // Fetch current rate for valuation
@@ -2370,6 +2391,8 @@ router.get('/dept-cost-analysis', requirePermission('inventory', 'view'), async 
   }
 });
 
+router.use('/planning', planningRouter);
+router.use('/scm', scmOpsRouter);
 router.use('/advanced', advInventoryRouter);
 router.use('/serials', serialNumbersRouter);
 router.use('/catalog', componentCatalogRouter);

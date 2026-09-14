@@ -8,18 +8,23 @@ import * as drive from '../../../services/googleDrive.service.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { nextProjectCode, nextLifecycleNumber } from '../../../shared/docNumber.js';
-import { resolveAutoAssignee } from '../services/leadAssignment.service.js';
+import { resolveAutoAssignee, resolveAssignment } from '../services/leadAssignment.service.js';
 import { convertOpportunityToProject } from '../services/opportunityConversion.service.js';
 import notificationsRepository from '../../notifications/repositories/notifications.repository.js';
 import { respondError } from '../../../shared/pgErrors.js';
 import {
   sqlLeadConverted, sqlOpportunityWon, sqlOpportunityLost, sqlOpportunityOpen,
-  sqlOpportunityClosed, sqlSalesOrderBooked, isIn, LEAD_CLOSED,
+  sqlOpportunityClosed, sqlSalesOrderBooked, isIn, LEAD_CLOSED, canonicalState,
 } from '../../../shared/statusSets.js';
 import {
   resolveCustomer, resolveOrCreateContact, findLikelyDuplicates, normalizeOrgName,
 } from '../services/customerIdentity.service.js';
 import { mergeAccounts } from '../services/customerMerge.service.js';
+import { validateOpportunity } from '../services/opportunityValidation.js';
+import { dispatch as dispatchWorkflows } from '../../../services/workflowEngine.js';
+import { validate as validateRules } from '../../../services/ValidationEngineService.js';
+import { timelineFor, customerTimeline, TIMELINE_KEYS } from '../services/activityTimeline.service.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -281,7 +286,7 @@ router.post('/accounts', requirePermission('crm', 'add'), async (req, res) => {
 });
 
 
-router.put('/accounts/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/accounts/:id', requirePermission('crm', 'edit'), captureBefore('accounts'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { name, industry, website, phone, email, city, account_type, annual_revenue, employee_count, status } = req.body;
@@ -303,7 +308,7 @@ router.put('/accounts/:id', requirePermission('crm', 'edit'), async (req, res) =
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.delete('/accounts/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/accounts/:id', requirePermission('crm', 'delete'), captureBefore('accounts'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { rows: deps } = await pool.query(
@@ -458,7 +463,7 @@ router.post('/contacts', requirePermission('crm', 'add'), async (req, res) => {
   } finally { client.release(); }
 });
 
-router.put('/contacts/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/contacts/:id', requirePermission('crm', 'edit'), captureBefore('contacts'), async (req, res) => {
   const client = await pool.connect();
   try {
     const cid = companyOf(req);
@@ -507,7 +512,7 @@ router.put('/contacts/:id', requirePermission('crm', 'edit'), async (req, res) =
   } finally { client.release(); }
 });
 
-router.delete('/contacts/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/contacts/:id', requirePermission('crm', 'delete'), captureBefore('contacts'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -682,6 +687,15 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
     const userId     = req.user?.userId ?? req.user?.id;
     const company_id = companyOf(req);
 
+    // Configurable per-tenant rules from validation_rules (module 'crm').
+    // These sit ON TOP of the unconditional checks below and in the repository:
+    // the rule table is where a company expresses its own policy, and it was
+    // empty for this module until migration 20260904000002.
+    const ruleCheck = await validateRules('crm', req.body, { partial: false, companyId: company_id });
+    if (!ruleCheck.valid) {
+      return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors: ruleCheck.errors });
+    }
+
     // 409 on duplicate email within the same company
     if (req.body.email && company_id) {
       const dup = await pool.query(
@@ -707,16 +721,38 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
       } catch (_) {}
     }
 
-    // Auto-assign when auto_assign_owner is enabled — resolveAutoAssignee covers
-    // crm_assignment_rules matches plus real round-robin/load-balanced rotation
-    // across active sales_exec/sales_manager employees.
+    // Resolve owner AND territory. resolveAssignment() runs
+    // crm_assignment_rules, then sales_territories, then round-robin /
+    // load-balanced rotation across active sales_exec/sales_manager employees.
+    //
+    // The territory is stamped even when the lead was assigned by hand and even
+    // when auto_assign_owner is off — territory performance reporting needs to
+    // know where a lead landed, and re-deriving it later from today's territory
+    // definitions would silently rewrite history every time someone edits a
+    // territory boundary.
     let assignedTo = req.body.assigned_to;
     let autoAssignedId = null;
-    if (!assignedTo && crmSettings.auto_assign_owner && company_id) {
+    let territoryId = req.body.territory_id ?? null;
+    if (company_id) {
       try {
-        autoAssignedId = await resolveAutoAssignee(company_id, crmSettings.lead_assignment_method, req.body);
-        if (autoAssignedId) assignedTo = autoAssignedId;
-      } catch (_) {}
+        const resolved = await resolveAssignment(
+          company_id,
+          assignedTo ? 'manual' : crmSettings.lead_assignment_method,
+          req.body
+        );
+        if (territoryId == null) territoryId = resolved.territory_id;
+        if (!assignedTo && crmSettings.auto_assign_owner && resolved.assigned_to) {
+          autoAssignedId = resolved.assigned_to;
+          assignedTo = autoAssignedId;
+        }
+      } catch (err) {
+        // Assignment is an enrichment, not a precondition — a lead must still be
+        // capturable if territory lookup fails. Logged, never swallowed silently.
+        console.warn(JSON.stringify({
+          ts: new Date().toISOString(), level: 'WARN', event: 'lead_assignment_failed',
+          companyId: company_id, message: err.message,
+        }));
+      }
     }
     // assigned_to FKs employees (see leadAssignment.service.js), not users — userId
     // here is a users.id and would silently break every downstream employees-join
@@ -752,6 +788,7 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
       created_by:  userId,
       company_id,
       assigned_to: assignedTo,
+      territory_id: territoryId,
     });
 
     if (autoAssignedId) {
@@ -773,6 +810,10 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
 router.put('/leads/:id', requirePermission('crm', 'edit'), async (req, res) => {
   try {
     const userId = req.user?.userId ?? req.user?.id ?? null;
+    const ruleCheck = await validateRules('crm', req.body, { partial: true, companyId: companyOf(req) });
+    if (!ruleCheck.valid) {
+      return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors: ruleCheck.errors });
+    }
     const before = await leadsRepository.findById(req.params.id, companyOf(req));
     if (!before) return res.status(404).json({ error: 'Lead not found' });
     const lead = await leadsRepository.update(req.params.id, req.body, companyOf(req));
@@ -798,7 +839,7 @@ router.delete('/leads/:id', requirePermission('crm', 'delete'), async (req, res)
 });
 
 // PATCH /leads/:id/assign — re-assign owner (managers/admins only)
-router.patch('/leads/:id/assign', allowRoles('manager', 'admin', 'super_admin', 'hr'), async (req, res) => {
+router.patch('/leads/:id/assign', allowRoles('manager', 'admin', 'super_admin', 'hr'), captureBefore('leads'), async (req, res) => {
   try {
     const { owner_id } = req.body;
     if (!owner_id) return res.status(400).json({ error: 'owner_id required' });
@@ -818,7 +859,7 @@ router.patch('/leads/:id/assign', allowRoles('manager', 'admin', 'super_admin', 
 });
 
 // PATCH /leads/:id/score — manual score override
-router.patch('/leads/:id/score', requirePermission('crm', 'edit'), async (req, res) => {
+router.patch('/leads/:id/score', requirePermission('crm', 'edit'), captureBefore('leads'), async (req, res) => {
   try {
     const score = parseInt(req.body.lead_score);
     if (isNaN(score) || score < 0 || score > 100) {
@@ -1093,9 +1134,15 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
     expected_value,
     probability_percentage,
     expected_closing_date,
-    stage = 'Qualification',
+    stage: rawStage,
     assigned_to,
   } = req.body;
+
+  // Canonical stored spelling (crm_pipeline_stages.stage_key). The default was
+  // 'Qualification', which the pipeline GROUP BY drew as a second stage beside
+  // the 'qualification' rows every other path writes; a client-supplied stage
+  // was stored verbatim, which did the same for any stage it named.
+  const stage = canonicalState(rawStage) || 'qualification';
 
   if (!opportunity_name || !opportunity_name.trim()) {
     return res.status(400).json({ error: 'opportunity_name is required' });
@@ -1154,6 +1201,25 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
       ? (lead.probability ?? 50)
       : parseInt(probability_percentage, 10);
 
+    // Conversion creates an opportunity, so it must satisfy the same configured
+    // requirements as POST /opportunities. It did not, which is one of the two
+    // routes by which opportunities with no expected_closing_date entered this
+    // database — and a deal with no close date belongs to no period, so it is
+    // absent from every forecast and ageing report without ever erroring.
+    const convCheck = await validateOpportunity(client, lead.company_id, {
+      opportunity_name,
+      expected_value: value,
+      estimate_value: lead.estimated_value,
+      expected_closing_date,
+      probability_percentage: prob,
+      stage,
+      account_id: lead.id,   // conversion always materialises an account below
+    });
+    if (!convCheck.ok) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: convCheck.errors.join('; '), errors: convCheck.errors });
+    }
+
     // Only reached when the lead itself had no owner either — a normal
     // conversion just carries the lead's existing assigned_to forward.
     let autoAssignedId = null;
@@ -1209,13 +1275,19 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
       }
     }
 
-    // Create the opportunity — inherit company_id from the lead
+    // Create the opportunity — inherit company_id AND territory from the lead.
+    //
+    // territory_id is carried forward rather than re-derived. Re-matching the
+    // territory rules at conversion time would let an edit to a territory
+    // boundary silently move historical deals between territories, which makes
+    // territory revenue unreproducible; the lead recorded where it landed, and
+    // the opportunity inherits that fact.
     const oppRes = await client.query(
       `INSERT INTO opportunities
          (lead_id, opportunity_name, expected_value, probability_percentage,
           expected_closing_date, stage, assigned_to, created_by, company_id,
-          region, notes, estimate_value, account_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          region, notes, estimate_value, account_id, territory_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING *`,
       [
         leadId,
@@ -1223,7 +1295,7 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
         value,
         Math.min(100, Math.max(0, Number.isNaN(prob) ? 50 : prob)),
         expected_closing_date || null,
-        stage || 'Qualification',
+        stage,
         finalAssignedTo,
         userId,
         lead.company_id || null,
@@ -1233,6 +1305,7 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
         // revalued) expected_value so the IEM summary can show the spread.
         lead.estimated_value ?? null,
         account?.id ?? null,
+        lead.territory_id ?? null,
       ]
     );
     const opportunity = oppRes.rows[0];
@@ -1504,19 +1577,20 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
     const userId     = req.user?.userId ?? req.user?.id;
     const company_id = companyOf(req);
 
-    // Validate require_close_date setting
-    if (company_id && !expected_closing_date) {
-      try {
-        const sr = await pool.query(
-          `SELECT required_fields_to_close FROM crm_settings WHERE company_id = $1`,
-          [company_id]
-        );
-        const required = sr.rows[0]?.required_fields_to_close || [];
-        if (Array.isArray(required) && required.includes('expected_close_date')) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'Expected closing date is required (configured in CRM settings)' });
-        }
-      } catch (_) {}
+    // Enforce crm_settings.required_fields_to_close through the shared validator.
+    // This used to honour only 'expected_close_date' (ignoring the configured
+    // 'value') and swallowed any error reading crm_settings, so a failed lookup
+    // silently passed validation.
+    const check = await validateOpportunity(client, company_id, req.body);
+    if (!check.ok) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: check.errors.join('; '), errors: check.errors });
+    }
+    // Configurable rules (module 'sales') on top of the invariants above.
+    const oppRules = await validateRules('sales', req.body, { partial: false, companyId: company_id });
+    if (!oppRules.valid) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors: oppRules.errors });
     }
 
     // Prevent duplicate opportunities for the same lead when lead_id is supplied
@@ -1602,16 +1676,42 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
       });
     }
 
+    // Territory: inherit from the originating lead when there is one, otherwise
+    // match on the geography supplied with the opportunity. Stamped regardless
+    // of how the owner was chosen, so territory reporting sees every deal.
+    let oppTerritoryId = req.body.territory_id ?? null;
+    if (oppTerritoryId == null && company_id) {
+      try {
+        if (lead_id) {
+          const { rows: lt } = await client.query(
+            `SELECT territory_id FROM leads WHERE id = $1`, [lead_id]
+          );
+          oppTerritoryId = lt[0]?.territory_id ?? null;
+        }
+        if (oppTerritoryId == null) {
+          const resolved = await resolveAssignment(company_id, 'manual', req.body);
+          oppTerritoryId = resolved.territory_id;
+        }
+      } catch (err) {
+        // Enrichment, not a precondition — an opportunity must still be
+        // creatable if territory lookup fails. Logged, never swallowed silently.
+        console.warn(JSON.stringify({
+          ts: new Date().toISOString(), level: 'WARN', event: 'opportunity_territory_failed',
+          companyId: company_id, message: err.message,
+        }));
+      }
+    }
+
     const oppRes = await client.query(
       `INSERT INTO opportunities
          (lead_id, opportunity_name, expected_value, probability_percentage,
           expected_closing_date, stage, assigned_to, notes, created_by, company_id,
-          estimate_value, held_by, follow_up_date, account_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+          estimate_value, held_by, follow_up_date, account_id, territory_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [lead_id || null, opportunity_name, expected_value, probability_percentage,
        expected_closing_date || null, stage, finalAssignedTo, notes || null, userId, company_id,
        estimate_value === '' || estimate_value == null ? null : estimate_value,
-       held_by || null, follow_up_date || null, accountId]
+       held_by || null, follow_up_date || null, accountId, oppTerritoryId]
     );
     const opportunity = oppRes.rows[0];
 
@@ -1654,8 +1754,13 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
 router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { stage, notes: stageNotes, close_reason, competitor } = req.body;
-    if (!stage) return res.status(400).json({ error: 'stage is required' });
+    const { stage: rawStage, notes: stageNotes, close_reason, competitor } = req.body;
+    if (!rawStage) return res.status(400).json({ error: 'stage is required' });
+    // The client's casing is a display choice, not a value. Storing it verbatim
+    // is how this column ended up holding 'Qualification' and 'qualification'
+    // as two stages — the Kanban sends 'Won', the conversion path wrote
+    // 'Qualification', and every GROUP BY drew each spelling as its own column.
+    const stage  = canonicalState(rawStage);
     const cid    = companyOf(req);
     const userId = req.user?.userId ?? req.user?.id ?? null;
 
@@ -1670,7 +1775,7 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
 
     const params = [stage, req.params.id];
     let extraSet = '';
-    const stageLc = stage.toLowerCase();
+    const stageLc = stage; // already canonical — kept named for the branches below
     if (stageLc === 'won') {
       // sales_cycle_days is what makes "average sales cycle" computable; it was
       // never populated, so the KPI read 0 even once deals started closing.
@@ -1734,6 +1839,25 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
                action: 'stage_change', oldData: { stage: prevStage },
                newData: { stage, close_reason: close_reason || null }, req });
     res.json(rows[0]);
+
+    // Fire configured automation for this event. Deliberately AFTER the commit
+    // and after the response: a workflow rule is an observer of the stage
+    // change, not a participant in it, so a broken rule must not be able to
+    // fail or slow the change it was watching. dispatch() never throws — every
+    // outcome lands in workflow_run_logs.
+    //
+    // `previous` carries the before-image so a rule can use the `changed`
+    // operator, which is otherwise unanswerable from the new row alone.
+    dispatchWorkflows({
+      companyId: cid,
+      module: 'opportunity',
+      event: 'stage_changed',
+      entityId: Number(req.params.id),
+      table: 'opportunities',
+      record: rows[0],
+      previous: { stage: prevStage },
+      actorUserId: userId,
+    });
 
     // Auto-convert on Won — mirrors the Sales Order path's auto-bootstrap
     // (sales.routes.js) so a Won opportunity gets a project regardless of
@@ -2794,7 +2918,7 @@ router.post('/activities', requirePermission('crm', 'add'), async (req, res) => 
   } catch (error) { respondError(res, error); }
 });
 
-router.put('/activities/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/activities/:id', requirePermission('crm', 'edit'), captureBefore('crm_activities'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const {
@@ -2818,7 +2942,7 @@ router.put('/activities/:id', requirePermission('crm', 'edit'), async (req, res)
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.delete('/activities/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/activities/:id', requirePermission('crm', 'delete'), captureBefore('crm_activities'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -2831,6 +2955,71 @@ router.delete('/activities/:id', requirePermission('crm', 'delete'), async (req,
 });
 
 // ── Customer 360 — single-call comprehensive account view ─────────────────────
+/**
+ * GET /api/crm/timeline — activities directly attached to one or more entities.
+ *
+ * Query keys are the entity columns themselves (lead_id, opportunity_id,
+ * ticket_id, quotation_id, …) and are OR-ed: an activity on an opportunity
+ * belongs to that opportunity's history whether or not it also names the
+ * account. Requiring every supplied key to match would return almost nothing.
+ */
+router.get('/timeline', requirePermission('crm', 'view'), async (req, res) => {
+  try {
+    const filters = {};
+    for (const k of TIMELINE_KEYS) {
+      if (req.query[k] !== undefined && req.query[k] !== '') filters[k] = req.query[k];
+    }
+    if (!Object.keys(filters).length) {
+      // Refusing beats returning every activity in the tenant: an unfiltered
+      // timeline is not a useful answer and is an expensive accident.
+      return res.status(400).json({
+        error: `Supply at least one of: ${TIMELINE_KEYS.join(', ')}`,
+      });
+    }
+    const rows = await timelineFor(pool, {
+      companyId: companyOf(req), filters,
+      from: req.query.from, to: req.query.to, limit: req.query.limit,
+      types: req.query.types ? String(req.query.types).split(',') : undefined,
+    });
+    res.json({ count: rows.length, filters, data: rows });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/crm/timeline/customer/:accountId — the whole customer history.
+ *
+ * Resolves the account's opportunities, leads, quotations, orders and projects
+ * first, then returns every activity attached to ANY of them. This is the
+ * question Customer 360 asks and the one that could not be answered while the
+ * seven activity tables had no common read model.
+ */
+router.get('/timeline/customer/:accountId', requirePermission('crm', 'view'), async (req, res) => {
+  try {
+    const accountId = parseInt(req.params.accountId, 10);
+    if (!Number.isInteger(accountId)) return res.status(400).json({ error: 'accountId must be an integer' });
+
+    // Scope check before reading history: the timeline crosses tables whose own
+    // company_id is inherited, so the account is the boundary to enforce.
+    const cid = companyOf(req);
+    const { rows: [acct] } = await pool.query(
+      `SELECT id FROM accounts WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [accountId, cid]
+    );
+    if (!acct) return res.status(404).json({ error: 'Account not found' });
+
+    const result = await customerTimeline(pool, {
+      companyId: cid, accountId,
+      from: req.query.from, to: req.query.to, limit: req.query.limit,
+      types: req.query.types ? String(req.query.types).split(',') : undefined,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 router.get('/customer-360/:accountId', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const { accountId } = req.params;

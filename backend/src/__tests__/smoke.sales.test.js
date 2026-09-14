@@ -8,10 +8,19 @@ vi.mock('../middlewares/auth.middleware.js', () => ({
     if (!header.startsWith('Bearer ')) {
       return res.status(401).json({ message: 'No token provided' });
     }
-    req.user = { userId: 1, id: 1, role: 'admin', company_id: null };
+    // `roles` (plural) is what rolesOf() reads; a mock supplying only the legacy
+    // singular `role` leaves the caller with no roles at all.
+    req.user = { userId: 1, id: 1, role: 'admin', roles: ['admin'], company_id: null };
     next();
   },
   requirePermission: () => (_req, _res, next) => next(),
+  // sales.routes.js gates PUT /settings with allowRoles at MODULE scope, so the
+  // mock has to provide it or the router throws on import — the whole file then
+  // reports "0 test" rather than a failure, which is easy to miss in a summary.
+  // A partial mock has to keep up with the surface of the module it replaces.
+  allowRoles: () => (_req, _res, next) => next(),
+  hasRole: () => true,
+  rolesOf: (req) => req?.user?.roles ?? [],
 }));
 
 vi.mock('../services/AuditService.js', () => ({ logAudit: vi.fn() }));

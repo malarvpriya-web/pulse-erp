@@ -6,6 +6,7 @@ import { validateOptionalMobile } from '../../shared/validators.js';
 import { PROJECT_TYPES } from '../../shared/projectTypes.js';
 import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -444,7 +445,7 @@ router.post('/', svc('add'), async (req, res) => {
  * guard's PROTECTED set covers id/company_id/audit columns but not an identifier,
  * so without this a client could rewrite an IPCS number.
  */
-router.put('/:id', svc('edit'), async (req, res) => {
+router.put('/:id', svc('edit'), captureBefore('complaints'), async (req, res) => {
   try {
     const companyId = cid(req);
 
@@ -600,7 +601,7 @@ router.get('/:id', svc('view'), async (req, res) => {
 });
 
 // ── STATUS UPDATE ─────────────────────────────────────────────────────────────
-router.put('/:id/status', svc('edit'), async (req, res) => {
+router.put('/:id/status', svc('edit'), captureBefore('complaints'), async (req, res) => {
   const client = await pool.connect();
   try {
     const companyId = cid(req);
@@ -699,7 +700,7 @@ router.post('/:id/link-ncr', svc('edit'), async (req, res) => {
 });
 
 // ── DELETE (soft) ─────────────────────────────────────────────────────────────
-router.delete('/:id', svc('delete'), async (req, res) => {
+router.delete('/:id', svc('delete'), captureBefore('complaints'), async (req, res) => {
   try {
     const companyId = cid(req);
     const result = await pool.query(

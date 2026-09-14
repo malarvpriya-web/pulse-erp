@@ -8,6 +8,8 @@
 import { Router } from 'express';
 import pool from '../../shared/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { sqlPoCommitted } from '../../../shared/statusSets.js';
+import { poSpendInr } from '../../procurement/services/spendAnalytics.service.js';
 
 const router = Router();
 
@@ -176,12 +178,19 @@ router.get('/:id/full-history', async (req, res) => {
     );
 
     // ── Purchase Orders ───────────────────────────────────────────────────
+    // `spend` is the INR figure and counts COMMITTED orders only. It was
+    // COALESCE(po.total_amount, 0) over every row: the order's own currency (so
+    // a foreign-currency PO was added to a rupee total at face value), and
+    // including drafts, cancellations and rejections — none of which is spend.
+    // Soft-deleted orders were counted too. The row itself is still LISTED
+    // whatever its status, because the history panel is a history; only the
+    // TOTAL is restricted to what was actually committed.
     const purchaseOrders = await safeQuery(
       `SELECT po.*, v.vendor_name,
-              COALESCE(po.total_amount, 0) AS spend
+              CASE WHEN ${sqlPoCommitted('po.status')} THEN ${poSpendInr('po')} ELSE 0 END AS spend
        FROM purchase_orders po
        LEFT JOIN vendors v ON v.id = po.supplier_id
-       WHERE po.project_id=$1 OR po.sales_order_id=$2
+       WHERE (po.project_id=$1 OR po.sales_order_id=$2) AND po.deleted_at IS NULL
        ORDER BY po.created_at DESC`,
       [projectId, salesOrderId]
     );
@@ -191,7 +200,7 @@ router.get('/:id/full-history', async (req, res) => {
     const vendors = purchaseOrders.length ? await safeQuery(
       `SELECT DISTINCT v.id, v.vendor_name, v.gstin, v.quality_rating,
               COUNT(po.id)::int AS po_count,
-              SUM(po.total_amount) AS total_spend
+              SUM(CASE WHEN ${sqlPoCommitted('po.status')} THEN ${poSpendInr('po')} ELSE 0 END) AS total_spend
        FROM purchase_orders po
        JOIN vendors v ON v.id = po.supplier_id
        WHERE po.id = ANY($1::int[])

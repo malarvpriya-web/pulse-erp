@@ -24,6 +24,19 @@ const STATUS_META = {
 
 const ISSUE_TYPES = ['general', 'technical', 'scope', 'resource', 'schedule', 'quality', 'commercial'];
 
+// The client retries a short 429 on its own; anything that reaches here has
+// already outlasted that budget, so tell the user what to do rather than
+// failing silently to an empty page.
+function describeLoadError(err) {
+  if (err?.status === 429 || err?.response?.status === 429) {
+    const secs = err?.retryAfter ?? err?.response?.data?.retry_after;
+    return secs
+      ? `Too many requests — the server asked us to wait ${secs}s. Retry after that.`
+      : 'Too many requests — please wait a moment and retry.';
+  }
+  return err?.response?.data?.error || 'Could not load issue data. Please retry.';
+}
+
 const empty = () => ({
   title: '', description: '', issue_type: 'general', severity: 'medium',
   priority: 'medium', assigned_to: '', due_date: '', is_blocker: false,
@@ -43,6 +56,7 @@ export default function IssueManagement({ setPage, urlParams }) {
   const [statusFilter,setStatusFilter]= useState('all');
   const [toast,       setToast]       = useState(null);
   const [pendingHandleDelete, setPendingHandleDelete] = useState(null);
+  const [loadError,   setLoadError]   = useState(null);
   const isMounted = useRef(true);
 
   useEffect(() => {
@@ -55,24 +69,35 @@ export default function IssueManagement({ setPage, urlParams }) {
     setTimeout(() => setToast(null), 3000);
   };
 
+  // Reference data (project list + assignee list). allSettled, not all: an
+  // unguarded Promise.all rejected the whole pair on a single 429 and left an
+  // unhandled rejection in the console with nothing shown to the user.
+  const loadRefs = useCallback(async () => {
+    const [prjs, emps] = await Promise.allSettled([getProjects(), getProjectEmployees()]);
+    if (!isMounted.current) return;
+    if (prjs.status === 'fulfilled') setProjects(Array.isArray(prjs.value) ? prjs.value : []);
+    if (emps.status === 'fulfilled') setEmployees(Array.isArray(emps.value) ? emps.value : []);
+
+    const failed = [prjs, emps].find(r => r.status === 'rejected');
+    if (failed) setLoadError(describeLoadError(failed.reason));
+    else if (isMounted.current) setLoadError(null);
+  }, []);
+
   useEffect(() => {
     const pid = urlParams?.id || sessionStorage.getItem('selectedProjectId');
     if (pid) setSelectedPid(String(pid));
-
-    Promise.all([getProjects(), getProjectEmployees()]).then(([prjs, emps]) => {
-      if (!isMounted.current) return;
-      setProjects(prjs);
-      setEmployees(emps);
-    });
-  }, []);
+    loadRefs();
+  }, [loadRefs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     if (!selectedPid) return;
     setLoading(true);
     try {
       const data = await getProjectIssues(selectedPid);
-      if (isMounted.current) setIssues(Array.isArray(data) ? data : []);
-    } catch { /* handled */ }
+      if (isMounted.current) { setIssues(Array.isArray(data) ? data : []); setLoadError(null); }
+    } catch (e) {
+      if (isMounted.current) { setIssues([]); setLoadError(describeLoadError(e)); }
+    }
     if (isMounted.current) setLoading(false);
   }, [selectedPid]);
 
@@ -167,6 +192,24 @@ export default function IssueManagement({ setPage, urlParams }) {
         }}>{toast.msg}</div>
       )}
 
+
+      {loadError && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,
+          padding: '10px 14px', borderRadius: 8,
+          background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 13,
+        }}>
+          <AlertTriangle size={16} />
+          <span style={{ flex: 1 }}>{loadError}</span>
+          <button
+            onClick={() => { setLoadError(null); loadRefs(); load(); }}
+            style={{
+              padding: '5px 12px', border: '1px solid #fcd34d', borderRadius: 6,
+              background: '#fff', color: '#92400e', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+            }}
+          >Retry</button>
+        </div>
+      )}
 
       {/* Project selector */}
       <div style={{ marginBottom: 16 }}>

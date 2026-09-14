@@ -16,9 +16,9 @@ export const ALWAYS_VISIBLE = new Set(['Home']);
 
 // Sections that hold the screens used to undo a bad access change — protected
 // so an admin cannot accidentally lock themselves out of the very screens
-// needed to fix it. 'Settings' holds Access Control; 'User Management' holds
-// the same Users / Roles / Approver screens as direct entries.
-export const SELF_SERVICE_LOCK = new Set(['Settings', 'User Management']);
+// needed to fix it. 'Settings' holds Access Control, which is now the ONLY
+// section carrying Users / Roles / Approver — so it is the only one to lock.
+export const SELF_SERVICE_LOCK = new Set(['Settings']);
 
 /** Extract the page key from a submenu/child entry (handles both NAV shapes). */
 function entryPage(entry) {

@@ -5,9 +5,13 @@ import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './Contacts.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import MasterSelect from '@/components/core/MasterSelect';
 
 const TITLES = ['Mr', 'Ms', 'Mrs', 'Dr', 'Prof'];
-const DEPARTMENTS = ['Sales', 'Marketing', 'Finance', 'IT', 'Operations', 'HR', 'Executive', 'Other'];
+// Departments come from the master via <MasterSelect>, which also offers an
+// inline add so a missing one does not mean a trip to Master Setup.
+// The hardcoded array that was here disagreed with every other screen's, so a
+// record created here could carry a department name no report could group by.
 
 
 const emptyForm = () => ({
@@ -221,10 +225,13 @@ export default function Contacts() {
                 </div>
                 <div className="ct-field">
                   <label>Department</label>
-                  <select value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))}>
-                    <option value="">Select…</option>
-                    {DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
-                  </select>
+                  <MasterSelect
+                    endpoint="/master/departments"
+                    label="Department"
+                    value={form.department}
+                    onChange={v => setForm(f => ({ ...f, department: v }))}
+                    placeholder="Select…"
+                  />
                 </div>
               </div>
               <div className="ct-field">

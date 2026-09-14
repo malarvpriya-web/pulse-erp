@@ -9,8 +9,11 @@ import { PROJECT_TYPES } from '../../../shared/projectTypes.js';
 import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
 import { pageParams } from '../../../shared/pagination.js';
 import { validateOptionalMobile } from '../../../shared/validators.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
 import { postStock } from '../../production/subcontracting.routes.js';
+import knowledgeWorkflowRoutes from './knowledgeWorkflow.routes.js';
+import { editArticle, transition } from '../services/knowledgeWorkflow.service.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -482,6 +485,82 @@ router.get('/tickets/my', svcSelfService, async (req, res) => {
 });
 
 // ── single ticket ───────────────────────────────────────────────────────────────
+/**
+ * The email thread on a case.
+ *
+ * ⚠ This did not exist. Email-to-case writes `ticket_conversations` rows, and
+ * the ONLY endpoint that could read them lived under /finance/tickets/:id gated
+ * on the `finance` permission — so the service desk could receive a customer's
+ * email and then not show it to the agent handling the case.
+ *
+ * Same self-service rule as the ticket itself: a requester may read their own
+ * thread, staff may read any in their company, and internal notes are stripped
+ * for anyone who is not staff.
+ */
+router.get('/tickets/:id/conversations', svcSelfService, async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const { rows: [ticket] } = await pool.query(
+      `SELECT id, requester_email, company_id FROM support_tickets
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) AND deleted_at IS NULL`,
+      [req.params.id, companyId]
+    );
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+    if (!ownsTicket(req, ticket)) {
+      return res.status(403).json({ error: 'Not authorized to view this ticket' });
+    }
+
+    const staff = isServiceStaff(req);
+    const { rows } = await pool.query(
+      `SELECT c.id, c.message, c.is_internal, c.created_by_name, c.created_at,
+              c.channel, c.message_id, c.inbound_email_id,
+              e.from_email, e.subject AS email_subject, e.received_at
+         FROM ticket_conversations c
+         LEFT JOIN inbound_emails e ON e.id = c.inbound_email_id
+        WHERE c.ticket_id = $1
+          AND ($2::boolean OR COALESCE(c.is_internal, false) = false)
+        ORDER BY c.created_at ASC, c.id ASC`,
+      [req.params.id, staff]
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/** Add a reply to the thread. Internal notes are staff-only. */
+router.post('/tickets/:id/conversations', svcSelfService, async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const { message, is_internal } = req.body || {};
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ error: 'message is required' });
+    }
+    const { rows: [ticket] } = await pool.query(
+      `SELECT id, requester_email, company_id FROM support_tickets
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) AND deleted_at IS NULL`,
+      [req.params.id, companyId]
+    );
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+    if (!ownsTicket(req, ticket)) {
+      return res.status(403).json({ error: 'Not authorized to comment on this ticket' });
+    }
+    // A requester marking their own message internal would hide it from the
+    // agents who need to read it.
+    const internal = Boolean(is_internal) && isServiceStaff(req);
+
+    const { rows: [created] } = await pool.query(
+      `INSERT INTO ticket_conversations
+         (ticket_id, message, is_internal, created_by, created_by_name, channel)
+       VALUES ($1,$2,$3,$4,$5,'web')
+       RETURNING *`,
+      [req.params.id, String(message).trim(), internal, req.user?.userId ?? null,
+       req.user?.email ?? null]
+    );
+    logAudit({ userId: req.user?.userId, module: 'service', recordId: created.id,
+      recordType: 'ticket_conversation', action: 'create', newData: created, req });
+    res.status(201).json(created);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 router.get('/tickets/:id', svcSelfService, async (req, res) => {
   try {
     const companyId = cid(req);
@@ -510,10 +589,24 @@ router.get('/tickets/:id', svcSelfService, async (req, res) => {
 // ── create ticket ───────────────────────────────────────────────────────────────
 router.post('/tickets', svcSelfService, async (req, res) => {
   try {
-    const { valid, errors } = await validate('service', req.body);
+    const { valid, errors } = await validate('service', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'service', errors });
     const companyId = cid(req);
     const { title, description, category, priority, team } = req.body;
+
+    // support_tickets.title is NOT NULL, and the rule-driven ValidationEngine
+    // cannot catch that here: it is gated behind VALIDATION_ENGINE_ENABLED
+    // (unset in this deployment, so validate() returns valid for everything)
+    // and validation_rules holds rules for only `leaves` and `projects` — none
+    // for `service`. A ticket posted without a title therefore reached Postgres
+    // and came back as a raw 500 quoting the constraint name. A missing
+    // required field is a 400 about the field, not a server fault.
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({
+        error: 'title is required', code: 'VALIDATION_ERROR', module: 'service',
+        errors: [{ field: 'title', message: 'A ticket needs a title' }],
+      });
+    }
     // Staff may raise a ticket on behalf of any requester; a self-service user
     // is always recorded as the requester (can't spoof someone else).
     const requester_name  = isServiceStaff(req) ? req.body.requester_name  : (req.user?.name  || req.body.requester_name);
@@ -605,7 +698,7 @@ router.post('/tickets', svcSelfService, async (req, res) => {
 // ── update ticket ───────────────────────────────────────────────────────────────
 router.put('/tickets/:id', svcAdmin('edit'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('service', req.body);
+    const { valid, errors } = await validate('service', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'service', errors });
     const companyId = cid(req);
     const { title, description, status, priority, category, team, assigned_to,
@@ -700,7 +793,7 @@ router.put('/tickets/:id', svcAdmin('edit'), async (req, res) => {
 });
 
 // ── soft delete ticket ──────────────────────────────────────────────────────────
-router.delete('/tickets/:id', svcAdmin('delete'), async (req, res) => {
+router.delete('/tickets/:id', svcAdmin('delete'), captureBefore('support_tickets'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -772,7 +865,7 @@ router.delete('/tickets/:ticketId/attachments/:id', svcAdmin('edit'), async (req
 // ── add comment ─────────────────────────────────────────────────────────────────
 router.post('/tickets/:id/comments', svcSelfService, async (req, res) => {
   try {
-    const { valid, errors } = await validate('service', req.body);
+    const { valid, errors } = await validate('service', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'service', errors });
     const companyId = cid(req);
     const { body, is_internal } = req.body;
@@ -880,7 +973,7 @@ router.post('/engineers', svcAdmin('add'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/engineers/:id', svcAdmin('edit'), async (req, res) => {
+router.put('/engineers/:id', svcAdmin('edit'), captureBefore('service_engineers'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { name, email, phone, skills, zone, status, employee_id } = req.body;
@@ -1071,11 +1164,16 @@ router.put('/field-visits/:id', svcAdmin('edit'), async (req, res) => {
     // one capture point serves both. Best-effort: must not fail the save.
     if (customer_rating && row.customer_rating == null) {
       pool.query(
+        // See voc.service.js — sentiment is the common currency between the
+        // 1-5 visit rating and the portal's 0-10 NPS answer.
         `INSERT INTO voc_responses
-           (company_id, trigger_event, trigger_ref_id, customer_name, rating, suggestions, submitted_at)
-         VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+           (company_id, trigger_event, trigger_ref_id, customer_name, rating, suggestions,
+            sentiment, classification, submitted_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
         [companyId, row.amc_contract_id ? 'amc_visit' : 'service_visit', row.id,
-         row.customer_name, customer_rating, customer_feedback || null]
+         row.customer_name, customer_rating, customer_feedback || null,
+         ...(({ sentiment, classification }) => [sentiment, classification])(
+           deriveResponseFields({ rating: customer_rating, suggestions: customer_feedback }))]
       ).catch(e => console.error('[field-visits/:id] voc_responses mirror failed:', e.message));
     }
 
@@ -1147,7 +1245,7 @@ router.put('/contracts/:id', svcAdmin('edit'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/contracts/:id', svcAdmin('delete'), async (req, res) => {
+router.delete('/contracts/:id', svcAdmin('delete'), captureBefore('service_contracts'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1193,7 +1291,7 @@ router.post('/sla/policies', svcAdmin('add'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/sla/policies/:id', svcAdmin('edit'), async (req, res) => {
+router.put('/sla/policies/:id', svcAdmin('edit'), captureBefore('sla_policies'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { name, priority, first_response_hours, resolution_hours, escalation_hours, business_hours_only } = req.body;
@@ -1210,7 +1308,7 @@ router.put('/sla/policies/:id', svcAdmin('edit'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/sla/policies/:id', svcAdmin('delete'), async (req, res) => {
+router.delete('/sla/policies/:id', svcAdmin('delete'), captureBefore('sla_policies'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1432,7 +1530,7 @@ router.post('/auto-assignment-rules', svcAdmin('add'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/auto-assignment-rules/:id', svcAdmin('edit'), async (req, res) => {
+router.put('/auto-assignment-rules/:id', svcAdmin('edit'), captureBefore('auto_assignment_rules'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { name, priority, conditions, assign_to_team, assign_to_user_id, round_robin_group, is_active } = req.body;
@@ -1450,7 +1548,7 @@ router.put('/auto-assignment-rules/:id', svcAdmin('edit'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/auto-assignment-rules/:id', svcAdmin('delete'), async (req, res) => {
+router.delete('/auto-assignment-rules/:id', svcAdmin('delete'), captureBefore('auto_assignment_rules'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1503,7 +1601,7 @@ router.post('/service-master', svcAdmin('add'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/service-master/:id', svcAdmin('edit'), async (req, res) => {
+router.put('/service-master/:id', svcAdmin('edit'), captureBefore('service_master'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { name, category, description, price, is_active } = req.body;
@@ -1682,7 +1780,7 @@ router.put('/customers/:id', svcAdmin('edit'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/customers/:id', svcAdmin('delete'), async (req, res) => {
+router.delete('/customers/:id', svcAdmin('delete'), captureBefore('contacts'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1742,7 +1840,7 @@ router.post('/sites', svcAdmin('add'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/sites/:id', svcAdmin('edit'), async (req, res) => {
+router.put('/sites/:id', svcAdmin('edit'), captureBefore('service_sites'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { name, customer_id, customer_name, address, city, state, pincode, contact_name, contact_phone, site_type, status } = req.body;
@@ -1762,7 +1860,7 @@ router.put('/sites/:id', svcAdmin('edit'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/sites/:id', svcAdmin('delete'), async (req, res) => {
+router.delete('/sites/:id', svcAdmin('delete'), captureBefore('service_sites'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1810,7 +1908,7 @@ router.post('/delivery-notes', svcAdmin('add'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/delivery-notes/:id', svcAdmin('edit'), async (req, res) => {
+router.put('/delivery-notes/:id', svcAdmin('edit'), captureBefore('delivery_notes'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, delivered_by, notes } = req.body;
@@ -1994,8 +2092,9 @@ router.get('/knowledge-base', svcKnowledgeBase, async (req, res) => {
     if (category) { params.push(category); where += ` AND category=$${params.length}`; }
     const { rows } = await pool.query(
       `SELECT id, company_id, title, content, category, array_to_string(tags, ',') AS tags,
-              author_id, views, helpful_yes, helpful_no, is_published, created_at, updated_at
-       FROM service_knowledge_base WHERE ${where} AND is_published=true ORDER BY views DESC LIMIT $2`,
+              author_id, views, helpful_yes, helpful_no, is_published,
+              status, visibility, version, created_at, updated_at
+       FROM service_knowledge_base WHERE ${where} AND status = 'published' ORDER BY views DESC LIMIT $2`,
       params
     );
     res.json(rows);
@@ -2012,45 +2111,107 @@ router.post('/knowledge-base', svcKnowledgeBase, svcAdmin('add'), async (req, re
       ? tags.split(',').map(t => t.trim()).filter(Boolean)
       : (Array.isArray(tags) ? tags : []);
     const { rows } = await pool.query(
-      `INSERT INTO service_knowledge_base (company_id, title, content, category, tags, author_id)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO service_knowledge_base
+         (company_id, title, content, category, tags, author_id, status, visibility, version)
+       VALUES ($1,$2,$3,$4,$5,$6,'draft','internal',1)
        RETURNING id, company_id, title, content, category, array_to_string(tags, ',') AS tags,
-                 author_id, views, is_published, created_at, updated_at`,
+                 author_id, views, is_published, status, visibility, version, created_at, updated_at`,
       [companyId, title, content || null, category || 'General', tagsArr, authorId]
     );
-    res.status(201).json(rows[0]);
+    logAudit({ userId: req.user?.userId, module: 'service', recordId: rows[0].id,
+      recordType: 'knowledge_article', action: 'create', newData: rows[0], req });
+    // An article is now born a DRAFT and reaches readers through review — which
+    // is why the caller is told where it went. Before the workflow existed this
+    // insert defaulted is_published to true, so anything anyone typed was
+    // immediately what the business told its customers.
+    res.status(201).json({ ...rows[0],
+      notice: 'Saved as a draft. Submit it for review from the knowledge workspace to publish.' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/**
+ * Legacy edit. Kept on its original path and shape so the existing screen works,
+ * but it now writes THROUGH the workflow: the previous text is snapshotted, the
+ * version is bumped, and a published article returns to draft for re-approval.
+ *
+ * ⚠ `is_published` is no longer a column you can set — a trigger derives it from
+ * `status`, so the old `SET is_published=$5` was silently reverted on the way to
+ * disk. A caller asking to publish is routed through the state machine, which
+ * refuses if the article was never approved and says so.
+ */
 router.put('/knowledge-base/:id', svcKnowledgeBase, svcAdmin('edit'), async (req, res) => {
   try {
     const companyId = cid(req);
-    const { title, content, category, tags, is_published } = req.body;
-    const tagsArr = typeof tags === 'string'
-      ? tags.split(',').map(t => t.trim()).filter(Boolean)
-      : (Array.isArray(tags) ? tags : []);
-    const { rows } = await pool.query(
-      `UPDATE service_knowledge_base SET title=$1,content=$2,category=$3,tags=$4,is_published=$5,updated_at=NOW()
-       WHERE id=$6 AND ($7::int IS NULL OR company_id=$7)
-       RETURNING id, company_id, title, content, category, array_to_string(tags, ',') AS tags,
-                 author_id, views, is_published, created_at, updated_at`,
-      [title, content || null, category || 'General', tagsArr, is_published !== false, req.params.id, companyId]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Article not found' });
-    res.json(rows[0]);
+    const { is_published } = req.body;
+    const employeeId = await employeeOf(req, pool);
+
+    const out = await editArticle(pool, {
+      id: req.params.id, companyId, employeeId, patch: req.body,
+      note: req.body.change_note || null,
+    });
+    if (out.error === 'not_found') return res.status(404).json({ error: 'Article not found' });
+    if (out.error) return res.status(400).json({ error: out.error });
+
+    let article = out.article;
+    let notice = out.unpublishedOnEdit
+      ? 'Editing a published article returns it to draft. Submit it for review to publish again.'
+      : undefined;
+
+    if (is_published === false && article.status === 'published') {
+      const moved = await transition(pool, { id: article.id, companyId, to: 'draft',
+        employeeId, roles: rolesOf(req) });
+      if (moved.article) article = moved.article;
+    } else if (is_published === true && article.status !== 'published') {
+      const moved = await transition(pool, { id: article.id, companyId, to: 'published',
+        employeeId, roles: rolesOf(req) });
+      if (moved.article) { article = moved.article; notice = undefined; }
+      else if (moved.error === 'not_approved' || moved.error === 'illegal_transition') {
+        notice = 'Saved. Publishing needs an approval first — submit it for review.';
+      } else if (moved.error === 'role_required') {
+        notice = `Saved. Publishing requires one of: ${moved.roles.join(', ')}.`;
+      } else if (moved.error === 'self_approval') {
+        notice = 'Saved. It cannot be published by the person who submitted it.';
+      }
+    }
+
+    res.json({ ...article, tags: Array.isArray(article.tags) ? article.tags.join(',') : article.tags,
+               notice });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/**
+ * Archive rather than delete.
+ *
+ * An article that was published is part of what the business told its customers
+ * and when — and its version history, case links and effectiveness data all hang
+ * off the row (ON DELETE CASCADE, so a delete took those with it). Archived
+ * articles leave every reader-facing list and can be restored to draft.
+ */
 router.delete('/knowledge-base/:id', svcKnowledgeBase, svcAdmin('delete'), async (req, res) => {
   try {
     const companyId = cid(req);
-    await pool.query('DELETE FROM service_knowledge_base WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)', [req.params.id, companyId]);
-    res.json({ success: true });
+    const employeeId = await employeeOf(req, pool);
+    const { rows: [before] } = await pool.query(
+      'SELECT * FROM service_knowledge_base WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)',
+      [req.params.id, companyId]);
+    if (!before) return res.status(404).json({ error: 'Article not found' });
+
+    const out = await transition(pool, { id: req.params.id, companyId, to: 'archived',
+      employeeId, roles: rolesOf(req) });
+    if (out.error) return res.status(409).json({ error: out.error, from: out.from });
+
+    logAudit({ userId: req.user?.userId, module: 'service', recordId: before.id,
+      recordType: 'knowledge_article', action: 'archive', oldData: before, newData: out.article, req });
+    res.json({ success: true, archived: true, id: out.article.id });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// The governed knowledge surface: versions, review, publish, effectiveness.
+// Same table as /knowledge-base above — not a second knowledge base.
+router.use('/knowledge', knowledgeWorkflowRoutes);
+
 // ── engineer delete ────────────────────────────────────────────────────────────
-router.delete('/engineers/:id', svcAdmin('delete'), async (req, res) => {
+router.delete('/engineers/:id', svcAdmin('delete'), captureBefore('service_engineers'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -2174,7 +2335,7 @@ router.get('/notifications', svcAdmin('view'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/notifications/:id/read', svcAdmin('view'), async (req, res) => {
+router.put('/notifications/:id/read', svcAdmin('view'), captureBefore('service_notifications'), async (req, res) => {
   try {
     await pool.query(`UPDATE service_notifications SET is_read=TRUE WHERE id=$1`, [req.params.id]);
     res.json({ success: true });

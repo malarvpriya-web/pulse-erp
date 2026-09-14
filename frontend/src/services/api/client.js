@@ -20,6 +20,14 @@ function hardLogout(reason = 'session_expired') {
   window.location.replace('/');
 }
 
+// ── Rate-limit (429) retry budget ─────────────────────────────────────────────
+// Deliberately small: this smooths a burst, it is not a way to sit out a real
+// throttle. Anything longer than RL_MAX_WAIT_SEC is reported to the user.
+const RL_MAX_RETRIES  = 2;
+const RL_MAX_WAIT_SEC = 5;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const api = axios.create({
   baseURL: BASE_URL,
   headers: { 'Content-Type': 'application/json' },
@@ -103,6 +111,49 @@ api.interceptors.response.use(
       } finally {
         isRefreshing = false;
       }
+    }
+
+    // ── 429 handling ──────────────────────────────────────────────────────────
+    // The global limiter (300/min/IP) is a backstop for scripted floods, but a
+    // burst of navigation — or several pages each fanning out to a handful of
+    // endpoints — can clip it. The server replies with Retry-After and a clean
+    // body, so honour it here once, centrally, instead of every page inventing
+    // its own retry.
+    //
+    // Only GET/HEAD are replayed. Auto-retrying a POST/PUT/DELETE risks a
+    // duplicate write, and the server never told us the first one didn't land.
+    // A long Retry-After is surfaced immediately rather than freezing the UI
+    // for the rest of the window.
+    if (status === 429) {
+      const method = String(origReq?.method || 'get').toLowerCase();
+      const retryAfterSec = Number(
+        err.response?.headers?.['retry-after'] ?? err.response?.data?.retry_after ?? 0
+      );
+      const attempts = origReq._rlRetries ?? 0;
+
+      if (
+        origReq &&
+        (method === 'get' || method === 'head') &&
+        attempts < RL_MAX_RETRIES &&
+        retryAfterSec > 0 &&
+        retryAfterSec <= RL_MAX_WAIT_SEC
+      ) {
+        origReq._rlRetries = attempts + 1;
+        // Jitter so a page that fired several requests together doesn't
+        // resend them in the same instant and trip the limiter again.
+        await sleep(retryAfterSec * 1000 + Math.random() * 400);
+        return api(origReq);
+      }
+
+      const wrapped = new Error(
+        err.response?.data?.error ||
+        'Too many requests. Please wait a moment and try again.'
+      );
+      wrapped.status = 429;
+      wrapped.retryAfter = retryAfterSec || null;
+      wrapped.response = err.response;
+      wrapped.originalError = err;
+      return Promise.reject(wrapped);
     }
 
     if (status === 403) {

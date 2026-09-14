@@ -66,9 +66,21 @@ function computeNextCode(lastCode) {
   return `EMP${String(n + 1).padStart(3, "0")}`;
 }
 
+/**
+ * A client-input error, not a server fault. `respondError` (shared/pgErrors.js)
+ * honours `statusCode`, so tagging the throw is all it takes to stop these
+ * surfacing as 500s — a rejected master value, a missing required field and a
+ * duplicate employee code are all things the caller can fix and retry.
+ */
+function badRequest(message, statusCode = 400) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
 export const addEmployee = async (data) => {
   if (!data) {
-    throw new Error("Request body is empty");
+    throw badRequest("Request body is empty");
   }
 
   // Extract only the fields that are being sent
@@ -141,7 +153,7 @@ export const addEmployee = async (data) => {
   } = data;
 
   if (!first_name || !company_email) {
-    throw new Error("First name and company email are required");
+    throw badRequest("First name and company email are required");
   }
 
   // Validate PAN format when provided (5 letters, 4 digits, 1 letter). Empty is allowed.
@@ -174,7 +186,7 @@ export const addEmployee = async (data) => {
         [office_id]
       );
       if (dupeCheck.rows.length > 0) {
-        throw new Error(`Employee code ${office_id} is already in use`);
+        throw badRequest(`Employee code ${office_id} is already in use`, 409);
       }
     }
 
@@ -320,7 +332,14 @@ export const addEmployee = async (data) => {
     return login ? { ...emp, login } : emp;
   } catch (err) {
     await client.query("ROLLBACK");
-    throw new Error(`Failed to add employee: ${err.message}`);
+    // Carry the classification through the re-wrap: without this a 400 from
+    // validateMasterValue re-emerged as an unclassified 500.
+    const wrapped = new Error(`Failed to add employee: ${err.message}`);
+    if (err.statusCode) wrapped.statusCode = err.statusCode;
+    if (err.code) wrapped.code = err.code;
+    if (err.constraint) wrapped.constraint = err.constraint;
+    if (err.detail) wrapped.detail = err.detail;
+    throw wrapped;
   } finally {
     client.release();
   }
@@ -331,10 +350,41 @@ const HR_PII_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'pa
 const SALARY_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin',
                       'finance_manager', 'HR', 'Admin', 'SuperAdmin'];
 
+// Salary/bank block — stripped for anyone outside SALARY_ROLES.
+const SALARY_FIELDS = ['basic_salary', 'bank_name', 'branch_name', 'account_number',
+                       'ifsc_code', 'nominee_name', 'pf_number', 'uan_number', 'esic_number'];
+
+// Dropped outright for non-HR callers: identity documents, home/family details,
+// emergency contacts and the uploaded-document paths. These live on the
+// `employees` row only because HR maintains them there — no picker, roster,
+// team view or directory has ever needed them, so there is nothing to degrade
+// by removing them rather than blanking them.
+const PII_DROP_FIELDS = [
+  'dob', 'personal_email', 'blood_group',
+  'father_name', 'mother_name', 'spouse_name', 'anniversary_date', 'marital_status',
+  'emergency_name', 'emergency_phone', 'emergency_relationship',
+  'passport_number', 'driving_license_number',
+  'pan_file', 'aadhaar_file', 'cancelled_cheque_file', 'bank_statement_file',
+  'resume_file', 'offer_letter_file',
+  'notes',
+];
+
+// Roles are many-to-many (user_roles), so callers pass the whole set from
+// rolesOf(req). A bare string is still accepted for the legacy single-role
+// call sites. Comparison is case-insensitive because older user rows store
+// mixed-case codes ('HR', 'Admin').
+function holdsRole(role, allowed) {
+  const held = (Array.isArray(role) ? role : [role])
+    .filter(Boolean)
+    .map(r => String(r).toLowerCase());
+  const want = allowed.map(r => r.toLowerCase());
+  return held.some(r => want.includes(r));
+}
+
 function maskPII(emp, role, isSelf = false) {
   if (!emp) return emp;
   if (isSelf) return emp;
-  if (HR_PII_ROLES.includes(role)) return emp;
+  if (holdsRole(role, HR_PII_ROLES)) return emp;
   const out = { ...emp };
   // Aadhaar: show only last 4 digits
   if (out.aadhaar_number) out.aadhaar_number = `XXXX XXXX ${String(out.aadhaar_number).slice(-4)}`;
@@ -342,28 +392,29 @@ function maskPII(emp, role, isSelf = false) {
   if (out.pan_number)     out.pan_number     = `XXXXXX${String(out.pan_number).slice(-4)}`;
   // Bank account: mask all but last 4
   if (out.account_number) out.account_number = `XXXX${String(out.account_number).slice(-4)}`;
-  // Address PII â€” redact for non-HR callers
+  // Address PII — redact for non-HR callers
   if (out.current_address)   out.current_address   = '[RESTRICTED]';
   if (out.permanent_address) out.permanent_address = '[RESTRICTED]';
-  // Salary â€” strip for non-salary-role callers
-  if (!SALARY_ROLES.includes(role)) {
-    delete out.basic_salary;
-    delete out.bank_name;
-    delete out.branch_name;
-    delete out.account_number;
-    delete out.ifsc_code;
-    delete out.nominee_name;
-    delete out.pf_number;
-    delete out.uan_number;
-    delete out.esic_number;
+  // Salary — strip for non-salary-role callers
+  if (!holdsRole(role, SALARY_ROLES)) {
+    for (const f of SALARY_FIELDS) delete out[f];
   }
+  for (const f of PII_DROP_FIELDS) delete out[f];
   return out;
 }
 
-export const getEmployeeById = async (id, callerRole, isSelf = false) => {
+/**
+ * Unmasked read, for internal use only — tenant-scope checks and the `oldData`
+ * side of an audit entry. Never hand the result to a client: every HTTP path
+ * goes through getEmployeeById(), which masks.
+ */
+export const getEmployeeRecord = async (id) => {
   const { rows } = await pool.query(`SELECT * FROM employees WHERE id = $1`, [id]);
-  return maskPII(rows[0] || null, callerRole, isSelf);
+  return rows[0] || null;
 };
+
+export const getEmployeeById = async (id, callerRole, isSelf = false) =>
+  maskPII(await getEmployeeRecord(id), callerRole, isSelf);
 
 // Validates that dept/designation exists in master table IF the master has been configured.
 // Silently passes when: master table is empty, table doesn't exist, or DB query fails.
@@ -371,6 +422,7 @@ async function validateMasterValue(value, table) {
   if (!value) return;
   const needle = String(value).trim().toLowerCase();
   if (!needle) return;
+  let rejected = false;
   try {
     const countRes = await pool.query(`SELECT COUNT(*) AS n FROM ${table} WHERE is_active = true`);
     if (!countRes?.rows?.[0]) return; // table or pool not available â€” skip
@@ -400,14 +452,24 @@ async function validateMasterValue(value, table) {
       if (empRows.length > 0) return;
     }
 
-    throw new Error(`"${value}" is not a valid ${table.replace('master_', '')}. Select a value from the master list.`);
-  } catch (err) {
-    if (err.message?.includes('is not a valid')) throw err; // re-throw our own validation errors
-    // DB / table-not-found / mock errors â€” skip validation silently
+    rejected = true;
+  } catch {
+    // DB / table-not-found / mock errors â€” skip validation silently. The throw
+    // below sits OUTSIDE this catch on purpose: it used to be inside, which
+    // meant the only way to tell a validation failure from a database fault was
+    // to sniff the error message for 'is not a valid'.
+    return;
+  }
+
+  if (rejected) {
+    // Singular: the message is user-facing now that it surfaces as a 400, and
+    // "is not a valid grades" read as a typo.
+    const noun = table.replace('master_', '').replace(/ies$/, 'y').replace(/s$/, '');
+    throw badRequest(`"${value}" is not a valid ${noun}. Select a value from the master list.`);
   }
 }
 
-export const getEmployees = async ({ status, department, designation, employment_type, company_id, callerRole, page, limit } = {}) => {
+export const getEmployees = async ({ status, department, designation, employment_type, company_id, callerRole, callerEmployeeId, page, limit } = {}) => {
   const conditions = [];
   const values = [];
   let i = 1;
@@ -465,28 +527,20 @@ export const getEmployees = async ({ status, department, designation, employment
     `SELECT * FROM employees ${where} ORDER BY id DESC LIMIT $${i++} OFFSET $${i++}`,
     values
   );
-  // Strip salary/bank fields for non-salary roles on bulk list
-  if (!SALARY_ROLES.includes(callerRole)) {
-    return result.rows.map(emp => {
-      const out = { ...emp };
-      delete out.basic_salary;
-      delete out.bank_name;
-      delete out.branch_name;
-      delete out.account_number;
-      delete out.ifsc_code;
-      delete out.nominee_name;
-      delete out.pf_number;
-      delete out.uan_number;
-      delete out.esic_number;
-      return out;
-    });
-  }
-  return result.rows;
+  // Same redaction the single-record path applies. This list used to strip only
+  // the salary/bank block, so every authenticated caller — a plain employee
+  // included — could read PAN, Aadhaar, home addresses, date of birth, family
+  // and emergency contacts and the uploaded-document paths for the whole
+  // company. Route both paths through maskPII so they cannot drift apart again.
+  const selfId = callerEmployeeId != null ? String(callerEmployeeId) : null;
+  return result.rows.map(emp =>
+    maskPII(emp, callerRole, selfId != null && String(emp.id) === selfId)
+  );
 };
 
 const EX_STATUSES = `LOWER(e.status) IN ('left','terminated','resigned','inactive','ex-employee','notice_period','notice period')`;
 
-export const getExEmployees = async ({ exit_date_from, exit_date_to, company_id } = {}) => {
+export const getExEmployees = async ({ exit_date_from, exit_date_to, company_id, callerRole } = {}) => {
   const conditions = [EX_STATUSES];
   const values = [];
   let idx = 1;
@@ -529,7 +583,11 @@ export const getExEmployees = async ({ exit_date_from, exit_date_to, company_id 
     ORDER BY COALESCE(er.last_working_date, e.exit_date) DESC NULLS LAST
   `, values);
 
-  return rows;
+  // `e.*` carries the whole employee row, salary and bank block included — this
+  // list applied no redaction at all, so it leaked strictly more than the
+  // active-employee list did. Same maskPII as every other read path; there is
+  // no self case here, since the caller is by definition not an ex-employee.
+  return rows.map(row => maskPII(row, callerRole));
 };
 
 export const getNextEmployeeCode = async () => {
@@ -539,7 +597,7 @@ export const getNextEmployeeCode = async () => {
 
 export const updateEmployee = async (id, data, company_id = null) => {
   if (!data) {
-    throw new Error("Request body is empty");
+    throw badRequest("Request body is empty");
   }
 
   if (data.department)  await validateMasterValue(data.department, 'master_departments');
@@ -585,6 +643,8 @@ export const updateEmployee = async (id, data, company_id = null) => {
     basic_qualification,
     department,
     designation,
+    grade,
+    band,
     employee_role,
     reporting_manager,
     reporting_manager_id,
@@ -688,9 +748,11 @@ export const updateEmployee = async (id, data, company_id = null) => {
         offer_letter_file = COALESCE($56, offer_letter_file),
         exit_date = COALESCE($57, exit_date),
         exit_reason = COALESCE($58, exit_reason),
-        is_field_employee = COALESCE($59, is_field_employee)
-      WHERE id = $60
-        ${company_id != null ? 'AND company_id = $61' : ''}
+        is_field_employee = COALESCE($59, is_field_employee),
+        grade = COALESCE($60, grade),
+        band = COALESCE($61, band)
+      WHERE id = $62
+        ${company_id != null ? 'AND company_id = $63' : ''}
       RETURNING *;
     `;
 
@@ -756,6 +818,8 @@ export const updateEmployee = async (id, data, company_id = null) => {
       is_field_employee === undefined || is_field_employee === null
         ? null
         : (is_field_employee === true || is_field_employee === 'true'),
+      grade || null,
+      band || null,
       id,
     ];
     if (company_id != null) values.push(company_id);
@@ -766,7 +830,12 @@ export const updateEmployee = async (id, data, company_id = null) => {
     }
     return result.rows[0];
   } catch (err) {
-    throw new Error(`Failed to update employee: ${err.message}`);
+    const wrapped = new Error(`Failed to update employee: ${err.message}`);
+    if (err.statusCode) wrapped.statusCode = err.statusCode;
+    if (err.code) wrapped.code = err.code;
+    if (err.constraint) wrapped.constraint = err.constraint;
+    if (err.detail) wrapped.detail = err.detail;
+    throw wrapped;
   }
 };
 
@@ -836,7 +905,11 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
     SELECT COALESCE(NULLIF(gender,''), 'Not specified') AS gender, COUNT(*) AS count
     FROM employees
     WHERE LOWER(status) IN ('active', 'probation') ${cidAnd}
-    GROUP BY gender ORDER BY count DESC
+    -- GROUP BY 1 (the output expression), NOT the column name. Postgres resolves a
+    -- GROUP BY name that collides with an input column in favour of the *input*
+    -- column, so this grouped on the raw value and emitted NULL and '' as two
+    -- separate rows that the COALESCE then labelled identically.
+    GROUP BY 1 ORDER BY count DESC
   `, cidPar);
   const genderBreakdown = genderRes.rows.map(r => ({ gender: r.gender, count: parseInt(r.count) }));
 
@@ -845,7 +918,9 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
     SELECT COALESCE(NULLIF(skill_type,''), 'Not specified') AS skill, COUNT(*) AS count
     FROM employees
     WHERE LOWER(status) IN ('active', 'probation') ${cidAnd}
-    GROUP BY skill_type ORDER BY count DESC
+    -- Same trap as the gender query above, reached the other way: this named the
+    -- RAW column outright, so NULL and '' stayed two groups under one label.
+    GROUP BY 1 ORDER BY count DESC
   `, cidPar);
   const skillBreakdown = skillRes.rows.map(r => ({ skill: r.skill, count: parseInt(r.count) }));
 
@@ -879,7 +954,9 @@ export const getEmployeeAnalytics = async ({ fy_start, fy_end, company_id } = {}
       COUNT(*) FILTER (WHERE LOWER(status) = 'active')  AS active
     FROM employees
     WHERE LOWER(status) IN ('active', 'probation') ${cidAnd}
-    GROUP BY department ORDER BY count DESC LIMIT 12
+    -- GROUP BY 1, not the column name - see the gender query above. Latent
+    -- rather than live today (no employee has department = ''), but the same defect.
+    GROUP BY 1 ORDER BY count DESC LIMIT 12
   `, cidPar);
   const deptBreakdown = deptRes.rows.map(r => ({
     department: r.department,

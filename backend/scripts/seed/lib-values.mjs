@@ -153,6 +153,7 @@ function intFor(n, i, rng) {
   // CAPAManagement crash on '☆'.repeat(5 - rating). NPS is 0-10.
   if (/rating/.test(n)) return 1 + (i % 5);
   if (/nps/.test(n)) return 1 + (i % 10);
+  if (PCT_RATE(n)) return Math.min(100, 12 + (i % 7) * 9);
   if (/(percent|pct|percentage|score|utilization)/.test(n)) return Math.min(100, 60 + i * 5);
   if (/(sequence|order_no|sort|priority|level|version|attempt|revision)/.test(n)) return 1 + i;
   if (/(hours|hrs)/.test(n)) return 4 + i;
@@ -161,8 +162,43 @@ function intFor(n, i, rng) {
   return 1 + i;
 }
 
+// A `_rate` column is a price in some tables and a proportion in others.
+// `win_rate` matched the money branch below, produced 1250.5, and the
+// numeric(5,2) width cap floored that to `Math.floor(999 * 0.9)` = **899** —
+// which then rendered as "899% win rate". These names are proportions; the
+// money senses (unit/hourly/daily/bill/exchange/freight rates) are not.
+// ISO 4217 codes, so a 3-char `currency_code` column stays a currency code.
+const ISO_CCY = ['USD', 'EUR', 'GBP', 'AED', 'SGD', 'JPY', 'AUD', 'CHF'];
+// Index-aligned with ISO_CCY: a row whose code says USD must not have a name
+// saying INR — that pairing is what made the seeded forex rows read as
+// "one rupee is worth 1250 rupees".
+const CCY_NAME = ['US Dollar', 'Euro', 'Pound Sterling', 'UAE Dirham',
+                  'Singapore Dollar', 'Japanese Yen', 'Australian Dollar', 'Swiss Franc'];
+// Plausible units of INR per unit of the above, index-aligned.
+const FX_VS_INR = [83.20, 90.10, 105.40, 22.65, 61.80, 0.56, 54.30, 94.70];
+
+// Performance/quality proportions expressed as a percentage.
+const PROPORTION_RATE = /(^|_)(win|loss|conversion|success|failure|defect|reject|scrap|rework|attrition|turnover|retention|churn|completion|utilisation|utilization|occupancy|adoption|response|resolution|growth|on_time|first_pass|fill|pass|yield|error|accuracy|availability|uptime|absent|absenteeism|open|click|bounce)_rate(_|$)/;
+
+// Statutory and commercial rates. Every one of these is a percentage of a
+// taxable/base amount, never a per-unit price — and the whole tax family was
+// landing in the money branch, so `master_hsn_sac.gst_rate` (the GST master
+// itself) held 899 in every seeded row.
+const CHARGE_RATE = /(^|_)(gst|cgst|sgst|igst|utgst|cess|vat|tax|tds|tcs|duty|wdv|depreciation|deduction|commission|discount|markup|margin|interest|penalty|surcharge)_rate(_|$)/;
+
+// `rate_with_pan` / `rate_without_pan` (TDS/TCS masters) and any `*_rate_pct`.
+const NAMED_PCT_RATE = /^rate_(with|without)_pan$|^rate_pct$|_rate_pct$/;
+
+const PCT_RATE = (n) => PROPORTION_RATE.test(n) || CHARGE_RATE.test(n) || NAMED_PCT_RATE.test(n);
+
 function numFor(n, i, rng) {
-  if (/(percent|pct|percentage|utilization|efficiency|progress)/.test(n)) return Number((55 + i * 6.5).toFixed(2));
+  // An FX rate is neither a percentage nor a unit price. `exchange_rate` and
+  // `rate_vs_inr` matched the money branch and were seeded at 1250.5 — against
+  // a currency_name of 'INR', so every seeded row asserted that one rupee was
+  // worth 1250 rupees.
+  if (/(exchange_rate|rate_vs_inr|fx_rate|forex_rate)/.test(n)) return FX_VS_INR[i % FX_VS_INR.length];
+  if (PCT_RATE(n)) return Number((12 + (i % 7) * 9.5).toFixed(2));
+  if (/(percent|pct|percentage|utilization|efficiency|progress)/.test(n)) return Number(Math.min(100, 55 + i * 6.5).toFixed(2));
   if (/(rating|score|cpi|spi)/.test(n)) return Number((3.5 + (i % 3) * 0.4).toFixed(2));
   if (/(qty|quantity|weight|volume|hours|hrs)/.test(n)) return Number((10 + i * 2.5).toFixed(2));
   if (/(tax|gst|cgst|sgst|igst|tds|tcs)/.test(n)) return Number((1800 + i * 450).toFixed(2));
@@ -221,6 +257,16 @@ function textFor(n, i, rowSeq, table) {
   if (/^pan/.test(n)) return `AABCU${pad(9000 + i, 4)}A`;
   if (/ifsc/.test(n)) return 'HDFC0001234';
   if (/(account_number|bank_account)/.test(n)) return `50100${pad(100000 + rowSeq, 8)}`;
+  // Currency must be classified before the generic `_code$` branch below, or
+  // `currency_code` comes out as an abbreviation truncated to the column's
+  // 3 characters — which is how forex_rates ended up keyed on 'FR-' and '944'.
+  // A bare `currency` column is the transaction currency and stays INR (the
+  // base); a code/name pair describes some *other* currency and must agree.
+  if (/currency/.test(n)) {
+    if (/(code|iso)/.test(n)) return pick(ISO_CCY, i);
+    if (/name/.test(n))       return pick(CCY_NAME, i);
+    return 'INR';
+  }
   if (/(_number$|_code$|_no$|^code$|^number$|^ref$|^reference$|serial|voucher|invoice_no)/.test(n)) {
     return `${abbr}-${pad(1000 + rowSeq, 5)}`;
   }
@@ -230,7 +276,6 @@ function textFor(n, i, rowSeq, table) {
   if (/(path|file_url|attachment)/.test(n)) return `/uploads/${TAG.toLowerCase()}/doc-${rowSeq}.pdf`;
   if (/(file_name|filename)/.test(n)) return `${TAG}-document-${rowSeq}.pdf`;
   if (/(mime|content_type)/.test(n)) return 'application/pdf';
-  if (/currency/.test(n)) return 'INR';
   if (/(uom|^unit$|unit_of)/.test(n)) return pick(['Nos', 'Kg', 'Mtr', 'Set'], i);
   if (/city/.test(n)) return pick(CITY, i);
   if (/state$/.test(n)) return 'Tamil Nadu';

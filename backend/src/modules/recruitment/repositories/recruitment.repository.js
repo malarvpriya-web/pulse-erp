@@ -1176,7 +1176,19 @@ const recruitmentRepository = {
   // not candidates, regardless). Fixed 2026-08-04. `offered`/`declined` added
   // for the card's breakdown row; `total`/`accepted`/`rate` kept as the
   // pre-existing field names for HiringForecasts.jsx.
-  async getOfferAcceptanceRate(company_id) {
+  /**
+   * @param {number|null} company_id
+   * @param {{from?: string|null, to?: string|null}} [range] optional issue-date
+   *   window, from resolveRange(). Callers that omit it keep the previous
+   *   all-time behaviour, so HR Dashboard and Recruitment are unchanged.
+   *
+   *   HR Benchmarking DOES pass one: its cards sit under a period filter and a
+   *   rail that names the window, so an unwindowed "2 accepted of 3 offers"
+   *   read as activity inside that window when it was the company's whole
+   *   history. Windowed on the date the offer went out — offer_sent_date, with
+   *   created_at as the fallback for rows still in draft.
+   */
+  async getOfferAcceptanceRate(company_id, range = null) {
     let query = `
       SELECT
         COUNT(CASE WHEN offer_status IN ('sent','accepted','declined') THEN 1 END) AS offered,
@@ -1185,6 +1197,9 @@ const recruitmentRepository = {
       FROM offer_letters WHERE deleted_at IS NULL`;
     const params = [];
     if (company_id) { query += ` AND company_id = $1`; params.push(company_id); }
+    const issued = `COALESCE(offer_sent_date, created_at::date)`;
+    if (range?.from) { params.push(range.from); query += ` AND ${issued} >= $${params.length}::date`; }
+    if (range?.to)   { params.push(range.to);   query += ` AND ${issued} <= $${params.length}::date`; }
     const result = await pool.query(query, params);
     const row = result.rows[0];
     const offered  = parseInt(row.offered)  || 0;

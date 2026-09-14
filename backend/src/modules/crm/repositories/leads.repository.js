@@ -10,7 +10,7 @@ import {
 const LEAD_COLUMNS = new Set([
   'lead_source', 'company_name', 'contact_person', 'email', 'phone',
   'industry', 'location', 'assigned_to', 'status', 'notes', 'lead_score',
-  'zone', 'estimated_value', 'partner_id', 'probability',
+  'zone', 'estimated_value', 'partner_id', 'probability', 'territory_id',
 ]);
 
 // The IEM number: fiscal year (Apr-Mar) of creation + zero-padded id. Must stay
@@ -48,6 +48,7 @@ const leadsRepository = {
       lead_source, company_name, contact_person, email, phone,
       industry, location, assigned_to, status, notes, created_by,
       lead_score, company_id, zone, estimated_value, partner_id, probability,
+      territory_id,
     } = data;
     // The id is drawn from the sequence first so the enquiry and its IEM number
     // are written together — no second statement, nothing to leave half-done.
@@ -57,8 +58,8 @@ const leadsRepository = {
          (id, lead_source, company_name, contact_person, email, phone,
           industry, location, assigned_to, status, notes, created_by,
           lead_score, company_id, zone, estimated_value, partner_id, probability,
-          iem_no)
-       SELECT s.new_id, $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+          territory_id, iem_no)
+       SELECT s.new_id, $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
               (${IEM_NO_SQL})
          FROM s
        RETURNING *`,
@@ -67,6 +68,7 @@ const leadsRepository = {
         industry, location, assigned_to, status ?? 'New', notes,
         created_by, lead_score ?? 0, company_id ?? null,
         zone || null, asNum(estimated_value), asNum(partner_id), asNum(probability),
+        asNum(territory_id),
       ]
     );
     return result.rows[0];

@@ -2,6 +2,9 @@ import express from 'express';
 import crypto from 'crypto';
 import pool from '../../shared/db.js';
 import documentsRepository from '../repositories/documents.repository.js';
+import { hasRole } from '../../../middlewares/auth.middleware.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -24,12 +27,32 @@ async function zohoPost(path, body) {
 
 // ── Document Signing ──────────────────────────────────────────────────────────
 
+/**
+ * Who may see documents about OTHER people.
+ *
+ * `documents`.`view` is granted to 24 of 26 roles — an employee is meant to
+ * reach their own paperwork — so the permission gate cannot scope these lists.
+ * A live probe on 2026-09-04 returned other people's signing requests and
+ * generated documents to a plain employee, and with no company filter either.
+ */
+const DOC_ADMIN_ROLES = ['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'department_head', 'manager'];
+const seesAllDocuments = (req) => hasRole(req, ...DOC_ADMIN_ROLES);
+
 router.get('/signing', async (req, res) => {
   try {
     const { status, search, limit = 200 } = req.query;
-    let q = `SELECT * FROM document_signings WHERE 1=1`;
-    const params = [];
-    let i = 1;
+    // WHERE 1=1 with no company predicate read every tenant's signing requests.
+    let q = `SELECT * FROM document_signings WHERE ($1::int IS NULL OR company_id = $1)`;
+    const params = [companyOf(req)];
+    let i = 2;
+
+    // A signing request names its recipient. Someone who is not an approver sees
+    // only the ones addressed to them, or that they raised.
+    if (!seesAllDocuments(req)) {
+      q += ` AND (LOWER(recipient_email) = LOWER($${i}) OR created_by = $${i + 1})`;
+      params.push(req.user?.email ?? '', req.user?.userId ?? null);
+      i += 2;
+    }
     if (status) { q += ` AND status = $${i++}`; params.push(status); }
     if (search) {
       q += ` AND (title ILIKE $${i} OR recipient_name ILIKE $${i} OR recipient_email ILIKE $${i} OR doc_type ILIKE $${i})`;
@@ -131,7 +154,7 @@ router.post('/signing/:id/remind', async (req, res) => {
   }
 });
 
-router.patch('/signing/:id/revoke', async (req, res) => {
+router.patch('/signing/:id/revoke', captureBefore('document_signings'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE document_signings SET status = 'declined', declined_reason = $2, updated_at = NOW() WHERE id = $1 RETURNING *`,
@@ -144,7 +167,7 @@ router.patch('/signing/:id/revoke', async (req, res) => {
   }
 });
 
-router.patch('/signing/:id/sign', async (req, res) => {
+router.patch('/signing/:id/sign', captureBefore('document_signings'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE document_signings SET status = 'signed', signed_date = CURRENT_DATE, updated_at = NOW() WHERE id = $1 RETURNING *`,
@@ -157,7 +180,7 @@ router.patch('/signing/:id/sign', async (req, res) => {
   }
 });
 
-router.patch('/signing/:id', async (req, res) => {
+router.patch('/signing/:id', captureBefore('document_signings'), async (req, res) => {
   try {
     const allowed = ['status', 'signed_date', 'declined_reason'];
     const fields = Object.keys(req.body).filter(k => allowed.includes(k));
@@ -226,7 +249,17 @@ router.delete('/templates/:id', async (req, res) => {
 
 router.get('/generated', async (req, res) => {
   try {
-    const documents = await documentsRepository.findGeneratedDocuments(req.query);
+    // generated_documents carries both employee_id (who it is ABOUT) and
+    // generated_by (who made it). A non-approver sees only their own on either
+    // count; the repository query was unfiltered on both, and on company_id.
+    const scope = { ...req.query, company_id: companyOf(req) };
+    if (!seesAllDocuments(req)) {
+      scope.employee_id = await employeeOf(req, pool);
+      scope.generated_by = req.user?.userId ?? null;
+      scope.self_only = true;
+      if (scope.employee_id == null && scope.generated_by == null) return res.json([]);
+    }
+    const documents = await documentsRepository.findGeneratedDocuments(scope);
     res.json(documents);
   } catch (error) {
     res.status(500).json({ error: error.message });

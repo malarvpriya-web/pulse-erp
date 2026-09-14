@@ -49,10 +49,15 @@ const ROUTES_SRC = readFileSync(resolve(here, '../modules/intelligence/intellige
 const CHECKER_SRC = readFileSync(resolve(here, '../../scripts/check-sql-references.mjs'), 'utf8');
 
 /** The capabilities the checker is allowed to skip, and their backing tables. */
+//
+// `['/widgets', 'dashboard_widgets']` was removed on 10 Sep 2026. The table now
+// exists (migration 20260910000002_dashboard_builder) and the routes execute
+// through shared/metricRegistry.js, so leaving it here would fail the last
+// test in this file — "the exempted tables really are absent from the schema" —
+// which is precisely the alarm that test was written to raise.
 const UNBACKED = [
   ['/sla-config',       'sla_config'],
   ['/sla-tracking',     'sla_tracking'],
-  ['/widgets',          'dashboard_widgets'],
   ['/documents',        'documents'],
   ['/project-costs',    'project_costs'],
   ['/budget-vs-actual', 'budget_vs_actual'],

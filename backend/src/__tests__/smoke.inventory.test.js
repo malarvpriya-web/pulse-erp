@@ -170,11 +170,16 @@ describe('POST /api/inventory/items', () => {
 describe('POST /api/inventory/stock/movement', () => {
   it('201 records a stock-in transaction', async () => {
     passthrough();
+    // A receipt adds stock, so there is nothing to check availability against:
+    // the handler goes straight from BEGIN to the ledger write. This fixture
+    // used to send movement_type 'stock_in', which the route does not recognise
+    // (it compares against 'IN', and the UI sends 'IN'), so the test was in fact
+    // exercising the ISSUE path and passing only because both branches happened
+    // to make the same single balance query.
     const mockClient = {
       query: vi.fn()
-        .mockResolvedValueOnce({ rows: [] })                       // BEGIN
-        .mockResolvedValueOnce({ rows: [{ balance: '10000' }] })   // balance check (movement_type !== 'IN')
-        .mockResolvedValueOnce({ rows: [] }),                       // COMMIT
+        .mockResolvedValueOnce({ rows: [] })   // BEGIN
+        .mockResolvedValueOnce({ rows: [] }),  // COMMIT
       release: vi.fn(),
     };
     sharedPool.connect.mockResolvedValueOnce(mockClient);
@@ -182,20 +187,23 @@ describe('POST /api/inventory/stock/movement', () => {
     const res = await request(app).post('/api/inventory/stock/movement')
       .set('Authorization', `Bearer ${adminToken()}`)
       .send({
-        item_id: 1, movement_type: 'stock_in', quantity: 100,
+        item_id: 1, movement_type: 'IN', quantity: 100,
         reference_number: 'GRN-2026-001', warehouse_id: 1,
       });
 
     expect([200, 201]).toContain(res.status);
   });
 
-  it('201 records a stock-out transaction', async () => {
+  it('201 records a stock-out transaction against free stock', async () => {
     passthrough();
+    // An issue asks two questions now, not one: what is on hand, and how much of
+    // it is already reserved. 10000 on hand with nothing reserved is all free.
     const mockClient = {
       query: vi.fn()
-        .mockResolvedValueOnce({ rows: [] })                       // BEGIN
-        .mockResolvedValueOnce({ rows: [{ balance: '10000' }] })   // balance check
-        .mockResolvedValueOnce({ rows: [] }),                       // COMMIT
+        .mockResolvedValueOnce({ rows: [] })                        // BEGIN
+        .mockResolvedValueOnce({ rows: [{ on_hand: '10000' }] })     // availability: on hand
+        .mockResolvedValueOnce({ rows: [{ reserved: '0' }] })        // availability: reserved
+        .mockResolvedValueOnce({ rows: [] }),                        // COMMIT
       release: vi.fn(),
     };
     sharedPool.connect.mockResolvedValueOnce(mockClient);
@@ -203,11 +211,36 @@ describe('POST /api/inventory/stock/movement', () => {
     const res = await request(app).post('/api/inventory/stock/movement')
       .set('Authorization', `Bearer ${adminToken()}`)
       .send({
-        item_id: 1, movement_type: 'stock_out', quantity: 20,
+        item_id: 1, movement_type: 'OUT', quantity: 20,
         reference_number: 'ISS-2026-001', warehouse_id: 1,
       });
 
     expect([200, 201]).toContain(res.status);
+  });
+
+  it('422 refuses an issue that would eat stock reserved for someone else', async () => {
+    passthrough();
+    // 100 on hand, 90 of it spoken for: only 10 is issuable without naming the
+    // reservation being drawn on.
+    const mockClient = {
+      query: vi.fn()
+        .mockResolvedValueOnce({ rows: [] })                      // BEGIN
+        .mockResolvedValueOnce({ rows: [{ on_hand: '100' }] })     // availability: on hand
+        .mockResolvedValueOnce({ rows: [{ reserved: '90' }] })     // availability: reserved
+        .mockResolvedValueOnce({ rows: [] }),                      // ROLLBACK
+      release: vi.fn(),
+    };
+    sharedPool.connect.mockResolvedValueOnce(mockClient);
+
+    const res = await request(app).post('/api/inventory/stock/movement')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({
+        item_id: 1, movement_type: 'OUT', quantity: 50,
+        reference_number: 'ISS-2026-002', warehouse_id: 1,
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/reserved/i);
   });
 });
 

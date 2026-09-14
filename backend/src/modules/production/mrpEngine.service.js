@@ -186,8 +186,14 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
 
     // ── 3. Independent demand ────────────────────────────────────────────────
     if (includeSalesOrders) {
+      // soi.item_id is the identifier this join should always have had. Until
+      // 20260911000010 added it, sales_order_items carried only a varchar
+      // item_code and a free-text description, so demand reached planning solely
+      // by lowercased string match — and a live audit run reported four of four
+      // demand lines unmatched because the description column held prose. The
+      // code/name fallback stays for rows predating the column.
       const { rows } = await client.query(`
-        SELECT soi.item_code, soi.description,
+        SELECT soi.item_id, soi.item_code, soi.description,
                (COALESCE(soi.quantity,0) - COALESCE(soi.fulfilled_qty,0)) AS qty,
                COALESCE(so.delivery_date, so.order_date) AS need_date, so.order_number
           FROM sales_order_items soi JOIN sales_orders so ON so.id = soi.order_id
@@ -197,7 +203,8 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
       for (const r of rows) {
         const nd = r.need_date ? new Date(r.need_date) : today;
         if (nd > horizonEnd) continue;
-        const it = (r.item_code && byCode.get(String(r.item_code).toLowerCase())) ||
+        const it = (r.item_id != null && items.get(r.item_id)) ||
+                   (r.item_code && byCode.get(String(r.item_code).toLowerCase())) ||
                    (r.description && byName.get(String(r.description).toLowerCase()));
         if (it) pushDemand(it.id, num(r.qty), nd, 'sales_order', r.order_number);
         else unmatched.push({ item: r.item_code || r.description, qty: num(r.qty), source: 'sales_order', ref: r.order_number });
@@ -217,9 +224,16 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
       }
     }
     if (includeForecast) {
+      // Only forecast somebody has agreed to. A statistical run writes drafts,
+      // and a regeneration marks its predecessors superseded; planning against
+      // either would mean MRP acting on a number nobody approved, or on several
+      // generations of the same number at once. run_id IS NULL is a hand-entered
+      // forecast, which is a deliberate act and counts as approved.
       const { rows } = await client.query(`
         SELECT item_id, product_name, forecast_date, (COALESCE(quantity,0) - COALESCE(consumed_qty,0)) AS qty
-          FROM demand_forecasts WHERE ${scope()} AND (COALESCE(quantity,0) - COALESCE(consumed_qty,0)) > 0`);
+          FROM demand_forecasts
+         WHERE ${scope()} AND (COALESCE(quantity,0) - COALESCE(consumed_qty,0)) > 0
+           AND (run_id IS NULL OR COALESCE(status,'draft') = 'approved')`);
       for (const r of rows) {
         const nd = r.forecast_date ? new Date(r.forecast_date) : today;
         if (nd > horizonEnd) continue;
@@ -255,6 +269,52 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
       for (const r of rows) addReceipt(r.product_id, num(r.qty), r.due);
     } catch (e) { /* ignore */ }
 
+    // ── 4b. Stock already committed elsewhere ────────────────────────────────
+    // On-hand is not the same as available. Material reserved for a production
+    // order and stock allocated to a customer order are both physically present
+    // and both spoken for; netting against the raw on-hand figure plans as if
+    // they were free and under-orders by exactly the committed quantity. The
+    // audit found MRP consulting neither table.
+    const committed = new Map();
+    const addCommitted = (id, qty) => {
+      if (!id || qty <= 0) return;
+      committed.set(id, (committed.get(id) || 0) + qty);
+    };
+
+    // Optional reads run inside a SAVEPOINT. A bare try/catch is not enough in
+    // Postgres: the first failing statement aborts the whole transaction, and
+    // every later command returns 25P02 until rollback — so a swallowed error on
+    // an optional table silently took the entire MRP run down with it.
+    const optional = async (label, sql, onRows) => {
+      await client.query('SAVEPOINT mrp_opt');
+      try {
+        const { rows } = await client.query(sql);
+        await client.query('RELEASE SAVEPOINT mrp_opt');
+        onRows(rows);
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT mrp_opt');
+        await client.query('RELEASE SAVEPOINT mrp_opt');
+        console.warn(`[mrp] optional source skipped (${label}): ${e.message}`);
+      }
+    };
+
+    await optional('material_reservations', `
+      SELECT item_id, SUM(GREATEST(COALESCE(qty_reserved,0) - COALESCE(qty_issued,0), 0)) AS qty
+        FROM material_reservations
+       WHERE ${scope()} AND LOWER(COALESCE(status,'')) NOT IN ('cancelled','closed','completed')
+       GROUP BY item_id`,
+      (rows) => { for (const r of rows) addCommitted(r.item_id, num(r.qty)); });
+
+    // inventory_allocations carries no status or company_id — an allocation row
+    // exists only while it is live, and scoping comes through the item.
+    await optional('inventory_allocations', `
+      SELECT a.item_id, SUM(COALESCE(a.quantity,0)) AS qty
+        FROM inventory_allocations a
+        JOIN inventory_items i ON i.id = a.item_id
+       WHERE ${scope('i.company_id')}
+       GROUP BY a.item_id`,
+      (rows) => { for (const r of rows) addCommitted(r.item_id, num(r.qty)); });
+
     // ── 5. Time-phased netting by ascending LLC ──────────────────────────────
     const plannedOrders = [];
     const exceptions = [];
@@ -280,7 +340,10 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
       if (gross.every(g => g <= 0)) continue; // only supply, no requirement → nothing to plan
 
       const lb = leadBuckets(item.lead_time_days);
-      let prev = item.current_stock;
+      // Available-to-plan, not on-hand: what is physically here minus what is
+      // already promised to a production or customer order.
+      const committedQty = committed.get(id) || 0;
+      let prev = item.current_stock - committedQty;
       let anyPlanned = false;
       for (let b = 0; b < nB; b++) {
         const available = prev + schedArr[b];
@@ -341,6 +404,137 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
       void anyPlanned;
     }
 
+    // ── 5b. Capacity check ───────────────────────────────────────────────────
+    // MRP is an infinite-capacity calculation by definition, and this engine had
+    // no reference to capacity, work centres or CRP at all — so it emitted plans
+    // that no shop floor could execute, with nothing saying so. CRP measured the
+    // overload afterwards and nothing read the answer back.
+    //
+    // This does not change the plan: rescheduling to fit capacity is a planner's
+    // decision, and silently moving dates would hide the constraint rather than
+    // surface it. It LABELS each make order with the load its work centres would
+    // be under, so an infeasible release is visible at the point it is created.
+    let capacityInfeasible = 0;
+    const capacityChecked = true;
+    {
+      const wcCap = new Map();
+      await optional('work_centres (capacity)', `
+        SELECT id, name,
+               COALESCE(capacity_hours_per_day,8)   AS hrs,
+               COALESCE(efficiency_pct,100)         AS eff,
+               COALESCE(working_days_per_week,5)    AS days,
+               COALESCE(num_machines,1)             AS machines,
+               num_operators, labour_hours_per_operator, labour_efficiency_pct
+          FROM work_centres
+         WHERE ${scope()} AND COALESCE(status,'active') <> 'inactive'`,
+        (rows) => {
+          for (const w of rows) {
+            // Effective capacity is the LESSER of the machine and labour
+            // constraints. A centre with four machines and one operator has one
+            // operator's worth of capacity, which is what a bottleneck is.
+            const machineHrs = num(w.hrs) * (num(w.eff) / 100) * (parseInt(w.machines, 10) || 1);
+            const labourHrs = w.num_operators
+              ? (parseInt(w.num_operators, 10) || 0) * num(w.labour_hours_per_operator || w.hrs) *
+                (num(w.labour_efficiency_pct || 100) / 100)
+              : null;
+            const perDay = labourHrs === null ? machineHrs : Math.min(machineHrs, labourHrs);
+            wcCap.set(w.id, {
+              name: w.name,
+              perBucket: perDay * (Math.min(bucketDays, 31) * (parseInt(w.days, 10) || 5) / 7),
+              constraint: labourHrs !== null && labourHrs < machineHrs ? 'labour' : 'machine',
+            });
+          }
+        });
+
+      if (wcCap.size) {
+        const routingByBom = new Map();
+        await optional('routing_steps', `
+          SELECT bom_id, work_centre_id, COALESCE(std_time_hrs,0) AS std, COALESCE(setup_time_hrs,0) AS setup
+            FROM routing_steps WHERE work_centre_id IS NOT NULL`,
+          (rows) => {
+            for (const r of rows) {
+              if (!routingByBom.has(r.bom_id)) routingByBom.set(r.bom_id, []);
+              routingByBom.get(r.bom_id).push(r);
+            }
+          });
+
+        // Load the plan onto work centres, bucket by bucket.
+        const load = new Map();  // `${wcId}:${bucket}` -> hours
+        for (const p of plannedOrders) {
+          if (p.order_type !== 'make' || !p.bom_id) continue;
+          for (const step of routingByBom.get(p.bom_id) || []) {
+            const key = `${step.work_centre_id}:${p.release_bucket}`;
+            load.set(key, (load.get(key) || 0) + num(step.setup) + num(step.std) * p.quantity);
+          }
+        }
+        for (const p of plannedOrders) {
+          if (p.order_type !== 'make' || !p.bom_id) { p.capacity_status = null; continue; }
+          const steps = routingByBom.get(p.bom_id) || [];
+          if (!steps.length) { p.capacity_status = 'no_capacity_data'; continue; }
+          let worst = 0, worstWc = null;
+          for (const step of steps) {
+            const cap = wcCap.get(step.work_centre_id);
+            if (!cap || cap.perBucket <= 0) continue;
+            const pct = (load.get(`${step.work_centre_id}:${p.release_bucket}`) || 0) / cap.perBucket * 100;
+            if (pct > worst) { worst = pct; worstWc = { id: step.work_centre_id, ...cap }; }
+          }
+          p.capacity_load_pct = Math.round(worst * 10) / 10;
+          p.work_centre_id = worstWc?.id ?? null;
+          p.capacity_status = worst > 100 ? 'overloaded' : 'ok';
+          if (worst > 100) {
+            capacityInfeasible++;
+            exceptions.push({
+              item: items.get(p.item_id), type: 'capacity_overload', severity: 'warning',
+              need_date: p.need_date,
+              message: `${p.item_name}: ${worstWc.name} is at ${Math.round(worst)}% of ${worstWc.constraint} capacity in the release bucket. Level the load or move the date.`,
+            });
+          }
+        }
+      }
+    }
+
+    // ── 5c. Reschedule messages on existing supply ───────────────────────────
+    // Classic MRP emits reschedule-in and reschedule-out against orders that are
+    // already placed; this engine emitted neither, so a purchase order arriving
+    // three weeks after it is needed looked identical to one arriving on time.
+    // This is also the path by which a SUPPLIER DELAY reaches planning — the
+    // audit found supplier lateness measured in vendor health and never fed back
+    // into MRP or production.
+    await optional('open PO reschedule check', `
+      SELECT poi.item_id, po.po_number,
+             (COALESCE(poi.quantity,0) - COALESCE(poi.received_qty,0)) AS qty,
+             COALESCE(po.expected_delivery_date, po.order_date) AS due
+        FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id
+       WHERE ${scope('po.company_id')} AND po.deleted_at IS NULL
+         AND LOWER(COALESCE(po.status,'')) NOT IN ('cancelled','closed','received','rejected')
+         AND (COALESCE(poi.quantity,0) - COALESCE(poi.received_qty,0)) > 0`,
+      (rows) => {
+        for (const r of rows) {
+          const item = items.get(r.item_id);
+          if (!item) continue;
+          const due = r.due ? new Date(r.due) : null;
+          if (!due) continue;
+          const firstNeed = (demand.get(r.item_id) || [])
+            .map(d => new Date(d.date)).sort((a, b) => a - b)[0];
+          if (!firstNeed) {
+            // Supply arriving for something nothing needs any more.
+            if (due > addDays(today, horizonDays)) return;
+            exceptions.push({ item, type: 'reschedule_out', severity: 'info', need_date: due,
+              message: `${item.item_name}: ${r.po_number} delivers ${isoDate(due)} but there is no demand for it in this horizon. Consider deferring or cancelling.` });
+            continue;
+          }
+          const slipDays = Math.round((due - firstNeed) / DAY_MS);
+          if (slipDays > 0) {
+            exceptions.push({ item, type: 'reschedule_in', severity: slipDays > 14 ? 'critical' : 'warning',
+              need_date: firstNeed,
+              message: `${item.item_name}: ${r.po_number} is due ${isoDate(due)} but is needed ${isoDate(firstNeed)} — ${slipDays} day(s) late. Expedite the supplier.` });
+          } else if (slipDays < -bucketDays * 4) {
+            exceptions.push({ item, type: 'reschedule_out', severity: 'info', need_date: firstNeed,
+              message: `${item.item_name}: ${r.po_number} arrives ${Math.abs(slipDays)} day(s) before it is needed. Defer to reduce carrying cost.` });
+          }
+        }
+      });
+
     // ── 6. Persist ───────────────────────────────────────────────────────────
     const makeCount = plannedOrders.filter(p => p.order_type === 'make').length;
     const buyCount = plannedOrders.length - makeCount;
@@ -350,24 +544,26 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
     const { rows: [run] } = await client.query(`
       INSERT INTO mrp_runs (company_id, run_no, run_type, horizon_days, bucket_days, status, params,
         item_count, planned_order_count, planned_make_count, planned_buy_count, exception_count,
-        total_purchase_value, run_by, run_by_name, completed_at)
-      VALUES ($1,$2,'regenerative',$3,$4,'completed',$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW()) RETURNING *`,
+        total_purchase_value, run_by, run_by_name, capacity_checked, capacity_infeasible_count, completed_at)
+      VALUES ($1,$2,'regenerative',$3,$4,'completed',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW()) RETURNING *`,
       [companyId ?? null, runNo, horizonDays, bucketDays,
        JSON.stringify({ includeSalesOrders, includeMPS, includeForecast, bucketDays, unmatched_count: unmatched.length }),
        items.size, plannedOrders.length, makeCount, buyCount, exceptions.length,
-       Math.round(buyValue * 100) / 100, actor.id ?? null, actor.name ?? 'System']);
+       Math.round(buyValue * 100) / 100, actor.id ?? null, actor.name ?? 'System',
+       capacityChecked, capacityInfeasible]);
 
     for (const p of plannedOrders) {
       const { rows: [saved] } = await client.query(`
         INSERT INTO mrp_planned_orders (run_id, company_id, item_id, item_code, item_name, order_type,
           low_level_code, quantity, uom, need_date, start_date, lead_time_days, gross_requirement,
           on_hand, scheduled_receipts, safety_stock, net_requirement, lot_rule, unit_cost, est_value,
-          bom_id, preferred_vendor_id, pegging)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`,
+          bom_id, preferred_vendor_id, pegging, capacity_status, capacity_load_pct, work_centre_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) RETURNING id`,
         [run.id, companyId ?? null, p.item_id, p.item_code, p.item_name, p.order_type, p.low_level_code,
          p.quantity, p.uom, isoDate(p.need_date), isoDate(p.start_date), p.lead_time_days, p.gross_requirement,
          p.on_hand, p.scheduled_receipts, p.safety_stock, p.net_requirement, p.lot_rule, p.unit_cost,
-         Math.round(p.est_value * 100) / 100, p.bom_id, p.preferred_vendor_id, JSON.stringify(p.pegging)]);
+         Math.round(p.est_value * 100) / 100, p.bom_id, p.preferred_vendor_id, JSON.stringify(p.pegging),
+         p.capacity_status ?? null, p.capacity_load_pct ?? null, p.work_centre_id ?? null]);
       p.id = saved.id;
     }
     for (const ex of exceptions) {

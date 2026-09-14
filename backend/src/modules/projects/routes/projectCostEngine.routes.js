@@ -10,6 +10,7 @@ import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? companyOf(req);
@@ -296,7 +297,7 @@ router.post('/transactions', requirePermission('projects', 'add'), async (req, r
 });
 
 // PUT /project-cost-engine/transactions/:id
-router.put('/transactions/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/transactions/:id', requirePermission('projects', 'edit'), captureBefore('project_cost_transactions'), async (req, res) => {
   try {
     const {
       customer_id, customer_name, project_id, project_code,
@@ -328,7 +329,7 @@ router.put('/transactions/:id', requirePermission('projects', 'edit'), async (re
 });
 
 // DELETE /project-cost-engine/transactions/:id
-router.delete('/transactions/:id', requirePermission('projects', 'delete'), async (req, res) => {
+router.delete('/transactions/:id', requirePermission('projects', 'delete'), captureBefore('project_cost_transactions'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `DELETE FROM project_cost_transactions WHERE id=$1 AND ($2::int IS NULL OR company_id=$2) RETURNING id`,
@@ -908,7 +909,7 @@ router.post('/cost-centers', requirePermission('projects', 'add'), async (req, r
 });
 
 // PUT /project-cost-engine/cost-centers/:id
-router.put('/cost-centers/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/cost-centers/:id', requirePermission('projects', 'edit'), captureBefore('cost_centers'), async (req, res) => {
   try {
     const { code, name, department, department_id, parent_id, description, is_active } = req.body;
     const { rows: [cc] } = await pool.query(`

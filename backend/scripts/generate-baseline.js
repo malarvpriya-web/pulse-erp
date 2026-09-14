@@ -172,15 +172,31 @@ if (notApplied.length) {
   process.exit(1);
 }
 
+// ⚠ The manifest is the union of files on disk AND applied ledger rows, not
+// just the files.
+//
+// The dump is taken from a database where every APPLIED migration's effects are
+// present — including ones whose file was deleted after it ran (a mistake
+// corrected minutes later, a renumber). Listing only files on disk drops those
+// rows from the manifest, so a fresh database bootstrapped from this snapshot
+// gets the DDL but never records that it has it. The ledgers then disagree
+// forever: the source DB carries a row the fresh one lacks, and the orphan
+// warning it raises can never be resolved by any action.
+//
+// That is exactly how 20260530000003_payroll_settings.js came to warn on every
+// single migrate run — its table is in baseline.sql, but its name was in no
+// manifest, so nothing could explain it.
+const embodied = [...new Set([...files, ...ledger])].sort();
+
 const manifest = {
   generated_at: new Date().toISOString(),
   source: `${DB.name}@${DB.host}:${DB.port}`,
-  migrations: files,
+  migrations: embodied,
 };
 
 const tables = (sql.match(/^CREATE TABLE/gm) || []).length;
 const dataRows = (dataSql.match(/^INSERT INTO/gm) || []).length;
-console.log(`   ${(sql.length / 1024).toFixed(0)} KB schema (${tables} tables), ${(dataSql.length / 1024).toFixed(0)} KB config data (${CONFIG_DATA_TABLES.join(', ')}), ${files.length} migrations embodied`);
+console.log(`   ${(sql.length / 1024).toFixed(0)} KB schema (${tables} tables), ${(dataSql.length / 1024).toFixed(0)} KB config data (${CONFIG_DATA_TABLES.join(', ')}, ${dataRows} INSERTs), ${embodied.length} migrations embodied (${files.length} on disk + ${embodied.length - files.length} applied-but-deleted)`);
 
 if (dryRun) {
   console.log('✅  Dry run — nothing written.');

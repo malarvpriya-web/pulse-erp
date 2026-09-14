@@ -19,6 +19,7 @@ import { isDriveConfigured, ensureCustomerDocFolder, DOC_TYPES } from '../../../
 import { uploadFile } from '../../../services/StorageService.js';
 import { pickUpdatable } from '../../../shared/safeUpdate.js';
 import { respondError } from '../../../shared/pgErrors.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -72,7 +73,7 @@ router.post('/accounts/seed-defaults', requirePermission('finance', 'add'), asyn
 
 router.post('/accounts', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const companyId = req.scope?.company_id ?? null;
     const account = await coaRepo.create({ ...req.body, company_id: companyId });
@@ -169,9 +170,9 @@ router.post('/accounts/import', requirePermission('finance', 'add'), upload.sing
   }
 });
 
-router.put('/accounts/:id', requirePermission('finance', 'edit'), async (req, res) => {
+router.put('/accounts/:id', requirePermission('finance', 'edit'), captureBefore('chart_of_accounts'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const account = await coaRepo.update(req.params.id, req.body);
     res.json(account);
@@ -180,7 +181,7 @@ router.put('/accounts/:id', requirePermission('finance', 'edit'), async (req, re
   }
 });
 
-router.delete('/accounts/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/accounts/:id', requirePermission('finance', 'delete'), captureBefore('chart_of_accounts'), async (req, res) => {
   try {
     await coaRepo.softDelete(req.params.id);
     res.json({ message: 'Account deactivated' });
@@ -192,7 +193,7 @@ router.delete('/accounts/:id', requirePermission('finance', 'delete'), async (re
 // Parties (Customers & Suppliers)
 router.post('/parties', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const partyCode = await partiesRepo.getNextCode(req.body.party_type);
     const party = await partiesRepo.create({ ...req.body, party_code: partyCode, company_id: req.scope?.company_id ?? null });
@@ -250,9 +251,9 @@ router.get('/parties/:id/outstanding', requirePermission('finance', 'view'), asy
   }
 });
 
-router.put('/parties/:id', requirePermission('finance', 'edit'), async (req, res) => {
+router.put('/parties/:id', requirePermission('finance', 'edit'), captureBefore('parties'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const party = await partiesRepo.update(req.params.id, req.body);
     res.json(party);
@@ -379,7 +380,7 @@ router.post('/parties/import', requirePermission('finance', 'add'), async (req, 
 
 // Invoices
 router.post('/invoices', requirePermission('finance', 'add'), async (req, res, next) => {
-  const { valid, errors } = await validate('finance', req.body).catch(() => ({ valid: true, errors: [] }));
+  const { valid, errors } = await validate('finance', req.body, { partial: false }).catch(() => ({ valid: true, errors: [] }));
   if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
   next();
 }, async (req, res, next) => {
@@ -541,7 +542,7 @@ router.put('/invoices/:id', requirePermission('finance', 'edit'), async (req, re
   }
 });
 
-router.patch('/invoices/:id/send', requirePermission('finance', 'edit'), async (req, res) => {
+router.patch('/invoices/:id/send', requirePermission('finance', 'edit'), captureBefore('invoices'), async (req, res) => {
   try {
     const { rows: [inv] } = await pool.query(
       `UPDATE invoices SET status='sent', updated_at=NOW() WHERE id=$1 AND status NOT IN ('paid','cancelled') RETURNING id, status`,
@@ -553,7 +554,7 @@ router.patch('/invoices/:id/send', requirePermission('finance', 'edit'), async (
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/invoices/:id/mark-paid', requirePermission('finance', 'edit'), async (req, res) => {
+router.patch('/invoices/:id/mark-paid', requirePermission('finance', 'edit'), captureBefore('invoices'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -607,7 +608,7 @@ router.patch('/invoices/:id/mark-paid', requirePermission('finance', 'edit'), as
   }
 });
 
-router.patch('/invoices/:id/attachment', requirePermission('finance', 'edit'), upload.single('file'), async (req, res) => {
+router.patch('/invoices/:id/attachment', requirePermission('finance', 'edit'), upload.single('file'), captureBefore('invoices'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file provided' });
     const file_url = await uploadFile(req.file.buffer, req.file.originalname, req.file.mimetype);
@@ -623,7 +624,7 @@ router.patch('/invoices/:id/attachment', requirePermission('finance', 'edit'), u
 // Bills
 router.post('/bills', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const bill = await billService.createBill({ ...req.body, company_id: req.scope?.company_id ?? null }, req.user.userId ?? req.user.id);
     logAudit({ userId: req.user?.userId, module: 'finance', recordId: bill.id, recordType: 'bill', action: 'create', newData: bill, req });
@@ -631,7 +632,9 @@ router.post('/bills', requirePermission('finance', 'add'), async (req, res) => {
     const ruleAlerts = ruleResults.filter(r => r.triggered);
     res.status(201).json({ ...bill, ...(ruleAlerts.length ? { rule_alerts: ruleAlerts } : {}) });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // A rejected po_id is the caller's mistake, not a server fault — reporting
+    // it as 500 tells the user to retry something that will never succeed.
+    res.status(error.status ?? 500).json({ error: error.message });
   }
 });
 
@@ -713,7 +716,7 @@ router.post('/bills/:id/resubmit', requirePermission('finance', 'edit'), async (
 // Payments
 router.post('/payments', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const payment = await paymentService.createPayment({ ...req.body, company_id: req.scope?.company_id ?? null }, req.user.userId ?? req.user.id);
     logAudit({ userId: req.user?.userId, module: 'finance', recordId: payment.id, recordType: 'payment', action: 'create', newData: payment, req });
@@ -737,7 +740,7 @@ router.get('/payments', requirePermission('finance', 'view'), async (req, res) =
 // Receipts
 router.post('/receipts', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const receipt = await receiptService.createReceipt({ ...req.body, company_id: req.scope?.company_id ?? null }, req.user.userId ?? req.user.id);
     res.status(201).json(receipt);
@@ -758,7 +761,7 @@ router.get('/receipts', requirePermission('finance', 'view'), async (req, res) =
 // Expense Claims
 router.post('/expenses', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const client = await pool.connect();
     try {

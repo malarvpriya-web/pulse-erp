@@ -32,10 +32,21 @@ const STAGE_META = {
   Shelved:       { color: '#6b7280', bg: '#f3f4f6' },
 };
 const ALL_STAGES = [...STAGES, 'Lost', 'Shelved'];
-const sm = s => STAGE_META[s] || STAGE_META.Shelved;
+
+// The keys above are DISPLAY labels; `opportunities.stage` stores the canonical
+// lowercase key ('proposal'). Looked up with STAGE_META[s] every row whose
+// stage was stored lowercase missed the map entirely and fell through to the
+// Shelved grey, while stageProgress() returned -1 → 100%: a live deal in
+// Proposal drew as a grey bar at "100% through pipeline".
+const stageLabel = (s) => {
+  const k = String(s ?? '').trim().toLowerCase();
+  return ALL_STAGES.find(m => m.toLowerCase() === k) ?? s;
+};
+const sm = s => STAGE_META[stageLabel(s)] || STAGE_META.Shelved;
 
 const stageProgress = (stage) => {
-  const i = STAGES.indexOf(stage);
+  const k = String(stage ?? '').trim().toLowerCase();
+  const i = STAGES.findIndex(s => s.toLowerCase() === k);
   if (i >= 0) return Math.round((i / (STAGES.length - 1)) * 100);
   return 100; // Lost / Shelved are closed
 };
@@ -224,7 +235,7 @@ export default function Pursuits() {
       expected_value: r.expected_value ?? '',
       estimate_value: r.estimate_value ?? '',
       probability_percentage: r.probability_percentage ?? 50,
-      stage: r.stage || 'Prospecting',
+      stage: stageLabel(r.stage) || 'Prospecting',
       assigned_to: r.assigned_to || '',
       held_by: r.held_by || '',
       expected_closing_date: r.expected_closing_date ? String(r.expected_closing_date).slice(0, 10) : '',
@@ -467,7 +478,7 @@ export default function Pursuits() {
                         : `${prob}%`}
                     </td>
                     <td className="pu-td pu-num">{toLac(r.estimate_value)}</td>
-                    <td className="pu-td"><span className="pu-badge" style={{ background: st.bg, color: st.color }}>{r.stage}</span></td>
+                    <td className="pu-td"><span className="pu-badge" style={{ background: st.bg, color: st.color }}>{stageLabel(r.stage)}</span></td>
                     <td className="pu-td">{r.held_by_name || '—'}</td>
                     <td className="pu-td">{fmtDMY(r.follow_up_date)}</td>
                     {!readOnly && (

@@ -1,0 +1,182 @@
+/* DashboardBuilder.css
+ *
+ * ⚠ Every selector is prefixed `dbw-`. Page CSS in this codebase must be scoped
+ * to its own root class: an unprefixed `.grid` or `.tab` here leaks into every
+ * page that shares the shell, which is a defect this project has shipped before.
+ */
+
+.dbw-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; margin: 12px 0; border-radius: 10px;
+  font-size: 13px;
+}
+.dbw-banner--error {
+  background: rgba(224, 87, 91, 0.10);
+  color: #A02B2F;
+  border: 1px solid rgba(224, 87, 91, 0.25);
+}
+.dbw-banner .dbw-icon-btn { margin-left: auto; }
+
+/* ── board tabs ───────────────────────────────────────────────────────────── */
+.dbw-boardbar {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; margin: 14px 0 18px;
+}
+.dbw-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 14px; border-radius: 999px;
+  border: 1px solid rgba(107, 63, 219, 0.20);
+  background: #fff; color: #43405A;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.dbw-tab:hover { background: rgba(107, 63, 219, 0.06); }
+.dbw-tab.is-active {
+  background: #6B3FDB; border-color: #6B3FDB; color: #fff;
+}
+.dbw-tab-count {
+  font-size: 11px; font-variant-numeric: tabular-nums;
+  padding: 1px 7px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.08);
+}
+.dbw-tab.is-active .dbw-tab-count { background: rgba(255, 255, 255, 0.22); }
+
+/* ── buttons ──────────────────────────────────────────────────────────────── */
+.dbw-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 14px; border-radius: 9px;
+  border: 1px solid rgba(107, 63, 219, 0.22);
+  background: #fff; color: #43405A;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: background .15s, box-shadow .15s;
+}
+.dbw-btn:hover:not(:disabled) { background: rgba(107, 63, 219, 0.06); }
+.dbw-btn:disabled { opacity: .5; cursor: not-allowed; }
+.dbw-btn--primary {
+  background: #6B3FDB; border-color: #6B3FDB; color: #fff;
+}
+.dbw-btn--primary:hover:not(:disabled) { background: #5B33C4; }
+.dbw-btn--ghost { border-style: dashed; }
+
+.dbw-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 7px;
+  border: none; background: transparent; color: #6E6A85; cursor: pointer;
+}
+.dbw-icon-btn:hover { background: rgba(0, 0, 0, 0.06); color: #43405A; }
+
+/* ── composer ─────────────────────────────────────────────────────────────── */
+.dbw-composer {
+  background: #fff; border: 1px solid rgba(107, 63, 219, 0.16);
+  border-radius: 14px; margin-bottom: 18px; overflow: hidden;
+}
+.dbw-composer-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.dbw-composer-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: #2C2A3D; }
+
+.dbw-composer-body {
+  display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 18px;
+  padding: 18px;
+}
+@media (max-width: 860px) {
+  .dbw-composer-body { grid-template-columns: 1fr; }
+}
+
+.dbw-fields { display: flex; flex-direction: column; gap: 12px; }
+.dbw-fields label { display: flex; flex-direction: column; gap: 5px; }
+.dbw-fields label > span {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: #6E6A85;
+}
+.dbw-fields select,
+.dbw-fields input {
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  font-size: 13px; color: #2C2A3D; background: #fff;
+}
+.dbw-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.dbw-metric-desc {
+  margin: -4px 0 0; font-size: 12px; line-height: 1.5; color: #6E6A85;
+}
+.dbw-note {
+  margin: 0; font-size: 12px; line-height: 1.5; color: #6E6A85;
+  padding: 8px 10px; border-radius: 8px; background: rgba(107, 63, 219, 0.05);
+}
+
+.dbw-preview {
+  border: 1px solid rgba(0, 0, 0, 0.08); border-radius: 10px;
+  display: flex; flex-direction: column; min-height: 280px;
+}
+.dbw-preview-head {
+  padding: 8px 12px; font-size: 11px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; color: #6E6A85;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.dbw-preview-body { flex: 1; padding: 10px; min-height: 240px; }
+
+.dbw-composer-foot {
+  display: flex; justify-content: flex-end; gap: 10px;
+  padding: 14px 18px; border-top: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(107, 63, 219, 0.03);
+}
+
+/* ── grid + widgets ───────────────────────────────────────────────────────── */
+.dbw-grid { margin: 0 -8px; }
+
+.dbw-widget {
+  background: #fff; border: 1px solid rgba(107, 63, 219, 0.14);
+  border-radius: 14px; display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.dbw-widget-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  cursor: move; /* the drag handle */
+}
+.dbw-widget-title {
+  font-size: 13px; font-weight: 600; color: #2C2A3D;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dbw-widget-body { flex: 1; padding: 10px; min-height: 0; }
+.dbw-widget-foot {
+  padding: 6px 12px; font-size: 11px; color: #8A7A2E;
+  background: rgba(214, 178, 46, 0.12);
+  border-top: 1px solid rgba(214, 178, 46, 0.25);
+}
+
+/* ── tile states ──────────────────────────────────────────────────────────── */
+.dbw-state {
+  height: 100%; display: flex; align-items: center; justify-content: center;
+  gap: 8px; text-align: center; padding: 16px;
+  font-size: 12.5px; line-height: 1.5; color: #6E6A85;
+}
+.dbw-state--error  { color: #A02B2F; }
+.dbw-state--locked { color: #6E6A85; }
+
+.dbw-kpi {
+  height: 100%; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 6px;
+}
+.dbw-kpi-value {
+  font-size: clamp(22px, 4.5vw, 38px); font-weight: 700;
+  color: #2C2A3D; font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.dbw-kpi-label { font-size: 12px; color: #6E6A85; }
+
+/* ── table tile ───────────────────────────────────────────────────────────── */
+.dbw-table-wrap { height: 100%; overflow: auto; }
+.dbw-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dbw-table th {
+  position: sticky; top: 0; background: #fff; z-index: 1;
+  text-align: left; padding: 6px 8px; font-weight: 600; color: #6E6A85;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+.dbw-table td {
+  padding: 6px 8px; color: #43405A;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+}
+.dbw-table .dbw-num { text-align: right; font-variant-numeric: tabular-nums; }

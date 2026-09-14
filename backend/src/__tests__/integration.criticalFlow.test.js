@@ -16,6 +16,15 @@ vi.mock('../services/ValidationEngineService.js', () => ({
 vi.mock('../services/RuleEngineService.js', () => ({
   evaluateRules: vi.fn().mockResolvedValue([]),
 }));
+// Same reason as the two above: captureBefore() SELECTs the row being changed so
+// the audit trail records what it changed FROM, and those queries consume slots
+// from this file's strict `mockResolvedValueOnce` queue — shifting every later
+// answer and failing an assertion for a reason unrelated to the route.
+// The middleware itself is covered by captureBefore.test.js and by a live probe.
+vi.mock('../middlewares/captureBefore.js', () => ({
+  captureBefore: () => (req, res, next) => next(),
+  default:       () => (req, res, next) => next(),
+}));
 
 import request            from 'supertest';
 import configPool         from '../config/db.js';
@@ -155,10 +164,19 @@ describe('Step 1 — Create CRM Lead', () => {
     // POST /crm/leads query order (all via sharedPool):
     //   1. duplicate email check (SELECT id FROM leads WHERE company_id=$1 AND email=$2)
     //   2. CRM settings (SELECT auto_assign_owner ... FROM crm_settings WHERE company_id=$1)
-    //   3. INSERT INTO leads → LEAD
+    //   3. active territories (resolveAssignment → territoryAssignment.service)
+    //   4. INSERT INTO leads → LEAD
+    //
+    // Step 3 was added 2026-09-03 when territories started influencing
+    // assignment. The territory lookup runs on EVERY create, not only when
+    // auto-assign is on, because a manually-assigned lead still belongs to a
+    // territory and the stamp is what makes territory revenue reporting
+    // possible. An empty result here means "no territory matched", which is the
+    // path this case exercises.
     sharedPool.query
-      .mockResolvedValueOnce({ rows: [] })     // dup email check → no duplicate
-      .mockResolvedValueOnce({ rows: [] })     // CRM settings → no settings (auto features off)
+      .mockResolvedValueOnce({ rows: [] })      // dup email check → no duplicate
+      .mockResolvedValueOnce({ rows: [] })      // CRM settings → no settings (auto features off)
+      .mockResolvedValueOnce({ rows: [] })      // active territories → none configured
       .mockResolvedValueOnce({ rows: [LEAD] }); // INSERT leads → LEAD
 
     const res = await request(crmApp).post('/api/crm/leads')

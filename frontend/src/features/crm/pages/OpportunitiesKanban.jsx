@@ -85,6 +85,13 @@ export default function OpportunitiesKanban({ setPage } = {}) {
   const [pendingMove,    setPendingMove]    = useState(null);
   const [winLossReasons, setWinLossReasons] = useState([]);
   const [selectedReason, setSelectedReason] = useState('');
+  const [competitorList, setCompetitorList] = useState([]);
+  const [selectedCompetitor, setSelectedCompetitor] = useState('');
+  // Close attribution on an *already* closed deal, edited from the detail
+  // drawer. The close dialog only fires on the transition, so without this a
+  // deal lost before the field existed stays untagged forever.
+  const [closeEdit,    setCloseEdit]    = useState({ reason: '', competitor: '' });
+  const [savingClose,  setSavingClose]  = useState(false);
   const [detailOpp,         setDetailOpp]         = useState(null);
   const [creatingLifecycle, setCreatingLifecycle] = useState(false);
 
@@ -156,7 +163,20 @@ export default function OpportunitiesKanban({ setPage } = {}) {
     api.get('/crm/win-loss-reasons')
       .then(res => setWinLossReasons(res.data?.data ?? []))
       .catch(() => {});
+    // The competitor master feeds the close dialog's "Lost To" picker. Without
+    // it the only way to name a competitor is free text, which fragments the
+    // Top Competitors roll-up into near-duplicate spellings.
+    api.get('/sales/competitors', { params: { limit: 100 } })
+      .then(res => setCompetitorList(Array.isArray(res.data) ? res.data : []))
+      .catch(() => setCompetitorList([]));
   }, []);
+
+  useEffect(() => {
+    setCloseEdit({
+      reason:     detailOpp?.lost_reason || detailOpp?.close_reason || '',
+      competitor: detailOpp?.competitor  || '',
+    });
+  }, [detailOpp?.id, detailOpp?.lost_reason, detailOpp?.close_reason, detailOpp?.competitor]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -236,7 +256,7 @@ export default function OpportunitiesKanban({ setPage } = {}) {
     } finally { setSubmitting(false); }
   };
 
-  const executeMove = async (opp, newStage, reason = '') => {
+  const executeMove = async (opp, newStage, reason = '', competitor = '') => {
     const prevBoard = JSON.parse(JSON.stringify(board));
     // Optimistic update. Iterating the board's own keys rather than a fixed
     // stage list matters for the Unmapped column: a card dragged out of it has
@@ -248,7 +268,11 @@ export default function OpportunitiesKanban({ setPage } = {}) {
       return updated;
     });
     try {
-      await api.patch(`/crm/opportunities/${opp.id}/stage`, { stage: newStage, close_reason: reason || undefined });
+      await api.patch(`/crm/opportunities/${opp.id}/stage`, {
+        stage: newStage,
+        close_reason: reason || undefined,
+        competitor: competitor || undefined,
+      });
       load(); // Refresh for server-computed fields (is_overdue, probability after won/lost)
     } catch (err) {
       setBoard(prevBoard);
@@ -259,16 +283,31 @@ export default function OpportunitiesKanban({ setPage } = {}) {
   // Won/Lost are whatever the stage master flags as won/lost, not the two
   // literals this file used to hardcode — a company that renames "Won" to
   // "Order Received" still gets the close-reason dialog.
-  const closedKeys  = new Set(stages.filter(s => s.is_won || s.is_lost).map(s => s.key));
-  const isClosed    = key => closedKeys.has(key);
+  // Every stage comparison on this page is case-insensitive, because the two
+  // sides genuinely differ: `stages[].key` is the master's DISPLAY name
+  // ('Won', 'Proposal') while `opp.stage` is the stored canonical key ('won',
+  // 'proposal'). Compared with ===, an already-won deal read as still open —
+  // no attribution panel, and "Mark Won"/"Mark Lost" offered on a closed deal.
+  const sameStage   = (a, b) =>
+    String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+  const closedKeys  = new Set(
+    stages.filter(s => s.is_won || s.is_lost).map(s => String(s.key ?? '').toLowerCase())
+  );
+  const isClosed    = key => closedKeys.has(String(key ?? '').trim().toLowerCase());
+  // The close dialog kept comparing against the literal 'Won', so on a renamed
+  // stage master it offered loss reasons for a win. It reads the same flags as
+  // `closedKeys` now; a stage flagged neither way falls back to the old literal.
+  const stageMeta   = key => stages.find(s => sameStage(s.key, key)) || {};
+  const isWonStage  = key => (stageMeta(key).is_won ?? sameStage(key, 'won'));
   // Stages you can move a card *to*: everything the master defines. `Unmapped`
   // is a symptom, never a destination.
   const targetStages = stages.filter(s => s.key !== UNMAPPED_KEY);
 
   const moveStage = (opp, newStage) => {
-    if (opp.stage === newStage) return;
+    if (sameStage(opp.stage, newStage)) return;
     if (isClosed(newStage)) {
       setSelectedReason('');
+      setSelectedCompetitor('');
       setPendingMove({ opp, newStage });
     } else {
       executeMove(opp, newStage);
@@ -277,9 +316,31 @@ export default function OpportunitiesKanban({ setPage } = {}) {
 
   const confirmClose = () => {
     if (!pendingMove) return;
-    executeMove(pendingMove.opp, pendingMove.newStage, selectedReason);
+    executeMove(pendingMove.opp, pendingMove.newStage, selectedReason, selectedCompetitor);
     setPendingMove(null);
     setSelectedReason('');
+    setSelectedCompetitor('');
+  };
+
+  const saveCloseDetails = async () => {
+    if (!detailOpp) return;
+    setSavingClose(true);
+    const competitor = closeEdit.competitor.trim();
+    const reason     = closeEdit.reason.trim();
+    try {
+      // '' rather than undefined: clearing a mis-typed name has to reach the
+      // column, and the repository maps '' on these fields to NULL.
+      const { data } = await api.put(`/crm/opportunities/${detailOpp.id}`, {
+        competitor,
+        ...(isWonStage(detailOpp.stage) ? {} : { lost_reason: reason }),
+        close_reason: reason,
+      });
+      setDetailOpp(d => (d ? { ...d, ...data } : d));
+      showToast('Close details saved');
+      load();
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Failed to save close details', 'error');
+    } finally { setSavingClose(false); }
   };
 
   // Totals run over every bucket the board holds — including Unmapped — so the
@@ -582,36 +643,60 @@ export default function OpportunitiesKanban({ setPage } = {}) {
         </div>
       )}
 
+      {/* Shared by the close dialog and the detail drawer's attribution editor;
+          neither is mounted at the same time as the other, so the options live
+          here rather than inside either one. */}
+      <datalist id="ok-competitor-options">
+        {competitorList.map(c => <option key={c.id} value={c.name} />)}
+      </datalist>
+
       {/* ── Win/Loss Reason Modal ── */}
       {pendingMove && (
         <div className="ok-overlay" onClick={() => setPendingMove(null)}>
           <div className="ok-drawer" style={{ maxWidth: 440, top: '30%', height: 'auto' }} onClick={e => e.stopPropagation()}>
             <div className="ok-drawer-hd">
-              <h3 style={{ color: pendingMove.newStage === 'Won' ? '#059669' : '#6b7280' }}>
+              <h3 style={{ color: isWonStage(pendingMove.newStage) ? '#059669' : '#6b7280' }}>
                 Mark as {pendingMove.newStage}
               </h3>
               <button className="ok-icon-btn" onClick={() => setPendingMove(null)}><X size={16} /></button>
             </div>
             <div className="ok-drawer-body" style={{ flex: 'none' }}>
               <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>
-                Select a {pendingMove.newStage === 'Won' ? 'win' : 'loss'} reason for{' '}
+                Select a {isWonStage(pendingMove.newStage) ? 'win' : 'loss'} reason for{' '}
                 <strong>{pendingMove.opp.opportunity_name}</strong>
               </p>
               <div className="ok-field">
-                <label>{pendingMove.newStage === 'Won' ? 'Win' : 'Loss'} Reason</label>
+                <label>{isWonStage(pendingMove.newStage) ? 'Win' : 'Loss'} Reason</label>
                 <select value={selectedReason} onChange={e => setSelectedReason(e.target.value)}>
                   <option value="">— Select a reason (optional) —</option>
                   {winLossReasons
-                    .filter(r => r.type === (pendingMove.newStage === 'Won' ? 'win' : 'loss') && r.is_active)
+                    .filter(r => r.type === (isWonStage(pendingMove.newStage) ? 'win' : 'loss') && r.is_active)
                     .map(r => <option key={r.id} value={r.reason}>{r.reason}</option>)}
                 </select>
+              </div>
+              {/* Who the deal went to. This is the only place it gets captured,
+                  and it is what the Sales Command Center's Top Competitors
+                  panel counts. */}
+              <div className="ok-field">
+                <label>{isWonStage(pendingMove.newStage) ? 'Won Against' : 'Lost To'} (Competitor)</label>
+                <input
+                  list="ok-competitor-options"
+                  value={selectedCompetitor}
+                  onChange={e => setSelectedCompetitor(e.target.value)}
+                  placeholder={competitorList.length
+                    ? '— Select or type a competitor (optional) —'
+                    : '— Type a competitor name (optional) —'}
+                />
+                <p style={{ margin: '6px 0 0', fontSize: 11, color: '#9ca3af' }}>
+                  Feeds Top Competitors on the Sales Command Center.
+                </p>
               </div>
             </div>
             <div className="ok-drawer-ft">
               <button className="ok-btn-outline" onClick={() => setPendingMove(null)}>Cancel</button>
               <button
                 className="ok-btn-primary"
-                style={{ background: pendingMove.newStage === 'Won' ? '#059669' : '#6b7280' }}
+                style={{ background: isWonStage(pendingMove.newStage) ? '#059669' : '#6b7280' }}
                 onClick={confirmClose}
               >
                 Confirm {pendingMove.newStage}
@@ -695,11 +780,57 @@ export default function OpportunitiesKanban({ setPage } = {}) {
                   <p>{detailOpp.notes}</p>
                 </div>
               )}
+              {/* A closed deal's attribution stays editable. The close dialog
+                  only fires on the transition, so this is the only way to tag
+                  a deal that was already lost — the entire historical backlog. */}
+              {isClosed(detailOpp.stage) && !readOnly && (
+                <div className="ok-detail-notes">
+                  <span className="ok-detail-label">
+                    {isWonStage(detailOpp.stage) ? 'Win' : 'Loss'} Attribution
+                  </span>
+                  <div className="ok-field" style={{ marginTop: 8 }}>
+                    <label>{isWonStage(detailOpp.stage) ? 'Win' : 'Loss'} Reason</label>
+                    <select
+                      value={closeEdit.reason}
+                      onChange={e => setCloseEdit(c => ({ ...c, reason: e.target.value }))}
+                    >
+                      <option value="">— Not recorded —</option>
+                      {/* A reason already on the record but no longer in the
+                          master still has to be selectable, or saving would
+                          silently drop it. */}
+                      {closeEdit.reason &&
+                        !winLossReasons.some(r => r.reason === closeEdit.reason) && (
+                          <option value={closeEdit.reason}>{closeEdit.reason}</option>
+                        )}
+                      {winLossReasons
+                        .filter(r => r.type === (isWonStage(detailOpp.stage) ? 'win' : 'loss') && r.is_active)
+                        .map(r => <option key={r.id} value={r.reason}>{r.reason}</option>)}
+                    </select>
+                  </div>
+                  <div className="ok-field" style={{ marginTop: 8 }}>
+                    <label>{isWonStage(detailOpp.stage) ? 'Won Against' : 'Lost To'} (Competitor)</label>
+                    <input
+                      list="ok-competitor-options"
+                      value={closeEdit.competitor}
+                      onChange={e => setCloseEdit(c => ({ ...c, competitor: e.target.value }))}
+                      placeholder="— Not recorded —"
+                    />
+                  </div>
+                  <button
+                    className="ok-btn-primary"
+                    style={{ marginTop: 10, background: '#6d28d9' }}
+                    disabled={savingClose}
+                    onClick={saveCloseDetails}
+                  >
+                    {savingClose ? 'Saving…' : 'Save attribution'}
+                  </button>
+                </div>
+              )}
             </div>
             {!isClosed(detailOpp.stage) && (
               <div className="ok-drawer-ft">
                 <button className="ok-btn-outline" onClick={() => setDetailOpp(null)}>Close</button>
-                {(detailOpp.stage === 'Proposal' || detailOpp.stage === 'Negotiation') && (
+                {(sameStage(detailOpp.stage, 'proposal') || sameStage(detailOpp.stage, 'negotiation')) && (
                   <button
                     className="ok-btn-primary"
                     style={{ background: '#6d28d9' }}
@@ -725,7 +856,7 @@ export default function OpportunitiesKanban({ setPage } = {}) {
                 </button>
               </div>
             )}
-            {detailOpp.stage === 'Won' && (
+            {isWonStage(detailOpp.stage) && (
               <div className="ok-drawer-ft">
                 <button className="ok-btn-outline" onClick={() => setDetailOpp(null)}>Close</button>
                 <button

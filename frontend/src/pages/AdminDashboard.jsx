@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Users, ShieldCheck, Activity, Database, RefreshCw,
   Plus, Key, FileText, X, Search, ChevronRight,
   AlertCircle, CheckCircle, ToggleLeft, ToggleRight,
-  Server, Zap, Eye, EyeOff, Upload, Lock, BarChart2, Inbox,
+  Server, Zap, Eye, EyeOff, Lock, BarChart2, Inbox,
   Gauge,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -27,12 +27,6 @@ const ROLE_META = {
 
 const MODULE_COLORS = { Admin: '#6366f1', Auth: '#8b5cf6', Leaves: '#10b981', Finance: '#3b82f6', System: '#9ca3af', Settings: '#6b21a8' };
 
-const DEPARTMENTS = [
-  'Engineering', 'Product', 'Design', 'Marketing', 'Sales',
-  'Finance', 'HR', 'Operations', 'Legal', 'Customer Success', 'Other',
-];
-
-const PERM_MODULES = ['Leaves', 'Finance', 'CRM', 'Inventory', 'Projects', 'Reports', 'HR'];
 
 const timeAgo = ts => {
   if (!ts) return '—';
@@ -81,30 +75,7 @@ const pwdStrength = pwd => {
   return              { label: 'Strong', color: '#10b981', pct: 100 };
 };
 
-const emptyPerms = () =>
-  PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: false, edit: false } }), {});
 
-const defaultPerms = role => {
-  if (['super_admin', 'admin'].includes(role))
-    return PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: true, edit: true } }), {});
-  if (role === 'manager')
-    return PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: true, edit: m !== 'Finance' } }), {});
-  if (role === 'department_head')
-    return PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: true, edit: ['Leaves', 'Projects', 'HR'].includes(m) } }), {});
-  return PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: m === 'Leaves', edit: false } }), {});
-};
-
-const emptyUser = () => ({ name: '', email: '', role: 'employee', department: '', password: '', force_change_pwd: false });
-
-const parseCSV = text => {
-  const lines = text.trim().split('\n').filter(Boolean);
-  if (lines.length < 2) return [];
-  return lines.slice(1).map(line => {
-    const [name = '', email = '', role = 'employee', department = ''] =
-      line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
-    return { name, email, role: role || 'employee', department };
-  }).filter(r => r.name && r.email);
-};
 
 // ── KPI card ──────────────────────────────────────────────────────────────────
 // Delegates to the design-system <Stat> (manual §116.4) — the signature is
@@ -163,8 +134,7 @@ const PwdField = ({ label, value, onChange }) => {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 export default function AdminDashboard({ setPage }) {
-  const { role, user } = useAuth();
-  const isSuperAdmin = role === 'super_admin';
+  const { role } = useAuth();
   const isAdmin = ['super_admin', 'admin'].includes(role);
   const [activeTab, setActiveTab] = useState(() => isAdmin ? 'admin' : 'team');
 
@@ -174,21 +144,12 @@ export default function AdminDashboard({ setPage }) {
   const [loading,    setLoading]    = useState(false);
   const [search,     setSearch]     = useState('');
   const [drawer,     setDrawer]     = useState(null);
-  const [form,       setForm]       = useState(emptyUser());
-  const [perms,      setPerms]      = useState(emptyPerms());
-  const [deptOther,  setDeptOther]  = useState('');
-  const [showPerms,  setShowPerms]  = useState(false);
   const [pwdUser,    setPwdUser]    = useState(null);
   const [newPwd,     setNewPwd]     = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [toast,      setToast]      = useState(null);
   const [storage,    setStorage]    = useState(null);
   const [health,     setHealth]     = useState(null);
-  const [csvDrawer,  setCsvDrawer]  = useState(false);
-  const [csvRows,    setCsvRows]    = useState([]);
-  const [csvError,   setCsvError]   = useState('');
-  const [importing,  setImporting]  = useState(false);
-  const fileRef = useRef();
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -237,37 +198,6 @@ export default function AdminDashboard({ setPage }) {
     }
   };
 
-  const closeAddUser = () => {
-    setDrawer(null);
-    setForm(emptyUser());
-    setPerms(emptyPerms());
-    setDeptOther('');
-    setShowPerms(false);
-  };
-
-  const handleRoleChange = role => {
-    setForm(f => ({ ...f, role }));
-    setPerms(defaultPerms(role));
-  };
-
-  const handleAddUser = async () => {
-    if (!form.name || !form.email) return showToast('Name and email required', 'error');
-    if (!form.password || form.password.length < 8) return showToast('Password must be at least 8 characters', 'error');
-    const dept = form.department === 'Other' ? deptOther : form.department;
-    const payload = { ...form, department: dept, permissions: perms };
-    setSubmitting(true);
-    try {
-      await api.post('/admin/users', payload);
-      showToast('User created');
-      closeAddUser();
-      load();
-    } catch(err) {
-      showToast(err.response?.data?.error || 'Failed to create user', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleResetPwd = async () => {
     if (!newPwd || newPwd.length < 8) return showToast('Password must be at least 8 characters', 'error');
     setSubmitting(true);
@@ -284,57 +214,6 @@ export default function AdminDashboard({ setPage }) {
     }
   };
 
-  const handleCSVFile = e => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      try {
-        const rows = parseCSV(ev.target.result);
-        if (rows.length === 0) { setCsvError('No valid rows found. Check your CSV format.'); setCsvRows([]); }
-        else { setCsvRows(rows); setCsvError(''); }
-      } catch { setCsvError('Failed to parse file.'); }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  };
-
-  const handleImportCSV = async () => {
-    if (csvRows.length === 0) return;
-    setImporting(true);
-    let ok = 0;
-    for (const row of csvRows) {
-      try {
-        await api.post('/admin/users', { ...row, password: generatePassword(), force_change_pwd: true });
-        ok++;
-      } catch {
-        // Count failures — reported in toast below
-      }
-    }
-    const failed = csvRows.length - ok;
-    showToast(
-      failed === 0
-        ? `Imported all ${ok} users successfully`
-        : `Imported ${ok} of ${csvRows.length} users (${failed} failed)`,
-      failed > 0 ? 'error' : 'success'
-    );
-    setCsvDrawer(false);
-    setCsvRows([]);
-    setCsvError('');
-    setImporting(false);
-    load();
-  };
-
-  const togglePerm = (mod, key, checked) => {
-    setPerms(p => ({
-      ...p,
-      [mod]: {
-        ...p[mod],
-        [key]: checked,
-        ...(key === 'view' && !checked ? { edit: false } : {}),
-      },
-    }));
-  };
 
   const displayed = users.filter(u => {
     const q = search.toLowerCase();
@@ -402,13 +281,10 @@ export default function AdminDashboard({ setPage }) {
           <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('AuditLogs')}>
             <Eye size={13} /> Audit Trail
           </button>
-          <button className="plh-cta plh-cta--ghost" onClick={() => { setCsvRows([]); setCsvError(''); setCsvDrawer(true); }}>
-            <Upload size={13} /> Import CSV
-          </button>
           <button className="plh-cta plh-cta--ghost" onClick={() => { setPwdUser(null); setNewPwd(''); setDrawer('resetPwd'); }}>
             <Key size={13} /> Reset Password
           </button>
-          <button className="plh-cta" onClick={() => { setForm(emptyUser()); setPerms(defaultPerms('employee')); setDrawer('addUser'); }}>
+          <button className="plh-cta" onClick={() => setPage && setPage('AccessControl')}>
             <Plus size={14} /> Add User
           </button>
           <button className="plh-icon-btn" onClick={load} title="Refresh" disabled={loading}>
@@ -548,8 +424,8 @@ export default function AdminDashboard({ setPage }) {
             <div className="adm-box-hd"><span className="adm-section-title"><Zap size={13} style={{ marginRight: 5 }} />Quick Actions</span></div>
             <div className="adm-box-body adm-quick-actions">
               {[
-                { label: 'Add New User',    icon: Plus,     action: () => { setForm(emptyUser()); setPerms(defaultPerms('employee')); setDrawer('addUser'); }, color: '#6366f1' },
-                { label: 'Import CSV',      icon: Upload,   action: () => { setCsvRows([]); setCsvError(''); setCsvDrawer(true); }, color: '#10b981' },
+                { label: 'Add New User',    icon: Plus,     action: () => setPage && setPage('AccessControl'), color: '#6366f1' },
+                { label: 'Roles & Access',  icon: ShieldCheck, action: () => setPage && setPage('AccessControl'), color: '#10b981' },
                 { label: 'Reset Password',  icon: Key,      action: () => { setPwdUser(null); setNewPwd(''); setDrawer('resetPwd'); }, color: '#6d28d9' },
                 { label: 'View Audit Trail',icon: FileText, action: () => setPage && setPage('AuditLogs'), color: '#3b82f6' },
                 { label: 'System Settings', icon: Server,   action: () => setPage && setPage('SettingsCenter'), color: '#8b5cf6' },
@@ -651,95 +527,6 @@ export default function AdminDashboard({ setPage }) {
 
       </>} {/* end activeTab === 'admin' */}
 
-      {/* ── Add User Drawer ────────────────────────────────────────────────────── */}
-      {drawer === 'addUser' && (
-        <div className="adm-overlay" onClick={closeAddUser}>
-          <div className="adm-drawer adm-drawer-lg" onClick={e => e.stopPropagation()}>
-            <div className="adm-drawer-hd">
-              <h3>Add New User</h3>
-              <button className="adm-icon-btn" onClick={closeAddUser}><X size={16} /></button>
-            </div>
-            <div className="adm-drawer-body">
-              <div className="adm-field">
-                <label>Full Name *</label>
-                <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Full name…" />
-              </div>
-              <div className="adm-field">
-                <label>Email *</label>
-                <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="user@company.com" />
-              </div>
-              <div className="adm-row2">
-                <div className="adm-field">
-                  <label>Role</label>
-                  <select value={form.role} onChange={e => handleRoleChange(e.target.value)}>
-                    <option value="employee">Employee</option>
-                    <option value="manager">Manager</option>
-                    <option value="department_head">Dept Head</option>
-                    <option value="admin">Admin</option>
-                    {isSuperAdmin && <option value="super_admin">Super Admin</option>}
-                  </select>
-                </div>
-                <div className="adm-field">
-                  <label>Department</label>
-                  <select value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))}>
-                    <option value="">Select…</option>
-                    {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
-                  </select>
-                </div>
-              </div>
-              {form.department === 'Other' && (
-                <div className="adm-field">
-                  <label>Custom Department</label>
-                  <input value={deptOther} onChange={e => setDeptOther(e.target.value)} placeholder="Enter department name…" />
-                </div>
-              )}
-
-              <PwdField
-                label="Temporary Password *"
-                value={form.password}
-                onChange={v => setForm(f => ({ ...f, password: v }))}
-              />
-
-              <label className="adm-checkbox-row">
-                <input type="checkbox" checked={form.force_change_pwd}
-                  onChange={e => setForm(f => ({ ...f, force_change_pwd: e.target.checked }))} />
-                <span>Force password change on first login</span>
-              </label>
-
-              {/* Module permissions */}
-              <div className="adm-perms-block">
-                <button className="adm-perms-toggle" type="button" onClick={() => setShowPerms(v => !v)}>
-                  <Lock size={12} />
-                  Module Permissions
-                  <ChevronRight size={13} style={{ transform: showPerms ? 'rotate(90deg)' : 'none', transition: 'transform .2s', marginLeft: 'auto' }} />
-                </button>
-                {showPerms && (
-                  <div className="adm-perms-grid">
-                    <div className="adm-perms-hd"><span>Module</span><span>View</span><span>Edit</span></div>
-                    {PERM_MODULES.map(m => (
-                      <div key={m} className="adm-perms-row">
-                        <span>{m}</span>
-                        <input type="checkbox" checked={perms[m]?.view || false}
-                          onChange={e => togglePerm(m, 'view', e.target.checked)} />
-                        <input type="checkbox" checked={perms[m]?.edit || false}
-                          disabled={!perms[m]?.view}
-                          onChange={e => togglePerm(m, 'edit', e.target.checked)} />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="adm-drawer-ft">
-              <button className="adm-btn-outline" onClick={closeAddUser}>Cancel</button>
-              <button className="adm-btn-primary" onClick={handleAddUser} disabled={submitting}>
-                {submitting ? 'Creating…' : 'Create User'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── Reset Password Drawer ─────────────────────────────────────────────── */}
       {drawer === 'resetPwd' && (
         <div className="adm-overlay" onClick={() => { setDrawer(null); setPwdUser(null); setNewPwd(''); }}>
@@ -785,62 +572,6 @@ export default function AdminDashboard({ setPage }) {
         </div>
       )}
 
-      {/* ── CSV Import Drawer ─────────────────────────────────────────────────── */}
-      {csvDrawer && (
-        <div className="adm-overlay" onClick={() => { if (!importing) { setCsvDrawer(false); setCsvRows([]); setCsvError(''); } }}>
-          <div className="adm-drawer adm-drawer-lg" onClick={e => e.stopPropagation()}>
-            <div className="adm-drawer-hd">
-              <h3>Bulk Import Users</h3>
-              <button className="adm-icon-btn" onClick={() => { setCsvDrawer(false); setCsvRows([]); setCsvError(''); }}><X size={16} /></button>
-            </div>
-            <div className="adm-drawer-body">
-              <div className="adm-csv-hint">
-                <p style={{ margin: '0 0 4px', fontWeight: 600, fontSize: 12 }}>Expected CSV format (include header row):</p>
-                <code>Name, Email, Role, Department</code>
-                <p style={{ margin: '6px 0 0', fontSize: 11, color: '#9ca3af' }}>
-                  Role values: employee · manager · department_head · admin{isSuperAdmin ? ' · super_admin' : ''}<br />
-                  A random temporary password is generated per user. Force-change-on-login is enabled by default.
-                </p>
-              </div>
-
-              <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={handleCSVFile} />
-              <button className="adm-csv-upload-btn" onClick={() => fileRef.current?.click()}>
-                <Upload size={16} />
-                {csvRows.length > 0 ? `${csvRows.length} users loaded — click to replace` : 'Choose CSV file…'}
-              </button>
-              {csvError && <p className="adm-csv-error">{csvError}</p>}
-
-              {csvRows.length > 0 && (
-                <div>
-                  <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600, color: '#374151' }}>
-                    {csvRows.length} user{csvRows.length !== 1 ? 's' : ''} ready to import
-                  </p>
-                  <div className="adm-table-wrap" style={{ maxHeight: 260, overflowY: 'auto' }}>
-                    <table className="adm-table">
-                      <thead>
-                        <tr><th>Name</th><th>Email</th><th>Role</th><th>Department</th></tr>
-                      </thead>
-                      <tbody>
-                        {csvRows.map((r, i) => (
-                          <tr key={i} className="adm-row">
-                            <td>{r.name}</td><td>{r.email}</td><td>{r.role}</td><td>{r.department || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="adm-drawer-ft">
-              <button className="adm-btn-outline" onClick={() => { setCsvDrawer(false); setCsvRows([]); setCsvError(''); }}>Cancel</button>
-              <button className="adm-btn-primary" onClick={handleImportCSV} disabled={importing || csvRows.length === 0}>
-                {importing ? 'Importing…' : `Import ${csvRows.length > 0 ? `${csvRows.length} Users` : 'Users'}`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </PageShell>
   );
 }

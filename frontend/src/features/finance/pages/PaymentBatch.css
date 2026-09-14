@@ -1,4 +1,12 @@
-.pb-root{padding:24px;background:#f8f9fc;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative;}
+/* Root is a PageShell (`.plh-page`), which already pays the page gutters and
+   the min-height — repeating them here nested the panels 24px deeper than the
+   tab strip they sit under. Keep only what PageShell does not set. */
+.pb-root{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative;}
+
+/* page tab strip — lives in the PageShell dock, frozen above every tab */
+.pb-tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:2px solid #e9e4ff;padding-top:4px;margin-bottom:12px;}
+.pb-tab{padding:8px 20px;border:none;cursor:pointer;border-radius:6px 6px 0 0;font-weight:600;font-size:14px;background:#e9e4ff;color:#6B3FDB;}
+.pb-tab.active{background:#6B3FDB;color:#fff;}
 .pb-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:60px;color:#9ca3af;}
 .pb-spinner{width:32px;height:32px;border:3px solid #e5e7eb;border-top-color:#6B3FDB;border-radius:50%;animation:pbspin .8s linear infinite;}
 @keyframes pbspin{to{transform:rotate(360deg);}}

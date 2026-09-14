@@ -1,10 +1,11 @@
 import express from "express";
 import { addEmployee, getEmployees, getEmployee, updateEmployee, deleteEmployee, getNextEmployeeCode, getEmployeeAnalytics, getExEmployees } from "./employee.controller.js";
-import { verifyToken, allowRoles } from "../middlewares/auth.middleware.js";
+import { verifyToken, allowRoles, hasRole } from "../middlewares/auth.middleware.js";
 import { logAudit } from "../services/AuditService.js";
 import pool from "../config/db.js";
 import { companyOf, callerIdentity } from "../shared/scope.js";
 import { presenceOf } from "../shared/presence.js";
+import { captureBefore } from '../middlewares/captureBefore.js';
 
 const HR_ROLES = [
   "admin", "super_admin", "hr", "hr_manager", "hr_exec", "payroll_admin",
@@ -12,10 +13,18 @@ const HR_ROLES = [
   "Admin", "SuperAdmin", "HR",
 ];
 
+// Roles that reach the Employees section in the sidebar (ROLE_SECTION_ALLOWLIST
+// in the frontend's menuCatalog.js). Offboarding records — separation type,
+// exit reason, F&F status — are not phonebook data: this list was
+// verifyToken-only, so any authenticated caller could read every ex-employee's
+// full row, salary and bank block included. maskPII in getExEmployees redacts
+// what the non-HR roles here must not see.
+const EX_EMPLOYEE_ROLES = [...HR_ROLES, "manager", "department_head"];
+
 const router = express.Router();
 
 router.get("/analytics", verifyToken, getEmployeeAnalytics);
-router.get("/ex", verifyToken, getExEmployees);
+router.get("/ex", verifyToken, allowRoles(...EX_EMPLOYEE_ROLES), getExEmployees);
 router.get("/", verifyToken, getEmployees);
 router.get("/next-code", verifyToken, allowRoles(...HR_ROLES), getNextEmployeeCode);
 
@@ -235,13 +244,18 @@ router.post("/ex/:id/rehire", verifyToken, allowRoles(...HR_ROLES), async (req, 
 // ── Employee Directory — company phonebook (active staff only, safe fields) ──────
 // Managers and above can see personal phone. Regular employees cannot.
 // birthday (MM-DD only, no year) and on_leave_today are included for card badges.
-const DIRECTORY_PHONE_ROLES = new Set([
-  'admin', 'super_admin', 'hr', 'HR', 'Admin', 'SuperAdmin',
-  'hr_manager', 'hr_exec', 'payroll_admin', 'manager', 'Manager',
-]);
+const DIRECTORY_PHONE_ROLES = [
+  'admin', 'super_admin', 'hr',
+  'hr_manager', 'hr_exec', 'payroll_admin', 'manager',
+];
 router.get("/directory", verifyToken, async (req, res) => {
-  const companyId  = req.scope?.company_id ?? null;
-  const canSeePhone = DIRECTORY_PHONE_ROLES.has(req.user?.role || '');
+  const companyId = companyOf(req);
+  // hasRole() over the whole user_roles set, lower-cased on both sides. The
+  // previous Set membership test read req.user.role — the primary claim only —
+  // so a manager or HR user holding that grant as a secondary role had the
+  // phone column redacted, and the mixed-case legacy variants were carried in
+  // the Set purely to work around the missing case fold.
+  const canSeePhone = hasRole(req, DIRECTORY_PHONE_ROLES);
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -425,7 +439,7 @@ router.get("/:id", verifyToken, getEmployee);
 router.post("/", verifyToken, allowRoles(...HR_ROLES), addEmployee);
 router.put("/:id", verifyToken, allowRoles(...HR_ROLES), updateEmployee);
 // Lightweight status-only patch — auto-sets confirmation_date when status → Active
-router.patch("/:id/status", verifyToken, allowRoles(...HR_ROLES, "hr_manager"), async (req, res) => {
+router.patch("/:id/status", verifyToken, allowRoles(...HR_ROLES, "hr_manager"), captureBefore('employees'), async (req, res) => {
   const empId = Number(req.params.id);
   if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   const { status } = req.body;

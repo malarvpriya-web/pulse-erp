@@ -7,6 +7,7 @@ import cron from 'node-cron';
 import pool from '../config/db.js';
 import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 import { narrateKpis } from '../modules/intelligence/kpiNarrator.js';
+import { sqlOpportunityOpen, sqlOpportunityWon } from '../shared/statusSets.js';
 
 const LEADERSHIP_ROLES = ['admin', 'super_admin', 'superadmin', 'department_head'];
 
@@ -63,12 +64,12 @@ async function getPriorMonthKpis(companyId) {
     pool.query(
       `SELECT COALESCE(SUM(expected_value),0)::numeric AS value FROM opportunities
        WHERE company_id = $1 AND deleted_at IS NULL
-         AND LOWER(stage) NOT IN ('closed_won','closed_lost')`,
+         AND ${sqlOpportunityOpen('stage')}`,
       [companyId]
     ),
     pool.query(
       `SELECT
-         COUNT(*) FILTER (WHERE LOWER(stage) = 'closed_won') AS won,
+         COUNT(*) FILTER (WHERE ${sqlOpportunityWon('stage')}) AS won,
          COUNT(*) AS total
        FROM opportunities
        WHERE company_id = $1 AND deleted_at IS NULL

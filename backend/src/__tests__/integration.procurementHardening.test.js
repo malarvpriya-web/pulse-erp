@@ -567,7 +567,13 @@ describe('business validation', () => {
 
   it('refuses a receipt dated in the future', async () => {
     const { po, line } = await makePo({ status: 'approved' });
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    // Build tomorrow from the LOCAL calendar, matching the frame the guard
+    // compares in. A UTC-derived string (`toISOString().slice(0,10)`) is still
+    // *today* locally whenever the run happens between UTC midnight and local
+    // midnight — 00:00-05:30 in IST — which made this assertion fail for clock
+    // reasons rather than because the guard had regressed.
+    const t = new Date(); t.setDate(t.getDate() + 1);
+    const tomorrow = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
     const res = await request(buyer()).post('/api/procurement/grn').send({
       po_id: po.id, warehouse_id: warehouseId, received_date: tomorrow,
       items: [{ po_item_id: line.id, item_id: itemId, quantity_received: 1, rate: 100 }],

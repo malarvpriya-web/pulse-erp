@@ -184,7 +184,9 @@ function DispatchModal({ order, onClose, onDone }) {
 function CreditLimitModal({ customer, onClose, onDone }) {
   const toast = useToast();
   const [form, setForm] = useState({
-    credit_limit:      customer?.credit_limit ?? 0,
+    // Blank, not 0, when no limit is configured: 0 is now a real limit (cash
+    // only) and prefilling it would let a stray Save impose one by accident.
+    credit_limit:      customer?.credit_status === 'no_limit' ? '' : (customer?.credit_limit ?? ''),
     credit_terms_days: customer?.credit_terms_days ?? 30,
   });
   const [saving, setSaving] = useState(false);
@@ -193,11 +195,10 @@ function CreditLimitModal({ customer, onClose, onDone }) {
     setSaving(true);
     try {
       await api.patch(`/sales/fulfilment/credit-control/${customer.id}`, {
-        credit_limit:      parseFloat(form.credit_limit) || 0,
-        credit_terms_days: parseInt(form.credit_terms_days) || 30,
-        is_blocked:        customer?.is_blocked ?? false,
-        block_reason:      customer?.block_reason ?? null,
+        credit_limit:      form.credit_limit === '' ? null : Number(form.credit_limit),
+        credit_terms_days: form.credit_terms_days === '' ? null : Number(form.credit_terms_days),
       });
+      toast.success('Credit limit saved.');
       onDone();
     } catch (e) {
       toast.error(e?.response?.data?.error || 'Save failed');
@@ -312,10 +313,8 @@ export default function FulfilmentTracking() {
   const blockCustomer = async (cust, block) => {
     try {
       await api.patch(`/sales/fulfilment/credit-control/${cust.id}`, {
-        credit_limit:      parseFloat(cust.credit_limit) || 0,
-        credit_terms_days: parseInt(cust.credit_terms_days) || 30,
-        is_blocked:        block,
-        block_reason:      block ? 'Blocked by credit controller' : null,
+        is_blocked:   block,
+        block_reason: block ? 'Blocked by credit controller' : null,
       });
       toast.success(block ? 'Customer blocked.' : 'Customer unblocked.');
       load();

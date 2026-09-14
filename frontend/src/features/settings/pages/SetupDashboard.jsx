@@ -38,7 +38,7 @@ function StatusBadge({ done, skipped }) {
   return           <span style={{ padding: '2px 8px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9', fontSize: 10, fontWeight: 700 }}>Pending</span>;
 }
 
-export default function SetupDashboard({ setPage: setPageProp }) {
+export default function SetupDashboard({ setPage: setPageProp, embedded = false }) {
   const navigate = useNavigate();
   const { role }  = useAuth();
   const { progress, isLoading, refetch } = useSetupProgress();
@@ -94,7 +94,7 @@ export default function SetupDashboard({ setPage: setPageProp }) {
   }
 
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={
       <PageHero
         icon={LayoutDashboard}
         eyebrow="Settings"

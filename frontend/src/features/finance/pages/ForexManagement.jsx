@@ -37,7 +37,7 @@ function Sparkline({ data }) {
   );
 }
 
-export default function ForexManagement() {
+export default function ForexManagement({ embedded = false }) {
   const [tab, setTab] = useState(0);
   const [rates, setRates] = useState([]);
   const [exposure, setExposure] = useState([]);
@@ -155,7 +155,7 @@ export default function ForexManagement() {
   const allCurrencies = ['INR', ...rates.map(r => r.from_currency).filter(c => c !== 'INR')];
 
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={
       <PageHero
         icon={IndianRupee}
         eyebrow="Finance"

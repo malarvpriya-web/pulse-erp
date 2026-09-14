@@ -177,13 +177,31 @@ class GRNService {
       // yet, and one dated before the order was raised cannot be a receipt
       // against it. Both were accepted; both distort ageing, the on-time
       // delivery metric and every period report the row falls into.
-      const received = data.received_date ? new Date(data.received_date) : new Date();
-      if (Number.isNaN(received.getTime())) throw bad('Received date is not a valid date.', 400);
-      const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
-      if (received > endOfToday) throw bad('A goods receipt cannot be dated in the future.', 400);
-      if (poLock.order_date && received < new Date(poLock.order_date)) {
+      // Both are CALENDAR-date questions, so compare YYYY-MM-DD strings in one
+      // frame. The previous version mixed frames: `new Date('2026-09-10')` is
+      // UTC midnight, while `endOfToday` was local 23:59. In any timezone
+      // BEHIND UTC that made a receipt dated tomorrow compare as earlier than
+      // local end-of-today, so the future guard let it straight through.
+      // Storing via `.toISOString()` shifted the date the same way.
+      const asCalendarDate = (v) => {
+        if (v == null || v === '') return null;
+        if (typeof v === 'string') {
+          const m = v.match(/^(\d{4}-\d{2}-\d{2})/);
+          if (m) return m[1];                       // date-only: take it as given
+        }
+        const d = v instanceof Date ? v : new Date(v);
+        if (Number.isNaN(d.getTime())) return null; // anything else: local calendar day
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      };
+
+      const today    = asCalendarDate(new Date());
+      const received = data.received_date ? asCalendarDate(data.received_date) : today;
+      if (!received) throw bad('Received date is not a valid date.', 400);
+      if (received > today) throw bad('A goods receipt cannot be dated in the future.', 400);
+      const orderedOn = asCalendarDate(poLock.order_date);
+      if (orderedOn && received < orderedOn) {
         throw bad(
-          `A receipt cannot be dated ${received.toISOString().slice(0, 10)}, before its purchase order was raised on ${new Date(poLock.order_date).toISOString().slice(0, 10)}.`,
+          `A receipt cannot be dated ${received}, before its purchase order was raised on ${orderedOn}.`,
           400
         );
       }
@@ -216,7 +234,7 @@ class GRNService {
       const grnNumber = await grnRepo.getNextNumber(client, data.company_id ?? null);
       const grn = await grnRepo.create(client, {
         ...data,
-        received_date: received.toISOString().slice(0, 10),
+        received_date: received,
         company_id: data.company_id,
         grn_number: grnNumber,
         // Explicit, never the column default. 'draft' — what the default was —
@@ -265,7 +283,7 @@ class GRNService {
             grn, grnNumber, item, acceptedQty,
             warehouseId: data.warehouse_id,
             supplierId: po?.supplier_id ?? null,
-            receivedDate: received.toISOString().slice(0, 10),
+            receivedDate: received,
             companyId: data.company_id,
             createdBy: userId,
           });

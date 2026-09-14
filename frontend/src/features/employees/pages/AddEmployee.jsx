@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Users } from 'lucide-react';
 import api from "@/services/api/client";
 import ResultDialog from "@/components/ResultDialog";
+import MasterSelect from "@/components/core/MasterSelect";
 import "./AddEmployee.css";
 import "./EmployeesData.css";
 import { PageHero, PageShell } from '@/components/pulse-ui';
@@ -49,10 +50,10 @@ export default function AddEmployee({ setPage, employee, setSelectedEmployee }) 
   // 🆔 Employee Code from backend
   const [employeeCode, setEmployeeCode] = useState(employee?.office_id || "");
 
-  // Hoisted before useEffect to satisfy React Compiler declaration order
-  const [departments, setDepartments] = useState([]);
-  const [zones, setZones] = useState([]);
-  const [designationList, setDesignations] = useState([]);
+  // Hoisted before useEffect to satisfy React Compiler declaration order.
+  // Departments, zones and designations are no longer fetched here — each of
+  // those pickers is a <MasterSelect>, which owns its own fetch and can add to
+  // the master inline instead of sending the user to Master Data Setup.
   const [shifts, setShifts] = useState([]);
 
   // SHIFT — persisted as an hr_shift_assignment after the employee is saved.
@@ -78,24 +79,6 @@ export default function AddEmployee({ setPage, employee, setSelectedEmployee }) 
         .filter(e => !EX_STATUSES_LOWER.has((e.status || '').toLowerCase()))
     ))
     .catch(() => {});
-
-  api.get('/admin/config/departments')
-    .then(res => setDepartments(
-      Array.isArray(res.data) ? res.data.map(d => d.name || d) : []
-    ))
-    .catch(() => setDepartments([]));
-
-  api.get('/admin/config/zones')
-    .then(res => setZones(
-      Array.isArray(res.data) ? res.data.map(z => z.name || z) : []
-    ))
-    .catch(() => setZones([]));
-
-  api.get('/admin/config/designations')
-    .then(res => setDesignations(
-      Array.isArray(res.data) ? res.data.map(d => d.name || d) : []
-    ))
-    .catch(() => setDesignations([]));
 
   // Shift master for the Job Information shift picker
   api.get('/hr/shifts')
@@ -184,6 +167,12 @@ export default function AddEmployee({ setPage, employee, setSelectedEmployee }) 
   // JOB
   const [department,setDepartment] = useState(employee?.department || "");
   const [designation,setDesignation]=useState(employee?.designation || "");
+  // Grade and band validate against master_grades / master_bands server-side
+  // (employee.service.js validateMasterValue) and the columns have existed all
+  // along — there was simply no field on any form, so every employee row held
+  // NULL for both and the two master tabs had no consumer at all.
+  const [grade,setGrade]=useState(employee?.grade || "");
+  const [band,setBand]=useState(employee?.band || "");
   const [employeeRole,setEmployeeRole]=useState(employee?.employee_role || "");
   const [reportingManagerId,setReportingManagerId]=useState(employee?.reporting_manager_id ? String(employee.reporting_manager_id) : "");
   const [reportingManagerName,setReportingManagerName]=useState(employee?.reporting_manager || "");
@@ -339,6 +328,8 @@ export default function AddEmployee({ setPage, employee, setSelectedEmployee }) 
         basic_qualification:basicQualification,
         department,
         designation,
+        grade,
+        band,
         reporting_manager_id: reportingManagerId || null,
         reporting_manager: reportingManagerName || null,
         location,
@@ -376,12 +367,10 @@ export default function AddEmployee({ setPage, employee, setSelectedEmployee }) 
 
       Object.entries(fields).forEach(([k,v])=>formData.append(k,v));
 
-      // Persist a newly typed zone to the master list so it appears in the
-      // dropdown next time (best-effort — the employee still saves the text).
-      const zoneTrim = (zone || '').trim();
-      if (zoneTrim && !zones.some(z => String(z).toLowerCase() === zoneTrim.toLowerCase())) {
-        api.post('/admin/config/zones', { name: zoneTrim }).catch(() => {});
-      }
+      // The zone picker used to be a free-text datalist, so a typed value was
+      // best-effort POSTed to the zone master here. It is a <MasterSelect> now:
+      // the value can only come from the master or from its own "Add new" —
+      // either way the row already exists by the time we get here.
 
       if(photoFile) formData.append("photo_file",photoFile);
       if(panFile) formData.append("pan_file",panFile);
@@ -601,17 +590,41 @@ export default function AddEmployee({ setPage, employee, setSelectedEmployee }) 
       <div className="form-grid">
         <div>
           <label>Department</label>
-          <select value={department} onChange={e=>setDepartment(e.target.value)}>
-            <option value="" disabled>-- Select Department --</option>
-            {departments.map(d => <option key={d}>{d}</option>)}
-          </select>
+          <MasterSelect
+            endpoint="/master/departments"
+            label="Department"
+            value={department}
+            onChange={setDepartment}
+          />
         </div>
 
         <div><label>Designation</label>
-          <select value={designation} onChange={e=>setDesignation(e.target.value)}>
-            <option value="" disabled>-- Select Designation --</option>
-            {designationList.map(d => <option key={d}>{d}</option>)}
-          </select>
+          <MasterSelect
+            endpoint="/master/designations"
+            label="Designation"
+            value={designation}
+            onChange={setDesignation}
+          />
+        </div>
+
+        <div>
+          <label>Grade</label>
+          <MasterSelect
+            endpoint="/master/grades"
+            label="Grade"
+            value={grade}
+            onChange={setGrade}
+          />
+        </div>
+
+        <div>
+          <label>Band</label>
+          <MasterSelect
+            endpoint="/master/bands"
+            label="Band"
+            value={band}
+            onChange={setBand}
+          />
         </div>
 
         <div>
@@ -673,21 +686,23 @@ export default function AddEmployee({ setPage, employee, setSelectedEmployee }) 
             <input type="checkbox" checked={isFieldEmployee}
               onChange={e=>setIsFieldEmployee(e.target.checked)}
               style={{ width:16, height:16 }} />
-            Exempt from shift-time &amp; location clock-in rules
+            Punches attendance in the app with a camera selfie + GPS.
+            Exempt from the shift window and geo-fence. Everyone else clocks
+            in at the office face / biometric device instead.
           </label>
         </div>
 
         <div>
           <label>Zone</label>
-          <input
-            list="zone-options"
+          {/* POST /master/zones additionally accepts the hr roles, so the add
+              option stays available to the people who fill this form in. */}
+          <MasterSelect
+            endpoint="/master/zones"
+            label="Zone"
             value={zone}
-            onChange={e=>setZone(e.target.value)}
-            placeholder="Select or type a new zone"
+            onChange={setZone}
+            addRoles={['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec']}
           />
-          <datalist id="zone-options">
-            {zones.map(z => <option key={z} value={z} />)}
-          </datalist>
         </div>
 
         <div>

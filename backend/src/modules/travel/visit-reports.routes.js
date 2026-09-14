@@ -9,6 +9,7 @@ import pool from '../shared/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -185,7 +186,7 @@ router.post('/', async (req, res) => {
 });
 
 // ── PUT /visit-reports/:id ────────────────────────────────────────────────────
-router.put('/:id', async (req, res) => {
+router.put('/:id', captureBefore('visit_reports'), async (req, res) => {
   try {
     const {
       visit_type, customer_name, project_number, site_name,
@@ -225,7 +226,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // ── DELETE /visit-reports/:id ─────────────────────────────────────────────────
-router.delete('/:id', allowRoles('admin', 'super_admin', 'manager'), async (req, res) => {
+router.delete('/:id', allowRoles('admin', 'super_admin', 'manager'), captureBefore('visit_reports'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM visit_reports WHERE id=$1`, [req.params.id]);
     res.json({ message: 'Report deleted' });

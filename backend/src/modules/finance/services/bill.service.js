@@ -57,6 +57,31 @@ class BillService {
         } catch { /* don't block bill creation if settings check fails */ }
       }
 
+      // A caller-supplied po_id must belong to the caller's company. The foreign
+      // key proves the purchase order exists; it says nothing about whose it is,
+      // so an unscoped passthrough would let one tenant attach its payables to
+      // another tenant's order and read that order's number back out of every
+      // AP view. Refused rather than silently dropped: a link the user asked for
+      // and did not get is the kind of quiet no-op reportCatalog exists to stop.
+      if (data.po_id != null && data.po_id !== '') {
+        const poId = Number.parseInt(data.po_id, 10);
+        if (!Number.isInteger(poId) || poId < 1) {
+          throw Object.assign(new Error('po_id must be a purchase order id.'), { status: 400 });
+        }
+        const { rows: poRows } = await client.query(
+          `SELECT id FROM purchase_orders
+            WHERE id = $1 AND deleted_at IS NULL
+              AND ($2::int IS NULL OR company_id = $2)`,
+          [poId, data.company_id ?? null]
+        );
+        if (!poRows[0]) {
+          throw Object.assign(new Error('That purchase order does not exist in this company.'), { status: 404 });
+        }
+        data = { ...data, po_id: poId };
+      } else {
+        data = { ...data, po_id: null };
+      }
+
       const billNumber = await billRepo.getNextNumber();
       const bill = await billRepo.create(client, {
         ...data,

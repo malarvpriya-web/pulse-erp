@@ -2,16 +2,36 @@
 import { Router } from 'express';
 import pool from '../../../config/db.js';
 import { logAudit } from '../../../services/AuditService.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../../shared/managerApprovalAuthz.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = Router();
+
+/**
+ * Authorization for this router.
+ *
+ * Only PUT /discount-approvals/:id carried a gate. The other 20 routes were
+ * reachable by any authenticated user because the mount is
+ * `v1Router.use("/pricing", verifyToken, pricingRoutes)` — confirmed live on
+ * 2026-09-03: a plain `employee` token read /price-lists and
+ * /discount-approvals, i.e. the whole customer-pricing strategy and every
+ * pending discount request.
+ *
+ * Price lists, discount rules and promotions all set what a customer can be
+ * charged, so writes require 'sales'.'approve' (sales_manager / admin /
+ * super_admin) rather than 'edit' — role_permissions explicitly denies approve
+ * to sales_exec, which is the intended boundary: a rep quotes off a price list,
+ * a manager decides what the price list says.
+ */
+const canRead     = requirePermission('sales', 'view');
+const canSetPrice = requirePermission('sales', 'approve');
 
 // ── Price Lists ──────────────────────────────────────────────────────────────
 
 // GET /price-lists/stats
-router.get('/price-lists/stats', async (req, res) => {
+router.get('/price-lists/stats', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const result = await pool.query(
@@ -30,7 +50,7 @@ router.get('/price-lists/stats', async (req, res) => {
 });
 
 // GET /price-lists
-router.get('/price-lists', async (req, res) => {
+router.get('/price-lists', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const result = await pool.query(
@@ -49,9 +69,14 @@ router.get('/price-lists', async (req, res) => {
 });
 
 // POST /price-lists
-router.post('/price-lists', async (req, res) => {
+router.post('/price-lists', canSetPrice, async (req, res) => {
   const cid = companyOf(req);
-  const uid = req.user?.userId ?? req.user?.id;
+  // price_lists.created_by FKs employees(id), NOT users(id). Passing the
+  // users.id here made every create fail with
+  //   'insert or update on table "price_lists" violates foreign key constraint
+  //    "price_lists_created_by_fkey"'
+  // and return 500 — this endpoint had never successfully created a row.
+  const uid = await employeeOf(req, pool);
   try {
     const { name, currency, applicable_to, customer_ids, valid_from, valid_to, is_default } = req.body;
     if (is_default) {
@@ -69,7 +94,7 @@ router.post('/price-lists', async (req, res) => {
 });
 
 // PUT /price-lists/:id
-router.put('/price-lists/:id', async (req, res) => {
+router.put('/price-lists/:id', canSetPrice, async (req, res) => {
   const cid = companyOf(req);
   try {
     const { id } = req.params;
@@ -96,7 +121,7 @@ router.put('/price-lists/:id', async (req, res) => {
 });
 
 // DELETE /price-lists/:id
-router.delete('/price-lists/:id', async (req, res) => {
+router.delete('/price-lists/:id', canSetPrice, captureBefore('price_lists'), async (req, res) => {
   const cid = companyOf(req);
   try {
     await pool.query(`DELETE FROM price_lists WHERE id=$1 AND company_id=$2`, [req.params.id, cid]);
@@ -107,7 +132,7 @@ router.delete('/price-lists/:id', async (req, res) => {
 });
 
 // GET /price-lists/:id/items
-router.get('/price-lists/:id/items', async (req, res) => {
+router.get('/price-lists/:id/items', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const { id } = req.params;
@@ -122,7 +147,7 @@ router.get('/price-lists/:id/items', async (req, res) => {
 });
 
 // POST /price-lists/:id/items
-router.post('/price-lists/:id/items', async (req, res) => {
+router.post('/price-lists/:id/items', canSetPrice, async (req, res) => {
   const cid = companyOf(req);
   const changedBy = req.user?.name || req.user?.email || 'system';
   try {
@@ -174,7 +199,7 @@ router.post('/price-lists/:id/items', async (req, res) => {
 // ── Compute ──────────────────────────────────────────────────────────────────
 
 // GET /compute
-router.get('/compute', async (req, res) => {
+router.get('/compute', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const { customer_id, items: itemsParam } = req.query;
@@ -275,7 +300,7 @@ router.get('/compute', async (req, res) => {
 // ── Discount Rules ───────────────────────────────────────────────────────────
 
 // GET /discount-rules
-router.get('/discount-rules', async (req, res) => {
+router.get('/discount-rules', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const result = await pool.query(
@@ -289,7 +314,7 @@ router.get('/discount-rules', async (req, res) => {
 });
 
 // POST /discount-rules
-router.post('/discount-rules', async (req, res) => {
+router.post('/discount-rules', canSetPrice, async (req, res) => {
   const cid = companyOf(req);
   const uid = req.user?.userId ?? req.user?.id;
   try {
@@ -306,7 +331,7 @@ router.post('/discount-rules', async (req, res) => {
 });
 
 // PUT /discount-rules/:id
-router.put('/discount-rules/:id', async (req, res) => {
+router.put('/discount-rules/:id', canSetPrice, async (req, res) => {
   const cid = companyOf(req);
   try {
     const { id } = req.params;
@@ -331,7 +356,7 @@ router.put('/discount-rules/:id', async (req, res) => {
 });
 
 // DELETE /discount-rules/:id
-router.delete('/discount-rules/:id', async (req, res) => {
+router.delete('/discount-rules/:id', canSetPrice, captureBefore('discount_rules'), async (req, res) => {
   const cid = companyOf(req);
   try {
     await pool.query(`UPDATE discount_rules SET is_active=false WHERE id=$1 AND company_id=$2`, [req.params.id, cid]);
@@ -344,7 +369,7 @@ router.delete('/discount-rules/:id', async (req, res) => {
 // ── Discount Approvals ───────────────────────────────────────────────────────
 
 // POST /discount-rules/request-approval
-router.post('/discount-rules/request-approval', async (req, res) => {
+router.post('/discount-rules/request-approval', requirePermission('sales', 'add'), async (req, res) => {
   const cid = companyOf(req);
   try {
     const { discount_rule_id, lead_id, order_id, requested_discount_pct, requested_by, order_value } = req.body;
@@ -360,7 +385,7 @@ router.post('/discount-rules/request-approval', async (req, res) => {
 });
 
 // GET /discount-approvals
-router.get('/discount-approvals', async (req, res) => {
+router.get('/discount-approvals', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const result = await pool.query(
@@ -436,7 +461,7 @@ router.put('/discount-approvals/:id', requirePermission('sales', 'approve'), asy
 // ── Promotions ───────────────────────────────────────────────────────────────
 
 // GET /promotions
-router.get('/promotions', async (req, res) => {
+router.get('/promotions', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const result = await pool.query(
@@ -450,7 +475,7 @@ router.get('/promotions', async (req, res) => {
 });
 
 // POST /promotions
-router.post('/promotions', async (req, res) => {
+router.post('/promotions', canSetPrice, async (req, res) => {
   const cid = companyOf(req);
   try {
     const { name, type, conditions, discount_value, valid_from, valid_to, max_usage } = req.body;
@@ -466,7 +491,7 @@ router.post('/promotions', async (req, res) => {
 });
 
 // PUT /promotions/:id
-router.put('/promotions/:id', async (req, res) => {
+router.put('/promotions/:id', canSetPrice, async (req, res) => {
   const cid = companyOf(req);
   try {
     const { id } = req.params;
@@ -488,7 +513,7 @@ router.put('/promotions/:id', async (req, res) => {
 });
 
 // DELETE /promotions/:id
-router.delete('/promotions/:id', async (req, res) => {
+router.delete('/promotions/:id', canSetPrice, captureBefore('promotions'), async (req, res) => {
   const cid = companyOf(req);
   try {
     await pool.query(`UPDATE promotions SET is_active=false WHERE id=$1 AND company_id=$2`, [req.params.id, cid]);
@@ -501,7 +526,7 @@ router.delete('/promotions/:id', async (req, res) => {
 // ── Analytics ────────────────────────────────────────────────────────────────
 
 // GET /analytics
-router.get('/analytics', async (req, res) => {
+router.get('/analytics', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const [pendingR, approvedR, totalR, avgDiscR, topItemsR, monthlyR] = await Promise.allSettled([
@@ -539,7 +564,7 @@ router.get('/analytics', async (req, res) => {
 // ── Price Change Log ─────────────────────────────────────────────────────────
 
 // GET /price-change-log
-router.get('/price-change-log', async (req, res) => {
+router.get('/price-change-log', canRead, async (req, res) => {
   const cid = companyOf(req);
   try {
     const { price_list_id } = req.query;

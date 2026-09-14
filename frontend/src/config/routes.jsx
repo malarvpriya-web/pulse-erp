@@ -55,6 +55,10 @@ export const ROUTES = {
   // The single executive hub. `CeoDashboard` was retired 2026-08-17 once this page
   // reached feature parity with it — see manual §108/§108.1/§108.2.
   CEOIntelligenceDashboard: { component: lazy(() => import('@/features/analytics/pages/CEOIntelligenceDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
+  // Self-service authoring over the metric registry. The backend for this
+  // existed as four CRUD routes behind a 501 with no table and no callers; the
+  // page was the missing half. See shared/metricRegistry.js.
+  DashboardBuilder:         { component: lazy(() => import('@/features/analytics/pages/DashboardBuilder')) },
   PowerQualityAnalytics:    { module: 'engineering', component: lazy(() => import('@/features/engineering/pages/PowerQualityAnalytics')) },
 
   // ── Documents ────────────────────────────────────────────────────────────
@@ -245,6 +249,8 @@ export const ROUTES = {
   VendorApprovalQueue:      { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/VendorApprovalQueue')) },
   VendorRiskDashboard:      { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/VendorRiskDashboard')) },
   SupplierPerformanceIndex: { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/SupplierPerformanceIndex')) },
+  SourcingStrategy:         { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/SourcingStrategy')) },
+  RfxEvaluation:            { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/RfxEvaluation')) },
   VendorRegistration:       { public: true,          component: lazy(() => import('@/features/procurement/pages/VendorRegistration')) },
 
   // ── Inventory ────────────────────────────────────────────────────────────
@@ -362,6 +368,8 @@ export const ROUTES = {
   CRMSettings:           { component: lazy(() => import('@/features/crm/pages/CRMSettings')), props: ctx => ({ setPage: ctx.setPage }) },
   CRMActivities:         { component: lazy(() => import('@/features/crm/pages/CRMActivities')) },
   CRMReports:            { component: lazy(() => import('@/features/crm/pages/CRMReports')) },
+  WebLeadForms:          { component: lazy(() => import('@/features/crm/pages/WebLeadForms')) },
+  MarketingJourneys:     { component: lazy(() => import('@/features/crm/pages/MarketingJourneys')) },
   WonLostLeads:          { component: lazy(() => import('@/features/crm/pages/WonLostLeads')) },
   CustomerHealthDashboard: { component: lazy(() => import('@/features/crm/pages/CustomerHealthDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
   MarketingSettings:     { component: lazy(() => import('@/features/marketing/pages/MarketingSettings')),   props: ctx => ({ setPage: ctx.setPage }) },
@@ -381,6 +389,8 @@ export const ROUTES = {
   SalesCommandCenter:    { component: lazy(() => import('@/features/sales/pages/SalesCommandCenter')) },
   SalesFunnel:           { component: lazy(() => import('@/features/sales/pages/SalesFunnel')) },
   SalesForecasts:        { component: lazy(() => import('@/features/sales/pages/SalesForecasts')) },
+  ForecastCommit:        { component: lazy(() => import('@/features/sales/pages/ForecastCommit')) },
+  DealRegistrations:     { component: lazy(() => import('@/features/sales/pages/DealRegistrations')) },
   SalesPlaybooks:        { component: lazy(() => import('@/features/sales/pages/SalesPlaybooks')),  props: ctx => ({ setPage: ctx.setPage }) },
   PlaybookDetail:        { component: lazy(() => import('@/features/sales/pages/PlaybookDetail')),   props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
   SalesCalendar:         { component: lazy(() => import('@/features/sales/pages/SalesCalendar')) },
@@ -446,6 +456,7 @@ export const ROUTES = {
   FieldVisitScheduler:   { component: lazy(() => import('@/features/servicedesk/pages/FieldVisitScheduler')) },
   ServiceEngineers:      { component: lazy(() => import('@/features/servicedesk/pages/ServiceEngineers')) },
   KnowledgeBase:         { component: lazy(() => import('@/features/servicedesk/pages/KnowledgeBase')) },
+  SupportMailbox:        { component: lazy(() => import('@/features/servicedesk/pages/SupportMailbox')) },
   ServiceContracts:      { component: lazy(() => import('@/features/servicedesk/pages/ServiceContracts')) },
   AgentWorkload:         { component: lazy(() => import('@/features/servicedesk/pages/AgentWorkload')) },
   SLAManagement:         { component: lazy(() => import('@/features/servicedesk/pages/SLAManagement')) },
@@ -559,7 +570,7 @@ import {
   FaUsers, FaUserTie, FaBriefcase, FaGraduationCap, FaCalendarCheck,
   FaUmbrellaBeach, FaClock, FaTrophy, FaPlane, FaSitemap,
   FaFileSignature, FaQrcode,
-  FaUserShield, FaCog, FaHistory,
+  FaCog, FaHistory,
 } from 'react-icons/fa';
 
 // Top-level items are ordered by business domain and separated by `divider`
@@ -601,6 +612,7 @@ export const NAV_ITEMS = [
     { name: 'HR Dashboard',        page: 'HRDashboard' },
     { name: 'HR Benchmarking',     page: 'HRBenchmarkingDashboard' },
     { name: 'Platform',            separator: true },
+    { name: 'Dashboard Builder',   page: 'DashboardBuilder' },
     { name: 'ERP Intelligence',    page: 'ERPIntelligence' },
     { name: 'System Health',       page: 'SystemHealth' },
   ]},
@@ -626,6 +638,7 @@ export const NAV_ITEMS = [
     { name: 'CRM Email',           page: 'CRMEmail' },
     { name: 'Analysis & Setup',    separator: true },
     { name: 'Won / Lost Leads',    page: 'WonLostLeads' },
+    { name: 'Web-to-Lead Forms',   page: 'WebLeadForms' },
     { name: 'Reports',             page: 'CRMReports' },
     { name: 'Pipeline Automation', page: 'PipelineAutomation' },
     { name: 'Settings',            page: 'CRMSettings' },
@@ -644,6 +657,7 @@ export const NAV_ITEMS = [
     { name: 'Intelligence',     page: 'SalesIntelligence' },   // Conversion·Funnel·Forecasts
     { name: 'Commission',       page: 'CommissionManagement' },
     { name: 'Market Presence',  page: 'SalesMarket' },         // Partners·Territories·Competitors
+    { name: 'Deal Registration', page: 'DealRegistrations' },  // partner channel-conflict protection
     { name: 'Enablement & Setup', separator: true },
     { name: 'Playbooks',        page: 'SalesPlaybooks' },
     { name: 'Calendar',         page: 'SalesCalendar' },
@@ -659,6 +673,7 @@ export const NAV_ITEMS = [
     { name: 'Assign Tasks',    page: 'AssignTasks' },
     { name: 'Delivery Tracker',page: 'DeliveryTracker' },
     { name: 'Timesheet Entry', page: 'TimesheetEntry' },
+    { name: 'Journeys',        page: 'MarketingJourneys' },   // nurture sequences that actually run
     { name: 'Analysis & Setup', separator: true },
     { name: 'Analytics',       page: 'MarketingAnalytics' },  // Campaign·Won/Lost·Performance
     { name: 'Settings',        page: 'MarketingSettings' },
@@ -730,6 +745,7 @@ export const NAV_ITEMS = [
     { name: 'Service Master',    page: 'ServiceMasterIPS' },   // IPS field-service grid
     { name: 'Service Catalog',   page: 'ServiceMaster' },      // rate card (was 'Service Master')
     { name: 'Knowledge Base',    page: 'KnowledgeBase' },
+    { name: 'Email to Case',     page: 'SupportMailbox' },     // inbound mail → tickets
     { name: 'Insights & Setup',  separator: true },
     { name: 'Intelligence',      page: 'ServiceIntelligence' },   // Analytics·Failure·VoC
     { name: 'Settings',          page: 'ServiceDeskSettings' },
@@ -1010,16 +1026,14 @@ export const NAV_ITEMS = [
 
   { divider: true, section: 'Administration' },
 
-  // Direct access to the account/role/approval screens, which otherwise exist
-  // only as tabs inside Settings → Access Control. Users and Roles are in
-  // SUPER_ADMIN_ONLY_PAGES, so the Sidebar filters them out for every role
-  // except super_admin — for admin, Sidebar.jsx collapses this group down to
-  // a flat "Approver" link instead of a one-item folder.
-  { name: 'User Management', icon: <FaUserShield />, submenu: [
-    { name: 'Users',               page: 'UserSetup' },
-    { name: 'Roles',               page: 'RolesSetup' },
-    { name: 'Approver',            page: 'ApproverSetup' },
-  ]},
+  // NOTE: there is deliberately no 'User Management' group here. Users, Roles
+  // and Approver Chains are TABS of Settings → Access Control, and this group
+  // mounted the very same three components a second time. Two doors onto one
+  // screen is how the role list, the department list and the permission matrix
+  // drifted apart in the first place — each door grew its own copy. The pages
+  // stay routable (see SUPER_ADMIN_ONLY_PAGES in menuCatalog.js) so existing
+  // bookmarks and setPage('UserSetup') calls still resolve; they just are not
+  // advertised as a second home.
 
   { name: 'Settings', icon: <FaCog />, page: 'SettingsCenter', submenu: [
     { name: '⚙ Settings Center',   page: 'SettingsCenter' },

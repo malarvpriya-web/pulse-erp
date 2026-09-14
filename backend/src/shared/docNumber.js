@@ -24,6 +24,24 @@ export async function nextEcnNumber(client) {
   return `ECN-${String(n).padStart(5, '0')}`;
 }
 
+/** SAV-00001  (savings register initiatives — seq created by 20260910000003) */
+export async function nextSavingsNumber(client) {
+  const n = await nextval('seq_savings', client);
+  return `SAV-${String(n).padStart(5, '0')}`;
+}
+
+/**
+ * SDP-2026-0001 — supplier development plan.
+ *
+ * Carries the year because a development programme is read against the period
+ * it ran in far more often than against the one before it, and the sequence
+ * (seq_sdp, created by 20260911000002) keeps it unique regardless.
+ */
+export async function nextSupplierDevPlanNumber(client) {
+  const n = await nextval('seq_sdp', client);
+  return `SDP-${new Date().getFullYear()}-${String(n).padStart(4, '0')}`;
+}
+
 /** LC-000001 */
 export async function nextLifecycleNumber(client) {
   const n = await nextval('seq_lc', client);

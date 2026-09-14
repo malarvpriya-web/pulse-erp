@@ -1,43 +1,53 @@
-/* HR Benchmarking Dashboard — single-viewport cockpit.
+/* HR Benchmarking Dashboard (prefix: hrb-) — single-viewport cockpit.
  *
- * Fit contract (same shape as CeoDashboard's): the PAGE never scrolls.
- * `.hrb-root` fills `.page-content` (a definite-height flex child, so
- * height:100% resolves exactly) — never give it min-height:100vh.
- * The three metric bands are auto-height; the distribution band absorbs
- * whatever is left. Individual panels MAY scroll internally.
- * Below the breakpoints the grid relaxes to natural flow so nothing is clipped
- * on short or narrow screens.
+ * FIT CONTRACT — the PAGE never scrolls; individual panel bodies MAY scroll
+ * internally. Three metric bands are auto-height with a 120px ceiling, the
+ * chart band absorbs whatever height is left, and the benchmark strip closes
+ * the page. Below the breakpoints the lock is RELEASED and the page flows
+ * normally — a locked root is `overflow:hidden`, so on a short viewport it
+ * would clip rather than scroll.
  *
- * EVERY descendant rule is prefixed with `.hrb-root` on purpose:
- * styles/global-overrides.css:86 sets `.page-content div/span/p { font-size:13px;
- * line-height:1.6 }`, which outranks a bare single-class selector and inflates
- * every text line to ~21px. Two classes beat it. Drop the prefix and the cards
- * grow ~50% taller and the page stops fitting.
+ * ⚠ THIS SHEET WAS DEAD FOR SIX DAYS. The 2026-08-20 hero codemod replaced the
+ * page's `<div className="hrb-root">` root with `<PageShell>` and did not carry
+ * the class across; the same pass dropped the `import './…css'` and re-expanded
+ * every class back into an inline style. The page silently reverted to the
+ * ~1,700px scroller this file was written to replace, and NOTHING in the
+ * toolchain reported it — esbuild, `eslint --rule no-undef` and the vitest suite
+ * all pass on a page whose stylesheet matches nothing, and it logs no console
+ * error either. If you touch the JSX, keep BOTH the import and
+ * `<PageShell className="hrb-root">`, and re-render the page to check — the
+ * cheapest single signal is `!!document.querySelector('.hrb-root')`.
+ *
+ * SPECIFICITY — every descendant rule below is prefixed `.hrb-root` on purpose.
+ * styles/global-overrides.css sets `.page-content div|span|p { font-size:13px;
+ * line-height:1.6 }` at (0,1,1), which outranks a bare single-class selector and
+ * inflates every text line to ~21px. Two classes beat it. Drop the prefix and
+ * the cards grow ~50% taller and the page stops fitting. Never use !important.
  */
 
-.hrb-root {
-  height: 100%;
+/* ══ fit lock ═══════════════════════════════════════════════════════════════
+ * `.plh-page` cancels `.page-content`'s 20px padding with a -20px margin, so
+ * filling the scrollport exactly means 100% of the content box PLUS that 40px
+ * back. `.page-content` is `flex:1` inside a `height:100vh` column, so its
+ * height is definite and this resolves exactly. Same shape as `.exd-root`. */
+.hrb-root.plh-page {
+  height: calc(100% + var(--spacing-md, 20px) * 2);
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  overflow: hidden;
   background: var(--color-bg-page, #f8f9fc);
 }
-
-/* ── header: title + filter bar + refresh on one line ────────────────── */
-.hrb-root .hrb-head {
-  flex: 0 0 auto;
+.hrb-root .plh-dock { flex: 0 0 auto; }
+.hrb-root .plh-body {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
+  flex-direction: column;
 }
-.hrb-root .hrb-title { margin: 0; font-size: 17px; font-weight: 800; color: #111827; line-height: 1.2; }
-.hrb-root .hrb-sub   { margin: 2px 0 0; font-size: 11.5px; line-height: 1.3; color: #6b7280; }
 
-/* compact the shared filter bar for the cockpit band */
-.hrb-root .pl-filterbar { margin-bottom: 0; padding: 6px 11px; gap: 9px; }
+/* compact the shared filter bar for the cockpit dock */
+.hrb-root .pl-filterbar { margin-bottom: 10px; padding: 6px 11px; gap: 9px; }
 .hrb-root .pl-filterbar-label { font-size: 10px; line-height: 1.2; }
 .hrb-root .pl-filterbar-input { min-width: 112px; padding: 4px 8px; font-size: 12px; line-height: 1.3; }
 .hrb-root .pl-filterbar-reset { padding: 4px 10px; font-size: 11.5px; }
@@ -46,19 +56,23 @@
 .hrb-root .hrb-error {
   flex: 0 0 auto;
   background: #fee2e2; border: 1px solid #fca5a5; border-radius: 8px;
-  padding: 6px 13px; color: #991b1b; font-size: 12px; line-height: 1.4;
+  padding: 6px 13px; margin-bottom: 10px;
+  color: #991b1b; font-size: 12px; line-height: 1.4;
 }
 
-/* ── body grid: 3 metric bands + chart band + legend ─────────────────── */
+/* ══ body grid: 3 metric bands + chart band + legend ════════════════════════ */
 .hrb-root .hrb-body {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   display: grid;
   /* auto floor = a card is never clipped, whatever its text wraps to;
-     120px ceiling = metric rows stay compact on tall screens and the spare
-     height goes to the distribution band instead of stretching the cards. */
-  grid-template-rows: repeat(3, minmax(auto, 120px)) minmax(0, 1fr) auto;
-  gap: 10px;
+     112px ceiling = metric rows stay compact on tall screens and the spare
+     height goes to the chart band instead of stretching the cards. The ceiling
+     is what the chart band is paid out of: at 1280x720 the appraisal legend
+     wraps to two lines and 120px here left the panel bodies 9-23px short. */
+  grid-template-rows: repeat(3, minmax(auto, 112px)) minmax(0, 1fr) auto;
+  gap: 9px;
+  padding-bottom: 4px;
 }
 
 .hrb-root .hrb-band {
@@ -69,7 +83,7 @@
 }
 .hrb-root .hrb-band--charts { grid-template-columns: 128px 1.5fr 1fr 1fr; }
 
-/* ── section rail (replaces the old stacked section headers) ─────────── */
+/* ══ section rail (one column instead of a header row per group) ════════════ */
 .hrb-root .hrb-rail {
   display: flex; flex-direction: column; justify-content: center; gap: 2px;
   background: #fff; border: 1px solid #e5e7eb;
@@ -78,9 +92,15 @@
 }
 .hrb-root .hrb-rail-ico   { font-size: 14px; line-height: 1.1; }
 .hrb-root .hrb-rail-title { font-size: 11.5px; font-weight: 800; color: #111827; line-height: 1.25; }
-.hrb-root .hrb-rail-note  { font-size: 9.5px; color: #9ca3af; line-height: 1.3; }
+.hrb-root .hrb-rail-note  {
+  font-size: 9.5px; color: #9ca3af; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis;
+}
 
-/* ── metric card ─────────────────────────────────────────────────────── */
+/* ══ metric card ════════════════════════════════════════════════════════════
+ * `overflow:hidden` is deliberate: a card that outgrows its row must CLIP so a
+ * fit sweep catches it. Silent bleed into the next band is the failure mode
+ * that check exists to find. */
 .hrb-root .hrb-card {
   position: relative; overflow: hidden; min-width: 0;
   background: #fff; border: 1px solid #e5e7eb; border-radius: 11px;
@@ -88,7 +108,10 @@
   display: flex; flex-direction: column; gap: 3px;
 }
 .hrb-root .hrb-card-accent { position: absolute; left: 0; top: 0; width: 3px; height: 100%; }
-.hrb-root .hrb-card-label  { font-size: 11px; font-weight: 600; color: #6b7280; line-height: 1.25; }
+.hrb-root .hrb-card-label  {
+  font-size: 11px; font-weight: 600; color: #6b7280; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .hrb-root .hrb-card-val {
   font-size: 20px; font-weight: 800; line-height: 1.15;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -107,31 +130,53 @@
 .hrb-root .hrb-card-bm span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .hrb-root .hrb-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 
-/* ── chart panels ────────────────────────────────────────────────────── */
+/* ══ chart panels ═══════════════════════════════════════════════════════════ */
 .hrb-root .hrb-panel {
   background: #fff; border: 1px solid #e5e7eb; border-radius: 12px;
-  padding: 10px 13px; min-height: 0;
+  padding: 9px 12px; min-height: 0;
   display: flex; flex-direction: column;
 }
-.hrb-root .hrb-panel-title { flex: 0 0 auto; font-size: 11.5px; font-weight: 700; color: #374151; line-height: 1.3; margin-bottom: 8px; }
+.hrb-root .hrb-panel-title {
+  flex: 0 0 auto; font-size: 11.5px; font-weight: 700; color: #374151;
+  line-height: 1.3; margin-bottom: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .hrb-root .hrb-panel-body  { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; justify-content: center; }
 
 .hrb-root .hrb-stack   { display: flex; height: 18px; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
 .hrb-root .hrb-legends { display: flex; flex-wrap: wrap; gap: 4px 13px; }
-.hrb-root .hrb-legend-item { display: flex; align-items: center; gap: 5px; font-size: 10.5px; line-height: 1.35; color: #374151; }
+.hrb-root .hrb-legend-item {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10.5px; line-height: 1.35; color: #374151;
+}
 .hrb-root .hrb-swatch  { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
 .hrb-root .hrb-muted   { color: #9ca3af; font-size: 11px; line-height: 1.4; }
 
-/* ── benchmark reference strip ───────────────────────────────────────── */
+/* ══ benchmark reference strip ══════════════════════════════════════════════ */
 .hrb-root .hrb-legend {
   background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 9px;
   padding: 6px 11px; font-size: 10px; line-height: 1.45; color: #166534;
 }
-.hrb-root .hrb-legend strong { font-size: 10px; }
+.hrb-root .hrb-legend strong,
+.hrb-root .hrb-legend em { font-size: 10px; }
 
-/* ── relax on short / narrow viewports so nothing gets clipped ───────── */
+/* ══ short-viewport tier — still locked, just tighter ═══════════════════════
+ * 1280x720 clears both release breakpoints below, so it runs the locked grid
+ * with ~130px less height than 1366x768 — and the chart panels, whose legends
+ * wrap to a second line at that width, came up 14-17px short. Buying the chart
+ * band ~30px off the metric-row ceiling fixes it without releasing the lock.
+ * Ordered before the release query so the release still wins where it applies. */
+@media (max-height: 800px) {
+  .hrb-root .hrb-body { grid-template-rows: repeat(3, minmax(auto, 100px)) minmax(0, 1fr) auto; gap: 8px; }
+  .hrb-root .hrb-card { padding: 6px 9px 6px 11px; gap: 2px; }
+  .hrb-root .hrb-card-val { font-size: 18px; }
+  .hrb-root .hrb-panel { padding: 8px 11px; }
+  .hrb-root .hrb-legends { gap: 3px 10px; }
+}
+
+/* ══ relax on short / narrow viewports so nothing gets clipped ══════════════ */
 @media (max-width: 1180px), (max-height: 680px) {
-  .hrb-root { height: auto; min-height: 100%; overflow: visible; }
+  .hrb-root.plh-page { height: auto; min-height: 100%; overflow: visible; }
   .hrb-root .hrb-body { grid-template-rows: none; }
   .hrb-root .hrb-band { grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); }
   .hrb-root .hrb-band--charts { grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); }

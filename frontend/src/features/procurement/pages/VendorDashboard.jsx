@@ -230,14 +230,37 @@ export default function VendorDashboard({ setPage }) {
           </button>
         </div>
         {traceError && <div style={styles.errorBox}>{traceError}</div>}
-        {traceResult && <TraceabilityResult data={traceResult} />}
+        {traceResult && <TraceabilityResult data={traceResult} onApproved={runTraceability} />}
       </div>
     </PageShell>
   );
 }
 
-function TraceabilityResult({ data }) {
+function TraceabilityResult({ data, onApproved }) {
   const { vendor, spend, ncr, capa, scorecard, risk, projects, payments, traceability_score, traceability } = data;
+  const [approving, setApproving]     = useState(false);
+  const [approveError, setApproveError] = useState('');
+
+  // The approval check is the one failure a user can clear from this panel. A
+  // vendor that entered the master directly — seeded, imported, created by hand —
+  // has no registration behind it, so the four-stage approval queue can never
+  // stamp it and the traceability verdict was stuck at INCOMPLETE with no
+  // remedy. This records the decision against the vendor itself.
+  const recordApproval = async () => {
+    if (!vendor?.id) return;
+    setApproving(true);
+    setApproveError('');
+    try {
+      await api.put(`/vendor-approval/vendors/${vendor.id}/approve`, {
+        classification: vendor.classification || 'Approved',
+      });
+      await onApproved?.();
+    } catch (err) {
+      setApproveError(err.response?.data?.error || 'Could not record the approval');
+    } finally {
+      setApproving(false);
+    }
+  };
 
   // Three states, not two. "Incomplete record" and "open non-conformances" are
   // different problems and used to share one red badge that could never fire
@@ -281,6 +304,29 @@ function TraceabilityResult({ data }) {
               </div>
             ))}
           </div>
+
+          {traceability.checks.some(c => c.key === 'approved' && !c.pass) && (
+            <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={recordApproval}
+                disabled={approving}
+                style={{
+                  background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8,
+                  padding: '7px 14px', fontWeight: 600, fontSize: 12.5,
+                  cursor: approving ? 'not-allowed' : 'pointer', opacity: approving ? 0.6 : 1,
+                }}
+              >
+                {approving ? 'Recording…' : 'Record approval'}
+              </button>
+              <span style={{ fontSize: 11.5, color: '#6b7280' }}>
+                Stamps your user id and the current time against this vendor.
+              </span>
+            </div>
+          )}
+          {approveError && (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#dc2626' }}>{approveError}</div>
+          )}
         </div>
       )}
 

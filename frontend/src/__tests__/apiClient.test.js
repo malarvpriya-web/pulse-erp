@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Stub localStorage before importing the module
 const store = {};
@@ -100,5 +100,70 @@ describe('api client', () => {
       config:   { url: '/some/endpoint' },
     };
     await expect(handler.rejected(err)).rejects.toBe(err);
+  });
+
+  // ── 429 / rate limiting ─────────────────────────────────────────────────────
+  describe('429 rate limiting', () => {
+    const rateLimited = (config, { retryAfter = 1 } = {}) => ({
+      config,
+      response: {
+        status: 429,
+        headers: { 'retry-after': String(retryAfter) },
+        data: { error: 'Too many requests. Please try again in a few minutes.', retry_after: retryAfter },
+      },
+    });
+
+    let originalAdapter;
+    beforeEach(() => { originalAdapter = api.defaults.adapter; });
+    afterEach(() => { api.defaults.adapter = originalAdapter; });
+
+    it('retries a GET once the server-supplied Retry-After has elapsed', async () => {
+      const adapter = vi.fn(async (config) => ({ status: 200, data: 'ok', config, headers: {} }));
+      api.defaults.adapter = adapter;
+
+      const handler = api.interceptors.response.handlers.at(-1);
+      const cfg = { method: 'get', url: '/projects/projects', headers: {} };
+
+      const res = await handler.rejected(rateLimited(cfg, { retryAfter: 1 }));
+
+      expect(adapter).toHaveBeenCalledTimes(1);
+      expect(res.data).toBe('ok');
+      expect(cfg._rlRetries).toBe(1);
+    });
+
+    it('never replays a write — a POST is surfaced, not retried', async () => {
+      const adapter = vi.fn(async (config) => ({ status: 200, data: 'ok', config, headers: {} }));
+      api.defaults.adapter = adapter;
+
+      const handler = api.interceptors.response.handlers.at(-1);
+      const cfg = { method: 'post', url: '/projects/projects', headers: {} };
+
+      await expect(handler.rejected(rateLimited(cfg))).rejects.toMatchObject({ status: 429 });
+      expect(adapter).not.toHaveBeenCalled();
+    });
+
+    it('does not stall the UI when Retry-After exceeds the wait budget', async () => {
+      const adapter = vi.fn(async (config) => ({ status: 200, data: 'ok', config, headers: {} }));
+      api.defaults.adapter = adapter;
+
+      const handler = api.interceptors.response.handlers.at(-1);
+      const cfg = { method: 'get', url: '/projects/employees', headers: {} };
+
+      const started = Date.now();
+      await expect(handler.rejected(rateLimited(cfg, { retryAfter: 45 })))
+        .rejects.toMatchObject({ status: 429, retryAfter: 45 });
+      expect(Date.now() - started).toBeLessThan(1000);
+      expect(adapter).not.toHaveBeenCalled();
+    });
+
+    it('gives up once the retry budget is spent and reports the server message', async () => {
+      const handler = api.interceptors.response.handlers.at(-1);
+      const cfg = { method: 'get', url: '/projects/employees', headers: {}, _rlRetries: 2 };
+
+      await expect(handler.rejected(rateLimited(cfg))).rejects.toMatchObject({
+        status: 429,
+        message: 'Too many requests. Please try again in a few minutes.',
+      });
+    });
   });
 });

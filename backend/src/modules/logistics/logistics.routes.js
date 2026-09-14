@@ -2,13 +2,15 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { uploadFile } from '../../services/StorageService.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
 const cid = (req) => req.scope?.company_id ?? null;
 
 /* ── GET /shipments ── */
-router.get('/shipments', async (req, res) => {
+router.get('/shipments', requirePermission('logistics', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, direction, courier } = req.query;
@@ -24,7 +26,7 @@ router.get('/shipments', async (req, res) => {
 });
 
 /* ── POST /shipments ── */
-router.post('/shipments', async (req, res) => {
+router.post('/shipments', requirePermission('logistics', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const {
@@ -48,7 +50,7 @@ router.post('/shipments', async (req, res) => {
 });
 
 /* ── PATCH /shipments/:id/deliver ── */
-router.patch('/shipments/:id/deliver', async (req, res) => {
+router.patch('/shipments/:id/deliver', requirePermission('logistics', 'edit'), captureBefore('shipments'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { actual_delivery } = req.body;
@@ -63,7 +65,7 @@ router.patch('/shipments/:id/deliver', async (req, res) => {
 });
 
 /* ── GET /shipments/:id/track ── */
-router.get('/shipments/:id/track', async (req, res) => {
+router.get('/shipments/:id/track', requirePermission('logistics', 'view'), async (req, res) => {
   try {
     const { rows: [shipment] } = await pool.query('SELECT * FROM shipments WHERE id=$1', [req.params.id]);
     if (!shipment) return res.status(404).json({ error: 'Shipment not found' });
@@ -133,7 +135,7 @@ router.get('/shipments/:id/track', async (req, res) => {
 });
 
 /* ── POST /shipments/:id/pod ── */
-router.post('/shipments/:id/pod', async (req, res) => {
+router.post('/shipments/:id/pod', requirePermission('logistics', 'add'), async (req, res) => {
   try {
     const { pod_image_base64, delivery_date } = req.body;
     if (!pod_image_base64) return res.status(400).json({ error: 'pod_image_base64 is required' });
@@ -153,7 +155,7 @@ router.post('/shipments/:id/pod', async (req, res) => {
 });
 
 /* ── GET /eway-bills ── */
-router.get('/eway-bills', async (req, res) => {
+router.get('/eway-bills', requirePermission('logistics', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status } = req.query;
@@ -171,7 +173,7 @@ router.get('/eway-bills', async (req, res) => {
 });
 
 /* ── POST /eway-bills — manual entry (NIC API optional) ── */
-router.post('/eway-bills', async (req, res) => {
+router.post('/eway-bills', requirePermission('logistics', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const {
@@ -211,7 +213,7 @@ router.post('/eway-bills', async (req, res) => {
 });
 
 /* ── PATCH /eway-bills/:id/cancel ── */
-router.patch('/eway-bills/:id/cancel', async (req, res) => {
+router.patch('/eway-bills/:id/cancel', requirePermission('logistics', 'edit'), captureBefore('eway_bills'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -225,7 +227,7 @@ router.patch('/eway-bills/:id/cancel', async (req, res) => {
 });
 
 /* ── POST /eway-bills/generate — attempt NIC GST portal (legacy) ── */
-router.post('/eway-bills/generate', async (req, res) => {
+router.post('/eway-bills/generate', requirePermission('logistics', 'add'), async (req, res) => {
   try {
     const { shipment_id, from_gstin, to_gstin, vehicle_number,
             distance_km, goods_description, taxable_value } = req.body;
@@ -275,7 +277,7 @@ router.post('/eway-bills/generate', async (req, res) => {
 });
 
 /* ── GET /dashboard ── */
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', requirePermission('logistics', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const p = [companyId];

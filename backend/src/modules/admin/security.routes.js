@@ -4,6 +4,7 @@ import crypto  from 'crypto';
 import pool    from '../shared/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
 import auditRepository from '../audit/repositories/audit.repository.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -76,7 +77,7 @@ router.post('/ip-whitelist', async (req, res) => {
 });
 
 /* ── PATCH /api/security/ip-whitelist/:id — toggle active ── */
-router.patch('/ip-whitelist/:id', async (req, res) => {
+router.patch('/ip-whitelist/:id', captureBefore('ip_whitelist'), async (req, res) => {
   const { active } = req.body;
   if (active === undefined) return res.status(400).json({ success:false, message:'active is required' });
   try {
@@ -92,7 +93,7 @@ router.patch('/ip-whitelist/:id', async (req, res) => {
 });
 
 /* ── DELETE /api/security/ip-whitelist/:id — soft-remove by id */
-router.delete('/ip-whitelist/:id', async (req, res) => {
+router.delete('/ip-whitelist/:id', captureBefore('ip_whitelist'), async (req, res) => {
   try {
     const { rows: before } = await pool.query(`SELECT * FROM ip_whitelist WHERE id=$1`, [req.params.id]);
     await pool.query(`UPDATE ip_whitelist SET active=FALSE WHERE id=$1`, [req.params.id]);

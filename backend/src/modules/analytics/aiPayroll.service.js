@@ -430,11 +430,20 @@ export async function buildQueryContext(query) {
   // Inventory — included when query mentions stock/inventory/reorder
   if (q.includes('inventory') || q.includes('stock') || q.includes('reorder') || q.includes('item')) {
     try {
+      // ⚠ THIS QUERY HAD NEVER RETURNED A ROW. Two broken references, both
+      // inside a `try` that turned the failure into an absent section rather
+      // than an error: `name` does not exist (the column is `item_name`), and
+      // `reorder_point` was dropped by 20260911000010_sca_spine_identity after
+      // it was found to be 0.000 on every row — `reorder_level` is the single
+      // source of truth. Aliased back to the old names so the `r.name` /
+      // `r.reorder_point` readers below are untouched.
       const { rows } = await pool.query(`
-        SELECT name, current_stock, reorder_point, unit_of_measure
+        SELECT item_name AS name, current_stock,
+               reorder_level AS reorder_point, unit_of_measure
         FROM inventory_items
-        WHERE current_stock <= reorder_point * 1.5
-        ORDER BY current_stock::float / NULLIF(reorder_point, 0) ASC
+        WHERE reorder_level > 0
+          AND current_stock <= reorder_level * 1.5
+        ORDER BY current_stock::float / NULLIF(reorder_level, 0) ASC
         LIMIT 10
       `);
       if (rows.length) {

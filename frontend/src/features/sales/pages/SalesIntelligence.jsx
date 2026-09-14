@@ -1,15 +1,20 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { TrendingUp, Filter, Target, ShoppingCart } from 'lucide-react';
+import { TrendingUp, Filter, Target, ShoppingCart, CheckSquare } from 'lucide-react';
 import SalesConversionAnalytics from './SalesConversionAnalytics';
 import SalesFunnel from './SalesFunnel';
 import SalesForecasts from './SalesForecasts';
+import ForecastCommit from './ForecastCommit';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TABS = [
   { id: 'conversion', label: 'Conversion Analytics', icon: TrendingUp },
   { id: 'funnel',     label: 'Sales Funnel',         icon: Filter     },
   { id: 'forecasts',  label: 'Forecasts',            icon: Target     },
+  // The computed roll-up (Forecasts) and the forecast a person STATES are
+  // different questions, so they are different tabs rather than one screen
+  // showing two numbers under the same heading.
+  { id: 'commit',     label: 'Forecast & Commit',    icon: CheckSquare },
 ];
 const IDS = TABS.map(t => t.id);
 
@@ -50,6 +55,7 @@ export default function SalesIntelligence() {
         {active === 'conversion' && <SalesConversionAnalytics embedded />}
         {active === 'funnel'     && <SalesFunnel embedded />}
         {active === 'forecasts'  && <SalesForecasts embedded />}
+        {active === 'commit'     && <ForecastCommit embedded />}
       </div>
     </PageShell>
   );

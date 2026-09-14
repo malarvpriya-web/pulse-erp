@@ -15,7 +15,7 @@ import { companyOf, employeeOf } from '../../../shared/scope.js';
 import { resolveGstRate } from '../../../shared/gstRate.js';
 import { rollupQualityStatus } from '../../quality/services/qualityRollup.service.js';
 import { resolveSourcingAdvisory } from '../services/sourcingAdvisory.service.js';
-import { hasRole, allowRoles } from '../../../middlewares/auth.middleware.js';
+import { hasRole, allowRoles, permissionFor } from '../../../middlewares/auth.middleware.js';
 import { requiredBand, assertCanDecideAmount, requireProcurement } from '../procurement.authz.js';
 import { rankOptions, TCO_DEFAULTS } from '../engines/tcoEngine.js';
 import {
@@ -25,6 +25,11 @@ import {
   loadSpendFacets, loadSpendTrend, loadInvoiceSpend, poSpendInr,
   resolveLimit as resolveSpendLimit,
 } from '../services/spendAnalytics.service.js';
+import { loadTcoPortfolio } from '../services/tcoPortfolio.service.js';
+import {
+  createInitiative, changeStage, postRealisation, getInitiative,
+  loadPipeline, listInitiatives,
+} from '../services/savingsRegister.service.js';
 import { sqlPoCommitted } from '../../../shared/statusSets.js';
 import { resolveVendorParty } from '../services/vendorIdentity.service.js';
 import {
@@ -32,6 +37,7 @@ import {
 } from '../services/procurementSettings.service.js';
 import threeWayMatchRoutes, { createThreeWayMatchRecord } from './threeWayMatch.routes.js';
 import { assertTransition, isNoop } from '../procurement.stateMachine.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -470,11 +476,25 @@ router.patch('/purchase-requests/:id/convert-to-po', requireProcurement('edit'),
       }
 
       const poNumber = await poRepo.getNextNumber(client, companyId);
+      // A requisition carries no supplier commitment — there was no quote. The
+      // vendor's own lead time is the only due date available, and it is an
+      // assumption, so it is recorded as one. Without this the order goes out
+      // with expected_delivery_date NULL and the supplier's OTD has nothing at
+      // all to be measured against. See migration 20260910000006.
+      const { rows: [convVendor] } = await client.query(
+        `SELECT lead_time_days FROM vendors WHERE id = $1`, [supplierId]);
+      const convDays = parseInt(convVendor?.lead_time_days, 10) > 0
+        ? parseInt(convVendor.lead_time_days, 10) : null;
+      const convExpected = convDays == null ? null
+        : new Date(Date.now() + convDays * 86400000).toISOString().slice(0, 10);
+
       const po = await poRepo.create(client, {
         po_number:      poNumber,
         pr_id:          pr.id,
         supplier_id:    supplierId,
         order_date:     new Date().toISOString().slice(0, 10),
+        expected_delivery_date:  convExpected,
+        expected_delivery_basis: convExpected ? 'lead_time' : null,
         subtotal,
         tax_amount:     taxTotal,
         total_amount:   Number((subtotal + taxTotal).toFixed(2)),
@@ -2117,10 +2137,34 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
     // No longer optional. An award whose purchase order could not be created is
     // not an award, so a failure here rolls the whole thing back.
     const poNum = await nextPurchaseOrderNumber(client, companyId);
+    // ── The promised delivery date ───────────────────────────────────────────
+    // This path raised orders with expected_delivery_date NULL, and so did
+    // convert-to-po — between them, every order this product actually creates.
+    // Live before this change: 0 of 2 purchase orders carried one, so the
+    // supplier scorecard's OTD had nothing to measure against but
+    // order_date + vendors.lead_time_days, master data we typed about them.
+    //
+    // The winning quote's `delivery_days` is the supplier's own commitment on
+    // the bid we just accepted — the strongest promise this system ever holds.
+    // Falling back to the vendor's lead time is still better than NULL, but it
+    // is an assumption and `expected_delivery_basis` says so; vendorHealth
+    // refuses to publish an OTD measured only against 'lead_time' dates.
+    const quotedDays = Number.isFinite(parseInt(quote.delivery_days, 10)) && parseInt(quote.delivery_days, 10) > 0
+      ? parseInt(quote.delivery_days, 10) : null;
+    const { rows: [awardVendor] } = await client.query(
+      `SELECT lead_time_days FROM vendors WHERE id = $1`, [vendorId]);
+    const fallbackDays = quotedDays == null && parseInt(awardVendor?.lead_time_days, 10) > 0
+      ? parseInt(awardVendor.lead_time_days, 10) : null;
+    const promisedDays = quotedDays ?? fallbackDays;
+    const deliveryBasis = quotedDays != null ? 'quoted' : fallbackDays != null ? 'lead_time' : null;
+
     const { rows: [po] } = await client.query(`
       INSERT INTO purchase_orders (po_number, supplier_id, pr_id, total_amount, subtotal, status,
-                                   order_date, company_id, created_by, notes)
-      VALUES ($1,$2,$3,$4,$4,'draft',CURRENT_DATE,$5,$6,$7) RETURNING *
+                                   order_date, company_id, created_by, notes,
+                                   expected_delivery_date, expected_delivery_basis)
+      VALUES ($1,$2,$3,$4,$4,'draft',CURRENT_DATE,$5,$6,$7,
+              CASE WHEN $8::int IS NULL THEN NULL ELSE CURRENT_DATE + ($8::int || ' days')::interval END,
+              $9) RETURNING *
     `, [
       poNum, vendorId,
       // rfqs.pr_id is varchar while purchase_requests.id is integer — real
@@ -2134,6 +2178,8 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
       // again, and how a reviewer traces the price back to the event it was won
       // on. It was never recorded.
       `Awarded from ${rfq.rfq_number}${quote.vendor_name ? ` to ${quote.vendor_name}` : ''}`,
+      promisedDays,
+      deliveryBasis,
     ]);
 
     // Carry real line items onto the PO — an RFQ-award that only writes the
@@ -2744,6 +2790,116 @@ router.get('/analytics/spend', requireProcurement('view'), async (req, res) => {
       from: from || from_date || null,
       to: to || to_date || null,
       limit: resolveSpendLimit(limit),
+    }));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// SAVINGS REGISTER — identified → negotiated → contracted → realised
+// ════════════════════════════════════════════════════════════════════════════
+// The module a CPO is measured on, and the one the parity audit found entirely
+// absent. See services/savingsRegister.service.js for why almost every rule in
+// it is a refusal: a savings register is the most gameable object in
+// procurement, and each guard blocks one well-known way of inflating the number.
+
+router.get('/savings/pipeline', requireProcurement('view'), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    res.json(await loadPipeline({ companyId: cid(req), from: from || null, to: to || null }));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/savings', requireProcurement('view'), async (req, res) => {
+  try {
+    res.json(await listInitiatives({
+      companyId: cid(req),
+      stage: req.query.stage, lever: req.query.lever,
+      vendorId: req.query.vendor_id, limit: req.query.limit,
+    }));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/savings/:id', requireProcurement('view'), async (req, res) => {
+  try {
+    const one = await getInitiative({ companyId: cid(req), id: parseInt(req.params.id, 10) });
+    if (!one) return res.status(404).json({ error: 'Initiative not found' });
+    res.json(one);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/savings', requireProcurement('add'), async (req, res) => {
+  try {
+    const out = await createInitiative({
+      companyId: cid(req), userId: req.user?.userId, body: req.body,
+    });
+    if (out.error) return res.status(out.status || 400).json({ error: out.error });
+    res.status(201).json(out.initiative);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Stage transitions follow a graph — identified → realised in one hop is
+// refused, because the intermediate states ARE the evidence.
+router.patch('/savings/:id/stage', requireProcurement('edit'), async (req, res) => {
+  try {
+    const out = await changeStage({
+      companyId: cid(req), userId: req.user?.userId,
+      id: parseInt(req.params.id, 10),
+      toStage: req.body?.stage,
+      note: req.body?.note,
+      // ⚠ Moving to `realised` needs finance sign-off, and the person who raised
+      // the initiative cannot be the one who signs it. `finance:approve`, not
+      // `procurement:edit`, is the authority that matters for that transition —
+      // so it is checked here rather than trusting the body's own claim.
+      financeApproval: req.body?.finance_approval === true
+        ? await callerHoldsFinanceApproval(req)
+        : false,
+    });
+    if (out.error) return res.status(out.status || 400).json({ error: out.error });
+    res.json(out.initiative);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/savings/:id/realisation', requireProcurement('edit'), async (req, res) => {
+  try {
+    const out = await postRealisation({
+      companyId: cid(req), userId: req.user?.userId,
+      id: parseInt(req.params.id, 10), body: req.body,
+    });
+    if (out.error) return res.status(out.status || 400).json({ error: out.error });
+    res.status(201).json(out.event);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * Does this caller actually hold finance approval authority?
+ *
+ * A body flag saying `finance_approval: true` is the caller's own assertion.
+ * Trusting it would make the sign-off gate decorative — anyone with
+ * `procurement:edit` could self-certify by setting a boolean. The matrix is the
+ * authority, so it is consulted.
+ */
+async function callerHoldsFinanceApproval(req) {
+  const perm = await permissionFor(req, 'finance');
+  return perm?.can_approve === true;
+}
+
+// ── TCO portfolio: the savings board ─────────────────────────────────────────
+// The audit's sharpest finding was that the TCO engine "runs at the
+// quote-comparison moment and never rolls up into a portfolio view". This is
+// that rollup, over the frozen `procurement_award_decisions` rows.
+//
+// ⚠ Awarded events are NEVER re-scored — vendor performance and the TCO
+// parameters both move, so re-running the engine over a past decision reports a
+// number that was never on the buyer's screen. Only OPEN events are scored live,
+// and they are returned in their own block rather than summed into the result.
+router.get('/analytics/tco-portfolio', requireProcurement('view'), async (req, res) => {
+  try {
+    const { from, to, from_date, to_date, limit } = req.query;
+    res.json(await loadTcoPortfolio({
+      companyId: cid(req),
+      from: from || from_date || null,
+      to: to || to_date || null,
+      limit,
     }));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3390,7 +3546,7 @@ router.post('/avl', requireProcurement('add', 'qc_manager'), async (req, res) =>
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/avl/:id/block', requireProcurement('edit', 'qc_manager'), async (req, res) => {
+router.patch('/avl/:id/block', requireProcurement('edit', 'qc_manager'), captureBefore('approved_vendor_list'), async (req, res) => {
   try {
     const { reason } = req.body;
     const { rows } = await pool.query(
@@ -3404,7 +3560,7 @@ router.patch('/avl/:id/block', requireProcurement('edit', 'qc_manager'), async (
 });
 
 // Removing an approved-vendor-list entry changes who may be bought from at all.
-router.delete('/avl/:id', allowRoles('super_admin','admin','procurement_manager','qc_manager'), async (req, res) => {
+router.delete('/avl/:id', allowRoles('super_admin','admin','procurement_manager','qc_manager'), captureBefore('approved_vendor_list'), async (req, res) => {
   try {
     // Reports whether anything was actually removed rather than a blanket ok:
     // unscoped, this returned { ok: true } for another tenant's id it had not
@@ -3582,7 +3738,7 @@ router.post('/ncr', requireProcurement('add', 'qc_manager', 'qc_engineer'), asyn
 });
 
 // Closing a non-conformance report is a quality sign-off, not a clerical edit.
-router.patch('/ncr/:id/close', allowRoles('super_admin','admin','qc_manager','procurement_manager'), async (req, res) => {
+router.patch('/ncr/:id/close', allowRoles('super_admin','admin','qc_manager','procurement_manager'), captureBefore('non_conformance_reports'), async (req, res) => {
   try {
     const { capa_action, capa_due_date } = req.body;
     const { rows } = await pool.query(`

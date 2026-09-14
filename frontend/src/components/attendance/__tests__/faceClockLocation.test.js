@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getLocationString } from '../FaceClockModal';
+import { getLocationString } from '../geo';
 
 // getLocationString routes through @/mobile/native getPosition(). With no
 // window.Capacitor present (web), getPosition falls back to navigator.geolocation.

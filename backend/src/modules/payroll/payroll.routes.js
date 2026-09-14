@@ -22,6 +22,7 @@ import {
   saveSlip,
   getPayrollHistory,
 } from './payroll.controller.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -586,14 +587,16 @@ router.post('/arrears', verifyToken, allowRoles(...HR_ROLES), async (req, res) =
        to_month || from_month, to_year || from_year,
        old_basic || 0, new_basic || 0,
        parseFloat(arrear_amount), parseFloat(tds_on_arrear || 0), net,
-       reason, req.user?.id ?? null]
+       // req.user.id is always undefined — the JWT carries `userId`. This
+       // column recorded NULL for every arrear ever raised.
+       reason, req.user?.userId ?? null]
     );
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // PUT /payroll/arrears/:id/approve — approve and mark paid_in_month
-router.put('/arrears/:id/approve', verifyToken, allowRoles(...FINANCE_ROLES), async (req, res) => {
+router.put('/arrears/:id/approve', verifyToken, allowRoles(...FINANCE_ROLES), captureBefore('payroll_arrears'), async (req, res) => {
   const { paid_in_month, paid_in_year } = req.body;
   try {
     const { rows } = await pool.query(`
@@ -601,7 +604,8 @@ router.put('/arrears/:id/approve', verifyToken, allowRoles(...FINANCE_ROLES), as
          SET status = 'approved', approved_by = $1, approved_at = NOW(),
              paid_in_month = $2, paid_in_year = $3, updated_at = NOW()
        WHERE id = $4 RETURNING *`,
-      [req.user?.id ?? null, paid_in_month, paid_in_year, req.params.id]
+      // approved_by: see the note on created_by above — req.user.id is undefined.
+      [req.user?.userId ?? null, paid_in_month, paid_in_year, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ message: 'Arrear not found' });
     res.json(rows[0]);

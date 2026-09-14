@@ -74,6 +74,7 @@ const SEARCHABLE_PAGES = [
   { page: 'SalesOrders',         label: 'Sales Orders',               category: 'Sales' },
   { page: 'SalesTargets',        label: 'Sales Targets',              category: 'Sales' },
   { page: 'SalesForecasts',      label: 'Sales Forecasts',            category: 'Sales' },
+  { page: 'ForecastCommit',      label: 'Forecast & Commit',          category: 'Sales' },
   { page: 'SalesCalendar',       label: 'Sales Calendar',             category: 'Sales' },
   { page: 'Competitors',         label: 'Competitors',                category: 'Sales' },
   // Inventory

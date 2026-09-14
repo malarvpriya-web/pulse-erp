@@ -1,6 +1,7 @@
 // backend/src/modules/hr/learning-paths.routes.js
 import express from 'express';
 import pool from '../../config/db.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid  = req => { const n = Number.parseInt(req.scope?.company_id, 10); return Number.isInteger(n) ? n : null; };
@@ -72,7 +73,7 @@ router.get('/:id', async (req, res) => {
 });
 
 /* ── PUT /learning-paths/:id ───────────────────────────────── */
-router.put('/:id', async (req, res) => {
+router.put('/:id', captureBefore('learning_paths'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { name, description, path_type, target_role, target_department, thumbnail_url, is_active } = req.body;
   try {
@@ -94,7 +95,7 @@ router.put('/:id', async (req, res) => {
 });
 
 /* ── DELETE /learning-paths/:id ────────────────────────────── */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', captureBefore('learning_paths'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     await pool.query(`UPDATE learning_paths SET is_active=false WHERE id=$1`, [req.params.id]);
@@ -106,6 +107,16 @@ router.delete('/:id', async (req, res) => {
 router.put('/:id/items', async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { items = [] } = req.body;
+
+  // Full-replacement child collection — see the note on PUT /:id/questions.
+  // The path row is untouched; the items are what change.
+  try {
+    const { rows: prior } = await pool.query(
+      `SELECT * FROM learning_path_items WHERE path_id=$1 ORDER BY sequence_order`,
+      [req.params.id]);
+    req._auditBefore = { path_id: req.params.id, items: prior };
+  } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

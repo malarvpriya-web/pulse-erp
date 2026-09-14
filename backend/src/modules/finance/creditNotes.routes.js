@@ -13,6 +13,7 @@ import pool from './db.js';
 import { validateGstSplit } from '../../utils/gst.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -177,7 +178,7 @@ router.post('/', requirePermission('finance', 'add'), safe(async (req, res) => {
 /* ══════════════════════════════════════════════════════════════════════════════
    UPDATE (draft only)
    ══════════════════════════════════════════════════════════════════════════════ */
-router.put('/:id', requirePermission('finance', 'edit'), safe(async (req, res) => {
+router.put('/:id', requirePermission('finance', 'edit'), captureBefore('credit_notes'), safe(async (req, res) => {
   const { rows: [existing] } = await pool.query(
     `SELECT * FROM credit_notes WHERE id = $1 AND deleted_at IS NULL`, [req.params.id]
   );
@@ -321,7 +322,7 @@ router.post('/:id/cancel', requirePermission('finance', 'edit'), safe(async (req
 /* ══════════════════════════════════════════════════════════════════════════════
    DELETE (soft)
    ══════════════════════════════════════════════════════════════════════════════ */
-router.delete('/:id', requirePermission('finance', 'delete'), safe(async (req, res) => {
+router.delete('/:id', requirePermission('finance', 'delete'), captureBefore('credit_notes'), safe(async (req, res) => {
   const { rows: [existing] } = await pool.query(
     `SELECT * FROM credit_notes WHERE id = $1 AND deleted_at IS NULL`, [req.params.id]
   );

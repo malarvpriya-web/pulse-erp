@@ -64,7 +64,8 @@ export async function runCRP({ companyId, horizonDays = 84, bucketDays = 7,
       SELECT id, name, COALESCE(capacity_hours_per_day,8) capacity_hours_per_day,
              COALESCE(efficiency_pct,100) efficiency_pct,
              COALESCE(working_days_per_week,5) working_days_per_week,
-             COALESCE(num_machines,1) num_machines
+             COALESCE(num_machines,1) num_machines,
+             num_operators, labour_hours_per_operator, labour_efficiency_pct
         FROM work_centres WHERE ${scope()} AND COALESCE(status,'active') <> 'inactive'`);
 
     // load[wcId][bucketIndex] = { firm, planned, orders:Set, contributors:[] }
@@ -133,13 +134,50 @@ export async function runCRP({ companyId, horizonDays = 84, bucketDays = 7,
       }
     }
 
+    // ── Planned downtime ─────────────────────────────────────────────────────
+    // A work centre booked out for maintenance has fewer hours that week. CRP
+    // computed availability from a static capacity figure, so a machine under
+    // service still showed a full week of capacity and the plan looked feasible
+    // against hours that did not exist. This is the link that makes predictive
+    // maintenance affect capacity rather than sit beside it.
+    const downtime = new Map();   // `${wcId}:${bucketIndex}` -> hours lost
+    try {
+      const { rows: dts } = await client.query(`
+        SELECT work_centre_id, start_at, end_at, COALESCE(hours_lost,0) AS hours_lost,
+               COALESCE(probability_pct,100) AS probability_pct
+          FROM work_centre_downtime
+         WHERE ${scope()} AND end_at >= $1 AND start_at <= $2`,
+        [today.toISOString(), horizonEnd.toISOString()]);
+      for (const d of dts) {
+        const b = bucketOf(d.start_at);
+        if (!b) continue;
+        // An unplanned-risk entry carries a probability; a booked service is
+        // certain. Weighting by probability keeps a 30%-likely breakdown from
+        // removing capacity as if it had already happened.
+        const hrs = num(d.hours_lost) * (num(d.probability_pct) / 100);
+        const key = `${d.work_centre_id}:${b.index}`;
+        downtime.set(key, (downtime.get(key) || 0) + hrs);
+      }
+    } catch (e) { /* table optional pre-migration */ }
+
     // ── Assemble load grid + KPIs ──
     const rows = [];
     let overloaded = 0, peak = 0, totReq = 0, totAvail = 0;
     for (const wc of wcRows) {
       for (const b of buckets) {
         const wd = workingDaysInBucket(b.start, b.end, wc.working_days_per_week);
-        const available = num(wc.capacity_hours_per_day) * wd * (num(wc.efficiency_pct) / 100) * (wc.num_machines || 1);
+        const machineHours = num(wc.capacity_hours_per_day) * wd * (num(wc.efficiency_pct) / 100) * (wc.num_machines || 1);
+        // Labour is a constraint, not a footnote: a centre with four machines and
+        // one operator has one operator's worth of capacity. Effective capacity
+        // is the lesser of the two, which is what a bottleneck actually is.
+        const labourHours = wc.num_operators
+          ? (parseInt(wc.num_operators, 10) || 0) * num(wc.labour_hours_per_operator || wc.capacity_hours_per_day)
+            * wd * (num(wc.labour_efficiency_pct || 100) / 100)
+          : null;
+        const lost = downtime.get(`${wc.id}:${b.index}`) || 0;
+        const constraintType = labourHours !== null && labourHours < machineHours ? 'labour' : 'machine';
+        const available = Math.max(0,
+          (labourHours === null ? machineHours : Math.min(machineHours, labourHours)) - lost);
         const c = load.get(wc.id)?.get(b.index) || { firm: 0, planned: 0, orders: new Set(), contributors: [] };
         const required = c.firm + c.planned;
         const loadPct = available > 0 ? (required / available) * 100 : (required > 0 ? 999 : 0);
@@ -151,6 +189,10 @@ export async function runCRP({ companyId, horizonDays = 84, bucketDays = 7,
           work_centre_id: wc.id, work_centre_name: wc.name, bucket_index: b.index,
           bucket_start: b.start, bucket_end: b.end,
           available_hours: Math.round(available * 100) / 100,
+          machine_available_hours: Math.round(machineHours * 100) / 100,
+          labour_available_hours: labourHours === null ? null : Math.round(labourHours * 100) / 100,
+          constraint_type: constraintType,
+          downtime_hours: Math.round(lost * 100) / 100,
           firm_hours: Math.round(c.firm * 100) / 100,
           planned_hours: Math.round(c.planned * 100) / 100,
           required_hours: Math.round(required * 100) / 100,
@@ -176,12 +218,14 @@ export async function runCRP({ companyId, horizonDays = 84, bucketDays = 7,
       await client.query(`
         INSERT INTO crp_load (run_id, company_id, work_centre_id, work_centre_name, bucket_index,
           bucket_start, bucket_end, available_hours, required_hours, firm_hours, planned_hours,
-          load_pct, order_count, is_overloaded, contributors)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+          load_pct, order_count, is_overloaded, contributors,
+          machine_available_hours, labour_available_hours, constraint_type)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
         [run.id, companyId ?? null, r.work_centre_id, r.work_centre_name, r.bucket_index,
          isoDate(r.bucket_start), isoDate(r.bucket_end), r.available_hours, r.required_hours,
          r.firm_hours, r.planned_hours, r.load_pct, r.order_count, r.is_overloaded,
-         JSON.stringify(r.contributors)]);
+         JSON.stringify(r.contributors),
+         r.machine_available_hours, r.labour_available_hours, r.constraint_type]);
     }
 
     await client.query('COMMIT');

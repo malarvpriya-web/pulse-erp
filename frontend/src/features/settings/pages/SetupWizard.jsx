@@ -556,25 +556,33 @@ function StepRoles({ data, onChange }) {
 
   return (
     <div>
+      <div className="wizard-info-banner">
+        The roles below ship with Pulse and are what the server checks on every
+        request — they cannot be renamed or removed here. A role you add is a
+        page-access grouping: it controls which screens open, but API routes
+        still authorise against the built-in roles, so prefer assigning one of
+        those. Assign roles to people, and change page access, in
+        <strong> Settings → Access Control</strong> — that is where these live
+        once setup is done.
+      </div>
+
       {/* Existing roles */}
       {data.existing.length > 0 && (
         <div className="wizard-section">
           <div className="wizard-section-title">Existing Roles</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {data.existing.map(r => (
-              <div className="role-card" key={r.id || r.name}>
+              <div className="role-card" key={r.code}>
                 <div className="role-card-icon">
                   <Shield size={16} color="#6B3FDB" />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1f2937', marginBottom: 2 }}>
-                    {r.name}
+                    {r.label}
                   </div>
                   <div style={{ fontSize: 11, color: '#6b7280' }}>{r.description || 'No description'}</div>
                 </div>
-                <div className="role-perm-badge">
-                  {r.permission_count || 0} permissions
-                </div>
+                <div className="role-perm-badge">{r.code}</div>
               </div>
             ))}
           </div>
@@ -1310,7 +1318,7 @@ function defaultStepData() {
 }
 
 // ── Main Wizard ───────────────────────────────────────────────────────────────
-export default function SetupWizard({ setPage: setPageProp }) {
+export default function SetupWizard({ setPage: setPageProp, embedded = false }) {
   const navigate  = useNavigate();
   const { clearNeedsSetup } = useAuth();
   const { progress, markStepDone, skipStep } = useSetupProgress();
@@ -1656,7 +1664,7 @@ export default function SetupWizard({ setPage: setPageProp }) {
   };
 
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={
       <PageHero
         icon={SlidersHorizontal}
         eyebrow="Settings"

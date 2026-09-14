@@ -1,6 +1,7 @@
 // backend/src/modules/hr/knowledge.routes.js
 import express from 'express';
 import pool from '../../config/db.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid  = req => { const n = Number.parseInt(req.scope?.company_id, 10); return Number.isInteger(n) ? n : null; };
@@ -77,7 +78,7 @@ router.post('/', async (req, res) => {
 });
 
 /* ── PUT /knowledge/:id ─────────────────────────────────────── */
-router.put('/:id', async (req, res) => {
+router.put('/:id', captureBefore('knowledge_documents'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const {
     title, doc_type, category, description, content, file_url,
@@ -111,7 +112,7 @@ router.put('/:id', async (req, res) => {
 });
 
 /* ── DELETE /knowledge/:id ─────────────────────────────────── */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', captureBefore('knowledge_documents'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     await pool.query(`UPDATE knowledge_documents SET is_active=false, updated_at=NOW() WHERE id=$1`, [req.params.id]);

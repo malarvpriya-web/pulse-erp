@@ -655,6 +655,11 @@ export default function SalesCommandCenter() {
             {/* By reason */}
             <div style={{ ...C.card, padding: 20 }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: C.red, marginBottom: 14 }}>Lost Reasons</div>
+              {(lostDeals.by_reason || []).length === 0 ? (
+                <div style={{ color: '#9ca3af', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>
+                  No lost deals in this period.
+                </div>
+              ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {(lostDeals.by_reason || []).map((r, i) => (
                   <div key={r.reason}>
@@ -666,13 +671,17 @@ export default function SalesCommandCenter() {
                   </div>
                 ))}
               </div>
+              )}
             </div>
 
             {/* By competitor */}
             <div style={{ ...C.card, padding: 20 }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: '#374151', marginBottom: 14 }}>Top Competitors</div>
               {(lostDeals.by_competitor || []).length === 0 ? (
-                <div style={{ color: '#9ca3af', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>No competitor data. Tag lost opportunities with competitor names.</div>
+                <div style={{ color: '#9ca3af', textAlign: 'center', padding: '20px 0', fontSize: 13, lineHeight: 1.6 }}>
+                  No competitor data yet.<br />
+                  <span style={{ fontSize: 12 }}>Name the competitor in the close dialog when you move a deal to Lost on the Opportunities board.</span>
+                </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {lostDeals.by_competitor.map((c, i) => (
@@ -683,7 +692,17 @@ export default function SalesCommandCenter() {
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: C.red }}>{c.deals_lost} deals</div>
-                        <div style={{ fontSize: 11, color: '#9ca3af' }}>{fmtCr(c.value_lost)}</div>
+                        <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                          {fmtCr(c.value_lost)}
+                          {/* `competitors.win_rate` is range-checked to 0-100 at the
+                              database as of 20260902000002; the guard stays as
+                              defence in depth for a column that spent its whole
+                              life unconstrained and held 899 in every seeded row.
+                              NULL means never measured, and prints nothing. */}
+                          {c.competitor_win_rate != null && c.competitor_win_rate >= 0 && c.competitor_win_rate <= 100
+                            ? ` · ${c.competitor_win_rate}% win rate`
+                            : ''}
+                        </div>
                       </div>
                     </div>
                   ))}

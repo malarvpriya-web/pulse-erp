@@ -387,45 +387,96 @@ export const enforceScope = () => async (req, res, next) => {
 /**
  * applyFieldPermissions(module)
  *
- * Wraps res.json to strip invisible fields before the response leaves the server.
+ * Field-level permissions, in both directions: invisible fields are stripped
+ * from the RESPONSE, and non-editable fields are stripped from the REQUEST BODY
+ * before a handler can write them.
  *
- * Multi-role union, matching requirePermission: a field is stripped only when
- * EVERY role the user holds explicitly hides it. A role with no rule for the
- * field has no opinion, which defaults to visible — so holding one unrestricted
- * role is enough to see it.
+ * ⚠ This existed and was mounted NOWHERE. `field_permissions` held ten rules —
+ * an `employee` may not see aadhaar_number, pan_number, bank details, basic
+ * salary, gross or net_pay — and none of them had ever been enforced, because
+ * nothing in server.js called this. The rules were correct; the wiring was
+ * missing (2026-09-04).
+ *
+ * MULTI-ROLE UNION, matching requirePermission: a field is restricted only when
+ * EVERY role the user holds explicitly restricts it. A role with no rule has no
+ * opinion, which defaults to permitted — so holding one unrestricted role is
+ * enough to see the field. That is what stops a manager who also holds
+ * `employee` from losing access to their team's data.
+ *
+ * FAIL-OPEN ON ERROR IS DELIBERATE HERE and narrow: this middleware runs after
+ * requirePermission, so the caller is already authorised for the module. A
+ * database blip must not turn an authorised read into a 500, and the worst case
+ * is that a field the caller is already entitled to reach is not masked. The
+ * failure is logged rather than swallowed.
  */
 export const applyFieldPermissions = (module) => async (req, res, next) => {
   try {
     const pool = (await import("../config/db.js")).default;
     const heldRoles = rolesOf(req);
     if (!heldRoles.length) return next();
+
     const { rows } = await pool.query(
-      `SELECT fp.field_name
+      `SELECT fp.field_name,
+              BOOL_OR(fp.is_visible)  AS any_visible,
+              BOOL_OR(fp.is_editable) AS any_editable,
+              COUNT(DISTINCT LOWER(r.code))::int AS rules_for_held_roles
          FROM field_permissions fp
          JOIN roles r ON r.id = fp.role_id
         WHERE LOWER(r.code) = ANY($1) AND fp.module = $2
-        GROUP BY fp.field_name
-       HAVING BOOL_OR(fp.is_visible) = false
-          AND COUNT(DISTINCT LOWER(r.code)) = $3`,
-      [heldRoles, module, heldRoles.length]
+        GROUP BY fp.field_name`,
+      [heldRoles, module]
     );
-    const hidden = rows.map(r => r.field_name);
+
+    // Restricted only when every held role has a rule AND none of them allows it.
+    const covered = (r) => r.rules_for_held_roles === heldRoles.length;
+    const hidden   = rows.filter(r => covered(r) && r.any_visible  === false).map(r => r.field_name);
+    const readOnly = rows.filter(r => covered(r) && r.any_editable === false).map(r => r.field_name);
+
+    if (readOnly.length && req.body && typeof req.body === "object" && !Array.isArray(req.body)) {
+      // Stripped, not rejected: a form that posts the whole record back should
+      // still save the fields the caller may change. Rejecting the request would
+      // make an ordinary edit fail because of a field the user never touched.
+      const blocked = readOnly.filter(f => Object.prototype.hasOwnProperty.call(req.body, f));
+      for (const f of blocked) delete req.body[f];
+      if (blocked.length) {
+        req._fieldsStripped = blocked;
+        console.warn(JSON.stringify({
+          ts: new Date().toISOString(), level: "WARN", event: "field_permission_write_blocked",
+          module, userId: req.user?.userId, fields: blocked, path: req.originalUrl,
+        }));
+      }
+    }
+
     if (hidden.length) {
       const origJson = res.json.bind(res);
       res.json = (data) => origJson(_maskFields(data, hidden));
     }
     next();
-  } catch {
+  } catch (err) {
+    console.warn(JSON.stringify({
+      ts: new Date().toISOString(), level: "WARN", event: "field_permissions_unavailable",
+      module, message: err.message,
+    }));
     next();
   }
 };
 
-function _maskFields(data, hidden) {
-  if (Array.isArray(data)) return data.map(item => _maskFields(item, hidden));
-  if (data !== null && typeof data === "object") {
-    const out = { ...data };
-    for (const f of hidden) delete out[f];
-    return out;
+/**
+ * Strip `hidden` keys from a payload of any shape.
+ *
+ * The first version only walked arrays and top-level objects, so a field hidden
+ * inside `{ data: [...] }`, `{ rows: [...] }` or a nested `employee: {...}`
+ * survived untouched — and most of this API answers in exactly those shapes.
+ * Depth-limited because an audit payload can hold a deeply nested snapshot and a
+ * masking pass is not worth unbounded recursion.
+ */
+function _maskFields(data, hidden, depth = 0) {
+  if (depth > 6 || data === null || typeof data !== "object") return data;
+  if (Array.isArray(data)) return data.map(item => _maskFields(item, hidden, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (hidden.includes(k)) continue;
+    out[k] = _maskFields(v, hidden, depth + 1);
   }
-  return data;
+  return out;
 }

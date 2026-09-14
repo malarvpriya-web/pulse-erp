@@ -9,6 +9,7 @@ import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -70,7 +71,7 @@ router.post('/', verifyToken, async (req, res) => {
 });
 
 // PUT /failure-analytics/:id
-router.put('/:id', verifyToken, async (req, res) => {
+router.put('/:id', verifyToken, captureBefore('service_failure_records'), async (req, res) => {
   try {
     const fields = ['zone','product_name','fault_code','fault_description','root_cause',
       'root_cause_category','component_failed','vendor_component','resolution',
@@ -87,7 +88,7 @@ router.put('/:id', verifyToken, async (req, res) => {
 });
 
 // DELETE /failure-analytics/:id
-router.delete('/:id', verifyToken, async (req, res) => {
+router.delete('/:id', verifyToken, captureBefore('service_failure_records'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM service_failure_records WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
     res.json({ message: 'Deleted' });

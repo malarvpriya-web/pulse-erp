@@ -123,16 +123,11 @@ async function sweep() {
       // figure. `inventory_batches.grn_id` is RESTRICT, so the batches also have
       // to go BEFORE their receipt — an earlier version deleted the receipt
       // first and the whole teardown failed on the foreign key.
-      const { rows: posted } = await pool.query(
-        `SELECT item_id, SUM(quantity_in - quantity_out) AS net
-           FROM stock_ledger
-          WHERE reference_type='grn' AND reference_id::text = ANY($1::text[])
-          GROUP BY item_id`, [grnIds.map(String)]);
-      for (const p of posted) {
-        await pool.query(
-          `UPDATE inventory_items SET current_stock = COALESCE(current_stock,0) - $2 WHERE id = $1`,
-          [p.item_id, p.net]);
-      }
+      // Deleting the ledger rows is now the WHOLE teardown. current_stock is
+      // derived by a trigger (migration 20260911000016), so it corrects itself
+      // when the movements go; decrementing it here as well — which this used to
+      // do — would subtract the same quantity twice and was one of the paths
+      // that left the column drifting from the ledger.
       await pool.query(`DELETE FROM stock_ledger WHERE reference_type='grn' AND reference_id::text = ANY($1::text[])`, [grnIds.map(String)]);
       await pool.query(`DELETE FROM inventory_batches WHERE grn_id = ANY($1::int[])`, [grnIds]);
       await pool.query(`DELETE FROM quality_tests WHERE grn_id = ANY($1::int[])`, [grnIds]);
@@ -667,9 +662,10 @@ describe('D14 — a hand-booked batch is stock the ledger knows about', () => {
     expect(ledger.length, 'a batch with no ledger row is stock nobody can reconcile').toBe(1);
     expect(Number(ledger[0].quantity_in)).toBe(7);
 
+    // Removing the ledger row restores current_stock on its own — see the
+    // teardown note above.
     await pool.query(`DELETE FROM stock_ledger WHERE reference_type='inventory_batch' AND reference_id::text = $1::text`, [String(res.body.id)]);
     await pool.query('DELETE FROM inventory_batches WHERE id = $1', [res.body.id]);
-    await pool.query('UPDATE inventory_items SET current_stock = COALESCE(current_stock,0) - 7 WHERE id = $1', [seed.item.id]);
   });
 
   it('refuses another tenant\'s item, and writes nothing', async () => {

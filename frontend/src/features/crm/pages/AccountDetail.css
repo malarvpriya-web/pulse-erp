@@ -111,3 +111,38 @@
 .ad-toast        { position: fixed; top: 24px; right: 24px; z-index: 9999; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
 .ad-toast-success{ background: #10b981; color: #fff; }
 .ad-toast-error  { background: #ef4444; color: #fff; }
+
+/* ── Account team + hierarchy (manual §157.1 — these panels had no UI) ─────── */
+.ad-team-form {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+  background: #fff; border: 1px solid #f0f0f4; border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.ad-team-select {
+  padding: 8px 11px; border: 1px solid #e5e7eb; border-radius: 7px;
+  font-size: 13px; font-family: inherit; color: #1f2937; background: #fff;
+  outline: none; min-width: 150px;
+}
+.ad-team-select:focus { border-color: #6B3FDB; }
+
+.ad-team-tags {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+}
+.ad-team-tags .ad-contact-chip { margin-left: 4px; }
+
+.ad-tree { display: flex; flex-direction: column; gap: 6px; }
+.ad-tree-node {
+  position: relative; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: #fff; border: 1px solid #f0f0f4; border-radius: 10px; padding: 10px 14px;
+}
+/* The account being viewed, so a subsidiary page shows where it sits. */
+.ad-tree-node--self { border-color: #ddd0ff; background: #faf8ff; }
+/* Depth is expressed by margin-left on the node; this is the connector back
+   to the parent row above it. */
+.ad-tree-elbow {
+  position: absolute; left: -14px; top: 50%; width: 12px; height: 1px; background: #e5e7eb;
+}
+.ad-tree-icon  { color: #9ca3af; flex-shrink: 0; }
+.ad-tree-name  { font-size: 14px; font-weight: 600; color: #1f2937; }
+.ad-tree-meta  { font-size: 12px; color: #6b7280; }
+.ad-tree-nums  { margin-left: auto; font-size: 12px; color: #6b7280; white-space: nowrap; }

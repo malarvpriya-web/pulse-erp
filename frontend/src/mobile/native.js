@@ -73,16 +73,26 @@ export async function getPosition({ highAccuracy = true, timeout = 10000 } = {})
 /**
  * Capture a photo — face-attendance and service-engineer site photos. Returns a
  * data URL. Native uses the Camera plugin; web falls back to a file input.
+ *
+ * `facing` picks which camera the OS opens: 'environment' (rear) for site and
+ * evidence photos, 'user' (front) for an attendance selfie. It used to be
+ * hard-coded to 'environment', which pointed the rear camera at the wall every
+ * time someone tried to take an attendance selfie on the web fallback.
  */
-export async function capturePhoto({ quality = 80 } = {}) {
+export async function capturePhoto({ quality = 80, facing = 'environment' } = {}) {
   const cam = plugin('Camera');
   if (cam) {
-    const img = await cam.getPhoto({ quality, resultType: 'dataUrl', source: 'CAMERA' });
+    const img = await cam.getPhoto({
+      quality,
+      resultType: 'dataUrl',
+      source: 'CAMERA',
+      direction: facing === 'user' ? 'FRONT' : 'REAR',
+    });
     return img.dataUrl;
   }
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
-    input.type = 'file'; input.accept = 'image/*'; input.capture = 'environment';
+    input.type = 'file'; input.accept = 'image/*'; input.capture = facing;
     input.onchange = () => {
       const file = input.files?.[0];
       if (!file) return reject(new Error('no image selected'));

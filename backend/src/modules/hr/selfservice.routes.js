@@ -3,6 +3,7 @@ import express from 'express';
 import multer from 'multer';
 import pool from '../../config/db.js';
 import { uploadFile } from '../../services/StorageService.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -52,7 +53,7 @@ router.post('/it-declarations', async (req, res) => {
 });
 
 /* ─── PUT /self-service/it-declarations/:id ─────────────────── */
-router.put('/it-declarations/:id', async (req, res) => {
+router.put('/it-declarations/:id', captureBefore('it_declarations'), async (req, res) => {
   const { amount, description, proof_url, status, reviewed_by } = req.body;
   try {
     const { rows } = await pool.query(
@@ -182,7 +183,7 @@ router.post('/documents', upload.single('file'), async (req, res) => {
 
 /* ─── PATCH /self-service/documents/:id ─────────────────────── */
 /* HR can verify, reject, or update notes/drive_url/expiry. */
-router.patch('/documents/:id', async (req, res) => {
+router.patch('/documents/:id', captureBefore('employee_documents'), async (req, res) => {
   if (!isHRUser(req)) return res.status(403).json({ message: 'Only HR can verify or update document records' });
   const { status, notes, drive_url, expiry_date } = req.body;
   const reviewerId = req.user?.userId ?? req.user?.id ?? null;
@@ -205,7 +206,7 @@ router.patch('/documents/:id', async (req, res) => {
 });
 
 /* ─── DELETE /self-service/documents/:id ────────────────────── */
-router.delete('/documents/:id', async (req, res) => {
+router.delete('/documents/:id', captureBefore('employee_documents'), async (req, res) => {
   try {
     // Non-HR callers may only delete their own (unverified) documents
     const params = [req.params.id];
@@ -225,7 +226,7 @@ router.delete('/documents/:id', async (req, res) => {
 });
 
 /* ─── PUT /employees/:id/profile ─────────────────────────────── */
-router.put('/employees/:id/profile', async (req, res) => {
+router.put('/employees/:id/profile', captureBefore('employees'), async (req, res) => {
   const callerId = req.user?.employee_id ?? req.user?.userId ?? req.user?.id;
   const targetId = parseInt(req.params.id, 10);
   if (callerId && parseInt(callerId, 10) !== targetId && !HR_ROLES.includes(req.user?.role)) {
@@ -282,7 +283,7 @@ router.post('/reimbursements', async (req, res) => {
 });
 
 /* ─── PUT /self-service/reimbursements/:id/approve ───────────── */
-router.put('/reimbursements/:id/approve', async (req, res) => {
+router.put('/reimbursements/:id/approve', captureBefore('reimbursement_claims'), async (req, res) => {
   const { approved_amount, remarks, approved_by, status = 'approved' } = req.body;
   try {
     const { rows } = await pool.query(

@@ -40,7 +40,7 @@ const STATUS_BADGE = {
 };
 
 // ── component ─────────────────────────────────────────────────────────────────
-export default function PaymentGateway() {
+export default function PaymentGateway({ embedded = false }) {
   const [invoices,    setInvoices]    = useState([]);
   const [history,     setHistory]     = useState([]);
   const [kpis,        setKpis]        = useState(null);
@@ -276,7 +276,7 @@ export default function PaymentGateway() {
 
   // ── render ────────────────────────────────────────────────────────────────
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={
       <PageHero
         icon={ReceiptIndianRupee}
         eyebrow="Finance"

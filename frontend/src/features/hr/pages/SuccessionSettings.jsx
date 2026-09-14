@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useRoleCatalog } from '@/config/roleCatalog';
 
 const INP = { width: '100%', boxSizing: 'border-box', padding: '7px 10px',
               border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 };
@@ -56,7 +57,8 @@ function Section({ title, description, children }) {
   );
 }
 
-const ALL_ROLES = ['super_admin', 'admin', 'chro', 'hr_admin', 'hr_manager', 'manager', 'department_head'];
+// Was a hardcoded 7-role array including 'chro', a code no migration seeds —
+// ticking it granted nothing. Reads the registry instead.
 
 const DEFAULTS = {
   zero_successor_alert:       true,
@@ -69,6 +71,7 @@ const DEFAULTS = {
 };
 
 export default function SuccessionSettings() {
+  const allRoles = useRoleCatalog();
   const [settings, setSettings] = useState(DEFAULTS);
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
@@ -230,7 +233,7 @@ export default function SuccessionSettings() {
       <Section title="Notification Recipients"
         description="Roles that receive succession alerts and review reminders">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-          {ALL_ROLES.map(role => {
+          {allRoles.map(({ code: role, label }) => {
             const selected = (settings.notify_roles || []).includes(role);
             return (
               <button key={role} type="button" onClick={() => toggleRole(role)}
@@ -239,7 +242,7 @@ export default function SuccessionSettings() {
                          border: selected ? 'none' : '1px solid #e9e4ff',
                          background: selected ? '#6B3FDB' : '#fff',
                          color: selected ? '#fff' : '#6b7280' }}>
-                {role.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                {label}
               </button>
             );
           })}

@@ -211,7 +211,14 @@ async function calcProjectScore(customerId, companyId) {
          -- killed this whole aggregate (42703), zeroing every delivery metric.
          COUNT(CASE WHEN p.status='completed' AND p.baseline_end_date IS NOT NULL
                     AND p.end_date > p.baseline_end_date THEN 1 END)::int        AS delayed,
-         COUNT(CASE WHEN p.status IN ('cancelled','failed') THEN 1 END)::int     AS failed,
+         -- 'failed' is not a value projects.status can hold — projects_status_check
+         -- permits planning | active | on_hold | completed | cancelled — so this
+         -- metric has only ever counted CANCELLED projects while being labelled
+         -- "failed". The impossible literal is removed rather than the alias
+         -- renamed, because callers read the failed column and a cancelled
+         -- project is what this system means by one. (Backticks avoided here:
+         -- this SQL lives in a JS template literal and one would end it.)
+         COUNT(CASE WHEN p.status = 'cancelled' THEN 1 END)::int                 AS failed,
          COUNT(CASE WHEN p.status='active' AND p.end_date IS NOT NULL
                     AND p.end_date < NOW() THEN 1 END)::int                      AS overdue_active
        FROM projects p

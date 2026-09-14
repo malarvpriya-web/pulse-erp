@@ -3,7 +3,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
-import FaceClockModal, { getLocationString } from '@/components/attendance/FaceClockModal';
+import CameraClockModal from '@/components/attendance/CameraClockModal';
+import PunchModeNotice from '@/components/attendance/PunchModeNotice';
+import { getLocationString } from '@/components/attendance/geo';
+import usePunchMode from '@/hooks/usePunchMode';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ─── helpers ─────────────────────────────────────────────────── */
@@ -56,7 +59,10 @@ export default function EmployeeSelfService() {
   const [todayTasks, setTodayTasks]           = useState([]);
   const [attendanceToday, setAttendanceToday] = useState(null);
   const [clockLoading, setClockLoading]       = useState(false);
-  const [faceOpen, setFaceOpen]               = useState(false);
+  const [cameraOpen, setCameraOpen]           = useState(false);
+  // Only field employees punch from the app; everyone else uses the office
+  // face/biometric device.
+  const punch = usePunchMode(EMPLOYEE_ID);
 
   // IT Declaration form
   const [declForm, setDeclForm]   = useState({ declaration_type:'80C', amount:'', description:'', proof_url:'' });
@@ -138,7 +144,7 @@ export default function EmployeeSelfService() {
   const remaining80C = Math.max(0, LIMIT_80C - total80C);
 
   // clock-in / clock-out
-  const handleClock = async (faceData = null) => {
+  const handleClock = async (proof = null) => {
     if (clockLoading) return;
     if (!EMPLOYEE_ID) {
       flash('Your login is not linked to an employee record — ask HR to link your account to an employee profile.', 'error');
@@ -148,14 +154,15 @@ export default function EmployeeSelfService() {
     try {
       const now = new Date().toTimeString().slice(0, 5);
       const isIn = !attendanceToday?.check_in;
-      // Location is server-enforced for clock-in when a mandatory geo-fence exists
-      const location = isIn ? await getLocationString() : null;
+      // Clock-in carries the selfie + GPS the camera modal captured (both are
+      // mandatory server-side for field staff); a clock-out re-reads GPS only.
+      const location = proof?.location ?? (isIn ? await getLocationString() : null);
       const { data } = await api.post('/attendance/clock', {
         employee_id: EMPLOYEE_ID,
         action: isIn ? 'in' : 'out',
         time: now,
         ...(location ? { location } : {}),
-        ...(faceData?.face_token ? { face_token: faceData.face_token } : {}),
+        ...(proof?.selfie_url ? { selfie_url: proof.selfie_url } : {}),
       });
       setAttendanceToday(data);
       flash(isIn ? 'Clocked in successfully' : 'Clocked out successfully');
@@ -307,20 +314,27 @@ export default function EmployeeSelfService() {
                 </div>
               </div>
               {!clockedOut && (
-                <button onClick={() => (clockedIn || !EMPLOYEE_ID ? handleClock() : setFaceOpen(true))} disabled={clockLoading}
-                  style={{ padding: '8px 18px', borderRadius: 8, border: 'none', cursor: clockLoading ? 'default' : 'pointer', fontWeight: 600, fontSize: 13, background: clockedIn ? '#ef4444' : '#16a34a', color: '#fff' }}>
-                  {clockLoading ? 'Recording…' : clockedIn ? '🔴 Clock Out' : '📷 Clock In'}
-                </button>
+                punch.loading ? (
+                  <span style={{ fontSize: 12, color: '#6b7280' }}>Checking your attendance setup…</span>
+                ) : !punch.canPunch ? (
+                  /* Non-field staff record attendance on the office device. */
+                  <PunchModeNotice reason={punch.reason} message={punch.message} compact />
+                ) : (
+                  <button onClick={() => (clockedIn ? handleClock() : setCameraOpen(true))} disabled={clockLoading}
+                    style={{ padding: '8px 18px', borderRadius: 8, border: 'none', cursor: clockLoading ? 'default' : 'pointer', fontWeight: 600, fontSize: 13, background: clockedIn ? '#ef4444' : '#16a34a', color: '#fff' }}>
+                    {clockLoading ? 'Recording…' : clockedIn ? '🔴 Clock Out' : '📷 Clock In'}
+                  </button>
+                )
               )}
             </div>
 
-            {/* face-verified clock-in */}
-            {faceOpen && EMPLOYEE_ID && (
-              <FaceClockModal
+            {/* camera clock-in for field staff — selfie + GPS, enforced server-side */}
+            {cameraOpen && EMPLOYEE_ID && punch.canPunch && (
+              <CameraClockModal
                 employeeId={EMPLOYEE_ID}
                 action="in"
-                onVerified={(fd) => { setFaceOpen(false); handleClock(fd); }}
-                onClose={() => setFaceOpen(false)}
+                onCaptured={(proof) => { setCameraOpen(false); handleClock(proof); }}
+                onClose={() => setCameraOpen(false)}
               />
             )}
 

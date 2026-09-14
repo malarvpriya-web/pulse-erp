@@ -55,6 +55,25 @@ export const register = async (req, res) => {
       req.body.role,
       req.body.department
     );
+    // ⚠ Creating a login is the most consequential thing this module does, and
+    // it was the one auth event nothing recorded — auth_audit_log covered
+    // sign-in, sign-out and password changes, but not the account itself.
+    // Recorded in BOTH logs on purpose: auth_audit_log is where the Security
+    // Center looks, audit_logs is where "who created this user" is asked.
+    await audit(req.user?.userId ?? null, 'user_registered', req, {
+      created_user_id: user?.id ?? null,
+      created_email: req.body.email,
+      role: req.body.role ?? null,
+    });
+    logAudit({
+      userId: req.user?.userId ?? null, module: 'security',
+      recordId: user?.id ?? null, recordType: 'user', action: 'create',
+      // Never the password — registerUser has already hashed it, and an audit
+      // trail holding credentials is a liability rather than a control.
+      newData: { email: req.body.email, name: req.body.name,
+                 role: req.body.role ?? null, department: req.body.department ?? null },
+      req,
+    });
     res.json({ message: "User created successfully", user });
   } catch (err) {
     console.error(err);

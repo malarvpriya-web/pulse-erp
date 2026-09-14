@@ -485,7 +485,16 @@ describe('P3-3 Validation — boundary conditions', () => {
     expect(valid).toBe(true); // invalid regex → rule skipped
   });
 
-  test('multiple constraints on one field — all are evaluated independently', async () => {
+  test('an ABSENT value reports only "required", not every constraint at once', async () => {
+    // Contract changed 2026-09-04. Previously min_length and pattern also fired
+    // on an empty value, so one missing field produced three errors — and, more
+    // importantly, it made every range or length rule implicitly REQUIRED. That
+    // is what made `PUT /projects/:id {"status":"active"}` return 422 demanding
+    // project_name and budget: a `{min: 0}` rule on an absent number failed its
+    // own guard (`isNaN(undefined) || …`).
+    //
+    // Now only `required` may fire on an absent value; every other constraint
+    // describes a value that was supplied.
     qOnce([
       vRule('email', { required: true },  'Email required'),
       vRule('email', { min_length: 5 },   'Email too short'),
@@ -493,8 +502,36 @@ describe('P3-3 Validation — boundary conditions', () => {
     ]);
     const { valid, errors } = await validate('test', { email: '' });
     expect(valid).toBe(false);
-    // required fails; min_length fails (empty); pattern fails
-    expect(errors.length).toBeGreaterThanOrEqual(2);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toBe('Email required');
+  });
+
+  test('multiple constraints on a SUPPLIED value are still evaluated independently', async () => {
+    qOnce([
+      vRule('email', { required: true },  'Email required'),
+      vRule('email', { min_length: 5 },   'Email too short'),
+      vRule('email', { pattern: '.+@.+' }, 'Invalid email'),
+    ]);
+    const { valid, errors } = await validate('test', { email: 'a@b' });
+    expect(valid).toBe(false);
+    // required passes (it is present); min_length fails (3 < 5); pattern passes.
+    expect(errors.map(e => e.message)).toEqual(['Email too short']);
+  });
+
+  test('partial mode skips a field the caller did not mention', async () => {
+    qOnce([vRule('project_name', { required: true }, 'Name required')]);
+    const { valid, errors } = await validate('test', { status: 'active' }, { partial: true });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  test('partial mode still validates a field the caller DID mention, even when cleared', async () => {
+    // hasOwnProperty, not truthiness — explicitly blanking a required field is a
+    // change the caller made and must be rejected.
+    qOnce([vRule('project_name', { required: true }, 'Name required')]);
+    const { valid, errors } = await validate('test', { project_name: '' }, { partial: true });
+    expect(valid).toBe(false);
+    expect(errors[0].message).toBe('Name required');
   });
 });
 

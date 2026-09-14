@@ -53,6 +53,15 @@ router.put('/', async (req, res) => {
     allow_self_enrollment,
     max_concurrent_enrollments,
   } = req.body;
+
+  // Settings singleton — no :id for captureBefore() to key on; the company is
+  // the key. "Who dropped the pass score, and from what" is the question.
+  try {
+    const { rows: prior } = await pool.query(
+      `SELECT * FROM lnd_settings WHERE company_id=$1`, [companyId]);
+    req._auditBefore = prior[0] ?? null;
+  } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
+
   try {
     const { rows } = await pool.query(`
       INSERT INTO lnd_settings (

@@ -5,6 +5,7 @@ import api from '@/services/api/client';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import MasterSelect from '@/components/core/MasterSelect';
 import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 import {
   getCategories, createCategory,
@@ -13,7 +14,11 @@ import {
 import './ItemMaster.css';
 
 const ITEM_TYPES = ['Raw Materials', 'Finished Goods', 'Packaging', 'Consumables', 'Spares', 'WIP'];
-const UNITS = ['pcs', 'kg', 'ltr', 'mtr', 'box', 'rolls', 'cans', 'set', 'nos', 'pair', 'sheet', 'coil'];
+// Units and HSN/SAC codes come from their masters (/master/uom, /master/hsn)
+// via <MasterSelect>. They used to be a hard-coded array here and a free-text
+// box respectively, so Master Setup's Units and HSN tabs wrote to tables no
+// screen ever read — and the GST rate beside an HSN code had to be typed from
+// memory instead of coming off the same master row.
 const ABC_CLASSES = ['A', 'B', 'C'];
 const ABC_BADGE = { A: ['#d1fae5', '#16a34a'], B: ['#ede9fe', '#6d28d9'], C: ['#f3f4f6', '#6b7280'] };
 const thP = { padding: '8px 10px', textAlign: 'left', fontWeight: 600, whiteSpace: 'nowrap' };
@@ -41,7 +46,9 @@ const emptyForm = () => ({
   product_model:   '',
   category_id:     '',
   abc_class:       '',
-  unit_of_measure: 'pcs',
+  // Was 'pcs', which the master does not carry — codes are upper-case there.
+  // NOS is the unit most items already use.
+  unit_of_measure: 'NOS',
   reorder_level:   '',
   safety_stock:    '',
   standard_cost:   '',
@@ -166,7 +173,7 @@ export default function ItemMaster({ setPage: _setPage }) {
       product_model:   item.product_model   ?? '',
       category_id:     item.category_id      ?? '',
       abc_class:       item.abc_class        ?? '',
-      unit_of_measure: item.unit_of_measure ?? 'pcs',
+      unit_of_measure: item.unit_of_measure ?? 'NOS',
       reorder_level:   item.reorder_level   ?? '',
       safety_stock:    item.safety_stock    ?? '',
       standard_cost:   item.standard_cost   ?? '',
@@ -589,8 +596,29 @@ export default function ItemMaster({ setPage: _setPage }) {
               {/* Row 2: HSN + GST */}
               <div className="im-row2">
                 <div className="im-field">
-                  <label>HSN Code</label>
-                  <input value={form.hsn_code} onChange={e => setForm(f => ({ ...f, hsn_code: e.target.value }))} placeholder="e.g. 85044090" />
+                  <label>HSN / SAC Code</label>
+                  <MasterSelect
+                    endpoint="/master/hsn"
+                    label="HSN / SAC code"
+                    value={form.hsn_code}
+                    // The picked row carries the rate the code is classified at,
+                    // so the GST field below follows the code instead of being
+                    // a second, independently-typed answer to the same question.
+                    onChange={(code, row) => setForm(f => ({
+                      ...f,
+                      hsn_code: code,
+                      gst_rate: row?.gst_rate != null ? String(parseFloat(row.gst_rate)) : f.gst_rate,
+                    }))}
+                    optionValue="code"
+                    optionLabel={h => `${h.code} — ${h.description}`}
+                    placeholder="-- Select HSN / SAC --"
+                    fields={[
+                      { key: 'code',        label: 'Code', placeholder: '85044090', required: true, width: 110 },
+                      { key: 'description', label: 'Description', placeholder: 'Static converters — other', required: true },
+                      { key: 'gst_rate',    label: 'GST %', placeholder: '18', type: 'number', width: 80 },
+                      { key: 'type',        label: 'Type', type: 'select', options: ['HSN', 'SAC'], width: 80, default: 'HSN' },
+                    ]}
+                  />
                 </div>
                 <div className="im-field">
                   <label>GST Rate (%)</label>
@@ -614,9 +642,20 @@ export default function ItemMaster({ setPage: _setPage }) {
               <div className="im-row2">
                 <div className="im-field">
                   <label>Unit of Measure</label>
-                  <select value={form.unit_of_measure} onChange={e => setForm(f => ({ ...f, unit_of_measure: e.target.value }))}>
-                    {UNITS.map(u => <option key={u}>{u}</option>)}
-                  </select>
+                  <MasterSelect
+                    endpoint="/master/uom"
+                    label="Unit"
+                    value={form.unit_of_measure}
+                    onChange={v => setForm(f => ({ ...f, unit_of_measure: v }))}
+                    optionValue="code"
+                    optionLabel={u => `${u.code} — ${u.name}`}
+                    placeholder="-- Select Unit --"
+                    fields={[
+                      { key: 'code',     label: 'Code', placeholder: 'NOS', required: true, width: 90 },
+                      { key: 'name',     label: 'Name', placeholder: 'Numbers', required: true },
+                      { key: 'category', label: 'Category', placeholder: 'Count', width: 110 },
+                    ]}
+                  />
                 </div>
                 <div className="im-field">
                   <label>Standard Cost (₹)</label>

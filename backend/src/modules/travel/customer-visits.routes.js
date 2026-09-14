@@ -1,15 +1,21 @@
 import express from 'express';
 import pool from '../shared/db.js';
-import { allowRoles } from '../../middlewares/auth.middleware.js';
+import { requirePermission, allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
 
 // ── GET /visits ───────────────────────────────────────────────────────────────
-router.get('/', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied crm in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const { customer_id, project_id, visited_by, status, from_date, to_date, limit = 100 } = req.query;
     const companyId = cid(req);
@@ -41,7 +47,7 @@ router.get('/', async (req, res) => {
 });
 
 // ── GET /visits/:id ───────────────────────────────────────────────────────────
-router.get('/:id', async (req, res) => {
+router.get('/:id', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const { rows: [visit] } = await pool.query(`
       SELECT cv.*,
@@ -57,7 +63,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // ── POST /visits ──────────────────────────────────────────────────────────────
-router.post('/', async (req, res) => {
+router.post('/', requirePermission('crm', 'add'), async (req, res) => {
   try {
     const {
       visit_type, customer_id, customer_name, project_id, project_number, site_name,
@@ -96,7 +102,7 @@ router.post('/', async (req, res) => {
 });
 
 // ── PUT /visits/:id ───────────────────────────────────────────────────────────
-router.put('/:id', async (req, res) => {
+router.put('/:id', requirePermission('crm', 'edit'), captureBefore('customer_visits'), async (req, res) => {
   try {
     const {
       visit_type, customer_id, customer_name, project_id, project_number, site_name,
@@ -123,7 +129,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // ── DELETE /visits/:id ────────────────────────────────────────────────────────
-router.delete('/:id', allowRoles('admin','super_admin','manager'), async (req, res) => {
+router.delete('/:id', allowRoles('admin','super_admin','manager'), captureBefore('customer_visits'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM customer_visits WHERE id=$1`, [req.params.id]);
     res.json({ message: 'Deleted' });
@@ -131,7 +137,7 @@ router.delete('/:id', allowRoles('admin','super_admin','manager'), async (req, r
 });
 
 // ── Action items CRUD ─────────────────────────────────────────────────────────
-router.get('/:id/actions', async (req, res) => {
+router.get('/:id/actions', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT * FROM customer_visit_action_items WHERE visit_id=$1 ORDER BY id`, [req.params.id]);
@@ -139,7 +145,7 @@ router.get('/:id/actions', async (req, res) => {
   } catch { res.json([]); }
 });
 
-router.post('/:id/actions', async (req, res) => {
+router.post('/:id/actions', requirePermission('crm', 'add'), async (req, res) => {
   try {
     const { action, owner, due_date } = req.body;
     const { rows: [ai] } = await pool.query(
@@ -149,7 +155,7 @@ router.post('/:id/actions', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/actions/:actionId', async (req, res) => {
+router.put('/actions/:actionId', requirePermission('crm', 'edit'), async (req, res) => {
   try {
     const { status, completed_at } = req.body;
     const { rows: [ai] } = await pool.query(
@@ -160,7 +166,7 @@ router.put('/actions/:actionId', async (req, res) => {
 });
 
 // ── Dashboard summary ─────────────────────────────────────────────────────────
-router.get('/summary/stats', async (req, res) => {
+router.get('/summary/stats', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cFilter = companyId ? `WHERE company_id=${companyId}` : '';
@@ -180,7 +186,7 @@ router.get('/summary/stats', async (req, res) => {
 });
 
 // ── Recent visits by customer ─────────────────────────────────────────────────
-router.get('/summary/by-customer', async (req, res) => {
+router.get('/summary/by-customer', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cFilter = companyId ? `WHERE cv.company_id=${companyId}` : '';

@@ -14,6 +14,7 @@ import invoiceService from '../../finance/services/invoice.service.js';
 import { CLOSED_PROJECT_STATUSES } from '../projectStatus.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? null;
@@ -221,7 +222,7 @@ router.post('/product-lines', requirePermission('projects', 'add'), async (req, 
 
 router.post('/projects', requirePermission('projects', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('projects', req.body);
+    const { valid, errors } = await validate('projects', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors });
     const project = await projectRepository.create({
       ...req.body,
@@ -239,7 +240,7 @@ router.post('/projects', requirePermission('projects', 'add'), async (req, res) 
 
 router.put('/projects/:id', requirePermission('projects', 'edit'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('projects', req.body);
+    const { valid, errors } = await validate('projects', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors });
     const oldProject = await projectRepository.findById(req.params.id, cid(req));
     // findById is company-scoped, so a miss means the project is another tenant's
@@ -272,11 +273,16 @@ router.put('/projects/:id', requirePermission('projects', 'edit'), async (req, r
       // resolution is needed here.
       if (req.body.customer_rating) {
         pool.query(
+          // See voc.service.js — a rating-only response used to be invisible to
+          // every Voice-of-Customer KPI.
           `INSERT INTO voc_responses
-             (company_id, trigger_event, trigger_ref_id, customer_name, project_id, rating, suggestions, submitted_at)
-           VALUES ($1,'project_closure',$2,$3,$2,$4,$5,NOW())`,
+             (company_id, trigger_event, trigger_ref_id, customer_name, project_id, rating, suggestions,
+              sentiment, classification, submitted_at)
+           VALUES ($1,'project_closure',$2,$3,$2,$4,$5,$6,$7,NOW())`,
           [cid(req), req.params.id, project.customer_name || project.client_name || null,
-           req.body.customer_rating, req.body.customer_feedback || null]
+           req.body.customer_rating, req.body.customer_feedback || null,
+           ...(({ sentiment, classification }) => [sentiment, classification])(
+             deriveResponseFields({ rating: req.body.customer_rating, suggestions: req.body.customer_feedback }))]
         ).catch(e => console.error('[projects/:id] voc_responses mirror failed:', e.message));
       }
     }
@@ -574,7 +580,13 @@ router.get('/costing/in-progress', requirePermission('projects', 'view'), async 
       FROM projects p
       LEFT JOIN project_cost_summary pcs ON pcs.project_id = p.id
       WHERE ($1::int IS NULL OR p.company_id = $1)
-        AND p.status IN ('active','planning','in_progress','in-progress')
+        -- 'in_progress' / 'in-progress' were also listed here and can NEVER
+        -- match: projects_status_check permits exactly
+        -- planning | active | on_hold | completed | cancelled.
+        -- Harmless in this particular query (active/planning still match), but
+        -- they encode a belief about the vocabulary that is wrong, and the next
+        -- person to copy this list inherits it.
+        AND p.status IN ('active','planning')
       ORDER BY COALESCE(p.budget_amount, p.budget, 0) DESC
     `, [cid(req)]);
     res.json(rows);
@@ -623,7 +635,7 @@ router.post('/projects/:id/budget-lines', requirePermission('projects', 'edit'),
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/projects/budget-lines/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/projects/budget-lines/:id', requirePermission('projects', 'edit'), captureBefore('project_budget_lines'), async (req, res) => {
   try {
     const { wbs_code, category, description, budgeted_amount, actual_amount, sequence } = req.body;
     const { rows } = await pool.query(
@@ -637,7 +649,7 @@ router.put('/projects/budget-lines/:id', requirePermission('projects', 'edit'), 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/projects/budget-lines/:id', requirePermission('projects', 'delete'), async (req, res) => {
+router.delete('/projects/budget-lines/:id', requirePermission('projects', 'delete'), captureBefore('project_budget_lines'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM project_budget_lines WHERE id=$1`, [req.params.id]);
     res.json({ message: 'Budget line deleted' });
@@ -746,7 +758,7 @@ router.post('/projects/:id/milestones', requirePermission('projects', 'edit'), a
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/projects/milestones/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/projects/milestones/:id', requirePermission('projects', 'edit'), captureBefore('project_milestones'), async (req, res) => {
   try {
     const { title, due_date, billing_milestone, amount, owner_id, description, status } = req.body;
     const { rows } = await pool.query(
@@ -766,7 +778,7 @@ router.put('/projects/milestones/:id', requirePermission('projects', 'edit'), as
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/projects/milestones/:id/complete', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/projects/milestones/:id/complete', requirePermission('projects', 'edit'), captureBefore('project_milestones'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE project_milestones pm SET status='completed', completed_date=CURRENT_DATE
@@ -865,7 +877,7 @@ router.put('/projects/milestones/:id/complete', requirePermission('projects', 'e
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/projects/milestones/:id', requirePermission('projects', 'delete'), async (req, res) => {
+router.delete('/projects/milestones/:id', requirePermission('projects', 'delete'), captureBefore('project_milestones'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `DELETE FROM project_milestones pm WHERE pm.id=$1
@@ -921,7 +933,7 @@ router.post('/projects/:id/risks', requirePermission('projects', 'edit'), async 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/projects/risks/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/projects/risks/:id', requirePermission('projects', 'edit'), captureBefore('project_risks'), async (req, res) => {
   try {
     const PROB = { low: 1, medium: 2, high: 4 };
     const IMP  = { low: 1, medium: 2, high: 4 };
@@ -944,7 +956,7 @@ router.put('/projects/risks/:id', requirePermission('projects', 'edit'), async (
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/projects/risks/:id', requirePermission('projects', 'delete'), async (req, res) => {
+router.delete('/projects/risks/:id', requirePermission('projects', 'delete'), captureBefore('project_risks'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `DELETE FROM project_risks pr WHERE pr.id=$1
@@ -1007,7 +1019,7 @@ router.post('/projects/:id/issues', requirePermission('projects', 'edit'), async
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/projects/issues/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/projects/issues/:id', requirePermission('projects', 'edit'), captureBefore('project_issues'), async (req, res) => {
   try {
     const {
       title, description, issue_type, severity, priority, status,
@@ -1033,7 +1045,7 @@ router.put('/projects/issues/:id', requirePermission('projects', 'edit'), async 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/projects/issues/:id', requirePermission('projects', 'delete'), async (req, res) => {
+router.delete('/projects/issues/:id', requirePermission('projects', 'delete'), captureBefore('project_issues'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `DELETE FROM project_issues pi WHERE pi.id=$1
@@ -1092,7 +1104,7 @@ router.post('/projects/:id/fat', requirePermission('projects', 'edit'), async (r
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/projects/fat/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/projects/fat/:id', requirePermission('projects', 'edit'), captureBefore('fat_trackers'), async (req, res) => {
   try {
     const {
       serial_number, product_name, scheduled_date, actual_date, status,
@@ -1198,7 +1210,7 @@ router.post('/projects/:id/sat', requirePermission('projects', 'edit'), async (r
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/projects/sat/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/projects/sat/:id', requirePermission('projects', 'edit'), captureBefore('sat_trackers'), async (req, res) => {
   try {
     const {
       serial_number, product_name, site_name, site_address, scheduled_date, actual_date,
@@ -1368,7 +1380,7 @@ router.post('/projects/:id/documents', requirePermission('projects', 'edit'), as
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/projects/documents/:id', requirePermission('projects', 'delete'), async (req, res) => {
+router.delete('/projects/documents/:id', requirePermission('projects', 'delete'), captureBefore('project_documents'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM project_documents WHERE id=$1`, [req.params.id]);
     res.json({ message: 'Document deleted' });
@@ -1530,8 +1542,25 @@ router.get('/installation-dashboard', requirePermission('projects', 'view'), asy
         cr.status AS commissioning_status,
         cr.commissioning_date
       FROM projects p
-      LEFT JOIN lifecycle_instances li ON li.project_id=p.id AND li.status='active'
-      LEFT JOIN commissioning_reports cr ON cr.project_id=p.id
+      -- Both joins are 1:N (a project legitimately has several commissioning
+      -- reports). Joining them plainly fanned one project out into several rows:
+      -- the grid repeated it, the KPI count and average completion counted it
+      -- twice, and the React key collided. LATERAL ... LIMIT 1 keeps it 1:1 on
+      -- the newest record of each.
+      LEFT JOIN LATERAL (
+        SELECT li.current_stage
+        FROM lifecycle_instances li
+        WHERE li.project_id = p.id AND li.status = 'active'
+        ORDER BY li.created_at DESC NULLS LAST, li.id DESC
+        LIMIT 1
+      ) li ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT cr.status, cr.commissioning_date
+        FROM commissioning_reports cr
+        WHERE cr.project_id = p.id
+        ORDER BY cr.commissioning_date DESC NULLS LAST, cr.id DESC
+        LIMIT 1
+      ) cr ON TRUE
       WHERE ${whereSql}
       ORDER BY p.created_at DESC LIMIT 100
     `, params).catch(() => pool.query(
@@ -1676,7 +1705,7 @@ router.get('/warranties', requirePermission('projects', 'view'), async (req, res
 // `coverage_description` used to be referenced here against `project_warranties`,
 // which never had that column (a live 500-on-edit bug — 0 rows ever existed to
 // trigger it in practice). warranty_registrations now has a real column for it.
-router.put('/warranties/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/warranties/:id', requirePermission('projects', 'edit'), captureBefore('warranty_registrations'), async (req, res) => {
   try {
     const { product_name, serial_number, commissioning_date, warranty_start_date,
             warranty_end_date, warranty_type, coverage_description, exclusions, status,

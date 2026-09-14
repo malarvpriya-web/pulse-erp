@@ -1,6 +1,8 @@
 // backend/src/modules/hr/certifications.routes.js
 import express from 'express';
 import pool from '../../config/db.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid  = req => { const n = Number.parseInt(req.scope?.company_id, 10); return Number.isInteger(n) ? n : null; };
@@ -13,7 +15,12 @@ function sc(companyId, alias = '') {
 }
 
 /* ── GET /certifications/master ────────────────────────────── */
-router.get('/master', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied hr in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/master', requirePermission('hr', 'view'), async (req, res) => {
   const companyId = cid(req);
   try {
     const { rows } = await pool.query(
@@ -24,7 +31,7 @@ router.get('/master', async (req, res) => {
 });
 
 /* ── POST /certifications/master ───────────────────────────── */
-router.post('/master', async (req, res) => {
+router.post('/master', requirePermission('hr', 'add'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { name, code, issuing_body, category, validity_months = 12, is_mandatory = false, description } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -40,7 +47,7 @@ router.post('/master', async (req, res) => {
 });
 
 /* ── PUT /certifications/master/:id ────────────────────────── */
-router.put('/master/:id', async (req, res) => {
+router.put('/master/:id', requirePermission('hr', 'edit'), captureBefore('certifications'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { name, code, issuing_body, category, validity_months, is_mandatory, description } = req.body;
   try {
@@ -59,7 +66,7 @@ router.put('/master/:id', async (req, res) => {
 });
 
 /* ── DELETE /certifications/master/:id ─────────────────────── */
-router.delete('/master/:id', async (req, res) => {
+router.delete('/master/:id', requirePermission('hr', 'delete'), captureBefore('certifications'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     const { rows } = await pool.query(`DELETE FROM certifications WHERE id=$1 RETURNING id`, [req.params.id]);
@@ -69,7 +76,7 @@ router.delete('/master/:id', async (req, res) => {
 });
 
 /* ── GET /certifications/employee ──────────────────────────── */
-router.get('/employee', async (req, res) => {
+router.get('/employee', requirePermission('hr', 'view'), async (req, res) => {
   const companyId = cid(req);
   const { employee_id, status, expiring_days } = req.query;
   let where = `WHERE 1=1${sc(companyId, 'ec')}`;
@@ -92,7 +99,7 @@ router.get('/employee', async (req, res) => {
 });
 
 /* ── POST /certifications/employee ─────────────────────────── */
-router.post('/employee', async (req, res) => {
+router.post('/employee', requirePermission('hr', 'add'), async (req, res) => {
   const {
     employee_id, certification_id, certificate_number,
     issue_date, expiry_date, renewal_date,
@@ -136,7 +143,7 @@ router.post('/employee', async (req, res) => {
 });
 
 /* ── PUT /certifications/employee/:id ──────────────────────── */
-router.put('/employee/:id', async (req, res) => {
+router.put('/employee/:id', requirePermission('hr', 'edit'), captureBefore('employee_certifications'), async (req, res) => {
   const { certificate_number, issue_date, expiry_date, renewal_date,
           certificate_url, status, issued_by, notes } = req.body;
   try {
@@ -160,7 +167,7 @@ router.put('/employee/:id', async (req, res) => {
 });
 
 /* ── DELETE /certifications/employee/:id ───────────────────── */
-router.delete('/employee/:id', async (req, res) => {
+router.delete('/employee/:id', requirePermission('hr', 'delete'), captureBefore('employee_certifications'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     const { rows } = await pool.query(
@@ -172,7 +179,7 @@ router.delete('/employee/:id', async (req, res) => {
 });
 
 /* ── GET /certifications/expiry-dashboard ──────────────────── */
-router.get('/expiry-dashboard', async (req, res) => {
+router.get('/expiry-dashboard', requirePermission('hr', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc2 = companyId != null ? ` AND ec.company_id=${companyId}` : '';
   try {
@@ -194,7 +201,7 @@ router.get('/expiry-dashboard', async (req, res) => {
 });
 
 /* ── POST /certifications/employee/:id/renew ───────────────── */
-router.post('/employee/:id/renew', async (req, res) => {
+router.post('/employee/:id/renew', requirePermission('hr', 'add'), async (req, res) => {
   const { new_expiry_date, certificate_url, notes } = req.body;
   if (!new_expiry_date) return res.status(400).json({ error: 'new_expiry_date required' });
   try {

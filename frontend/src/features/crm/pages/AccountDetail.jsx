@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Building2, Phone, Globe, MapPin, Users, TrendingUp, Mail,
   Edit2, Plus, ChevronRight, Target, Activity, FileText, X, Contact,
-  Package, LayoutDashboard,
+  Package, LayoutDashboard, UserCog, Network,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './AccountDetail.css';
@@ -60,6 +60,8 @@ const TABS = [
   { key: 'contacts',      label: 'Contacts',       icon: Users },
   { key: 'products',      label: 'Products Bought', icon: Package },
   { key: 'opportunities', label: 'Opportunities',  icon: Target },
+  { key: 'team',          label: 'Account Team',   icon: UserCog },
+  { key: 'hierarchy',     label: 'Hierarchy',      icon: Network },
   { key: 'activity',      label: 'Activity',       icon: Activity },
 ];
 
@@ -381,6 +383,369 @@ function OppForm({ accountId, onSaved, onClose }) {
   );
 }
 
+// ── Account team panel ────────────────────────────────────────────────────────
+// The `crm_team_members` table and its `/crm/team` CRUD shipped with no UI at
+// all, which is the whole reason the table was empty (manual §157.1). Selling to
+// an enterprise account is never a one-owner job: `accounts.assigned_to` answers
+// "who is credited", this answers "who is actually on it, and what may they
+// change".
+//
+// POST /crm/team upserts on (parent, employee), so re-adding somebody already on
+// the team silently changes their role rather than erroring — the copy below
+// says so, because a form that looks like it did nothing is worse than one that
+// refuses.
+const TEAM_ROLES = [
+  { key: 'owner',             label: 'Owner' },
+  { key: 'sales_lead',        label: 'Sales Lead' },
+  { key: 'technical',         label: 'Technical' },
+  { key: 'commercial',        label: 'Commercial' },
+  { key: 'executive_sponsor', label: 'Executive Sponsor' },
+  { key: 'support',           label: 'Support' },
+  { key: 'contributor',       label: 'Contributor' },
+];
+const ROLE_LABEL = Object.fromEntries(TEAM_ROLES.map(r => [r.key, r.label]));
+
+// Owner and sales lead carry the deal; everyone else is support colour. Keeps
+// the roster scannable at a glance instead of seven equal-weight chips.
+const ROLE_TONE = {
+  owner:             { bg: '#ede9fe', color: '#5b21b6' },
+  sales_lead:        { bg: '#ede9fe', color: '#5b21b6' },
+  executive_sponsor: { bg: '#fef3c7', color: '#92400e' },
+};
+const roleTone = r => ROLE_TONE[r] || { bg: '#f3f4f6', color: '#4b5563' };
+
+function TeamPanel({ accountId, showToast }) {
+  const [rows,      setRows]      = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState('');
+  const [adding,    setAdding]    = useState(false);
+  const [saving,    setSaving]    = useState(false);
+  const [pick,      setPick]      = useState({ employee_id: '', team_role: 'contributor', access_level: 'read' });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    const [teamRes, empRes] = await Promise.allSettled([
+      api.get('/crm/team', { params: { account_id: accountId } }),
+      api.get('/employees', { params: { status: 'active', limit: 500 } }),
+    ]);
+
+    if (teamRes.status === 'fulfilled') {
+      setRows(Array.isArray(teamRes.value.data?.data) ? teamRes.value.data.data : []);
+    } else {
+      // A read failure has to say so. Rendering an empty roster over a 403 or a
+      // 500 tells the user this account has no team, which is a different fact.
+      setRows([]);
+      setError(teamRes.reason?.response?.data?.error || 'Could not load the account team');
+    }
+
+    if (empRes.status === 'fulfilled') {
+      const ed = empRes.value.data;
+      setEmployees(Array.isArray(ed) ? ed : Array.isArray(ed?.employees) ? ed.employees : []);
+    }
+    setLoading(false);
+  }, [accountId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const onTeam = new Set(rows.map(r => r.employee_id));
+
+  const submit = async () => {
+    const employeeId = parseInt(pick.employee_id, 10);
+    if (!Number.isInteger(employeeId)) { showToast('Pick an employee first', 'error'); return; }
+    setSaving(true);
+    try {
+      const wasOn = onTeam.has(employeeId);
+      await api.post('/crm/team', {
+        account_id: accountId,
+        employee_id: employeeId,
+        team_role: pick.team_role,
+        access_level: pick.access_level,
+      });
+      setPick({ employee_id: '', team_role: 'contributor', access_level: 'read' });
+      setAdding(false);
+      await load();
+      showToast(wasOn ? 'Role updated — they were already on this team' : 'Added to the account team');
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Could not add them to the team', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (row) => {
+    try {
+      await api.delete(`/crm/team/${row.id}`);
+      await load();
+      showToast(`${row.employee_name || 'Member'} removed from the team`);
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Could not remove them', 'error');
+    }
+  };
+
+  if (loading) return <div className="ad-center" style={{ padding: 40 }}><div className="ad-spinner" /></div>;
+
+  return (
+    <div>
+      <div className="ad-panel-hd">
+        <span className="ad-panel-count">
+          {rows.length} team member{rows.length !== 1 ? 's' : ''}
+        </span>
+        {!adding && (
+          <button className="ad-btn-primary" onClick={() => setAdding(true)}>
+            <Plus size={14} /> Add Member
+          </button>
+        )}
+      </div>
+
+      {error && <div className="ad-err">{error}</div>}
+
+      {adding && (
+        <div className="ad-team-form">
+          <select
+            className="ad-team-select"
+            value={pick.employee_id}
+            onChange={e => setPick(p => ({ ...p, employee_id: e.target.value }))}
+            aria-label="Employee"
+          >
+            <option value="">Choose an employee…</option>
+            {employees.map(e => (
+              <option key={e.id} value={e.id}>
+                {e.name || `${e.first_name || ''} ${e.last_name || ''}`.trim() || `Employee ${e.id}`}
+                {onTeam.has(e.id) ? ' — already on team' : ''}
+              </option>
+            ))}
+          </select>
+          <select
+            className="ad-team-select"
+            value={pick.team_role}
+            onChange={e => setPick(p => ({ ...p, team_role: e.target.value }))}
+            aria-label="Team role"
+          >
+            {TEAM_ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+          </select>
+          <select
+            className="ad-team-select"
+            value={pick.access_level}
+            onChange={e => setPick(p => ({ ...p, access_level: e.target.value }))}
+            aria-label="Access level"
+          >
+            <option value="read">Read only</option>
+            <option value="edit">Can edit</option>
+          </select>
+          <button className="ad-btn-primary" onClick={submit} disabled={saving}>
+            {saving ? 'Saving…' : 'Add'}
+          </button>
+          <button className="ad-btn-outline" onClick={() => { setAdding(false); setPick({ employee_id: '', team_role: 'contributor', access_level: 'read' }); }}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {rows.length === 0 ? (
+        <div className="ad-empty">
+          <Users size={36} color="#d1d5db" />
+          <p>No one is on this account team yet</p>
+          {!adding && (
+            <button className="ad-btn-primary" onClick={() => setAdding(true)}><Plus size={14} /> Add Member</button>
+          )}
+        </div>
+      ) : (
+        <div className="ad-contact-list">
+          {rows.map(m => {
+            const tone = roleTone(m.team_role);
+            return (
+              <div key={m.id} className="ad-contact-card">
+                <div className="ad-contact-avatar" style={{ background: avatarColor(m.employee_name) }}>
+                  {getInitials(m.employee_name)}
+                </div>
+                <div className="ad-contact-info-col">
+                  <span className="ad-contact-name">{m.employee_name || `Employee ${m.employee_id}`}</span>
+                  {m.designation && <span className="ad-contact-role">{m.designation}</span>}
+                </div>
+                {/* Its own class, not `.ad-contact-links`: that one stacks in a
+                    column on purpose (email over phone on the Contacts tab).
+                    A role + access pair reads as a row. */}
+                <div className="ad-team-tags">
+                  <span className="ad-badge" style={{ background: tone.bg, color: tone.color }}>
+                    {ROLE_LABEL[m.team_role] || m.team_role}
+                  </span>
+                  <span className="ad-badge" style={{ background: m.access_level === 'edit' ? '#dcfce7' : '#f3f4f6', color: m.access_level === 'edit' ? '#166534' : '#6b7280' }}>
+                    {m.access_level === 'edit' ? 'Can edit' : 'Read only'}
+                  </span>
+                  {m.company_email && (
+                    <a href={`mailto:${m.company_email}`} className="ad-contact-chip"><Mail size={12} />{m.company_email}</a>
+                  )}
+                </div>
+                <button className="ad-icon-btn" onClick={() => remove(m)} title="Remove from team" aria-label={`Remove ${m.employee_name || 'member'} from team`}>
+                  <X size={15} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Account hierarchy panel ───────────────────────────────────────────────────
+// Parent/child accounts — a group buying through several subsidiaries is one
+// customer commercially and several rows in `accounts`. The endpoint returns the
+// whole family from the ROOT down (not just this account's children), with
+// pipeline rolled up per node, so a subsidiary page shows the group it sits in.
+//
+// The server has a DB trigger that refuses a self-parent, a cycle, and excess
+// depth, and reports all three as a readable 400 — so the picker offers every
+// account and lets the server be the authority rather than guessing here.
+function HierarchyPanel({ accountId, showToast, onChanged }) {
+  const [tree,     setTree]     = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState('');
+  const [editing,  setEditing]  = useState(false);
+  const [parentId, setParentId] = useState('');
+  const [saving,   setSaving]   = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    const [hRes, aRes] = await Promise.allSettled([
+      api.get(`/crm/accounts/${accountId}/hierarchy`),
+      api.get('/crm/accounts'),
+    ]);
+
+    if (hRes.status === 'fulfilled') {
+      setTree(hRes.value.data);
+      const me = (hRes.value.data?.nodes || []).find(n => n.id === Number(accountId));
+      setParentId(me?.parent_account_id == null ? '' : String(me.parent_account_id));
+    } else {
+      setTree(null);
+      setError(hRes.reason?.response?.data?.error || 'Could not load the account hierarchy');
+    }
+
+    if (aRes.status === 'fulfilled') {
+      const raw = aRes.value.data?.accounts ?? aRes.value.data;
+      setAccounts(Array.isArray(raw) ? raw : []);
+    }
+    setLoading(false);
+  }, [accountId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.patch(`/crm/accounts/${accountId}/parent`, {
+        parent_account_id: parentId === '' ? null : Number(parentId),
+      });
+      setEditing(false);
+      await load();
+      onChanged?.();
+      showToast(parentId === '' ? 'Account is now a top-level account' : 'Parent account updated');
+    } catch (err) {
+      // The trigger's message is the useful one ("would create a cycle", …).
+      showToast(err.response?.data?.error || 'Could not change the parent account', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="ad-center" style={{ padding: 40 }}><div className="ad-spinner" /></div>;
+  if (error)   return <div className="ad-err" style={{ margin: 0 }}>{error}</div>;
+
+  const nodes  = tree?.nodes || [];
+  const totals = tree?.totals || {};
+
+  return (
+    <div>
+      <div className="ad-panel-hd">
+        <span className="ad-panel-count">
+          {nodes.length} account{nodes.length !== 1 ? 's' : ''} in this group
+        </span>
+        {!editing && (
+          <button className="ad-btn-primary" onClick={() => setEditing(true)}>
+            <Edit2 size={14} /> Set Parent
+          </button>
+        )}
+      </div>
+
+      {editing && (
+        <div className="ad-team-form">
+          <select
+            className="ad-team-select"
+            style={{ flex: 1 }}
+            value={parentId}
+            onChange={e => setParentId(e.target.value)}
+            aria-label="Parent account"
+          >
+            <option value="">— No parent (top-level account) —</option>
+            {accounts
+              .filter(a => a.id !== Number(accountId))
+              .map(a => <option key={a.id} value={a.id}>{a.name || a.account_name}</option>)}
+          </select>
+          <button className="ad-btn-primary" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button className="ad-btn-outline" onClick={() => setEditing(false)}>Cancel</button>
+        </div>
+      )}
+
+      {/* Group roll-up — the number a parent account cannot get from its own row */}
+      <div className="ad-kpi-strip" style={{ marginBottom: 14 }}>
+        <div className="ad-kpi">
+          <span className="ad-kpi-label">Accounts</span>
+          <span className="ad-kpi-val">{totals.accounts ?? nodes.length}</span>
+        </div>
+        <div className="ad-kpi">
+          <span className="ad-kpi-label">Opportunities</span>
+          <span className="ad-kpi-val">{totals.opportunity_count ?? 0}</span>
+        </div>
+        <div className="ad-kpi">
+          <span className="ad-kpi-label">Open Pipeline</span>
+          <span className="ad-kpi-val">{fmt(totals.open_pipeline || 0)}</span>
+        </div>
+        <div className="ad-kpi ad-kpi-green">
+          <span className="ad-kpi-label">Won</span>
+          <span className="ad-kpi-val">{fmt(totals.won_value || 0)}</span>
+        </div>
+      </div>
+
+      {nodes.length === 0 ? (
+        <div className="ad-empty">
+          <Building2 size={36} color="#d1d5db" />
+          <p>No hierarchy for this account</p>
+        </div>
+      ) : (
+        <div className="ad-tree">
+          {nodes.map(n => {
+            const isSelf = n.id === Number(accountId);
+            return (
+              <div
+                key={n.id}
+                className={`ad-tree-node${isSelf ? ' ad-tree-node--self' : ''}`}
+                style={{ marginLeft: (n.depth || 0) * 22 }}
+              >
+                {n.depth > 0 && <span className="ad-tree-elbow" aria-hidden="true" />}
+                <Building2 size={14} className="ad-tree-icon" />
+                <span className="ad-tree-name">{n.name}</span>
+                {isSelf && <span className="ad-badge" style={{ background: '#ede9fe', color: '#5b21b6' }}>This account</span>}
+                {n.account_type && <span className="ad-tree-meta">{n.account_type}</span>}
+                <span className="ad-tree-nums">
+                  {n.opportunity_count || 0} opp{(n.opportunity_count || 0) !== 1 ? 's' : ''}
+                  {' · '}
+                  {fmt(n.open_pipeline || 0)} open
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function AccountDetail() {
   const [searchParams] = useSearchParams();
@@ -566,6 +931,14 @@ export default function AccountDetail() {
 
         {/* ── Products Bought ── */}
         {tab === 'products' && <ProductsPanel partyId={account.party_id} />}
+
+        {/* ── Account Team ── */}
+        {tab === 'team' && <TeamPanel accountId={accountId} showToast={showToast} />}
+
+        {/* ── Hierarchy ── */}
+        {tab === 'hierarchy' && (
+          <HierarchyPanel accountId={accountId} showToast={showToast} onChanged={load} />
+        )}
 
         {/* ── Opportunities ── */}
         {tab === 'opportunities' && (

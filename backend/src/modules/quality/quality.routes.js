@@ -6,12 +6,37 @@ import { requirePermission, verifyToken, allowRoles } from '../../middlewares/au
 import { resolveRange } from '../../shared/dashboardFilters.js';
 import grnService from '../procurement/services/grn.service.js';
 import { rollupQualityStatus } from './services/qualityRollup.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 router.use(verifyToken);
 
 const cid = (req) => req.scope?.company_id ?? null;
 const uid = (req) => req.user?.userId ?? req.user?.id ?? null;
+
+/**
+ * The supplier a receipt came from, for attributing an NCR raised against it.
+ *
+ * ⚠ `goods_receipt_notes` has NO vendor_id column. Every attempt in this file to
+ * read one silently returned nothing (the writes were wrapped in `.catch(() => {})`),
+ * which is why `ncr_reports.vendor_id` was NULL on every one of the 8 rows in the
+ * live database and Vendor 360's NCR panel — `WHERE vendor_id = $1` — was empty
+ * for every supplier. Identity bridges through the order: grn.po_id → po.supplier_id.
+ *
+ * Returns null for a receipt with no order behind it (direct/unlinked GRN) rather
+ * than guessing. An NCR nobody can attribute is better than one attributed wrongly:
+ * it costs a supplier 5–15 points of quality score on the scorecard.
+ */
+async function vendorOfGrn(grnId) {
+  if (!grnId) return null;
+  const { rows } = await pool.query(
+    `SELECT po.supplier_id, po.id AS po_id
+       FROM goods_receipt_notes g
+       JOIN purchase_orders po ON po.id = g.po_id
+      WHERE g.id = $1`, [grnId]
+  ).catch(() => ({ rows: [] }));
+  return rows[0] ? { vendor_id: rows[0].supplier_id ?? null, po_id: rows[0].po_id ?? null } : null;
+}
 
 // Role guards — codes must match `roles.code` (see phase42_security_roles migration).
 // qc_engineer can view/create, qc_manager can approve/close/delete; production_manager
@@ -104,7 +129,31 @@ const seedData = async () => {
     `);
   } catch (err) { console.warn('[quality] seed failed:', err.message); }
 };
-setTimeout(seedData, 2000);
+
+/**
+ * ⚠ IMPORTING THIS ROUTER USED TO WRITE TO THE DATABASE TWO SECONDS LATER.
+ *
+ * `setTimeout(seedData, 2000)` sat at module scope, so merely importing the
+ * module — from the server, from a script, from a test — scheduled an INSERT
+ * against whatever database was configured, with nothing awaiting it and nobody
+ * having asked for it.
+ *
+ * Under vitest that is worse than untidy. A worker that finishes its file in
+ * under two seconds tears down its pool, the timer then fires into the closed
+ * pool, and the rejection lands during teardown: the FORK EXITS. Vitest reports
+ * "Worker exited unexpectedly" with no stack and no test name, and the entire
+ * file that shared that worker vanishes from the run — 27 tests neither passed
+ * nor failed, while the summary still said "54 passed". Reproduced at roughly
+ * 1 run in 6, and it names an innocent file every time.
+ *
+ * Two guards, both needed:
+ *   - skipped entirely under test, where seeding a shared database from an
+ *     import is never what a test wants;
+ *   - `unref()` so the timer can never by itself hold a process open.
+ */
+if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
+  setTimeout(seedData, 2000).unref();
+}
 
 /* ── INSPECTION CHECKLISTS ────────────────────────────────────────────────── */
 router.get('/checklists', requirePermission('quality', 'view'), canView, async (req, res) => {
@@ -131,7 +180,7 @@ router.post('/checklists', requirePermission('quality', 'add'), canManage, async
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/checklists/:id', requirePermission('quality', 'edit'), canManage, async (req, res) => {
+router.put('/checklists/:id', requirePermission('quality', 'edit'), canManage, captureBefore('inspection_checklists'), async (req, res) => {
   try {
     const { name, type, items } = req.body;
     const { rows } = await pool.query(
@@ -192,7 +241,7 @@ router.get('/inspect/:id', requirePermission('quality', 'view'), canView, async 
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/inspect/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
+router.put('/inspect/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('inspection_reports'), async (req, res) => {
   try {
     const { item_results, overall_result, status } = req.body;
     const existing = await pool.query('SELECT * FROM inspection_reports WHERE id=$1', [req.params.id]);
@@ -217,10 +266,13 @@ router.put('/inspect/:id', requirePermission('quality', 'edit'), canCreate, asyn
       if (settings.rows[0]?.iqc_auto_ncr_on_fail) {
         const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
         const ncrNum = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+        // Attribute it to the supplier that shipped the goods, or the scorecard
+        // never sees it — see vendorOfGrn().
+        const src = await vendorOfGrn(before.grn_id);
         const nr = await pool.query(
-          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'major','quality',$8) RETURNING *`,
-          [`Auto NCR - Inspection Fail`, 'Inspection failed', ncrNum, before.inspector_name, before.reference_type, before.reference_id, before.grn_id || null, before.company_id]
+          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, po_id, vendor_id, severity, source, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'major','quality',$10) RETURNING *`,
+          [`Auto NCR - Inspection Fail`, 'Inspection failed', ncrNum, before.inspector_name, before.reference_type, before.reference_id, before.grn_id || null, src?.po_id ?? null, src?.vendor_id ?? null, before.company_id]
         ).catch(() => ({ rows: [] }));
         autoNcr = nr.rows[0] || null;
       }
@@ -268,10 +320,11 @@ router.post('/inspect', requirePermission('quality', 'add'), canCreate, async (r
       if (settings.rows[0]?.iqc_auto_ncr_on_fail) {
         const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
         const ncrNum = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+        const src = await vendorOfGrn(grn_id);
         const nr = await pool.query(
-          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'major','quality',$8) RETURNING *`,
-          [`Auto NCR - Inspection Fail (${checklist.rows[0].name})`, remarks || 'Inspection failed', ncrNum, inspector_name, resolvedRefType, resolvedRefId, grn_id || null, companyId]
+          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, po_id, vendor_id, severity, source, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'major','quality',$10) RETURNING *`,
+          [`Auto NCR - Inspection Fail (${checklist.rows[0].name})`, remarks || 'Inspection failed', ncrNum, inspector_name, resolvedRefType, resolvedRefId, grn_id || null, src?.po_id ?? null, src?.vendor_id ?? null, companyId]
         );
         autoNcr = nr.rows[0];
       }
@@ -360,18 +413,24 @@ router.post('/ncr', requirePermission('quality', 'add'), canCreate, async (req, 
     const settings = await pool.query('SELECT ncr_auto_number_prefix FROM quality_settings WHERE company_id=$1', [companyId]).catch(() => ({ rows: [] }));
     const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
     const ncr_number = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+    // A caller that named the receipt but not the supplier still gets attributed:
+    // the order behind the GRN knows who shipped it. An explicit vendor_id wins.
+    const src = vendor_id ? null : await vendorOfGrn(grn_id);
+    const resolvedVendorId = vendor_id || src?.vendor_id || null;
     const { rows } = await pool.query(
-      `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, severity, source, grn_id, vendor_id, project_id, type, containment_action, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [title, description, ncr_number, detected_by, reference_type, reference_id, severity, source, grn_id || null, vendor_id || null, project_id || null, type, containment_action || null, companyId]
+      `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, severity, source, grn_id, po_id, vendor_id, project_id, type, containment_action, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      [title, description, ncr_number, detected_by, reference_type, reference_id, severity, source, grn_id || null, src?.po_id ?? null, resolvedVendorId, project_id || null, type, containment_action || null, companyId]
     );
     logAudit({ userId: uid(req), module: 'quality', recordId: rows[0].id, recordType: 'ncr_report', action: 'create', newData: { ncr_number, title, severity, source }, req });
-    if (vendor_id) {
-      pool.query(
-        `UPDATE vendors SET defect_rate=(SELECT ROUND(COUNT(*)*100.0/GREATEST((SELECT COUNT(*) FROM goods_receipt_notes WHERE vendor_id=$1),1),2) FROM ncr_reports WHERE vendor_id=$1) WHERE id=$1`,
-        [vendor_id]
-      ).catch(() => {});
-    }
+    // ⚠ REMOVED: an `UPDATE vendors SET defect_rate = (… FROM goods_receipt_notes
+    // WHERE vendor_id=$1 …)` used to run here. goods_receipt_notes HAS NO vendor_id
+    // COLUMN, so it threw on every NCR ever raised and the `.catch(() => {})` ate it
+    // — vendors.defect_rate was never once written by this path. It was also a second,
+    // different definition of defect rate (all-time NCR count over receipt count)
+    // competing with the scorecard's (rejected qty over received qty, 12-month window).
+    // vendorHealth.computeAndSave() is the single publisher of vendors.defect_rate and
+    // vendors.on_time_pct; the nightly recalc picks this NCR up.
     res.status(201).json({ success: true, data: rows[0] });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
@@ -393,7 +452,7 @@ router.put('/ncr/:id', requirePermission('quality', 'edit'), canCreate, async (r
 });
 
 // PATCH /ncr/:id/resolve — moves NCR to 'resolved' status
-router.patch('/ncr/:id/resolve', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
+router.patch('/ncr/:id/resolve', requirePermission('quality', 'edit'), canCreate, captureBefore('ncr_reports'), async (req, res) => {
   try {
     const { resolution } = req.body;
     const { rows } = await pool.query(
@@ -510,7 +569,7 @@ router.post('/capa', requirePermission('quality', 'add'), canCreate, async (req,
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/capa/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
+router.put('/capa/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('capa_actions'), async (req, res) => {
   try {
     const { status, completion_date, effectiveness_rating, description, due_date } = req.body;
     const { rows } = await pool.query(
@@ -580,7 +639,7 @@ router.post('/calibration/equipment', requirePermission('quality', 'add'), canMa
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/calibration/equipment/:id', requirePermission('quality', 'edit'), canManage, async (req, res) => {
+router.put('/calibration/equipment/:id', requirePermission('quality', 'edit'), canManage, captureBefore('calibration_equipment'), async (req, res) => {
   try {
     const f = req.body;
     const { rows } = await pool.query(
@@ -596,7 +655,7 @@ router.put('/calibration/equipment/:id', requirePermission('quality', 'edit'), c
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.delete('/calibration/equipment/:id', requirePermission('quality', 'delete'), canAdmin, async (req, res) => {
+router.delete('/calibration/equipment/:id', requirePermission('quality', 'delete'), canAdmin, captureBefore('calibration_equipment'), async (req, res) => {
   try {
     await pool.query('UPDATE calibration_equipment SET deleted_at=NOW() WHERE id=$1', [req.params.id]);
     res.json({ success: true });
@@ -684,7 +743,7 @@ router.post('/punch-points', requirePermission('quality', 'add'), canCreate, asy
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/punch-points/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
+router.put('/punch-points/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('punch_points'), async (req, res) => {
   try {
     const { status, remarks } = req.body;
     const extra = status === 'closed' ? ', closed_at=NOW()' : '';
@@ -749,7 +808,7 @@ router.post('/test-runs', requirePermission('quality', 'add'), canCreate, async 
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/test-runs/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
+router.put('/test-runs/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('test_runs'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, result, measurements, customer_accepted, customer_accepted_at, ncr_id } = req.body;
@@ -1083,7 +1142,7 @@ router.post('/tests/from-grn/:grnId', requirePermission('quality', 'add'), canCr
 });
 
 // PUT /quality/tests/:id — record a reading / result; auto-evaluate + auto-NCR on fail
-router.put('/tests/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
+router.put('/tests/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('quality_tests'), async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -1144,12 +1203,13 @@ router.put('/tests/:id', requirePermission('quality', 'edit'), canCreate, async 
         const refId = updated.source_type === 'grn' ? (updated.source_id || updated.operation_id)
           : updated.production_order_id ? updated.production_order_id
           : (updated.operation_id || updated.source_id);
+        const src = await vendorOfGrn(updated.grn_id);
         const nr = await pool.query(
-          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'major',$8,$9) RETURNING *`,
+          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, po_id, vendor_id, severity, source, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'major',$10,$11) RETURNING *`,
           [`Quality test failed — ${updated.test_name}`,
            `Test "${updated.test_name}" failed. Reading: ${actual_value ?? ''} ${updated.unit || ''}. ${remarks || ''}`.trim(),
-           ncrNum, testedName, refType, refId, updated.grn_id || null, source, companyId]
+           ncrNum, testedName, refType, refId, updated.grn_id || null, src?.po_id ?? null, src?.vendor_id ?? null, source, companyId]
         ).catch(() => ({ rows: [] }));
         if (nr.rows[0]) {
           autoNcr = nr.rows[0];
@@ -1164,7 +1224,7 @@ router.put('/tests/:id', requirePermission('quality', 'edit'), canCreate, async 
 });
 
 // DELETE /quality/tests/:id
-router.delete('/tests/:id', requirePermission('quality', 'delete'), canManage, async (req, res) => {
+router.delete('/tests/:id', requirePermission('quality', 'delete'), canManage, captureBefore('quality_tests'), async (req, res) => {
   try {
     const { rows } = await pool.query('DELETE FROM quality_tests WHERE id=$1 RETURNING grn_id, operation_id', [req.params.id]);
     if (!rows.length) return res.status(404).json({ success: false, error: 'Not found' });

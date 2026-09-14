@@ -110,6 +110,8 @@ function scopedPoCte({ companyId, from, to }) {
       SELECT po.id,
              po.supplier_id,
              po.order_date,
+             po.cost_center_id,
+             po.project_id,
              COALESCE(NULLIF(po.exchange_rate, 0), 1) AS fx,
              ${poSpendInr('po')} AS spend_inr
       FROM purchase_orders po
@@ -152,7 +154,8 @@ function finalise(rows, total, limit) {
 export async function loadSpendFacets({ companyId, from = null, to = null, limit = DEFAULT_LIMIT } = {}) {
   const { sql: cte, params } = scopedPoCte({ companyId, from, to });
 
-  const [vendorRes, commodityRes, monthRes, supplierTypeRes, coverageRes] = await Promise.all([
+  const [vendorRes, commodityRes, monthRes, supplierTypeRes,
+         costCentreRes, projectRes, coverageRes] = await Promise.all([
     // ── by vendor (header level) ───────────────────────────────────────────
     pool.query(`${cte}
       SELECT COALESCE(v.vendor_name, 'Unknown') AS vendor_name,
@@ -204,6 +207,39 @@ export async function loadSpendFacets({ companyId, from = null, to = null, limit
       GROUP BY COALESCE(v.category, 'Uncategorised')
       ORDER BY total_spend DESC NULLS LAST`, params),
 
+    // ── by cost centre (header level) ─────────────────────────────────────
+    // `purchase_orders.cost_center_id` arrived on 8 Sep. Before it, spend that
+    // belonged to a DEPARTMENT rather than a project had nowhere to sit, so
+    // this facet could not be asked for at all. Orders raised before the column
+    // existed carry NULL and are reported as 'Unallocated' — not folded into
+    // whichever centre happens to sort first, and not dropped, because a cost
+    // centre view that quietly omits a fifth of the spend is worse than one
+    // that shows the gap.
+    pool.query(`${cte}
+      SELECT COALESCE(cc.name, 'Unallocated') AS cost_centre,
+             COALESCE(cc.name, 'Unallocated') AS label,
+             cc.code                          AS cost_centre_code,
+             SUM(s.spend_inr) AS total_spend,
+             COUNT(*)::INT    AS po_count
+      FROM scoped s
+      LEFT JOIN cost_centers cc ON cc.id = s.cost_center_id
+      GROUP BY COALESCE(cc.name, 'Unallocated'), cc.code
+      ORDER BY total_spend DESC NULLS LAST`, params),
+
+    // ── by project (header level) ─────────────────────────────────────────
+    // Same treatment: an order not charged to a project is 'Unallocated', which
+    // for most businesses is the majority of the book and is a legitimate row.
+    pool.query(`${cte}
+      SELECT COALESCE(pr.project_name, 'Unallocated') AS project,
+             COALESCE(pr.project_name, 'Unallocated') AS label,
+             pr.project_code,
+             SUM(s.spend_inr) AS total_spend,
+             COUNT(*)::INT    AS po_count
+      FROM scoped s
+      LEFT JOIN projects pr ON pr.id = s.project_id AND pr.deleted_at IS NULL
+      GROUP BY COALESCE(pr.project_name, 'Unallocated'), pr.project_code
+      ORDER BY total_spend DESC NULLS LAST`, params),
+
     // ── coverage: how much of the header spend the line view can explain ───
     pool.query(`${cte}
       SELECT COUNT(*)::INT AS po_count,
@@ -223,6 +259,19 @@ export async function loadSpendFacets({ companyId, from = null, to = null, limit
   const byCategory = finalise(commodityRes.rows, lineTotal, limit);
   const byMonth = finalise(monthRes.rows, headerTotal, monthRes.rows.length);
   const byVendorCategory = finalise(supplierTypeRes.rows, headerTotal, limit);
+  // Both are header facets, so both share the header grand total — an order
+  // appears in exactly one cost centre and one project, so these reconcile with
+  // the vendor panel exactly, unlike the line-level commodity panel.
+  const byCostCentre = finalise(costCentreRes.rows, headerTotal, limit);
+  const byProject = finalise(projectRes.rows, headerTotal, limit);
+
+  // How much of the book has been charged to a centre / a project at all. A
+  // cost-centre chart is only a control surface once this is high; below that
+  // it is mostly one 'Unallocated' bar and the caller should be told.
+  const allocatedShare = (rows) => {
+    const unallocated = num(rows.find((r) => r.label === 'Unallocated')?.total_spend);
+    return headerTotal > 0 ? round2(((headerTotal - unallocated) / headerTotal) * 100) : 0;
+  };
 
   return {
     currency: 'INR',
@@ -233,12 +282,16 @@ export async function loadSpendFacets({ companyId, from = null, to = null, limit
     by_category: byCategory.rows,
     by_month: byMonth.rows,
     by_vendor_category: byVendorCategory.rows,
+    by_cost_centre: byCostCentre.rows,
+    by_project: byProject.rows,
 
     totals: {
       total_spend: headerTotal,
       po_count: num(coverageRes.rows[0]?.po_count),
       vendor_count: byVendor.group_count,
       category_count: byCategory.group_count,
+      cost_centre_count: byCostCentre.group_count,
+      project_count: byProject.group_count,
     },
 
     // Says out loud why the category panel does not add up to the vendor panel.
@@ -248,6 +301,13 @@ export async function loadSpendFacets({ companyId, from = null, to = null, limit
       unallocated_spend: round2(headerTotal - lineTotal),
       pos_without_lines: num(coverageRes.rows[0]?.pos_without_lines),
       note: 'Commodity spend is summed from PO lines; freight, duty and other header-level charges sit outside them, as does any PO with no lines.',
+
+      // The two header dimensions added on 10 Sep. Both are optional columns on
+      // a purchase order, so both have an honest "how much is actually tagged"
+      // figure rather than a chart that implies full coverage.
+      cost_centre_allocated_pct: allocatedShare(byCostCentre.rows),
+      project_allocated_pct: allocatedShare(byProject.rows),
+      allocation_note: 'cost_center_id arrived on 2026-09-08 and project_id is optional by design; orders carrying neither are reported as Unallocated rather than omitted.',
     },
 
     truncation: {
@@ -255,6 +315,8 @@ export async function loadSpendFacets({ companyId, from = null, to = null, limit
       by_vendor: { group_count: byVendor.group_count, truncated: byVendor.truncated },
       by_category: { group_count: byCategory.group_count, truncated: byCategory.truncated },
       by_vendor_category: { group_count: byVendorCategory.group_count, truncated: byVendorCategory.truncated },
+      by_cost_centre: { group_count: byCostCentre.group_count, truncated: byCostCentre.truncated },
+      by_project: { group_count: byProject.group_count, truncated: byProject.truncated },
     },
   };
 }

@@ -39,6 +39,7 @@ import { companyOf, employeeOf } from '../../../shared/scope.js';
 import { requireProcurement } from '../procurement.authz.js';
 import { getProcSettings } from '../services/procurementSettings.service.js';
 import { resolveVendorParty } from '../services/vendorIdentity.service.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -464,7 +465,7 @@ router.patch('/three-way-match/:id/approve', requireProcurement('approve', 'fina
 });
 
 // ── 3-Way Match: resolve discrepancy ─────────────────────────────────────────
-router.patch('/three-way-match/:id/resolve', requireProcurement('approve', 'finance', 'finance_manager'), async (req, res) => {
+router.patch('/three-way-match/:id/resolve', requireProcurement('approve', 'finance', 'finance_manager'), captureBefore('three_way_matches'), async (req, res) => {
   try {
     const { discrepancy_reason } = req.body;
     // Scoped: this is the control that clears an invoice for payment, so

@@ -5,6 +5,7 @@ import journalRepo from './repositories/journal.repository.js';
 import { nextAccountingJournalNumber } from '../../shared/docNumber.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { ACCUM_DEP_CODE_BY_CATEGORY, DEFAULT_ACCUM_DEP_CODE } from './services/depreciation.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -230,7 +231,7 @@ router.post('/', requirePermission('finance', 'add'), async (req, res) => {
 });
 
 /* ── PUT /:id ── */
-router.put('/:id', requirePermission('finance', 'edit'), async (req, res) => {
+router.put('/:id', requirePermission('finance', 'edit'), captureBefore('fixed_assets'), async (req, res) => {
   try {
     const companyId = cid(req);
     const {
@@ -264,7 +265,7 @@ router.put('/:id', requirePermission('finance', 'edit'), async (req, res) => {
 });
 
 /* ── DELETE /:id — soft delete (status → archived) ── */
-router.delete('/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/:id', requirePermission('finance', 'delete'), captureBefore('fixed_assets'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cidClause = companyId != null ? 'AND company_id=$2' : '';

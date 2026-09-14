@@ -2,6 +2,7 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -192,7 +193,7 @@ router.post('/assessments', requireHRWrite, async (req, res) => {
   } finally { client.release(); }
 });
 
-router.patch('/assessments/:id', requireHRWrite, async (req, res) => {
+router.patch('/assessments/:id', requireHRWrite, captureBefore('talent_assessments'), async (req, res) => {
   const {
     performance_score, potential_score, flight_risk, readiness, notes,
     leadership_score, mobility, talent_classification, assessment_period,
@@ -222,7 +223,7 @@ router.patch('/assessments/:id', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.delete('/assessments/:id', requireHRWrite, async (req, res) => {
+router.delete('/assessments/:id', requireHRWrite, captureBefore('talent_assessments'), async (req, res) => {
   const cid    = getCid(req);
   const params = [req.params.id];
   try {
@@ -395,7 +396,7 @@ router.post('/critical-roles', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.patch('/critical-roles/:id', requireHRWrite, async (req, res) => {
+router.patch('/critical-roles/:id', requireHRWrite, captureBefore('critical_roles'), async (req, res) => {
   const {
     role_title, department, current_holder_id, risk_level, reason,
     knowledge_domain, vacancy_impact, expected_vacancy_date,
@@ -428,7 +429,7 @@ router.patch('/critical-roles/:id', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.delete('/critical-roles/:id', requireHRWrite, async (req, res) => {
+router.delete('/critical-roles/:id', requireHRWrite, captureBefore('critical_roles'), async (req, res) => {
   const cid    = getCid(req);
   const params = [req.params.id];
   try {
@@ -461,7 +462,7 @@ router.get('/critical-roles/:id/candidates', requireHRRead, async (req, res) => 
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.put('/critical-roles/:id/candidates', requireHRWrite, async (req, res) => {
+router.put('/critical-roles/:id/candidates', requireHRWrite, captureBefore('succession_plans'), async (req, res) => {
   const { candidates = [] } = req.body;
   const cid = getCid(req);
   const client = await pool.connect();
@@ -558,7 +559,7 @@ router.post('/pipeline/levels', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.patch('/pipeline/levels/:id', requireHRWrite, async (req, res) => {
+router.patch('/pipeline/levels/:id', requireHRWrite, captureBefore('leadership_pipeline_levels'), async (req, res) => {
   const { level_name, level_order, description, required_experience_yrs, is_active } = req.body;
   const cid = getCid(req);
   try {
@@ -627,7 +628,7 @@ router.post('/pipeline/entries', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.patch('/pipeline/entries/:id', requireHRWrite, async (req, res) => {
+router.patch('/pipeline/entries/:id', requireHRWrite, captureBefore('leadership_pipeline_entries'), async (req, res) => {
   const {
     current_level_id, target_level_id, target_date,
     readiness, notes, status,
@@ -652,7 +653,7 @@ router.patch('/pipeline/entries/:id', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.delete('/pipeline/entries/:id', requireHRWrite, async (req, res) => {
+router.delete('/pipeline/entries/:id', requireHRWrite, captureBefore('leadership_pipeline_entries'), async (req, res) => {
   const cid = getCid(req);
   try {
     await pool.query(
@@ -751,7 +752,7 @@ router.post('/development-plans', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.patch('/development-plans/:id', requireHRWrite, async (req, res) => {
+router.patch('/development-plans/:id', requireHRWrite, captureBefore('development_plans'), async (req, res) => {
   const {
     plan_title, status, target_date, completion_date,
     overall_progress, notes,
@@ -776,7 +777,7 @@ router.patch('/development-plans/:id', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.delete('/development-plans/:id', requireHRWrite, async (req, res) => {
+router.delete('/development-plans/:id', requireHRWrite, captureBefore('development_plans'), async (req, res) => {
   const cid = getCid(req);
   try {
     await pool.query(
@@ -808,7 +809,7 @@ router.post('/development-plans/:id/actions', requireHRWrite, async (req, res) =
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.patch('/development-plans/:id/actions/:actionId', requireHRWrite, async (req, res) => {
+router.patch('/development-plans/:id/actions/:actionId', requireHRWrite, captureBefore('development_actions', { param: 'actionId' }), async (req, res) => {
   const { title, description, due_date, status, completion_date } = req.body;
   try {
     const { rows } = await pool.query(
@@ -843,7 +844,7 @@ router.patch('/development-plans/:id/actions/:actionId', requireHRWrite, async (
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.delete('/development-plans/:id/actions/:actionId', requireHRWrite, async (req, res) => {
+router.delete('/development-plans/:id/actions/:actionId', requireHRWrite, captureBefore('development_actions', { param: 'actionId' }), async (req, res) => {
   try {
     await pool.query(
       `DELETE FROM development_actions WHERE id=$1 AND plan_id=$2`,
@@ -896,7 +897,7 @@ router.post('/mentoring', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.patch('/mentoring/:id', requireHRWrite, async (req, res) => {
+router.patch('/mentoring/:id', requireHRWrite, captureBefore('mentoring_assignments'), async (req, res) => {
   const { status, session_count, next_session_date, end_date, notes } = req.body;
   const cid = getCid(req);
   try {
@@ -917,7 +918,7 @@ router.patch('/mentoring/:id', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.delete('/mentoring/:id', requireHRWrite, async (req, res) => {
+router.delete('/mentoring/:id', requireHRWrite, captureBefore('mentoring_assignments'), async (req, res) => {
   const cid = getCid(req);
   try {
     await pool.query(
@@ -967,7 +968,7 @@ router.post('/pools', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.patch('/pools/:id', requireHRWrite, async (req, res) => {
+router.patch('/pools/:id', requireHRWrite, captureBefore('employee_talent_pools'), async (req, res) => {
   const { pool_name, pool_type, description, department, is_active } = req.body;
   const cid = getCid(req);
   try {
@@ -991,6 +992,18 @@ router.patch('/pools/:id', requireHRWrite, async (req, res) => {
 router.delete('/pools/:id', requireHRWrite, async (req, res) => {
   const cid = getCid(req);
   try {
+    // Two tables, so captureBefore() cannot do this: it reads one. Deleting a
+    // talent pool destroys the pool AND its membership, and the membership is
+    // the part nobody can reconstruct — "who was in the high-potential pool
+    // before it was deleted" has no other record.
+    try {
+      const [poolRow, members] = await Promise.all([
+        pool.query(`SELECT * FROM employee_talent_pools WHERE id=$1 AND company_id=$2`, [req.params.id, cid]),
+        pool.query(`SELECT * FROM employee_pool_members WHERE pool_id=$1 ORDER BY employee_id`, [req.params.id]),
+      ]);
+      if (poolRow.rows[0]) req._auditBefore = { ...poolRow.rows[0], members: members.rows };
+    } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
+
     await pool.query(
       `DELETE FROM employee_pool_members WHERE pool_id=$1`,
       [req.params.id]
@@ -1035,6 +1048,17 @@ router.post('/pools/:id/members', requireHRWrite, async (req, res) => {
 
 router.delete('/pools/:id/members/:employeeId', requireHRWrite, async (req, res) => {
   try {
+    // One table, but a COMPOSITE key. captureBefore() keys on a single column,
+    // so pointing it at :id would have snapshotted an arbitrary one of the
+    // pool's members — the wrong row, which is worse than no row.
+    try {
+      const { rows } = await pool.query(
+        `SELECT * FROM employee_pool_members WHERE pool_id=$1 AND employee_id=$2`,
+        [req.params.id, req.params.employeeId]
+      );
+      if (rows[0]) req._auditBefore = rows[0];
+    } catch { /* as above */ }
+
     await pool.query(
       `DELETE FROM employee_pool_members WHERE pool_id=$1 AND employee_id=$2`,
       [req.params.id, req.params.employeeId]
@@ -1068,6 +1092,16 @@ router.put('/settings', requireHRWrite, async (req, res) => {
     review_frequency, notify_roles, hiPo_threshold_potential, hiPo_threshold_performance,
   } = req.body;
   const cid = getCid(req);
+
+  // A settings singleton has no :id, so captureBefore() has nothing to key on —
+  // the company is the key. Settings changes are exactly what an audit trail is
+  // asked about later ("who raised the flight-risk threshold, and from what").
+  try {
+    const { rows: prior } = await pool.query(
+      `SELECT * FROM succession_settings WHERE company_id=$1`, [cid]);
+    req._auditBefore = prior[0] ?? null;
+  } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
+
   try {
     const { rows } = await pool.query(
       `INSERT INTO succession_settings
@@ -1112,7 +1146,7 @@ router.get('/alerts', requireHRRead, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-router.patch('/alerts/:id/read', requireHRRead, async (req, res) => {
+router.patch('/alerts/:id/read', requireHRRead, captureBefore('succession_alerts'), async (req, res) => {
   try {
     await pool.query(
       `UPDATE succession_alerts SET is_read=TRUE WHERE id=$1`, [req.params.id]

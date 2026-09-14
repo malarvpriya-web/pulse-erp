@@ -11,6 +11,7 @@
 
 import express from 'express';
 import pool from '../../shared/db.js';
+import { loadPunchProfile, describePunchMode } from '../../../shared/punchMode.js';
 
 const router = express.Router();
 
@@ -42,6 +43,26 @@ router.post('/sync', async (req, res) => {
   }
   if (punches.length > 50) {
     return res.status(400).json({ error: 'Maximum 50 punches per sync batch' });
+  }
+
+  // This route writes attendance_records directly, so it bypasses every gate in
+  // POST /attendance/clock. Without the same punch-mode check a non-field
+  // employee could simply queue a punch offline and replay it here. Field staff
+  // only; their selfie is captured and enforced on the online /clock path, so a
+  // replayed offline punch is recorded but flagged `source = 'offline_sync'`.
+  const punchProfile = await loadPunchProfile(employeeId);
+  const punchDesc    = describePunchMode(punchProfile);
+  if (!punchDesc.can_punch_in_app) {
+    await writeAuditLog({
+      companyId, employeeId, action: 'offline_sync_blocked_punch_mode',
+      afterData: { reason: punchDesc.reason, queued: punches.length }, req,
+    });
+    return res.status(403).json({
+      error: 'in_app_punch_not_allowed',
+      mode: punchDesc.mode,
+      message: punchDesc.message,
+      discarded: punches.length,
+    });
   }
 
   const results = [];

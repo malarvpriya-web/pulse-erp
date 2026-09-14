@@ -14,6 +14,7 @@ import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
 import { pickUpdatable } from '../../shared/safeUpdate.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const crm = (a) => requirePermission('crm', a);
@@ -42,7 +43,9 @@ router.get('/', crm('view'), async (req, res) => {
         LEFT JOIN leads l ON l.id = o.lead_id
        WHERE o.deleted_at IS NULL AND ${TENDER_PRED}`;
     if (cid != null) { params.push(cid); q += ` AND o.company_id = $${params.length}`; }
-    if (stage)  { params.push(stage);  q += ` AND o.stage = $${params.length}`; }
+    // Case-insensitive: the workspace sends the display label ('Bidding'),
+    // the column stores the canonical key ('bidding').
+    if (stage)  { params.push(stage);  q += ` AND LOWER(o.stage) = LOWER($${params.length})`; }
     if (source) { params.push(source); q += ` AND o.tender_source = $${params.length}`; }
     if (search) { params.push(`%${search}%`); q += ` AND (o.opportunity_name ILIKE $${params.length} OR o.tender_number ILIKE $${params.length})`; }
     q += ` ORDER BY o.submission_deadline ASC NULLS LAST, o.id DESC`;
@@ -100,7 +103,7 @@ const TENDER_FIELDS = ['tender_number', 'tender_source', 'bid_type', 'submission
 router.post('/', crm('add'), async (req, res) => {
   try {
     const cid = companyOf(req) ?? 1;
-    const { opportunity_name, stage = 'Bidding' } = req.body || {};
+    const { opportunity_name, stage = 'bidding' } = req.body || {};
     if (!opportunity_name) return res.status(400).json({ error: 'opportunity_name (tender title) is required' });
     const nn = (v) => (v === '' || v === undefined ? null : v);
 
@@ -117,7 +120,7 @@ router.post('/', crm('add'), async (req, res) => {
 });
 
 // ── PUT /tenders/:id ──────────────────────────────────────────────────────────
-router.put('/:id', crm('edit'), async (req, res) => {
+router.put('/:id', crm('edit'), captureBefore('opportunities'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const safe = await pickUpdatable('opportunities', req.body, { protect: ['opportunity_number', 'lead_id'] });

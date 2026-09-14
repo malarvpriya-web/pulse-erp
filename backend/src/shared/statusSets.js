@@ -198,6 +198,31 @@ export const OPPORTUNITY_LOST = ['lost'];
 export const OPPORTUNITY_CLOSED = [...OPPORTUNITY_WON, ...OPPORTUNITY_LOST];
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Canonical stored spelling.
+
+   Every predicate below lowercases both sides, so a filter never cared how a
+   state was capitalised. A GROUP BY key does: `opportunities.stage` held both
+   'Qualification' and 'qualification' and the pipeline chart drew the stage
+   twice, splitting its value across the two rows.
+
+   The write side therefore has to agree on one spelling, and the one it agrees
+   on is lowercase — that is `crm_pipeline_stages.stage_key`, the master's own
+   rename-safe key, and it is character-for-character the vocabulary declared
+   above. The display label lives in `crm_pipeline_stages.name`.
+
+   Enforced in the database as well (migration 20260910000005): a normalising
+   trigger, not a CHECK, so a stage nobody anticipated is still stored rather
+   than rejected.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The spelling a state must be STORED as. Returns null/undefined unchanged so
+ * a caller can pass an optional field straight through.
+ */
+export const canonicalState = (value) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : value;
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Predicate builders — always case-insensitive.
    `col` is a caller-controlled column reference, never user input.
    ───────────────────────────────────────────────────────────────────────────── */
@@ -282,6 +307,7 @@ export default {
   LEAD_CONVERTED, LEAD_LOST, LEAD_CLOSED, LEAD_UNWORKED, LEAD_DISQUALIFIED,
   OPPORTUNITY_WON, OPPORTUNITY_LOST, OPPORTUNITY_CLOSED, OPPORTUNITY_OPEN_STAGES,
   LEAD_SHELVED, SALES_ORDER_LIFECYCLE,
+  canonicalState,
   isIn, notIn,
   sqlEmployeeActive, sqlEmployeeExited, sqlTicketOpen, sqlProjectOpen,
   sqlInvoicePaid, sqlInvoiceUnpaid, sqlBillUnpaid,

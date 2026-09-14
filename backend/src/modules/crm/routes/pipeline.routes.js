@@ -3,6 +3,7 @@ import pool from '../../shared/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { companyOf } from '../../../shared/scope.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 /**
  * Every mutation in this file changes CRM *configuration*, not a record — the
@@ -102,7 +103,7 @@ router.put('/pipeline-stages/reorder', requirePermission('crm', 'edit'), async (
   }
 });
 
-router.delete('/pipeline-stages/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/pipeline-stages/:id', requirePermission('crm', 'delete'), captureBefore('crm_pipeline_stages'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     // Block delete if opportunities exist in this stage
@@ -180,7 +181,7 @@ router.post('/lead-scoring-rules', requirePermission('crm', 'add'), async (req, 
   }
 });
 
-router.put('/lead-scoring-rules/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/lead-scoring-rules/:id', requirePermission('crm', 'edit'), captureBefore('crm_lead_scoring_rules'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const { field, operator, value, score_delta, is_active } = req.body;
@@ -205,7 +206,7 @@ router.put('/lead-scoring-rules/:id', requirePermission('crm', 'edit'), async (r
   }
 });
 
-router.delete('/lead-scoring-rules/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/lead-scoring-rules/:id', requirePermission('crm', 'delete'), captureBefore('crm_lead_scoring_rules'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const result = await pool.query(
@@ -256,7 +257,7 @@ router.post('/assignment-rules', requirePermission('crm', 'add'), async (req, re
   }
 });
 
-router.put('/assignment-rules/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/assignment-rules/:id', requirePermission('crm', 'edit'), captureBefore('crm_assignment_rules'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const { name, condition_field, condition_value, assign_to_name, priority, is_active } = req.body;
@@ -282,7 +283,7 @@ router.put('/assignment-rules/:id', requirePermission('crm', 'edit'), async (req
   }
 });
 
-router.delete('/assignment-rules/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/assignment-rules/:id', requirePermission('crm', 'delete'), captureBefore('crm_assignment_rules'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const result = await pool.query(
@@ -337,7 +338,7 @@ router.post('/win-loss-reasons', requirePermission('crm', 'add'), async (req, re
   }
 });
 
-router.put('/win-loss-reasons/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/win-loss-reasons/:id', requirePermission('crm', 'edit'), captureBefore('crm_win_loss_reasons'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const { reason, is_active } = req.body;
@@ -357,7 +358,7 @@ router.put('/win-loss-reasons/:id', requirePermission('crm', 'edit'), async (req
   }
 });
 
-router.delete('/win-loss-reasons/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/win-loss-reasons/:id', requirePermission('crm', 'delete'), captureBefore('crm_win_loss_reasons'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const result = await pool.query(

@@ -5,6 +5,12 @@ class PurchaseOrderRepository {
   async create(client, data) {
     const {
       po_number, pr_id, supplier_id, order_date, expected_delivery_date,
+      // Where the due date came from: 'quoted' (the supplier's delivery days on
+      // a winning bid), 'agreed' (a buyer typed it on the order) or 'lead_time'
+      // (derived from vendors.lead_time_days — an assumption, not a promise).
+      // The supplier scorecard refuses to publish an OTD measured only against
+      // 'lead_time' dates, so this must travel with the date it describes.
+      expected_delivery_basis,
       subtotal, tax_amount, total_amount, terms_conditions, notes,
       created_by, company_id, currency, exchange_rate, project_id, sales_order_id,
       // Where the spend is charged, and what sourcing decision was in force when
@@ -20,17 +26,22 @@ class PurchaseOrderRepository {
     const totalInr = (parseFloat(total_amount) || 0) * (Number.isFinite(rate) && rate > 0 ? rate : 1);
     const result = await client.query(
       `INSERT INTO purchase_orders (po_number, pr_id, supplier_id, order_date, expected_delivery_date,
+                                    expected_delivery_basis,
                                     subtotal, tax_amount, total_amount, terms_conditions, notes,
                                     created_by, company_id, currency, exchange_rate, total_amount_inr,
                                     project_id, sales_order_id,
                                     cost_center_id, sourcing_strategy_id, followed_sourcing_strategy)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$21,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
       [po_number, pr_id ?? null, supplier_id, order_date, expected_delivery_date ?? null,
        subtotal ?? 0, tax_amount ?? 0, total_amount ?? 0, terms_conditions ?? null, notes ?? null,
        created_by, company_id ?? null, currency || 'INR', Number.isFinite(rate) && rate > 0 ? rate : 1,
        totalInr, project_id ?? null, sales_order_id ?? null,
        cost_center_id ?? null, sourcing_strategy_id ?? null,
-       followed_sourcing_strategy === undefined ? null : followed_sourcing_strategy]
+       followed_sourcing_strategy === undefined ? null : followed_sourcing_strategy,
+       // $21. A caller that supplied a date but no basis put it there by hand:
+       // that is 'agreed'. A caller that supplied neither gets NULL, not a
+       // basis for a date that does not exist.
+       expected_delivery_basis ?? (expected_delivery_date ? 'agreed' : null)]
     );
     return result.rows[0];
   }

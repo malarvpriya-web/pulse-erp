@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import {
   sqlSalesOrderBooked, sqlLeadQualified,
   sqlOpportunityWon, sqlOpportunityLost,
@@ -55,7 +56,7 @@ const pct = (n, d) => (d > 0 ? parseFloat(((n / d) * 100).toFixed(1)) : null);
 // -- Monthly funnel snapshot --------------------------------------------------
 // One query over a generated month series, so a month with no activity comes
 // back as a zero row instead of vanishing from the chart's x-axis.
-router.get('/monthly', async (req, res) => {
+router.get('/monthly', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const months = Math.min(Math.max(parseInt(req.query.months || 12, 10) || 12, 1), 36);
@@ -149,7 +150,7 @@ router.get('/monthly', async (req, res) => {
 // Volume stays the headline because linkage in this schema is optional and
 // sparse; publishing only the linked number would report a near-empty funnel
 // for a company that is demonstrably winning orders.
-router.get('/conversion-ratios', async (req, res) => {
+router.get('/conversion-ratios', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
 
@@ -240,7 +241,7 @@ router.get('/conversion-ratios', async (req, res) => {
 });
 
 // -- Salesperson performance vs target ----------------------------------------
-router.get('/salesperson-performance', async (req, res) => {
+router.get('/salesperson-performance', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const yr = parseInt(req.query.fy_year || new Date().getFullYear(), 10);
@@ -356,7 +357,7 @@ router.get('/salesperson-performance', async (req, res) => {
 });
 
 // -- Won / Lost analysis ------------------------------------------------------
-router.get('/won-lost-analysis', async (req, res) => {
+router.get('/won-lost-analysis', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
 
@@ -431,7 +432,7 @@ router.get('/won-lost-analysis', async (req, res) => {
 });
 
 // -- Team / regional targets --------------------------------------------------
-router.get('/team-targets', async (req, res) => {
+router.get('/team-targets', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const yr = parseInt(req.query.fy_year || new Date().getFullYear(), 10);

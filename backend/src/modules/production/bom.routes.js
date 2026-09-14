@@ -4,6 +4,8 @@ import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { nextEcnNumber } from '../../shared/docNumber.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import prRepo from '../procurement/repositories/purchaseRequest.repository.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -487,18 +489,20 @@ router.post('/mrp/run', requirePermission('bom', 'view'), async (req, res) => {
 
       if (shortage > 0) {
         try {
-          const { rows: [pr] } = await pool.query(
-            // qty_requested/raised_by never existed (the columns are quantity /
-            // requested_by_employee_id) and raised_by was being handed the string
-            // 'MRP System' for an employee FK. A system-generated request records
-            // no employee and says so in notes.
-            `INSERT INTO purchase_requests
-               (company_id, item_name, item_id, quantity, unit, estimated_cost, status, requested_by_employee_id, notes)
-             VALUES ($1,$2,$3,$4,$5,$6,'draft',NULL,$7) RETURNING id`,
-            [cid, comp.component, comp.component_id, suggestedPOQty, comp.unit,
-             suggestedPOQty * comp.unit_cost,
-             `Auto-raised by MRP System — production qty ${quantity}`]
-          );
+          // Routed through the repository so the requisition gets a real
+          // request_number. Minting none left it blank in the procurement
+          // register — a requisition nobody could refer to. requested_by stays
+          // NULL: this is genuinely machine-raised, and NULL is the honest value
+          // for an employees FK with no employee behind it.
+          const pr = await prRepo.createSystemRequest(pool, {
+            company_id: cid,
+            item_id: comp.component_id,
+            item_name: comp.component,
+            quantity: suggestedPOQty,
+            unit: comp.unit,
+            estimated_cost: suggestedPOQty * comp.unit_cost,
+            notes: `Auto-raised by MRP System — production qty ${quantity}`,
+          });
           createdPRs.push({ pr_id: pr.id, component: comp.component, qty: suggestedPOQty });
         } catch (prErr) {
           console.warn('[mrp] auto-PR creation failed for', comp.component, '—', prErr.message);
@@ -562,7 +566,7 @@ router.post('/work-centres', requirePermission('bom', 'add'), async (req, res) =
 });
 
 /* ── PUT /work-centres/:id ── */
-router.put('/work-centres/:id', requirePermission('bom', 'edit'), async (req, res) => {
+router.put('/work-centres/:id', requirePermission('bom', 'edit'), captureBefore('work_centres'), async (req, res) => {
   try {
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
     const cid = req.scope?.company_id;
@@ -580,7 +584,7 @@ router.put('/work-centres/:id', requirePermission('bom', 'edit'), async (req, re
 });
 
 /* ── DELETE /work-centres/:id ── */
-router.delete('/work-centres/:id', requirePermission('bom', 'delete'), async (req, res) => {
+router.delete('/work-centres/:id', requirePermission('bom', 'delete'), captureBefore('work_centres'), async (req, res) => {
   try {
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
     const cid = req.scope?.company_id;

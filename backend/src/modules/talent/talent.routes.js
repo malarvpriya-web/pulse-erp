@@ -10,6 +10,7 @@ import {
   moveFile,
   isDriveConfigured,
 } from '../../services/googleDrive.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -291,7 +292,7 @@ router.post('/agencies', async (req, res) => {
 });
 
 // PUT /api/talent/agencies/:id
-router.put('/agencies/:id', async (req, res) => {
+router.put('/agencies/:id', captureBefore('recruitment_agencies'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const {
@@ -343,7 +344,7 @@ router.put('/agencies/:id', async (req, res) => {
 });
 
 // DELETE /api/talent/agencies/:id
-router.delete('/agencies/:id', async (req, res) => {
+router.delete('/agencies/:id', captureBefore('recruitment_agencies'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const check = await pool.query(
@@ -494,7 +495,7 @@ router.post('/questions', async (req, res) => {
 });
 
 // PUT /api/talent/questions/:id
-router.put('/questions/:id', async (req, res) => {
+router.put('/questions/:id', captureBefore('interview_questions'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const { question, category, difficulty, job_role, expected_answer, tags } = req.body;
@@ -524,7 +525,7 @@ router.put('/questions/:id', async (req, res) => {
 });
 
 // DELETE /api/talent/questions/:id  (soft delete)
-router.delete('/questions/:id', async (req, res) => {
+router.delete('/questions/:id', captureBefore('interview_questions'), async (req, res) => {
   try {
     const companyId = getCid(req);
     await pool.query(
@@ -624,7 +625,7 @@ router.post('/pools', async (req, res) => {
 });
 
 // PUT /api/talent/pools/:id
-router.put('/pools/:id', async (req, res) => {
+router.put('/pools/:id', captureBefore('talent_pools'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const { pool_name, description, skills, department, is_active } = req.body;
@@ -654,7 +655,7 @@ router.put('/pools/:id', async (req, res) => {
 });
 
 // DELETE /api/talent/pools/:id
-router.delete('/pools/:id', async (req, res) => {
+router.delete('/pools/:id', captureBefore('talent_pools'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const members = await pool.query(
@@ -1086,7 +1087,7 @@ router.post('/resumes', upload.single('resume'), async (req, res) => {
 });
 
 // PUT /api/talent/resumes/:id — update candidate profile from Resume Database
-router.put('/resumes/:id', async (req, res) => {
+router.put('/resumes/:id', captureBefore('candidates'), async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!companyId) return res.status(401).json({ error: 'Unauthorized' });

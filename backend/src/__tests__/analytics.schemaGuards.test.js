@@ -210,8 +210,20 @@ describe('check-sql-references.mjs actually detects defects', () => {
 describe('check-status-vocabulary.mjs actually detects defects', () => {
   test('baseline is green', OPTS, () => {
     const { code, stdout } = runChecker('check-status-vocabulary.mjs');
-    expect(stdout, stdout).toMatch(/PASS — every status value in the database is covered/);
+    expect(stdout, stdout).toMatch(/PASS — every status value is covered by statusSets\.js/);
     expect(code).toBe(0);
+  });
+
+  test('every state column is swept for case drift', OPTS, () => {
+    // The sweep is what makes the drift check real. If it silently swept zero
+    // columns — a renamed information_schema predicate, a permission change —
+    // it would report "ok" forever, which is the failure mode this asserts on:
+    // a gate that cannot fail looks exactly like a gate that passes.
+    const { stdout } = runChecker('check-status-vocabulary.mjs');
+    const swept = /Case drift .*— (\d+) column\(s\) swept/.exec(stdout);
+    expect(swept, stdout).not.toBeNull();
+    expect(Number(swept[1])).toBeGreaterThan(50);
+    expect(stdout).toMatch(/every state is stored under a single spelling/);
   });
 
   test('detects a status value dropped from a vocabulary set', OPTS, () => {

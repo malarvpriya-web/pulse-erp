@@ -5,7 +5,7 @@ import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import QualityTestsPanel from '@/features/quality/components/QualityTestsPanel';
 import './GoodsReceipt.css';
-import { PageHero, PageShell } from '@/components/pulse-ui';
+import { PageHero, PageShell, LoadError } from '@/components/pulse-ui';
 
 const STATUS_CFG = {
   pending:  { bg: '#ede9fe', color: '#5b21b6', label: 'Pending'  },
@@ -28,6 +28,9 @@ export default function GoodsReceipt() {
   const [search,     setSearch]     = useState('');
   const [statusF,    setStatusF]    = useState('All');
   const [toast,      setToast]      = useState(null);
+  // A failed request used to become an empty array, so the screen said
+  // "No goods receipts yet" when the truth was that the call was refused.
+  const [loadErr,    setLoadErr]    = useState(null);
   const [qualityGrn, setQualityGrn] = useState(null);  // GRN whose quality tests are open
 
   /* ── wizard state ── */
@@ -54,9 +57,16 @@ export default function GoodsReceipt() {
 
   const load = () => {
     setLoading(true);
+    setLoadErr(null);
     api.get('/procurement/grn', { params: { limit: 200 } })
       .then(r  => { if (isMounted.current) setGrns(Array.isArray(r.data) ? r.data : []); })
-      .catch(() => { if (isMounted.current) setGrns([]); })
+      .catch((e) => {
+        if (!isMounted.current) return;
+        setGrns([]);
+        // The server's own message where there is one — it now answers with
+        // sentences a storekeeper can act on.
+        setLoadErr(e.response?.data?.error || e.message || 'The receipts could not be loaded.');
+      })
       .finally(()=> { if (isMounted.current) setLoading(false); });
   };
   useEffect(() => { load(); }, []);
@@ -170,13 +180,22 @@ export default function GoodsReceipt() {
 
   const handleConfirm = async (id) => {
     try {
-      await api.put(`/procurement/grn/${id}`, { status: 'received' });
+      const { data } = await api.put(`/procurement/grn/${id}`, { status: 'received' });
       if (!isMounted.current) return;
       load();
-      showToast('GRN confirmed as received');
-    } catch {
+      // The server decides between 'received' and 'partial' — the receipt is
+      // confirmed either way, but 'partial' means its purchase order is still
+      // short, which the storekeeper needs to know before closing the file.
+      showToast(data?.status === 'partial'
+        ? 'Receipt confirmed — the purchase order is still short, so it stays open'
+        : 'GRN confirmed as received');
+    } catch (e) {
       if (!isMounted.current) return;
-      showToast('Update failed', 'error');
+      // The server now refuses an impossible transition with a message that says
+      // which one and why ("a goods receipt that is 'rejected' cannot become
+      // 'received'"). Swallowing it and printing "Update failed" threw that away
+      // and left the storekeeper with nothing to act on.
+      showToast(e.response?.data?.error || 'Update failed', 'error');
     }
   };
 
@@ -287,6 +306,8 @@ export default function GoodsReceipt() {
       <div className="grn-table-wrap">
         {loading ? (
           <div className="grn-loading"><div className="grn-spinner" /></div>
+        ) : loadErr ? (
+          <LoadError message={loadErr} onRetry={load} />
         ) : filtered.length === 0 ? (
           <div className="grn-empty">
             <Package size={40} />

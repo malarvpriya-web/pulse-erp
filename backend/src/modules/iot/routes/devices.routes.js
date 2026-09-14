@@ -21,6 +21,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = Router();
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
@@ -233,7 +234,7 @@ router.post('/rules', requirePermission('iot', 'add'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/rules/:id', requirePermission('iot', 'edit'), async (req, res) => {
+router.put('/rules/:id', requirePermission('iot', 'edit'), captureBefore('device_alert_rules'), async (req, res) => {
   try {
     const companyId = req.scope?.company_id ?? null;
     const allowed = ['name', 'metric', 'operator', 'threshold', 'stale_secs', 'severity', 'is_active'];
@@ -256,7 +257,7 @@ router.put('/rules/:id', requirePermission('iot', 'edit'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/rules/:id', requirePermission('iot', 'delete'), async (req, res) => {
+router.delete('/rules/:id', requirePermission('iot', 'delete'), captureBefore('device_alert_rules'), async (req, res) => {
   try {
     const companyId = req.scope?.company_id ?? null;
     const params = [req.params.id];

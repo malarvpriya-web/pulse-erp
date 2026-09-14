@@ -45,9 +45,11 @@ const DOMAINS = [
     desc: 'Users, roles, payroll, leave, attendance, and HR configuration',
     wizard: 'SetupWizard',
     items: [
-      { label: 'User Management',     page: 'UserSetup',          icon: Users,         desc: 'Add, edit, and manage login accounts' },
-      { label: 'Roles & Permissions', page: 'RolesSetup',         icon: KeyRound,      desc: 'Module access and role definitions' },
-      { label: 'Approver Chains',     page: 'ApproverSetup',      icon: UserCog,       desc: 'Multi-level approval routing' },
+      // All three are tabs of Access Control — link to the hub so there is one
+      // way in, not three. AccessControl reads ?tab= on mount.
+      { label: 'User Management',     page: 'AccessControl?tab=users',     icon: Users,    desc: 'Add, edit, and manage login accounts' },
+      { label: 'Roles & Permissions', page: 'AccessControl?tab=roles',     icon: KeyRound, desc: 'Module access and role definitions' },
+      { label: 'Approver Chains',     page: 'AccessControl?tab=approvers', icon: UserCog,  desc: 'Multi-level approval routing' },
       { label: 'Salary Structures',   page: 'SalaryStructure',    icon: IndianRupee,    desc: 'CTC components, HRA, PF, allowances' },
       { label: 'Leave Settings',      page: 'LeaveSettings',      icon: Calendar,      desc: 'Leave types, quotas, carry-forward' },
       { label: 'Attendance Policies', page: 'AttendancePolicies', icon: ClipboardList, desc: 'Late marks, grace time, overtime rules' },

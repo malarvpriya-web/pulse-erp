@@ -1298,20 +1298,24 @@ export default function Project360() {
     return () => { mountedRef.current = false; };
   }, []);
 
+  // Depends on nothing: the list is fetched once and filtered in the browser.
+  // It used to depend on `search`, so every keystroke re-ran the effect, flipped
+  // the rail back to its "Loading…" branch and fired a fresh request that raced
+  // the previous one with no cancellation — the last response to land won,
+  // regardless of which query it answered.
   const loadProjects = useCallback(async () => {
     setListLoading(true);
     try {
       const res = await api.get('/projects/projects', { params: { limit: 200 } });
       if (!mountedRef.current) return;
       const rows = Array.isArray(res.data) ? res.data : (res.data?.rows || []);
-      const filtered = search
-        ? rows.filter(p => (p.project_number + p.name + (p.customer_name||'')).toLowerCase().includes(search.toLowerCase()))
-        : rows;
-      setProjects(filtered);
-      if (!selectedId && filtered.length > 0) setSelectedId(filtered[0].id);
+      setProjects(rows);
+      // Functional form: reading `selectedId` from the closure captured the value
+      // at the time the callback was built, not at the time the response landed.
+      setSelectedId(prev => prev ?? (rows.length > 0 ? rows[0].id : null));
     } catch { if (mountedRef.current) setProjects([]); }
     finally  { if (mountedRef.current) setListLoading(false); }
-  }, [search]);
+  }, []);
 
   const loadProject = useCallback(async (id) => {
     if (!id) return;
@@ -1327,6 +1331,15 @@ export default function Project360() {
   useEffect(() => { loadProjects(); }, [loadProjects]);
   useEffect(() => { if (selectedId) { loadProject(selectedId); setTab('overview'); } }, [selectedId, loadProject]);
 
+  // Concatenating the fields without separators ("IPP-001" + "Acme") let a query
+  // straddling the join match a project that contains it in neither field.
+  const q = search.trim().toLowerCase();
+  const visibleProjects = q
+    ? projects.filter(p =>
+        [p.project_number, p.name, p.customer_name]
+          .filter(Boolean).join(' ').toLowerCase().includes(q))
+    : projects;
+
   const proj    = data?.project || {};
   const health  = data?.health;
   const alerts  = data?.alerts || [];
@@ -1340,9 +1353,62 @@ export default function Project360() {
       <PageHero
         icon={LayoutDashboard}
         eyebrow="Projects"
-        title={proj.name}
-        subtitle="Contract Value"
-        actions={!selectedId ? (
+        title={proj.name || 'Project 360°'}
+        subtitle={
+          selectedId && data
+            ? [proj.project_number, proj.customer_name].filter(Boolean).join(' · ') || 'Full project lifecycle'
+            : 'Pick a project to see sales, engineering, supply chain, delivery and money in one view'
+        }
+      />
+    }>
+      {/* Two-pane body. Both panes used to be rendered inside PageHero's
+          `actions` slot, which is a narrow flex item at the end of the hero row
+          (it is documented for buttons). The 20-tab workspace laid itself out
+          2331px wide in there and pushed the project list to y=1104 on a 768px
+          screen — below the fold, so the page read as "stuck on Loading…" even
+          though both fetches returned 200. The hero now carries only the project
+          identity and the panes live in the page body, where they fit. */}
+      <div style={{ display: 'flex', alignItems: 'stretch', minHeight: 0 }}>
+
+        {/* ── Left: Project List ──────────────────────────────────────────────── */}
+        <div style={{ width: 270, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fafafa', flexShrink: 0 }}>
+          <div style={{ padding: '14px 12px 10px', borderBottom: `1px solid ${C.border}`, background: '#fff' }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Project 360°</div>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search projects…"
+              style={{ width: '100%', padding: '7px 10px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, boxSizing: 'border-box', outline: 'none' }}
+            />
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {listLoading ? (
+              <div style={{ padding: 20, color: C.gray, textAlign: 'center', fontSize: 12 }}>Loading…</div>
+            ) : visibleProjects.map(p => (
+              <div key={p.id} onClick={() => setSelectedId(p.id)} style={{
+                padding: '10px 12px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer',
+                background: selectedId === p.id ? C.light : '#fff',
+                borderLeft: selectedId === p.id ? `3px solid ${C.primary}` : '3px solid transparent',
+              }}>
+                <div style={{ fontWeight: 600, fontSize: 12, color: '#111827', marginBottom: 1 }}>{p.project_number || p.name}</div>
+                <div style={{ fontSize: 11, color: C.gray, marginBottom: 3 }}>{p.name}</div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, color: statusColor(p.status), fontWeight: 600 }}>{(p.status||'').toUpperCase()}</span>
+                  {p.completion_percentage > 0 && <span style={{ fontSize: 10, color: C.gray }}>{p.completion_percentage}%</span>}
+                </div>
+              </div>
+            ))}
+            {!listLoading && visibleProjects.length === 0 && (
+              <div style={{ padding: 24, textAlign: 'center', color: C.gray, fontSize: 12 }}>
+                {q ? `No project matches "${search.trim()}"` : 'No projects found'}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Right: Detail Panel ──────────────────────────────── */}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {!selectedId ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.gray }}>
             <div style={{ textAlign: 'center' }}><div style={{ fontSize: 48, marginBottom: 12 }}>📋</div><div style={{ fontWeight: 600 }}>Select a project</div></div>
           </div>
@@ -1412,7 +1478,8 @@ export default function Project360() {
               {/* Tab Navigation */}
               <div style={{ display: 'flex', overflowX: 'auto', padding: '6px 20px 0', gap: 0, scrollbarWidth: 'none' }}>
                 {TABS.map(t => (
-                  <button className="plh-cta" key={t.id} onClick={() => setTab(t.id)}>
+                  <button className="plh-cta" key={t.id} onClick={() => setTab(t.id)}
+                    style={tab === t.id ? { background: C.primary, color: '#fff' } : undefined}>
                     <span>{t.icon}</span> {t.label}
                     {t.id === 'warroom' && alerts.length> 0 && (
                       <span style={{ background: C.red, color: '#fff', borderRadius: 10, fontSize: 9, padding: '1px 5px', fontWeight: 700 }}>{alerts.length}</span>
@@ -1447,44 +1514,9 @@ export default function Project360() {
             </div>
           </>
         )}
-      />
-    }>
+        </div>
 
-      {/* ── Left: Project List ──────────────────────────────────────────────── */}
-      <div style={{ width: 270, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fafafa', flexShrink: 0 }}>
-        <div style={{ padding: '14px 12px 10px', borderBottom: `1px solid ${C.border}`, background: '#fff' }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Project 360°</div>
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && loadProjects()}
-            placeholder="Search projects…"
-            style={{ width: '100%', padding: '7px 10px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, boxSizing: 'border-box', outline: 'none' }}
-          />
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {listLoading ? (
-            <div style={{ padding: 20, color: C.gray, textAlign: 'center', fontSize: 12 }}>Loading…</div>
-          ) : projects.map(p => (
-            <div key={p.id} onClick={() => setSelectedId(p.id)} style={{
-              padding: '10px 12px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer',
-              background: selectedId === p.id ? C.light : '#fff',
-              borderLeft: selectedId === p.id ? `3px solid ${C.primary}` : '3px solid transparent',
-            }}>
-              <div style={{ fontWeight: 600, fontSize: 12, color: '#111827', marginBottom: 1 }}>{p.project_number || p.name}</div>
-              <div style={{ fontSize: 11, color: C.gray, marginBottom: 3 }}>{p.name}</div>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={{ fontSize: 10, color: statusColor(p.status), fontWeight: 600 }}>{(p.status||'').toUpperCase()}</span>
-                {p.completion_percentage > 0 && <span style={{ fontSize: 10, color: C.gray }}>{p.completion_percentage}%</span>}
-              </div>
-            </div>
-          ))}
-          {!listLoading && projects.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: C.gray, fontSize: 12 }}>No projects found</div>}
-        </div>
       </div>
-
-      {/* ── Right: Detail Panel ─────────────────────────────────────────────── */}
-
     </PageShell>
   );
 }

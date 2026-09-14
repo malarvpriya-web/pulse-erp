@@ -137,10 +137,22 @@ describe('enforceScope middleware', () => {
 describe('applyFieldPermissions middleware', () => {
   beforeEach(() => mockQuery.mockReset());
 
+  /**
+   * Query contract changed 2026-09-04. The filtering used to happen in SQL (a
+   * HAVING clause returning only field_name); it now returns one row per field
+   * with `any_visible`, `any_editable` and `rules_for_held_roles`, and the
+   * multi-role union is applied in JS. That is what lets one query drive BOTH
+   * response masking and request-body stripping.
+   */
+  const rule = (field, { visible = false, editable = false, roles = 1 } = {}) => ({
+    field_name: field,
+    any_visible: visible,
+    any_editable: editable,
+    rules_for_held_roles: roles,
+  });
+
   test('strips hidden fields from a plain object response', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ field_name: 'pan_number' }, { field_name: 'basic_salary' }],
-    });
+    mockQuery.mockResolvedValueOnce({ rows: [rule('pan_number'), rule('basic_salary')] });
     const req  = { user: { role: 'employee' } };
     let captured;
     const res  = { json: vi.fn(d => { captured = d; }) };
@@ -149,7 +161,6 @@ describe('applyFieldPermissions middleware', () => {
     await applyFieldPermissions('employees')(req, res, next);
     expect(next).toHaveBeenCalled();
 
-    // res.json is now wrapped — calling it should mask hidden fields
     res.json({ id: 1, name: 'Alice', pan_number: 'ABCDE1234F', basic_salary: 50000 });
     expect(captured).not.toHaveProperty('pan_number');
     expect(captured).not.toHaveProperty('basic_salary');
@@ -157,7 +168,7 @@ describe('applyFieldPermissions middleware', () => {
   });
 
   test('strips hidden fields from array response', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ field_name: 'account_number' }] });
+    mockQuery.mockResolvedValueOnce({ rows: [rule('account_number')] });
     const req  = { user: { role: 'employee' } };
     let captured;
     const res  = { json: vi.fn(d => { captured = d; }) };
@@ -165,6 +176,70 @@ describe('applyFieldPermissions middleware', () => {
     res.json([{ id: 1, name: 'Bob', account_number: '123456' }]);
     expect(captured[0]).not.toHaveProperty('account_number');
     expect(captured[0]).toHaveProperty('name', 'Bob');
+  });
+
+  test('strips hidden fields NESTED inside an envelope', async () => {
+    // Most of this API answers as { data: [...] } or { success, data }. The
+    // first version of _maskFields only walked arrays and top-level objects, so
+    // a hidden field one level down survived — on the majority of endpoints.
+    mockQuery.mockResolvedValueOnce({ rows: [rule('pan_number')] });
+    let captured;
+    const res = { json: vi.fn(d => { captured = d; }) };
+    await applyFieldPermissions('employees')({ user: { role: 'employee' } }, res, vi.fn());
+
+    res.json({ success: true, data: [{ id: 1, employee: { name: 'Cara', pan_number: 'X' } }] });
+    expect(captured.data[0].employee).not.toHaveProperty('pan_number');
+    expect(captured.data[0].employee).toHaveProperty('name', 'Cara');
+  });
+
+  test('a field ONE held role still permits is not stripped', async () => {
+    // Multi-role union, matching requirePermission: restricted only when EVERY
+    // held role restricts it. This is what stops a manager who also holds
+    // `employee` from losing access to their team's data.
+    mockQuery.mockResolvedValueOnce({
+      rows: [rule('basic_salary', { visible: true, roles: 2 })],
+    });
+    let captured;
+    const res = { json: vi.fn(d => { captured = d; }) };
+    await applyFieldPermissions('employees')(
+      { user: { roles: ['employee', 'manager'] } }, res, vi.fn()
+    );
+    res.json({ id: 1, basic_salary: 50000 });
+    expect(captured).toHaveProperty('basic_salary', 50000);
+  });
+
+  test('a rule covering only SOME held roles has no effect', async () => {
+    // rules_for_held_roles (1) < roles held (2) means one role has no opinion,
+    // and no opinion defaults to permitted.
+    mockQuery.mockResolvedValueOnce({ rows: [rule('pan_number', { roles: 1 })] });
+    let captured;
+    const res = { json: vi.fn(d => { captured = d; }) };
+    await applyFieldPermissions('employees')(
+      { user: { roles: ['employee', 'manager'] } }, res, vi.fn()
+    );
+    res.json({ id: 1, pan_number: 'ABCDE1234F' });
+    expect(captured).toHaveProperty('pan_number');
+  });
+
+  test('strips a non-editable field from the REQUEST BODY', async () => {
+    // The write half. Stripped rather than rejected: a form posting the whole
+    // record back should still save the fields the caller may change.
+    mockQuery.mockResolvedValueOnce({ rows: [rule('basic_salary')] });
+    const req = { user: { role: 'employee' }, body: { name: 'Dev', basic_salary: 9999999 } };
+    await applyFieldPermissions('employees')(req, { json: vi.fn() }, vi.fn());
+
+    expect(req.body).not.toHaveProperty('basic_salary');
+    expect(req.body).toHaveProperty('name', 'Dev');
+    expect(req._fieldsStripped).toEqual(['basic_salary']);
+  });
+
+  test('a database failure does not break an already-authorised request', async () => {
+    // This middleware runs AFTER requirePermission, so the caller is already
+    // entitled to the module. A blip must not turn an authorised read into a 500.
+    mockQuery.mockRejectedValueOnce(new Error('connection terminated'));
+    const next = vi.fn();
+    await applyFieldPermissions('employees')({ user: { role: 'employee' } }, { json: vi.fn() }, next);
+    expect(next).toHaveBeenCalled();
   });
 });
 

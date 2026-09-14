@@ -26,6 +26,16 @@ const STATUS_META = {
 
 const FILTER_TABS = ['all', 'draft', 'sent', 'accepted', 'rejected', 'expired', 'revised', 'converted'];
 
+// Live rows carry statuses this UI never writes (the seeder left one 'active').
+// They used to render as "Draft" and no chip could select them, so show the real
+// value and give the chip row an "Other" bucket — the counts then add up to All.
+const statusMeta = (status) =>
+  STATUS_META[status] || {
+    label: String(status || 'Unknown').replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    bg: '#f3f4f6', color: '#374151',
+  };
+const isKnownStatus = (status) => Object.prototype.hasOwnProperty.call(STATUS_META, status);
+
 // Client-side filter model. `/sales/quotations` returns the full unpaginated set,
 // so every dimension below narrows rows already in memory — the same convention
 // SalesOrders uses. Keeping them client-side is also what lets the chip counts,
@@ -106,7 +116,11 @@ const matchesSearch = (q, term) => {
     .some(v => String(v ?? '').toLowerCase().includes(t));
 };
 
-const matchesStatus = (q, tab) => tab === 'all' || (q.status || 'draft') === tab;
+const matchesStatus = (q, tab) => {
+  if (tab === 'all') return true;
+  const s = q.status || 'draft';
+  return tab === 'other' ? !isKnownStatus(s) : s === tab;
+};
 
 const matchesFilters = (q, f, today) => {
   if (f.customer !== 'all' && (q.customer_name || '—') !== f.customer) return false;
@@ -256,7 +270,7 @@ function RevisionDrawer({ open, onClose, quotationId, onRevise }) {
 
               <div className="sq-rev-timeline">
                 {revisions.map((r, i) => {
-                  const s = STATUS_META[r.status] || STATUS_META.draft;
+                  const s = statusMeta(r.status);
                   const isLatest = i === revisions.length - 1;
                   const ver = r.version || 1;
                   return (
@@ -606,14 +620,22 @@ const Quotations = ({ setPage, urlParams } = {}) => {
   const statusCounts = useMemo(() => {
     const counts = Object.fromEntries(FILTER_TABS.map(t => [t, 0]));
     counts.all = preStatus.length;
+    counts.other = 0;
     for (const q of preStatus) {
       const s = q.status || 'draft';
-      if (s in counts && s !== 'all') counts[s] += 1;
+      if (isKnownStatus(s)) counts[s] += 1;
+      else counts.other += 1;
     }
     return counts;
   }, [preStatus]);
 
   const filtered = useMemo(() => preStatus.filter(q => matchesStatus(q, activeTab)), [preStatus, activeTab]);
+
+  // "Other" appears only when rows actually fall outside the known statuses, and
+  // stays while it is the active chip so the selection can be cleared.
+  const statusTabs = (statusCounts.other > 0 || activeTab === 'other')
+    ? [...FILTER_TABS, 'other']
+    : FILTER_TABS;
 
   const advancedCount = activeFilterCount(filters);
   const filterCount   = advancedCount + (search.trim() ? 1 : 0) + (activeTab !== 'all' ? 1 : 0);
@@ -715,13 +737,14 @@ const Quotations = ({ setPage, urlParams } = {}) => {
 
       {/* ── Status filter tabs ── */}
       <div className="sq-tabs">
-        {FILTER_TABS.map(tab => (
+        {statusTabs.map(tab => (
           <button
             key={tab}
             className={`sq-tab-btn${activeTab === tab ? ' sq-tab-active' : ''}`}
             onClick={() => setActiveTab(tab)}
+            title={tab === 'other' ? 'Quotations whose status is outside the standard set' : undefined}
           >
-            {tab === 'all' ? 'All' : STATUS_META[tab]?.label ?? tab}
+            {tab === 'all' ? 'All' : tab === 'other' ? 'Other' : STATUS_META[tab]?.label ?? tab}
             <span className="sq-tab-count">{statusCounts[tab] ?? 0}</span>
           </button>
         ))}
@@ -843,7 +866,7 @@ const Quotations = ({ setPage, urlParams } = {}) => {
             </thead>
             <tbody>
               {filtered.map(q => {
-                const s        = STATUS_META[q.status] || STATUS_META.draft;
+                const s        = statusMeta(q.status);
                 const ver      = parseInt(q.version) || 1;
                 const revCount = parseInt(q.total_revisions) || 1;
                 const validUntil = q.validity_date || q.valid_until;

@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -74,7 +75,7 @@ router.post('/', async (req, res) => {
 });
 
 /* PATCH /performance/cycles/:id */
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', captureBefore('review_cycles'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   const {

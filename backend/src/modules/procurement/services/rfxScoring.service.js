@@ -670,8 +670,16 @@ export async function listEvents(companyId, { rfxType = null } = {}) {
   const { rows } = await pool.query(
     `SELECT r.id, r.rfq_number, r.rfx_type, r.status, r.item_description, r.required_by,
             r.category_id, r.evaluated_at, ic.name AS category_name,
-            COUNT(q.id)::int                                        AS invited,
-            COUNT(q.id) FILTER (WHERE q.unit_price > 0)::int        AS responded,
+            -- DISTINCT is load-bearing: rfq_quotes and rfx_criteria_scores are
+            -- both children of rfqs, so joining them together fans each quote
+            -- out once per criterion score filed against the event. A plain
+            -- COUNT(q.id) read 2 quotes as "10 of 10" once five scores existed,
+            -- and was correct only while rfx_criteria_scores was empty — the
+            -- LEFT JOIN yields a single NULL row then. vendors_scored below was
+            -- never wrong for exactly this reason, which is what made the two
+            -- counts beside it look deliberate.
+            COUNT(DISTINCT q.id)::int                               AS invited,
+            COUNT(DISTINCT q.id) FILTER (WHERE q.unit_price > 0)::int AS responded,
             COUNT(DISTINCT sc.vendor_id)::int                       AS vendors_scored,
             (SELECT v.vendor_name FROM rfx_vendor_selections s
                JOIN vendors v ON v.id = s.vendor_id

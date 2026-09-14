@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit2, Trash2, Check, X, Users, RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Plus, Edit2, Trash2, Check, X, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import './MasterSetup.css';
@@ -23,10 +24,17 @@ const S = {
 
 function useToast() {
   const [toast, setToast] = useState(null);
+  // The timer is held so a second toast cancels the first one's dismissal.
+  // Without this, back-to-back messages share the earlier 3s deadline: a
+  // validation error at T=0 followed by a success at T=2.5s showed the success
+  // for 500ms and then blanked it, which reads as the save having done nothing.
+  const timer = useRef(null);
   const show = useCallback((msg, type = 'success') => {
+    if (timer.current) clearTimeout(timer.current);
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    timer.current = setTimeout(() => { setToast(null); timer.current = null; }, 3000);
   }, []);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   return [toast, show];
 }
 
@@ -215,210 +223,252 @@ function SimpleListTab({ endpoint, label }) {
   );
 }
 
-function LeaveTypesTab() {
-  const [types,         setTypes]         = useState([]);
+// ── Leave types live in Leave Settings ───────────────────────────────────────
+// This page used to carry a full leave-type editor of its own. Leave Settings
+// (features/leaves/pages/LeaveSettings.jsx) has the same CRUD plus Allocations,
+// Policy Rules, Accrual & Carry Forward and its own Bulk Allocate — it is the
+// strictly larger screen over the same `leave_types` table, so keeping a second
+// editor here only meant two places to look and two ways to disagree.
+function LeaveTypesPointer() {
+  const navigate = useNavigate();
+  return (
+    <div className="ms-card">
+      <div className="ms-empty" style={{ padding: '28px 20px', lineHeight: 1.6 }}>
+        <p style={{ margin: 0, fontWeight: 600, color: '#374151' }}>
+          Leave types are managed in Leave Settings.
+        </p>
+        <p style={{ margin: '6px 0 16px' }}>
+          That screen adds the policy rules, allocations and accrual settings
+          that go with each type.
+        </p>
+        <button className="ms-btn-add" onClick={() => navigate('/LeaveSettings')}>
+          Open Leave Settings
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Multi-column master tab (HSN/SAC, UOM) ────────────────────────────────────
+// SimpleListTab above assumes a row is just `{ id, name }`. HSN/SAC and UOM are
+// code-keyed with three or four meaningful columns each, so they get their own
+// tab driven by a field spec rather than four more near-copies of the same JSX.
+//
+// Both endpoints existed with full CRUD and had NO UI at all, which is why
+// `master_hsn_sac` and `master_uom` sat empty — see MODULE_FEATURE_CONNECTION_MANUAL
+// §157.1. Writes are admin-only on the server (`allowRoles(super_admin, admin)`),
+// so a 403 here is a role problem, not a bug; it is surfaced as such.
+function CodedListTab({ endpoint, label, fields, note }) {
+  const blank = useCallback(
+    () => Object.fromEntries(fields.map(f => [f.key, f.default ?? ''])),
+    [fields]
+  );
+
+  const [items,         setItems]         = useState([]);
+  const [draft,         setDraft]         = useState(blank);
+  const [editId,        setEditId]        = useState(null);
+  const [editDraft,     setEditDraft]     = useState({});
   const [loading,       setLoading]       = useState(false);
   const [loadErr,       setLoadErr]       = useState(false);
-  const [editId,        setEditId]        = useState(null);
-  const [editData,      setEditData]      = useState({});
-  const [addForm,       setAddForm]       = useState({ leave_name: '', default_days: '', description: '' });
-  const [allocating,    setAllocating]    = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
-  const [pendingAlloc,  setPendingAlloc]  = useState(false);
-  const [toast,      showToast]     = useToast();
+  const [toast,         showToast]        = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
     setLoadErr(false);
     try {
-      const res = await api.get('/leaves/types');
+      const res = await api.get(endpoint);
       const list = Array.isArray(res.data) ? res.data : (res.data?.data || []);
-      setTypes(list);
+      setItems(list);
     } catch (err) {
-      setTypes([]);
+      setItems([]);
       setLoadErr(true);
-      showToast(err?.message || 'Failed to load leave types', 'error');
+      showToast(err.response?.data?.error || err?.message || `Failed to load ${label}`, 'error');
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [endpoint, label, showToast]);
 
   useEffect(() => { load(); }, [load]);
 
+  // Returns an error string, or null when the row is good. Kept in one place so
+  // the add form and the inline editor cannot disagree about what is valid.
+  const validate = (row) => {
+    for (const f of fields) {
+      const raw = String(row[f.key] ?? '').trim();
+      if (f.required && !raw) return `${f.label} is required`;
+      if (raw && f.type === 'number') {
+        const n = Number(raw);
+        if (Number.isNaN(n)) return `${f.label} must be a number`;
+        // The server carries a CHECK for this range. Enforcing it here too is
+        // what stops the §146.2 defect recurring, where a GST rate of 899 was
+        // stored and every invoice line computed tax at 899%.
+        if (f.min != null && n < f.min) return `${f.label} cannot be below ${f.min}`;
+        if (f.max != null && n > f.max) return `${f.label} cannot be above ${f.max}`;
+      }
+    }
+    return null;
+  };
+
+  const failMsg = (err, verb) => {
+    if (err.response?.status === 403) return `Only an administrator can ${verb} ${label}`;
+    return err.response?.data?.error || err?.message || `Failed to ${verb} ${label}`;
+  };
+
   const handleAdd = async () => {
-    const { leave_name, default_days, description } = addForm;
-    if (!leave_name.trim()) return showToast('Leave name is required', 'error');
-    if (!default_days || isNaN(Number(default_days)) || Number(default_days) < 0)
-      return showToast('Enter valid default days (0 or more)', 'error');
+    const bad = validate(draft);
+    if (bad) { showToast(bad, 'error'); return; }
     try {
-      const res = await api.post('/leaves/types', {
-        leave_name: leave_name.trim(),
-        default_days: Number(default_days),
-        description: description.trim(),
-      });
-      const created = res.data?.id
-        ? res.data
-        : { id: Date.now(), leave_name: leave_name.trim(), default_days: Number(default_days), description: description.trim() };
-      setTypes(prev => [...prev, created]);
-      setAddForm({ leave_name: '', default_days: '', description: '' });
-      showToast('Leave type added');
+      await api.post(endpoint, draft);
+      setDraft(blank());
+      await load();
+      showToast(`${label} added`);
     } catch (err) {
-      showToast(err.response?.data?.error || err?.message || 'Failed to add leave type', 'error');
+      showToast(failMsg(err, 'add'), 'error');
     }
   };
 
-  const startEdit = (lt) => {
-    setEditId(lt.id);
-    setEditData({ leave_name: lt.leave_name, default_days: lt.default_days, description: lt.description || '' });
+  const startEdit = (item) => {
+    setEditId(item.id);
+    setEditDraft(Object.fromEntries(fields.map(f => [f.key, item[f.key] ?? ''])));
   };
 
-  const handleSave = async (id) => {
-    if (!editData.leave_name?.trim()) return showToast('Name required', 'error');
+  const saveEdit = async () => {
+    const bad = validate(editDraft);
+    if (bad) { showToast(bad, 'error'); return; }
     try {
-      await api.put(`/leaves/types/${id}`, {
-        leave_name: editData.leave_name.trim(),
-        default_days: Number(editData.default_days),
-        description: editData.description,
-      });
-      setTypes(prev => prev.map(t => t.id === id ? { ...t, ...editData, default_days: Number(editData.default_days) } : t));
+      await api.put(`${endpoint}/${editId}`, editDraft);
       setEditId(null);
-      showToast('Updated');
+      await load();
+      showToast(`${label} updated`);
     } catch (err) {
-      showToast(err.response?.data?.error || err?.message || 'Failed to update', 'error');
+      showToast(failMsg(err, 'update'), 'error');
     }
   };
 
-  const handleDelete = async () => {
-    if (!pendingDelete) return;
-    const id = pendingDelete;
-    setPendingDelete(null);
+  const handleDelete = async (id) => {
     try {
-      await api.delete(`/leaves/types/${id}`);
-      setTypes(prev => prev.filter(t => t.id !== id));
-      showToast('Deleted');
+      await api.delete(`${endpoint}/${id}`);
+      setPendingDelete(null);
+      await load();
+      showToast(`${label} removed`);
     } catch (err) {
-      showToast(err.response?.data?.error || err?.message || 'Failed to delete', 'error');
+      setPendingDelete(null);
+      showToast(failMsg(err, 'remove'), 'error');
     }
   };
 
-  const handleBulkAllocate = async () => {
-    setPendingAlloc(false);
-    const year = new Date().getFullYear();
-    setAllocating(true);
-    try {
-      await api.post('/leaves/bulk-allocate', { year });
-      showToast(`Leave balances allocated for ${year}`);
-    } catch (err) {
-      showToast(err.response?.data?.error || err?.message || 'Bulk allocation failed', 'error');
-    } finally {
-      setAllocating(false);
+  const renderInput = (f, value, onChange, keyPrefix) => {
+    // `key` is passed explicitly, never inside the spread — React 19 warns on a
+    // key that arrives via {...props} and drops it, which silently breaks
+    // reconciliation for the row.
+    const k = `${keyPrefix}-${f.key}`;
+    const common = {
+      value: value ?? '',
+      onChange: e => onChange(f.key, e.target.value),
+      style: { ...S.input, ...(f.grow ? { flex: 1, minWidth: 120 } : { width: f.width || 120 }) },
+    };
+    if (f.type === 'select') {
+      return (
+        <select key={k} {...common} aria-label={f.label}>
+          {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      );
     }
+    return (
+      <input
+        key={k}
+        {...common}
+        type={f.type === 'number' ? 'number' : 'text'}
+        placeholder={f.placeholder || f.label}
+        aria-label={f.label}
+        {...(f.type === 'number' ? { min: f.min, max: f.max, step: f.step || 'any' } : {})}
+        onKeyDown={e => { if (e.key === 'Enter' && keyPrefix === 'add') handleAdd(); }}
+      />
+    );
   };
-
-  const af = addForm;
-  const setAF = (k, v) => setAddForm(p => ({ ...p, [k]: v }));
 
   return (
     <>
-      <ConfirmDialog
-        open={!!pendingDelete}
-        title="Delete Leave Type"
-        message="Delete this leave type? This cannot be undone."
-        confirmLabel="Delete"
-        variant="danger"
-        onConfirm={handleDelete}
-        onCancel={() => setPendingDelete(null)}
-      />
-      <ConfirmDialog
-        open={pendingAlloc}
-        title="Bulk Allocate Leave Balances"
-        message={`Allocate leave balances to ALL active employees for ${new Date().getFullYear()}? Existing balances will not be overwritten.`}
-        confirmLabel="Allocate"
-        variant="warning"
-        onConfirm={handleBulkAllocate}
-        onCancel={() => setPendingAlloc(false)}
-      />
       {toast && <div className={`ms-toast ms-toast-${toast.type}`}>{toast.msg}</div>}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <button
-          onClick={() => setPendingAlloc(true)}
-          disabled={allocating}
-          style={{ ...S.btn('#6B3FDB'), display: 'flex', alignItems: 'center', gap: 6, opacity: allocating ? 0.65 : 1 }}
-        >
-          <Users size={13} />
-          {allocating ? 'Allocating…' : `Bulk Allocate to All Employees (${new Date().getFullYear()})`}
-        </button>
-      </div>
+      <ConfirmDialog
+        open={pendingDelete != null}
+        title={`Remove ${label}?`}
+        message="It is deactivated, not erased — anything already referencing it keeps working."
+        confirmLabel="Remove"
+        variant="danger"
+        onConfirm={() => handleDelete(pendingDelete)}
+        onCancel={() => setPendingDelete(null)}
+      />
 
-      <div style={{ background: '#fff', border: '1px solid #ebebf0', borderRadius: 14, overflow: 'hidden' }}>
-        {/* Add form */}
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f0f6', background: '#fafafa' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#6b7280', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Add New Leave Type
-          </div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div style={{ flex: '2 1 160px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: 11, color: '#6b7280', fontWeight: 500 }}>Leave Name *</label>
-              <input style={S.input} placeholder="e.g. Sick Leave" value={af.leave_name}
-                onChange={e => setAF('leave_name', e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAdd()} />
-            </div>
-            <div style={{ flex: '0 0 100px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: 11, color: '#6b7280', fontWeight: 500 }}>Default Days *</label>
-              <input type="number" min="0" style={{ ...S.smInput, width: '100%' }} placeholder="12"
-                value={af.default_days} onChange={e => setAF('default_days', e.target.value)} />
-            </div>
-            <div style={{ flex: '3 1 200px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: 11, color: '#6b7280', fontWeight: 500 }}>Description</label>
-              <input style={S.input} placeholder="Optional description…" value={af.description}
-                onChange={e => setAF('description', e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAdd()} />
-            </div>
-            <button className="ms-btn-add" onClick={handleAdd} style={{ alignSelf: 'flex-end', marginBottom: 1 }}>
-              <Plus size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />Add
-            </button>
-          </div>
+      <div className="ms-card">
+        {note && <div className="ms-note">{note}</div>}
+
+        {/* Add row — one input per field, then Add, then Refresh. Matches
+            SimpleListTab: `.ms-header` is the PAGE header's purple gradient and
+            must not be nested inside a card. */}
+        <div className="ms-add-row" style={{ flexWrap: 'wrap' }}>
+          {fields.map(f => renderInput(f, draft[f.key], (k, v) => setDraft(d => ({ ...d, [k]: v })), 'add'))}
+          <button className="ms-btn-add" onClick={handleAdd}>
+            <Plus size={13} style={{ marginRight: 4 }} />Add
+          </button>
+          <button onClick={load} style={{ ...S.btn('#f3f4f6', '#6b7280'), padding: '8px 10px' }} title="Refresh" disabled={loading}>
+            <RefreshCw size={13} />
+          </button>
         </div>
 
-        {/* Table header */}
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 90px 3fr auto', gap: 12, padding: '10px 20px', background: '#f8f7ff', borderBottom: '1px solid #f0f0f6', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-          <span>Leave Type</span><span style={{ textAlign: 'center' }}>Default Days</span><span>Description</span><span style={{ textAlign: 'right' }}>Actions</span>
-        </div>
+        <p className="ms-count">{loading ? 'Loading…' : `${items.length} active`}</p>
 
-        {loading ? (
-          <div className="ms-empty">Loading leave types…</div>
-        ) : loadErr ? (
-          <div className="ms-empty" style={{ color: '#dc2626' }}>Could not load leave types. Check your connection and try refreshing.</div>
-        ) : types.length === 0 ? (
-          <div className="ms-empty">No leave types configured. Add one above.</div>
+        {loadErr ? (
+          <div className="ms-empty">
+            <p>Could not load {label.toLowerCase()}.</p>
+            <button className="ms-btn-cancel" onClick={load}>Try again</button>
+          </div>
+        ) : items.length === 0 && !loading ? (
+          <div className="ms-empty">
+            <p>No {label.toLowerCase()} yet. Add the first one above.</p>
+          </div>
         ) : (
-          <ul style={{ listStyle: 'none', margin: 0, padding: '0 0 8px' }}>
-            {types.map((lt, idx) => (
-              <li key={lt.id} style={{ display: 'grid', gridTemplateColumns: '2fr 90px 3fr auto', gap: 12, alignItems: 'center', padding: '10px 20px', borderBottom: idx < types.length - 1 ? '1px solid #f0f0f6' : 'none' }}>
-                {editId === lt.id ? (
+          <ul className="ms-list">
+            {items.map(item => (
+              <li key={item.id} className="ms-item" style={{ flexWrap: 'wrap' }}>
+                {editId === item.id ? (
                   <>
-                    <input style={S.input} value={editData.leave_name} autoFocus
-                      onChange={e => setEditData(p => ({ ...p, leave_name: e.target.value }))}
-                      onKeyDown={e => e.key === 'Escape' && setEditId(null)} />
-                    <input type="number" min="0" style={{ ...S.smInput, width: '100%' }} value={editData.default_days}
-                      onChange={e => setEditData(p => ({ ...p, default_days: e.target.value }))} />
-                    <input style={S.input} value={editData.description}
-                      onChange={e => setEditData(p => ({ ...p, description: e.target.value }))}
-                      onKeyDown={e => { if (e.key === 'Enter') handleSave(lt.id); if (e.key === 'Escape') setEditId(null); }} />
-                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      <button className="ms-btn-save" onClick={() => handleSave(lt.id)}><Check size={11} style={{ marginRight: 3 }} />Save</button>
-                      <button className="ms-btn-cancel" onClick={() => setEditId(null)}><X size={11} /></button>
+                    {fields.map(f => renderInput(f, editDraft[f.key], (k, v) => setEditDraft(d => ({ ...d, [k]: v })), `e${item.id}`))}
+                    <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+                      <button className="ms-btn-save" onClick={saveEdit}>
+                        <Check size={11} style={{ marginRight: 3 }} />Save
+                      </button>
+                      <button className="ms-btn-cancel" onClick={() => setEditId(null)}>
+                        <X size={11} style={{ marginRight: 3 }} />Cancel
+                      </button>
                     </div>
                   </>
                 ) : (
                   <>
-                    <span style={{ fontSize: 14, color: '#1f2937', fontWeight: 500 }}>{lt.leave_name}</span>
-                    <div style={{ textAlign: 'center' }}>
-                      <span style={{ display: 'inline-block', background: '#ede9fe', color: '#6d28d9', borderRadius: 6, padding: '2px 10px', fontSize: 13, fontWeight: 700 }}>{lt.default_days}</span>
-                    </div>
-                    <span style={{ fontSize: 12, color: '#6b7280' }}>{lt.description || '—'}</span>
-                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      <button className="ms-btn-edit" onClick={() => startEdit(lt)}><Edit2 size={11} style={{ marginRight: 3 }} />Edit</button>
-                      <button className="ms-btn-delete" onClick={() => setPendingDelete(lt.id)}><Trash2 size={11} style={{ marginRight: 3 }} />Delete</button>
+                    {fields.map(f => (
+                      <span
+                        key={f.key}
+                        style={{
+                          fontSize: 13,
+                          color: f.strong ? '#1f2937' : '#6b7280',
+                          fontWeight: f.strong ? 600 : 400,
+                          ...(f.grow ? { flex: 1, minWidth: 120 } : { width: f.width || 120 }),
+                          ...(f.mono ? { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' } : {}),
+                        }}
+                        title={f.label}
+                      >
+                        {f.render ? f.render(item[f.key]) : (item[f.key] ?? '—')}
+                      </span>
+                    ))}
+                    <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+                      <button className="ms-btn-edit" onClick={() => startEdit(item)}>
+                        <Edit2 size={11} style={{ marginRight: 3 }} />Edit
+                      </button>
+                      <button className="ms-btn-delete" onClick={() => setPendingDelete(item.id)}>
+                        <Trash2 size={11} style={{ marginRight: 3 }} />Remove
+                      </button>
                     </div>
                   </>
                 )}
@@ -431,14 +481,35 @@ function LeaveTypesTab() {
   );
 }
 
+// Column specs for the two coded masters. `grow` takes the remaining width;
+// everything else is fixed so the rows line up as a table would.
+const HSN_FIELDS = [
+  { key: 'code',        label: 'Code',        placeholder: '85044090', width: 120, required: true, strong: true, mono: true },
+  { key: 'description', label: 'Description', placeholder: 'Static converters — other', grow: true, required: true },
+  { key: 'gst_rate',    label: 'GST %',       placeholder: '18', type: 'number', width: 90, min: 0, max: 100,
+    render: v => (v == null || v === '' ? '—' : `${parseFloat(v)}%`) },
+  { key: 'type',        label: 'Type',        type: 'select', options: ['HSN', 'SAC'], width: 90, default: 'HSN' },
+];
+
+const UOM_FIELDS = [
+  { key: 'code',     label: 'Code',     placeholder: 'NOS', width: 110, required: true, strong: true, mono: true },
+  { key: 'name',     label: 'Name',     placeholder: 'Numbers', grow: true, required: true },
+  { key: 'category', label: 'Category', placeholder: 'General', width: 150 },
+];
+
 const TABS = [
   { key: 'departments',  label: 'Departments',  endpoint: '/master/departments' },
   { key: 'zones',        label: 'Zones',        endpoint: '/master/zones' },
   { key: 'designations', label: 'Designations', endpoint: '/master/designations' },
   { key: 'grades',       label: 'Grades',       endpoint: '/master/grades' },
   { key: 'bands',        label: 'Bands',        endpoint: '/master/bands' },
+  { key: 'uom',          label: 'Units (UOM)',  endpoint: '/master/uom' },
+  { key: 'hsn',          label: 'HSN / SAC',    endpoint: '/master/hsn' },
   { key: 'leaveTypes',   label: 'Leave Types',  endpoint: null },
 ];
+
+// Tabs whose rows carry more than a single name need the extra width.
+const WIDE_TABS = new Set(['hsn', 'uom']);
 
 export default function MasterSetup() {
   const [activeTab, setActiveTab] = useState('departments');
@@ -451,11 +522,11 @@ export default function MasterSetup() {
         icon={SlidersHorizontal}
         eyebrow="Administration"
         title="Master Data Setup"
-        subtitle="Manage departments, zones, designations, grades, bands and leave type policies"
+        subtitle="The full lists behind the pickers — rename, retire and de-duplicate here. Adding a value is quicker from the form that needs it."
       />
     }>
 
-      <div style={{ maxWidth: activeTab === 'leaveTypes' ? 920 : 700, margin: '32px auto', padding: '0 16px' }}>
+      <div style={{ maxWidth: WIDE_TABS.has(activeTab) ? 1040 : 700, margin: '32px auto', padding: '0 16px' }}>
         <div className="ms-tabs" style={{ marginBottom: 16 }}>
           {TABS.map(t => (
             <button key={t.key} className={`ms-tab${activeTab === t.key ? ' ms-tab-active' : ''}`} onClick={() => setActiveTab(t.key)}>
@@ -465,7 +536,21 @@ export default function MasterSetup() {
         </div>
 
         {activeTab === 'leaveTypes' ? (
-          <LeaveTypesTab />
+          <LeaveTypesPointer />
+        ) : activeTab === 'hsn' ? (
+          <CodedListTab
+            endpoint={tab.endpoint}
+            label="HSN / SAC codes"
+            fields={HSN_FIELDS}
+            note="HSN classifies goods, SAC classifies services. The GST rate is capped at 100% — the same limit the database enforces."
+          />
+        ) : activeTab === 'uom' ? (
+          <CodedListTab
+            endpoint={tab.endpoint}
+            label="Units of measure"
+            fields={UOM_FIELDS}
+            note="Codes are stored uppercase. Removing a unit deactivates it; items already using it are unaffected."
+          />
         ) : (
           <SimpleListTab endpoint={tab.endpoint} label={tab.label.slice(0, -1)} />
         )}

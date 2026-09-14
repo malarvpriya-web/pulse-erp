@@ -5,15 +5,20 @@ import { useAuth } from '@/context/AuthContext';
 import { Plus, X, Settings, CheckCircle, AlertCircle, SlidersHorizontal } from 'lucide-react';
 import { fmt } from './travelUtils';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import MasterSelect from '@/components/core/MasterSelect';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const RULE_TYPES = ['grade', 'role', 'department'];
-const GRADES = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6'];
+// Grades come from master_grades via <MasterSelect>. The hardcoded L1-L6 that
+// was here was a SECOND grade vocabulary: the resolver below matches a rule's
+// grade against `employees.grade`, which is validated against master_grades
+// (G1-G7), so an L-graded rule could never match anyone. Migration
+// 20260911000003 folded the seeded rules onto the master.
 const TRAIN_CLASSES = ['Sleeper', 'AC-3', 'AC-2', 'AC-1', 'Business'];
 
 const EMPTY = {
   rule_name: '', rule_type: 'grade',
-  grade: 'L1', role: '', department: '',
+  grade: '', role: '', department: '',
   hotel_limit_per_day: '', meal_limit_per_day: '',
   travel_daily_allowance: '', flight_eligible: false,
   train_class: 'Sleeper', local_conveyance_limit: '',
@@ -41,7 +46,6 @@ export default function TravelPolicyEngine() {
   const [saving,   setSaving]   = useState(false);
   const [tab,      setTab]      = useState('All');
   const [pendingHandleDelete, setPendingHandleDelete] = useState(null);
-  const [deptList, setDeptList] = useState([]);
 
   // hasAnyRole, not user.role: `role` is only the PRIMARY role of a many-to-many
   // set, so gating on it alone made the policy editor read-only for anyone
@@ -57,12 +61,6 @@ export default function TravelPolicyEngine() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    api.get('/admin/config/departments')
-      .then(r => setDeptList(Array.isArray(r.data) ? r.data.map(d => d.name || d) : []))
-      .catch(() => setDeptList([]));
-  }, []);
-
   const fld = (key, val) => setForm(p => ({ ...p, [key]: val }));
 
   const openAdd = () => { setEditing(null); setForm(EMPTY); setShowForm(true); };
@@ -70,7 +68,7 @@ export default function TravelPolicyEngine() {
     setEditing(rule.id);
     setForm({
       rule_name: rule.rule_name, rule_type: rule.rule_type,
-      grade: rule.grade || 'L1', role: rule.role || '', department: rule.department || '',
+      grade: rule.grade || '', role: rule.role || '', department: rule.department || '',
       hotel_limit_per_day: rule.hotel_limit_per_day || '',
       meal_limit_per_day: rule.meal_limit_per_day || '',
       travel_daily_allowance: rule.travel_daily_allowance || '',
@@ -309,27 +307,43 @@ export default function TravelPolicyEngine() {
               {form.rule_type === 'grade' && (
                 <div>
                   <label style={lbl}>Grade</label>
-                  <select value={form.grade} onChange={e => fld('grade', e.target.value)} style={inp}>
-                    {GRADES.map(g => <option key={g}>{g}</option>)}
-                  </select>
+                  <MasterSelect
+                    endpoint="/master/grades"
+                    label="Grade"
+                    value={form.grade}
+                    onChange={v => fld('grade', v)}
+                    selectStyle={inp}
+                  />
                 </div>
               )}
               {form.rule_type === 'role' && (
                 <div>
                   <label style={lbl}>Role / Designation</label>
-                  <select value={form.role} onChange={e => fld('role', e.target.value)} style={inp}>
-                    <option value="">-- Select Role --</option>
-                    {['Sales Engineer','Sales Manager','Project Engineer','Project Manager','Service Engineer','HR Executive','Finance Executive','Senior Manager','Director','VP','Other'].map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
+                  {/* Matched against employees.designation by POST /travel-policy/check,
+                      so it must come from master_designations. The 11 names hardcoded
+                      here before were a third vocabulary: 8 of them ('Sales Engineer',
+                      'Project Manager', 'Director', 'VP', 'Other'…) are in no
+                      designation master, so a rule built on one matched nobody. */}
+                  <MasterSelect
+                    endpoint="/master/designations"
+                    label="Designation"
+                    value={form.role}
+                    onChange={v => fld('role', v)}
+                    placeholder="-- Select Role --"
+                    selectStyle={inp}
+                  />
                 </div>
               )}
               {form.rule_type === 'department' && (
                 <div>
                   <label style={lbl}>Department</label>
-                  <select value={form.department} onChange={e => fld('department', e.target.value)} style={inp}>
-                    <option value="">-- Select Department --</option>
-                    {deptList.map(d => <option key={d} value={d}>{d}</option>)}
-                  </select>
+                  <MasterSelect
+                    endpoint="/master/departments"
+                    label="Department"
+                    value={form.department}
+                    onChange={v => fld('department', v)}
+                    selectStyle={inp}
+                  />
                 </div>
               )}
 

@@ -6,10 +6,39 @@ import { numberToWordsINR } from '../../shared/numberToWordsINR.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { respondError } from '../../shared/pgErrors.js';
 import { postPayrollJournal } from './services/payrollJournal.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
 const cid = req => { const n = Number.parseInt(req.scope?.company_id, 10); return Number.isInteger(n) ? n : null; };
+
+/**
+ * A journal entry's before-image is its header AND its lines.
+ *
+ * `captureBefore()` reads exactly one table, and the amounts are not in the one
+ * it would read: PUT /journal-entries/:id deletes every `journal_lines` row and
+ * re-inserts them. A header-only snapshot would faithfully record that the
+ * description changed while losing the fact that ₹4,00,000 moved from one
+ * account to another — which is the only question anyone asks a general ledger
+ * audit trail. This is why the §8d codemod refused to automate multi-table
+ * handlers rather than capturing the wrong row.
+ *
+ * Stashed on `req._auditBefore`, which the audit floor already mounted on
+ * /finance/accounting picks up as `oldData`.
+ */
+async function captureEntryBefore(req, entry) {
+  try {
+    const { rows: lines } = await pool.query(
+      `SELECT id, account_id, account_code, account_name, debit, credit, narration
+         FROM journal_lines WHERE entry_id = $1 ORDER BY id`,
+      [entry.id]
+    );
+    req._auditBefore = { ...entry, lines };
+  } catch {
+    // The header alone is a poorer audit entry; no entry at all is poorer still.
+    req._auditBefore = entry;
+  }
+}
 
 // ─── Helper: check transaction lock date ─────────────────────────────────────
 async function checkLockDate(companyId, entryDate) {
@@ -850,6 +879,8 @@ router.put('/journal-entries/:id', requirePermission('finance', 'edit'), async (
     const totalDebit  = lines.reduce((s, l) => s + parseFloat(l.debit  || 0), 0);
     const totalCredit = lines.reduce((s, l) => s + parseFloat(l.credit || 0), 0);
 
+    await captureEntryBefore(req, entry);
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -897,6 +928,8 @@ router.delete('/journal-entries/:id', requirePermission('finance', 'delete'), as
     if (entry.status !== 'draft') {
       return res.status(400).json({ error: `Only draft entries can be deleted. Current status: '${entry.status}'.` });
     }
+
+    await captureEntryBefore(req, entry);
 
     await pool.query('DELETE FROM journal_lines WHERE entry_id=$1', [id]);
     await pool.query('DELETE FROM journal_entries WHERE id=$1', [id]);
@@ -2209,7 +2242,7 @@ router.post('/recurring-vouchers/:id/generate', requirePermission('finance', 'ad
   }
 });
 
-router.delete('/recurring-vouchers/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/recurring-vouchers/:id', requirePermission('finance', 'delete'), captureBefore('recurring_vouchers'), async (req, res) => {
   try {
     const { rows: [row] } = await pool.query(
       `UPDATE recurring_vouchers SET is_active=false, updated_at=NOW() WHERE id=$1 RETURNING id`, [req.params.id]

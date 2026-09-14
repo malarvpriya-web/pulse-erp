@@ -3,6 +3,7 @@ import performanceRepository from '../repositories/performance.repository.js';
 import pool from '../../shared/db.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { dimension, idDimension } from '../../../shared/dashboardFilters.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -189,7 +190,7 @@ router.post('/goals/:id/checkin', async (req, res) => {
 });
 
 /* ── Delete goal (soft) ── */
-router.delete('/goals/:id', async (req, res) => {
+router.delete('/goals/:id', captureBefore('performance_goals'), async (req, res) => {
   try {
     const companyId = cid(req);
     const params    = [req.params.id];

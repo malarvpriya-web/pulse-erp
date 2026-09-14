@@ -5,6 +5,8 @@ import attendanceRepository from '../repositories/attendance.repository.js';
 import { clockRateLimit } from '../../../middlewares/attendanceRateLimit.js';
 import { hasRole } from '../../../middlewares/auth.middleware.js';
 import { dimension } from '../../../shared/dashboardFilters.js';
+import { getWeekendDays, dayIsWeekend } from '../../../shared/weekend.js';
+import { loadPunchProfile, assertCanSelfPunch, describePunchMode } from '../../../shared/punchMode.js';
 import {
   requireAttendanceAdmin,
   requireAttendanceApprover,
@@ -14,6 +16,7 @@ import {
   assertSelfOrPrivileged,
   assertCanDecideFor,
 } from '../attendance.authz.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -21,24 +24,11 @@ function scopeCompanyId(req) {
   return req.scope?.company_id ?? null;
 }
 
-const DOW_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-
-async function getWeekendDays(companyId) {
-  try {
-    const { rows } = await pool.query(
-      'SELECT weekend_days FROM attendance_general_settings WHERE company_id=$1 LIMIT 1',
-      [companyId]
-    );
-    return rows[0]?.weekend_days ?? ['saturday', 'sunday'];
-  } catch {
-    return ['saturday', 'sunday'];
-  }
-}
-
-function dayIsWeekend(dateStr, weekendDays) {
-  const dayName = DOW_NAMES[new Date(dateStr + 'T00:00:00').getDay()];
-  return weekendDays.includes(dayName);
-}
+// getWeekendDays / dayIsWeekend / DOW_NAMES now live in shared/weekend.js so
+// comp-off answers "is this a non-working day?" the same way attendance does.
+// The local copies also looked the settings row up with `WHERE company_id = $1`,
+// which never matches the global (company_id IS NULL) row — every tenant fell
+// through to the hardcoded Sat/Sun default and Attendance Settings had no effect.
 
 // Hours that count as a full day before OT starts accruing. Configurable per
 // company; 9 is the fallback for companies that never opened Attendance Settings.
@@ -612,6 +602,40 @@ router.get('/team/:manager_id', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 3b. PUNCH MODE — how (and whether) the caller may clock in from the app
+// ─────────────────────────────────────────────────────────────────────────────
+// Field employees punch in-app with a camera selfie + GPS; everyone else uses
+// the office face / biometric device. The clock UI calls this on mount so it
+// renders the right control instead of offering a button the server will 403.
+// Reads its own employee id from the session — an id in the query is honoured
+// only for privileged callers, so nobody can probe another employee's setup.
+router.get('/punch-mode', async (req, res) => {
+  try {
+    const empId = isAttendanceOperator(req) && req.query.employee_id
+      ? parseInt(req.query.employee_id)
+      : (req.user?.employee_id ?? null);
+
+    if (empId == null) {
+      return res.json({
+        employee_id: null,
+        mode: 'device',
+        is_field_employee: false,
+        can_punch_in_app: false,
+        selfie_required: false,
+        location_required: false,
+        reason: 'employee_not_linked',
+        message: 'Your login is not linked to an employee record. Ask HR to link it before clocking in or out.',
+      });
+    }
+
+    const profile = await loadPunchProfile(empId);
+    res.json({ employee_id: empId, ...describePunchMode(profile) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/today/:employee_id', async (req, res) => {
   try {
     const data = await attendanceRepository.getTodayStatus(req.params.employee_id, scopeCompanyId(req));
@@ -684,41 +708,35 @@ router.post('/clock', clockRateLimit, async (req, res) => {
     let lateMinutes = 0;
     let derivedStatus = 'present';
 
-    if (action === 'in') {
-      // Employee meta drives the policy gates below: field staff punch from
-      // customer sites, so they skip the shift window and geo-fence.
-      const empMeta = await pool.query(
-        `SELECT department, COALESCE(is_field_employee, FALSE) AS is_field_employee
-           FROM employees WHERE id = $1 LIMIT 1`,
-        [employee_id]
-      ).catch(() => ({ rows: [] }));
-      const empDept     = empMeta.rows[0]?.department || null;
-      const isField     = empMeta.rows[0]?.is_field_employee === true;
-      const isSelfPunch = !!callerEmpId && String(callerEmpId) === String(employee_id);
+    // ── In-app punch gate (applies to BOTH directions) ───────────────────
+    // Only employees flagged `is_field_employee` punch from the app, and only
+    // with a camera selfie + GPS. Everyone else records attendance on the
+    // office face / biometric terminal, which writes attendance_records through
+    // hr/biometric.routes.js and never reaches this route. Admin/HR punching on
+    // behalf of someone else is a correction, not a self punch, and is exempt.
+    //
+    // This replaces the old face_token gate: a field employee has no face-match
+    // step to produce a token with, so the geotagged selfie enforced here is
+    // their proof of presence. face_token is still accepted (and ignored) so an
+    // older cached client does not break.
+    const isSelfPunch  = !!callerEmpId && String(callerEmpId) === String(employee_id);
+    const punchProfile = await loadPunchProfile(employee_id);
+    const empDept      = punchProfile?.department || null;
+    const isField      = punchProfile?.is_field_employee === true;
 
-      // ── Face-verification gate (self punches; all employees incl. field) ──
-      // /attendance/face/verify issues a 3-minute face_token on a successful
-      // match; a self clock-in without one is rejected. Admin/HR corrections
-      // on behalf of others are exempt, as is a company that disabled face
-      // attendance in settings.
-      if (isSelfPunch) {
-        const faceCfg = await loadFaceSettings(companyId);
-        if (faceCfg.enabled !== false) {
-          let faceOk = false;
-          if (req.body.face_token) {
-            try {
-              const dec = jwt.verify(req.body.face_token, process.env.JWT_SECRET);
-              faceOk = dec?.typ === 'face_verify' && String(dec.employee_id) === String(employee_id);
-            } catch { faceOk = false; }
-          }
-          if (!faceOk) {
-            return res.status(403).json({
-              error: 'face_verification_required',
-              message: 'Face verification is required to clock in. Use the face clock-in and verify your face first.',
-            });
-          }
-        }
+    if (isSelfPunch) {
+      const denial = assertCanSelfPunch(punchProfile, { action, selfie_url, location });
+      if (denial) {
+        await writeAuditLog({
+          companyId, employeeId: employee_id, action: 'clock_blocked_punch_mode',
+          afterData: { reason: denial.body.error, punch: action, mode: denial.body.mode },
+          performedBy: employee_id, req,
+        }).catch(() => {});
+        return res.status(denial.status).json(denial.body);
       }
+    }
+
+    if (action === 'in') {
 
       // Resolve shift via 4-level priority chain (date_override > assignment > rotation > default)
       const { shift: resolvedShift } = await resolveEmployeeShift(employee_id, today);
@@ -910,7 +928,7 @@ router.post('/clock', clockRateLimit, async (req, res) => {
       // accepted. Admin/HR corrections on behalf of others bypass this —
       // same exemption pattern as the clock-in shift-window gate above.
       const isSelfPunchOut = !!callerEmpId && String(callerEmpId) === String(employee_id);
-      if (isSelfPunchOut && !isAdminOrHR && prev.rows[0]?.check_in_time) {
+      if (isSelfPunchOut && !isAttendanceAdmin(req) && prev.rows[0]?.check_in_time) {
         const { shift: outShift } = await resolveEmployeeShift(employee_id, today);
         let requiredHours = 8.5;
         if (outShift?.start_time && outShift?.end_time) {
@@ -952,16 +970,22 @@ router.post('/clock', clockRateLimit, async (req, res) => {
 
       // Auto-calculate and record OT if > 9 hours
       if (prev.rows[0]?.check_in_time && result.rows[0]) {
+        // Hoisted out of the OT try/catch below. The comp-off auto-grant is a
+        // SIBLING block that reads both of these, so it referenced them from
+        // outside their scope and threw ReferenceError on every holiday
+        // clock-out — swallowed whole by its own `catch {}`. Comp off has never
+        // actually been auto-granted.
+        let totalHours   = 0;
+        let fullDayHours = 9;
         try {
           const hoursResult = await pool.query(
             `SELECT EXTRACT(EPOCH FROM ($1::time - $2::time)) / 3600 AS hours`,
             [time, String(prev.rows[0].check_in_time).slice(0, 5)]
           );
           // Cross-midnight shift: Postgres time subtraction goes negative — add 24h to correct
-          const rawHours   = parseFloat(hoursResult.rows[0]?.hours || 0);
-          const totalHours = rawHours < 0 ? rawHours + 24 : rawHours;
+          const rawHours = parseFloat(hoursResult.rows[0]?.hours || 0);
+          totalHours = rawHours < 0 ? rawHours + 24 : rawHours;
           // Read OT threshold from general settings (default 9h)
-          let fullDayHours = 9;
           try {
             const settingsRow = await pool.query(
               'SELECT full_day_hours FROM attendance_general_settings WHERE company_id=$1 LIMIT 1',
@@ -1063,19 +1087,30 @@ router.post('/clock', clockRateLimit, async (req, res) => {
             );
             if (hQ.rows.length > 0 && totalHours >= fullDayHours) {
               const holidayId = hQ.rows[0].id;
-              const expiry    = new Date(today);
-              expiry.setMonth(expiry.getMonth() + 3);
+              // WHERE NOT EXISTS, not ON CONFLICT: compensatory_off has no
+              // unique index on (employee_id, work_date), so the ON CONFLICT
+              // this used to carry raised 42P10 on every single holiday punch-out
+              // and the surrounding `catch {}` ate it — comp off has never once
+              // been auto-granted. A plain unique index is also the wrong fix
+              // here: a rejected request must stay re-submittable for that date.
+              //
+              // expires_on is computed in SQL. Date#setMonth mutates in local
+              // time while toISOString() reads back UTC, so the old expiry
+              // landed a day early east of UTC, and 30 Nov + 3 months rolled
+              // through Feb 30 into 2 Mar.
               await pool.query(`
                 INSERT INTO compensatory_off
                   (employee_id, work_date, hours_worked, holiday_id, reason, expires_on, company_id, auto_granted)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)
-                ON CONFLICT (employee_id, work_date) DO NOTHING
+                SELECT $1, $2::date, $3, $4, $5, ($2::date + INTERVAL '3 months')::date, $6, TRUE
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM compensatory_off
+                    WHERE employee_id = $1 AND work_date = $2::date AND status <> 'rejected'
+                 )
               `, [
                 employee_id, today,
                 parseFloat(totalHours).toFixed(2),
                 holidayId,
                 'Auto-granted: worked a full day on holiday',
-                expiry.toISOString().slice(0, 10),
                 companyId,
               ]);
             }
@@ -1341,7 +1376,7 @@ router.post('/overtime', async (req, res) => {
   }
 });
 
-router.put('/overtime/:id/approve', requireAttendanceApprover, async (req, res) => {
+router.put('/overtime/:id/approve', requireAttendanceApprover, captureBefore('attendance_ot_records'), async (req, res) => {
   try {
     const { remarks } = req.body;
     const approvedBy     = req.user?.userId;
@@ -1378,7 +1413,7 @@ router.put('/overtime/:id/approve', requireAttendanceApprover, async (req, res) 
   }
 });
 
-router.put('/overtime/:id/reject', requireAttendanceApprover, async (req, res) => {
+router.put('/overtime/:id/reject', requireAttendanceApprover, captureBefore('attendance_ot_records'), async (req, res) => {
   try {
     const { remarks } = req.body;
     if (!remarks || !String(remarks).trim())
@@ -1813,7 +1848,7 @@ router.put('/regularize/:id/approve', requireAttendanceApprover, async (req, res
 });
 
 // Reject — records reason, notifies employee
-router.put('/regularize/:id/reject', requireAttendanceApprover, async (req, res) => {
+router.put('/regularize/:id/reject', requireAttendanceApprover, captureBefore('attendance_regularization_requests'), async (req, res) => {
   try {
     const { remarks } = req.body;
     const actorId     = req.user?.userId || req.body.actor_id;
@@ -1894,7 +1929,7 @@ router.post('/policies', requireAttendanceAdmin, async (req, res) => {
   }
 });
 
-router.put('/policies/:id', requireAttendanceAdmin, async (req, res) => {
+router.put('/policies/:id', requireAttendanceAdmin, captureBefore('attendance_policies'), async (req, res) => {
   try {
     const { name, rules, is_active } = req.body;
     const result = await pool.query(`
@@ -1909,7 +1944,7 @@ router.put('/policies/:id', requireAttendanceAdmin, async (req, res) => {
   }
 });
 
-router.delete('/policies/:id', requireAttendanceAdmin, async (req, res) => {
+router.delete('/policies/:id', requireAttendanceAdmin, captureBefore('attendance_policies'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM attendance_policies WHERE id=$1`, [req.params.id]);
     res.json({ success: true });
@@ -1977,7 +2012,7 @@ router.post('/geo-rules', requireAttendanceAdmin, async (req, res) => {
   }
 });
 
-router.put('/geo-rules/:id', requireAttendanceAdmin, async (req, res) => {
+router.put('/geo-rules/:id', requireAttendanceAdmin, captureBefore('attendance_geo_rules'), async (req, res) => {
   try {
     const { name, location_name, lat, lng, radius_meters, rule_type, is_mandatory, is_active,
             applicable_to, applicable_department } = req.body;
@@ -1999,7 +2034,7 @@ router.put('/geo-rules/:id', requireAttendanceAdmin, async (req, res) => {
   }
 });
 
-router.delete('/geo-rules/:id', requireAttendanceAdmin, async (req, res) => {
+router.delete('/geo-rules/:id', requireAttendanceAdmin, captureBefore('attendance_geo_rules'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM attendance_geo_rules WHERE id=$1`, [req.params.id]);
     res.json({ success: true });
@@ -2868,7 +2903,7 @@ router.post('/work-centres', requireAttendanceAdmin, async (req, res) => {
 });
 
 // PUT /attendance/work-centres/:id — edit work centre definition
-router.put('/work-centres/:id', requireAttendanceAdmin, async (req, res) => {
+router.put('/work-centres/:id', requireAttendanceAdmin, captureBefore('work_centres'), async (req, res) => {
   try {
     const { name, capacity_hours_per_day, cost_per_hour, department } = req.body;
     const companyId = scopeCompanyId(req);
@@ -2885,7 +2920,7 @@ router.put('/work-centres/:id', requireAttendanceAdmin, async (req, res) => {
 });
 
 // Soft-delete a work centre
-router.delete('/work-centres/:id', requireAttendanceAdmin, async (req, res) => {
+router.delete('/work-centres/:id', requireAttendanceAdmin, captureBefore('work_centres'), async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
     await pool.query(
@@ -3049,7 +3084,7 @@ router.put('/work-centre/:id', requireAttendanceAdmin, async (req, res) => {
 });
 
 // Delete a work-centre attendance record
-router.delete('/work-centre/:id', requireAttendanceAdmin, async (req, res) => {
+router.delete('/work-centre/:id', requireAttendanceAdmin, captureBefore('work_centre_attendance'), async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
     const result = await pool.query(
@@ -3282,7 +3317,7 @@ router.post('/contract-labour', requireAttendanceAdmin, async (req, res) => {
   }
 });
 
-router.put('/contract-labour/:id', requireAttendanceAdmin, async (req, res) => {
+router.put('/contract-labour/:id', requireAttendanceAdmin, captureBefore('contract_labour'), async (req, res) => {
   try {
     const {
       contractor_company, employee_name, employee_code, aadhar_number,
@@ -3316,7 +3351,7 @@ router.put('/contract-labour/:id', requireAttendanceAdmin, async (req, res) => {
   }
 });
 
-router.delete('/contract-labour/:id', requireAttendanceAdmin, async (req, res) => {
+router.delete('/contract-labour/:id', requireAttendanceAdmin, captureBefore('contract_labour'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM contract_labour WHERE id = $1`, [req.params.id]);
     res.json({ success: true });
@@ -3811,7 +3846,7 @@ router.put('/shifts/:id', requireAttendanceAdmin, async (req, res) => {
 });
 
 // ── Delete shift ──────────────────────────────────────────────────────────
-router.delete('/shifts/:id', requireAttendanceAdmin, async (req, res) => {
+router.delete('/shifts/:id', requireAttendanceAdmin, captureBefore('hr_shifts'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       'DELETE FROM hr_shifts WHERE id=$1 RETURNING id',
@@ -4703,7 +4738,7 @@ router.post('/approval-delegations', requireAttendanceAdmin, async (req, res) =>
 });
 
 // DELETE /attendance/approval-delegations/:id
-router.delete('/approval-delegations/:id', requireAttendanceAdmin, async (req, res) => {
+router.delete('/approval-delegations/:id', requireAttendanceAdmin, captureBefore('attendance_approval_delegations'), async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
     const { rows } = await pool.query(`
@@ -4922,7 +4957,7 @@ router.get('/qr/scans', async (req, res) => {
 });
 
 /* ── DELETE /attendance/qr/codes/:id — deactivate a QR code ── */
-router.delete('/qr/codes/:id', requireAttendanceAdmin, async (req, res) => {
+router.delete('/qr/codes/:id', requireAttendanceAdmin, captureBefore('qr_attendance_codes'), async (req, res) => {
   try {
     const role = (req.user?.role || '').toLowerCase();
     if (!['admin', 'super_admin', 'manager'].includes(role)) {
@@ -5038,7 +5073,7 @@ router.put('/shift-change-requests/:id/approve', requireAttendanceApprover, asyn
   }
 });
 
-router.put('/shift-change-requests/:id/reject', requireAttendanceApprover, async (req, res) => {
+router.put('/shift-change-requests/:id/reject', requireAttendanceApprover, captureBefore('shift_change_requests'), async (req, res) => {
   try {
     const { remarks } = req.body;
     const reviewerId = req.user?.userId;   // never from the body — see approve route

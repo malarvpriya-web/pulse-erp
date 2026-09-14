@@ -7,7 +7,10 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import api from '../services/api/client';
 import MyPayslipsWidget from '@/components/dashboard/widgets/MyPayslipsWidget';
-import FaceClockModal, { getLocationString } from '@/components/attendance/FaceClockModal';
+import CameraClockModal from '@/components/attendance/CameraClockModal';
+import PunchModeNotice from '@/components/attendance/PunchModeNotice';
+import { getLocationString } from '@/components/attendance/geo';
+import usePunchMode from '@/hooks/usePunchMode';
 import { VizCard, Donut, DonutLegend, ProgressRing, RoundBars } from '@/components/charts/PulseViz';
 import CelebrationsBoard from '@/components/dashboard/CelebrationsBoard';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
@@ -249,8 +252,12 @@ export default function EmployeeDashboard({ setPage }) {
   const [leaveSubmitting,   setLeaveSubmitting]   = useState(false);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [faceOpen,   setFaceOpen]   = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [toast,      setToast]      = useState(null);
+
+  // Only field employees punch from the app; everyone else uses the office
+  // face/biometric device.
+  const punch = usePunchMode(user?.employee_id);
 
   const isInitial = useRef(true);
 
@@ -390,7 +397,7 @@ export default function EmployeeDashboard({ setPage }) {
   }, [loadData]);
 
   // ── Clock-in / Clock-out ──────────────────────────────────────────────────
-  async function handleClockAction(faceData = null) {
+  async function handleClockAction(proof = null) {
     if (!user?.employee_id) {
       showToast('Your login is not linked to an employee record — ask HR to link your account to an employee profile.', 'error');
       return;
@@ -399,14 +406,15 @@ export default function EmployeeDashboard({ setPage }) {
     try {
       const now = new Date().toTimeString().slice(0, 5); // "HH:MM"
       const isClockIn = !attendance?.check_in;
-      // Location is server-enforced for clock-in when a mandatory geo-fence exists
-      const location = isClockIn ? await getLocationString() : null;
+      // Clock-in carries the selfie + GPS the camera modal captured (both are
+      // mandatory server-side for field staff); a clock-out re-reads GPS only.
+      const location = proof?.location ?? (isClockIn ? await getLocationString() : null);
       const { data } = await api.post('/attendance/clock', {
         employee_id:     user?.employee_id,
         action:          isClockIn ? 'in' : 'out',
         time:            now,
         ...(location ? { location } : {}),
-        ...(faceData?.face_token ? { face_token: faceData.face_token } : {}),
+        ...(proof?.selfie_url ? { selfie_url: proof.selfie_url } : {}),
       });
       setAttendance(normalizeAttendance(data));
       showToast(isClockIn ? 'Clocked in successfully!' : 'Clocked out successfully!');
@@ -667,45 +675,41 @@ export default function EmployeeDashboard({ setPage }) {
             </div>
           </div>
           {!clockedOut && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button
-                onClick={() => setFaceOpen(true)}
-                disabled={clockLoading}
-                title="Clock in/out with face recognition"
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  background: '#fff', color: '#7c3aed',
-                  border: '1px solid #ddd6fe', borderRadius: 8,
-                  padding: '7px 12px', fontSize: 13, fontWeight: 600,
-                  cursor: clockLoading ? 'default' : 'pointer', fontFamily: 'inherit',
-                }}
-              >
-                <Camera size={14} /> Face
-              </button>
-              <button
-                className={clockedIn ? 'ed-clock-btn-out' : 'ed-clock-btn-in'}
-                onClick={() => (clockedIn || !user?.employee_id ? handleClockAction() : setFaceOpen(true))}
-                disabled={clockLoading}
-              >
-                {clockLoading
-                  ? 'Recording…'
-                  : clockedIn
-                    ? <><LogOut size={14} /> Clock Out</>
-                    : <><LogIn size={14} /> Clock In</>
-                }
-              </button>
-            </div>
+            punch.loading ? (
+              <span style={{ fontSize: 12, color: '#6b7280' }}>Checking your attendance setup…</span>
+            ) : !punch.canPunch ? (
+              /* Non-field staff record attendance on the office device. */
+              <PunchModeNotice reason={punch.reason} message={punch.message} compact />
+            ) : (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#6b7280' }}>
+                  <Camera size={13} /> Selfie + location required
+                </span>
+                <button
+                  className={clockedIn ? 'ed-clock-btn-out' : 'ed-clock-btn-in'}
+                  onClick={() => (clockedIn ? handleClockAction() : setCameraOpen(true))}
+                  disabled={clockLoading}
+                >
+                  {clockLoading
+                    ? 'Recording…'
+                    : clockedIn
+                      ? <><LogOut size={14} /> Clock Out</>
+                      : <><LogIn size={14} /> Clock In</>
+                  }
+                </button>
+              </div>
+            )
           )}
         </div>
       )}
 
-      {/* Face recognition clock-in/out */}
-      {faceOpen && user?.employee_id && (
-        <FaceClockModal
+      {/* Camera clock-in for field staff — selfie + GPS, both enforced server-side */}
+      {cameraOpen && user?.employee_id && punch.canPunch && (
+        <CameraClockModal
           employeeId={user.employee_id}
           action={clockedIn ? 'out' : 'in'}
-          onVerified={(fd) => { setFaceOpen(false); handleClockAction(fd); }}
-          onClose={() => setFaceOpen(false)}
+          onCaptured={(proof) => { setCameraOpen(false); handleClockAction(proof); }}
+          onClose={() => setCameraOpen(false)}
         />
       )}
 

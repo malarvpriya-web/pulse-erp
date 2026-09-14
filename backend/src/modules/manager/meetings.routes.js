@@ -23,6 +23,7 @@ import { companyOf, callerIdentity } from '../../shared/scope.js';
 import { respondError } from '../../shared/pgErrors.js';
 import { hasRole } from '../../middlewares/auth.middleware.js';
 import notificationsRepository from '../notifications/repositories/notifications.repository.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -275,7 +276,7 @@ router.get('/:id', async (req, res) => {
 // ── PATCH /meetings/:id/cancel ────────────────────────────────────────────────
 // Cancel rather than delete: invitees have already been notified, so the record
 // has to survive to explain why it disappeared from their list.
-router.patch('/:id/cancel', async (req, res) => {
+router.patch('/:id/cancel', captureBefore('meetings'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const me        = await callerIdentity(req, pool, companyId);

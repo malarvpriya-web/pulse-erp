@@ -1,6 +1,7 @@
 ﻿import { Router } from 'express';
 import { verifyToken, requirePermission } from '../../middlewares/auth.middleware.js';
 import pool from '../shared/db.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -95,7 +96,7 @@ router.post('/downloads', requirePermission('hr', 'add'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/downloads/:id', requirePermission('hr', 'edit'), async (req, res) => {
+router.patch('/downloads/:id', requirePermission('hr', 'edit'), captureBefore('hr_downloads'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
     const id = Number(req.params.id);
@@ -119,7 +120,7 @@ router.patch('/downloads/:id', requirePermission('hr', 'edit'), async (req, res)
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/downloads/:id/increment', requirePermission('hr', 'view'), async (req, res) => {
+router.patch('/downloads/:id/increment', requirePermission('hr', 'view'), captureBefore('hr_downloads'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
     const id = Number(req.params.id);
@@ -133,7 +134,7 @@ router.patch('/downloads/:id/increment', requirePermission('hr', 'view'), async 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/downloads/:id', requirePermission('hr', 'delete'), async (req, res) => {
+router.delete('/downloads/:id', requirePermission('hr', 'delete'), captureBefore('hr_downloads'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
     const id = Number(req.params.id);
@@ -236,7 +237,7 @@ router.post('/policies', requirePermission('hr', 'add'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/policies/:id', requirePermission('hr', 'edit'), async (req, res) => {
+router.put('/policies/:id', requirePermission('hr', 'edit'), captureBefore('hr_policies'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid policy id' });
   try {
@@ -263,7 +264,7 @@ router.put('/policies/:id', requirePermission('hr', 'edit'), async (req, res) =>
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/policies/:id', requirePermission('hr', 'delete'), async (req, res) => {
+router.delete('/policies/:id', requirePermission('hr', 'delete'), captureBefore('hr_policies'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
     const id = Number(req.params.id);
@@ -437,7 +438,7 @@ router.post('/shifts', verifyToken, requirePermission('hr', 'add'), async (req, 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/shifts/:id', verifyToken, requirePermission('hr', 'edit'), async (req, res) => {
+router.put('/shifts/:id', verifyToken, requirePermission('hr', 'edit'), captureBefore('hr_shifts'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1)
     return res.status(400).json({ error: 'Invalid shift id' });
@@ -477,7 +478,7 @@ router.put('/shifts/:id', verifyToken, requirePermission('hr', 'edit'), async (r
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/shifts/:id', verifyToken, requirePermission('hr', 'delete'), async (req, res) => {
+router.delete('/shifts/:id', verifyToken, requirePermission('hr', 'delete'), captureBefore('hr_shifts'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1)
     return res.status(400).json({ error: 'Invalid shift id' });
@@ -582,7 +583,7 @@ router.post('/shift-assignments', verifyToken, requirePermission('hr', 'add'), a
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/shift-assignments/:id', verifyToken, requirePermission('hr', 'delete'), async (req, res) => {
+router.delete('/shift-assignments/:id', verifyToken, requirePermission('hr', 'delete'), captureBefore('hr_shift_assignments'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid assignment id' });
   try {
@@ -633,7 +634,7 @@ router.post('/shift-rotations', verifyToken, requirePermission('hr', 'add'), asy
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/shift-rotations/:id', verifyToken, requirePermission('hr', 'delete'), async (req, res) => {
+router.delete('/shift-rotations/:id', verifyToken, requirePermission('hr', 'delete'), captureBefore('hr_shift_rotations'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid rotation id' });
   try {
@@ -699,7 +700,7 @@ router.post('/shift-overrides', verifyToken, requirePermission('hr', 'add'), asy
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/shift-overrides/:id', verifyToken, requirePermission('hr', 'delete'), async (req, res) => {
+router.delete('/shift-overrides/:id', verifyToken, requirePermission('hr', 'delete'), captureBefore('hr_shift_date_overrides'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid override id' });
   try {
@@ -731,6 +732,18 @@ router.get('/offboarding/templates', verifyToken, requirePermission('hr', 'view'
 router.put('/offboarding/templates', verifyToken, requirePermission('hr', 'edit'), async (req, res) => {
   const rows = Array.isArray(req.body?.items) ? req.body.items : [];
   if (!rows.length) return res.status(400).json({ error: 'items array is required' });
+
+  // Replaces the whole active template set — every current row is deactivated
+  // and the body written in its place. There is no :id here at all, so the
+  // before-image is the active set itself; without it, "what did the standard
+  // exit checklist require last quarter" has no answer.
+  try {
+    const { rows: prior } = await pool.query(
+      `SELECT * FROM hr_offboarding_checklist_templates
+        WHERE is_active = TRUE ORDER BY category, item_label`);
+    req._auditBefore = { templates: prior };
+  } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -810,6 +823,19 @@ router.patch('/offboarding/:employeeId/checklist', verifyToken, requirePermissio
   const rows = Array.isArray(req.body?.items) ? req.body.items : [];
   if (!Number.isInteger(employeeId) || employeeId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   if (!rows.length) return res.status(400).json({ error: 'items array is required' });
+
+  // This handler upserts MANY checklist rows in one request, so the before-image
+  // is a SET, not a row — captureBefore() cannot express that. The whole of this
+  // employee's prior checklist is snapshotted instead: it is what the exit
+  // clearance was signed off against, and after the loop no copy of it survives.
+  try {
+    const { rows: prior } = await pool.query(
+      `SELECT * FROM hr_offboarding_checklist_progress
+        WHERE employee_id = $1 ORDER BY category, item_label`,
+      [employeeId]
+    );
+    req._auditBefore = { employee_id: employeeId, checklist: prior };
+  } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
 
   const client = await pool.connect();
   try {

@@ -9,6 +9,11 @@ import auditRepository from '../audit/repositories/audit.repository.js';
 import { companyOf } from '../../shared/scope.js';
 import pool from '../../config/db.js';
 import { sqlEmployeeActive } from '../../shared/statusSets.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
+import { validateQueryConfig, getMetric, CHART_TYPES } from '../../shared/metricRegistry.js';
+import {
+  catalogFor, executeConfig, listDashboards, loadDashboard,
+} from './services/dashboardBuilder.service.js';
 
 const router = Router();
 
@@ -34,7 +39,12 @@ const router = Router();
 const UNBACKED_PREFIXES = [
   ['/sla-config',       'sla_config'],
   ['/sla-tracking',     'sla_tracking'],
-  ['/widgets',          'dashboard_widgets'],
+  // '/widgets' / 'dashboard_widgets' was here until 10 Sep 2026. The table now
+  // exists (migration 20260910000002_dashboard_builder) and the routes below
+  // execute against it through the metric registry, so the short-circuit would
+  // now be hiding a working feature. Removed here, in the checker's
+  // UNIMPLEMENTED_TABLES, and in analytics.intelligenceContract.test.js —
+  // all three together, as that test requires.
   ['/documents',        'documents'],
   ['/project-costs',    'project_costs'],
   ['/budget-vs-actual', 'budget_vs_actual'],
@@ -84,7 +94,7 @@ router.post('/rules', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/rules/:id', async (req, res) => {
+router.put('/rules/:id', captureBefore('rules_master'), async (req, res) => {
   try {
     const { rule_name, description, condition_json, action_json, priority, is_active } = req.body;
     const r = await pool.query(
@@ -97,7 +107,7 @@ router.put('/rules/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/rules/:id', async (req, res) => {
+router.delete('/rules/:id', captureBefore('rules_master'), async (req, res) => {
   try {
     await pool.query('UPDATE rules_master SET is_active=false WHERE id=$1', [req.params.id]);
     res.json({ success: true });
@@ -434,7 +444,7 @@ router.get('/notification-rules', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/notification-rules/:id', async (req, res) => {
+router.put('/notification-rules/:id', captureBefore('notification_rules'), async (req, res) => {
   try {
     const { is_active, template, channel } = req.body;
     const r = await pool.query(
@@ -480,49 +490,196 @@ router.post('/notification-rules/fire', async (req, res) => {
 // ════════════════════════════════════════════════════════════
 // 6. DASHBOARD BUILDER
 // ════════════════════════════════════════════════════════════
-router.get('/widgets', async (req, res) => {
+// Was four CRUD handlers over a `query_config` column nothing executed, on a
+// table that never existed, behind a 501. Now: a board, widgets on it, and an
+// executor that resolves each widget's config against `shared/metricRegistry.js`.
+//
+// `query_config` NAMES a metric and never describes one — see the registry for
+// why executing client SQL here would defeat tenant scoping and RBAC at once.
+// Every widget's metric permission is re-checked PER VIEWER, so sharing a board
+// shares the layout, never the authority.
+
+// The metric catalog, filtered to what this caller could actually chart.
+router.get('/metrics', async (req, res) => {
   try {
-    const role = req.user?.role || 'employee';
-    const userId = req.user?.userId;
-    const r = await pool.query(
-      `SELECT * FROM dashboard_widgets
-       WHERE (user_id=$1 OR role_default=$2) AND is_visible=true
-       ORDER BY position_y, position_x`,
-      [userId, role]
-    );
-    res.json(r.rows);
+    res.json({ metrics: await catalogFor(req), chart_types: CHART_TYPES });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/widgets', async (req, res) => {
+// Run a config without saving it — the builder's live preview.
+router.post('/metrics/preview', async (req, res) => {
   try {
-    const { widget_type, widget_name, query_config, position_x, position_y, width, height } = req.body;
-    const r = await pool.query(
-      `INSERT INTO dashboard_widgets (user_id, widget_type, widget_name, query_config, position_x, position_y, width, height)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [req.user?.userId, widget_type, widget_name, query_config, position_x||0, position_y||0, width||4, height||2]
-    );
-    res.json(r.rows[0]);
+    const result = await executeConfig(req, req.body?.query_config ?? req.body, {
+      companyId: companyOf(req),
+    });
+    // A config the registry refuses is the caller's error, not a server fault.
+    if (!result.ok && result.permitted === false) return res.status(403).json(result);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/widgets/:id', async (req, res) => {
+// ── boards ──────────────────────────────────────────────────────────────────
+router.get('/dashboards', async (req, res) => {
   try {
-    const { widget_name, query_config, position_x, position_y, width, height, is_visible } = req.body;
+    res.json(await listDashboards(req, {
+      companyId: companyOf(req), userId: req.user?.userId,
+    }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get('/dashboards/:id', async (req, res) => {
+  try {
+    const board = await loadDashboard(req, parseInt(req.params.id, 10), {
+      companyId: companyOf(req), userId: req.user?.userId,
+    });
+    if (!board) return res.status(404).json({ error: 'Dashboard not found' });
+    res.json(board);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/dashboards', async (req, res) => {
+  try {
+    const companyId = companyOf(req);
+    // dashboards.company_id is NOT NULL by design: a board with no tenant is
+    // invisible to every scoped user and visible to a global admin, which is
+    // the NULL-scoping trap rather than a feature.
+    if (!companyId) {
+      return res.status(400).json({ error: 'A dashboard must belong to a company.' });
+    }
+    const { name, description, visibility } = req.body ?? {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    if (visibility != null && !['private', 'company'].includes(visibility)) {
+      return res.status(400).json({ error: "visibility must be 'private' or 'company'" });
+    }
+    const r = await pool.query(
+      `INSERT INTO dashboards (company_id, owner_user_id, name, description, visibility)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [companyId, req.user?.userId ?? null, String(name).trim(),
+       description ?? null, visibility ?? 'private']
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/dashboards/:id', captureBefore('dashboards'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `UPDATE dashboards SET deleted_at = NOW()
+        WHERE id = $1 AND deleted_at IS NULL
+          AND ($2::INTEGER IS NULL OR company_id = $2::INTEGER)
+          AND owner_user_id = $3
+        RETURNING id`,
+      [req.params.id, companyOf(req) ?? null, req.user?.userId ?? null]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'Dashboard not found, or not yours to delete' });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── widgets ─────────────────────────────────────────────────────────────────
+router.post('/dashboards/:id/widgets', async (req, res) => {
+  try {
+    const companyId = companyOf(req);
+    const boardId = parseInt(req.params.id, 10);
+
+    // Only the OWNER may add a tile. A company-visible board is readable by
+    // colleagues; it is not writable by them.
+    const { rows: owned } = await pool.query(
+      `SELECT id, company_id FROM dashboards
+        WHERE id = $1 AND deleted_at IS NULL AND owner_user_id = $2
+          AND ($3::INTEGER IS NULL OR company_id = $3::INTEGER)`,
+      [boardId, req.user?.userId ?? null, companyId ?? null]
+    );
+    if (!owned.length) return res.status(404).json({ error: 'Dashboard not found, or not yours to edit' });
+
+    const { title, query_config, position_x, position_y, width, height } = req.body ?? {};
+    const v = validateQueryConfig(query_config);
+    if (!v.ok) return res.status(400).json({ error: v.error });
+
+    // Refuse to SAVE a tile the author cannot read. Otherwise a board becomes a
+    // way to park a metric now and have someone else's session run it later.
+    const metric = getMetric(v.config.metric);
+    const preview = await executeConfig(req, v.config, { companyId });
+    if (preview.permitted === false) {
+      return res.status(403).json({
+        error: `You cannot chart '${metric.label}' — it requires ${metric.permission[0]}:${metric.permission[1]}.`,
+      });
+    }
+
+    const r = await pool.query(
+      `INSERT INTO dashboard_widgets
+         (dashboard_id, company_id, title, chart_type, query_config,
+          position_x, position_y, width, height)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [boardId, owned[0].company_id, String(title || metric.label).trim(),
+       v.config.chart_type, JSON.stringify(v.config),
+       position_x ?? 0, position_y ?? 0, width ?? 4, height ?? 3]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.put('/widgets/:id', captureBefore('dashboard_widgets'), async (req, res) => {
+  try {
+    const companyId = companyOf(req);
+    const { rows: owned } = await pool.query(
+      `SELECT w.id FROM dashboard_widgets w
+         JOIN dashboards d ON d.id = w.dashboard_id
+        WHERE w.id = $1 AND d.deleted_at IS NULL AND d.owner_user_id = $2
+          AND ($3::INTEGER IS NULL OR w.company_id = $3::INTEGER)`,
+      [req.params.id, req.user?.userId ?? null, companyId ?? null]
+    );
+    if (!owned.length) return res.status(404).json({ error: 'Widget not found, or not yours to edit' });
+
+    const { title, query_config, position_x, position_y, width, height, is_visible } = req.body ?? {};
+
+    // A geometry-only update (dragging a tile) must not require the whole
+    // config to be resent, so query_config is optional here.
+    let configJson = null;
+    if (query_config !== undefined) {
+      const v = validateQueryConfig(query_config);
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      const preview = await executeConfig(req, v.config, { companyId });
+      if (preview.permitted === false) {
+        return res.status(403).json({ error: preview.error });
+      }
+      configJson = JSON.stringify(v.config);
+    }
+
     const r = await pool.query(
       `UPDATE dashboard_widgets
-       SET widget_name=$1, query_config=$2, position_x=$3, position_y=$4,
-           width=$5, height=$6, is_visible=$7, updated_at=NOW()
-       WHERE id=$8 AND user_id=$9 RETURNING *`,
-      [widget_name, query_config, position_x, position_y, width, height, is_visible, req.params.id, req.user?.userId]
+          SET title        = COALESCE($1, title),
+              query_config = COALESCE($2::jsonb, query_config),
+              chart_type   = COALESCE($2::jsonb ->> 'chart_type', chart_type),
+              position_x   = COALESCE($3, position_x),
+              position_y   = COALESCE($4, position_y),
+              width        = COALESCE($5, width),
+              height       = COALESCE($6, height),
+              is_visible   = COALESCE($7, is_visible),
+              updated_at   = NOW()
+        WHERE id = $8 RETURNING *`,
+      [title ?? null, configJson, position_x ?? null, position_y ?? null,
+       width ?? null, height ?? null, is_visible ?? null, req.params.id]
     );
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/widgets/:id', async (req, res) => {
+router.delete('/widgets/:id', captureBefore('dashboard_widgets'), async (req, res) => {
   try {
-    await pool.query('DELETE FROM dashboard_widgets WHERE id=$1 AND user_id=$2', [req.params.id, req.user?.userId]);
+    const r = await pool.query(
+      `DELETE FROM dashboard_widgets w
+        USING dashboards d
+        WHERE w.dashboard_id = d.id AND w.id = $1
+          AND d.owner_user_id = $2
+          AND ($3::INTEGER IS NULL OR w.company_id = $3::INTEGER)
+        RETURNING w.id`,
+      [req.params.id, req.user?.userId ?? null, companyOf(req) ?? null]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'Widget not found, or not yours to delete' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -559,7 +716,7 @@ router.post('/documents', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/documents/:id/verify', async (req, res) => {
+router.put('/documents/:id/verify', captureBefore('documents'), async (req, res) => {
   try {
     const r = await pool.query(
       'UPDATE documents SET is_verified=true, verified_by=$1, verified_at=NOW() WHERE id=$2 RETURNING *',
@@ -734,7 +891,7 @@ router.post('/masters', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/masters/:id', async (req, res) => {
+router.delete('/masters/:id', captureBefore('masters'), async (req, res) => {
   try {
     await pool.query('UPDATE masters SET is_active=false WHERE id=$1', [req.params.id]);
     res.json({ success: true });

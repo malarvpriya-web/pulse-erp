@@ -25,6 +25,7 @@ import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { PROJECT_TYPES } from '../../../shared/projectTypes.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? companyOf(req);
@@ -207,7 +208,7 @@ router.post('/categories', svcAdmin('add'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/categories/:id', svcAdmin('edit'), async (req, res) => {
+router.put('/categories/:id', svcAdmin('edit'), captureBefore('service_issue_categories'), async (req, res) => {
   try {
     const name = String(req.body.name ?? '').trim();
     if (!name) return res.status(400).json({ error: 'name is required' });
@@ -228,7 +229,7 @@ router.put('/categories/:id', svcAdmin('edit'), async (req, res) => {
 
 // Soft delete. Tickets keep pointing at the row (issue_category_id is ON DELETE
 // SET NULL, but we never hard-delete) so historical grouping stays intact.
-router.delete('/categories/:id', svcAdmin('delete'), async (req, res) => {
+router.delete('/categories/:id', svcAdmin('delete'), captureBefore('service_issue_categories'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE service_issue_categories SET deleted_at = NOW()

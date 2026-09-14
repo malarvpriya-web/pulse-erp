@@ -12,6 +12,7 @@ import express from 'express';
 import pool from '../../shared/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -67,7 +68,7 @@ router.post('/categories', requirePermission('inventory', 'add'), async (req, re
   }
 });
 
-router.put('/categories/:id', requirePermission('inventory', 'edit'), async (req, res) => {
+router.put('/categories/:id', requirePermission('inventory', 'edit'), captureBefore('item_categories'), async (req, res) => {
   try {
     const { name, category_code, parent_id, description, is_active } = req.body;
     const params = [name ?? null, category_code ?? null, parent_id || null, description ?? null, is_active ?? true, req.params.id];
@@ -165,7 +166,7 @@ router.post('/items/:itemId/vendor-prices', requirePermission('inventory', 'add'
   }
 });
 
-router.put('/vendor-prices/:id', requirePermission('inventory', 'edit'), async (req, res) => {
+router.put('/vendor-prices/:id', requirePermission('inventory', 'edit'), captureBefore('item_vendor_prices'), async (req, res) => {
   try {
     const b = req.body;
     const { rows } = await pool.query(
@@ -204,7 +205,7 @@ router.put('/vendor-prices/:id', requirePermission('inventory', 'edit'), async (
   }
 });
 
-router.delete('/vendor-prices/:id', requirePermission('inventory', 'delete'), async (req, res) => {
+router.delete('/vendor-prices/:id', requirePermission('inventory', 'delete'), captureBefore('item_vendor_prices'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE item_vendor_prices SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING id`,

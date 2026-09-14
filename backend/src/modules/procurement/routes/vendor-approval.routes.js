@@ -14,6 +14,7 @@ import VendorService from '../services/vendor.service.js';
 import { uploadFile } from '../../../services/StorageService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { resolveVendorParty } from '../services/vendorIdentity.service.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -188,7 +189,7 @@ router.get('/:id', requireProcurement('view'), async (req, res) => {
 });
 
 // ── PUT /vendor-approval/:id/scm-review ──────────────────────────────────────
-router.put('/:id/scm-review', requireProcurement('approve'), async (req, res) => {
+router.put('/:id/scm-review', requireProcurement('approve'), captureBefore('vendor_registrations'), async (req, res) => {
   try {
     const {
       decision, remarks,
@@ -230,7 +231,7 @@ router.put('/:id/scm-review', requireProcurement('approve'), async (req, res) =>
 });
 
 // ── PUT /vendor-approval/:id/quality-review ──────────────────────────────────
-router.put('/:id/quality-review', requireProcurement('approve', 'qc_manager', 'qc_engineer'), async (req, res) => {
+router.put('/:id/quality-review', requireProcurement('approve', 'qc_manager', 'qc_engineer'), captureBefore('vendor_registrations'), async (req, res) => {
   try {
     const {
       decision, remarks,
@@ -271,7 +272,7 @@ router.put('/:id/quality-review', requireProcurement('approve', 'qc_manager', 'q
 });
 
 // ── PUT /vendor-approval/:id/finance-review ───────────────────────────────────
-router.put('/:id/finance-review', requireProcurement('approve', 'finance', 'finance_manager'), async (req, res) => {
+router.put('/:id/finance-review', requireProcurement('approve', 'finance', 'finance_manager'), captureBefore('vendor_registrations'), async (req, res) => {
   try {
     const {
       decision, remarks,
@@ -356,6 +357,17 @@ router.put('/:id/management-review', requireProcurement('approve', 'department_h
         const { rows: [ct] } = await client.query(`SELECT COUNT(*) AS cnt FROM vendors WHERE company_id=$1 OR company_id IS NULL`, [reg.company_id]);
         const code = `VND-${String(Number(ct.cnt) + 1).padStart(4, '0')}`;
 
+        // ⚠ status is inserted as 'active', LOWER CASE. It used to be 'Active'
+        // here and nowhere else: the column default is 'active', every other
+        // writer and every test writes 'active', and VendorManagement.jsx filters
+        // on v.status === 'active'. So a vendor created by APPROVING a
+        // registration — the whole point of this workflow — rendered as
+        // "Inactive" in the vendor list and was excluded from the active-vendor
+        // picker, which then read "No active vendors." Case drift also splits
+        // GROUP BY, reporting one state as two.
+        //
+        // `classification` is deliberately Capitalised: that vocabulary comes
+        // from classifyHealth() and is Capitalised everywhere it is read.
         const { rows: [vendor] } = await client.query(`
           INSERT INTO vendors (
             vendor_name, category, vendor_type, vendor_category, vendor_code,
@@ -368,7 +380,7 @@ router.put('/:id/management-review', requireProcurement('approve', 'department_h
             risk_score, risk_rating,
             approved_by, approved_at, registration_id, company_id
           ) VALUES (
-            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,'Active','Approved',$27,$28,$29,NOW(),$30,$31
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,'active','Approved',$27,$28,$29,NOW(),$30,$31
           ) RETURNING id
         `, [
           reg.vendor_name, reg.vendor_type || 'General', reg.vendor_type, reg.vendor_type, code,
@@ -475,7 +487,7 @@ router.post('/vendors/:vendorId/contacts', requireProcurement('edit'), scopeVend
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/contacts/:id', requireProcurement('edit'), async (req, res) => {
+router.put('/contacts/:id', requireProcurement('edit'), captureBefore('vendor_contacts'), async (req, res) => {
   try {
     const { contact_type, name, designation, phone, mobile, email, is_primary } = req.body;
     const { rows: [c] } = await pool.query(`
@@ -487,7 +499,7 @@ router.put('/contacts/:id', requireProcurement('edit'), async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/contacts/:id', requireProcurement('delete'), async (req, res) => {
+router.delete('/contacts/:id', requireProcurement('delete'), captureBefore('vendor_contacts'), async (req, res) => {
   try {
     // Reports whether anything was actually deleted. The bare DELETE returned
     // "Deleted" for an id in another company that it had not touched.
@@ -529,7 +541,7 @@ router.post('/vendors/:vendorId/banks', requireProcurement('approve', 'finance',
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/banks/:id/verify', requireProcurement('approve', 'finance', 'finance_manager'), async (req, res) => {
+router.put('/banks/:id/verify', requireProcurement('approve', 'finance', 'finance_manager'), captureBefore('vendor_bank_details'), async (req, res) => {
   try {
     const { rows: [b] } = await pool.query(`
       UPDATE vendor_bank_details SET finance_verified=true, finance_verified_by=$1, finance_verified_at=NOW(), updated_at=NOW()
@@ -574,7 +586,7 @@ router.post('/vendors/:vendorId/documents', requireProcurement('edit', 'qc_manag
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/documents/:id/verify', requireProcurement('approve', 'qc_manager', 'finance', 'finance_manager'), async (req, res) => {
+router.put('/documents/:id/verify', requireProcurement('approve', 'qc_manager', 'finance', 'finance_manager'), captureBefore('vendor_documents'), async (req, res) => {
   try {
     const { rows: [doc] } = await pool.query(`
       UPDATE vendor_documents SET verified=true, verified_by=$1, verified_at=NOW(), updated_at=NOW()
@@ -589,11 +601,58 @@ router.put('/documents/:id/verify', requireProcurement('approve', 'qc_manager', 
 // NCR
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ⚠ THESE FOUR ENDPOINTS USED TO READ AND WRITE `vendor_ncr` / `vendor_capa`.
+ *
+ * Nothing else in the product did. Incoming QC raises its non-conformances into
+ * `ncr_reports` + `capa_actions` (quality.routes.js), which is also what Vendor
+ * 360, the CEO dashboards and the supply-chain risk panels read — while the
+ * supplier scorecard, alone, read the vendor_* pair. So a failed incoming
+ * inspection could never reach a supplier's rating, and anything recorded here
+ * could never reach anywhere else.
+ *
+ * Repointed at the canonical pair. Migration 20260910000006 moved the existing
+ * rows and added the columns these routes need (po_id, defect_type,
+ * quantity_rejected on ncr_reports; capa_number, vendor_id, root_cause,
+ * action_plan, verification_method on capa_actions).
+ *
+ * The wire shape is preserved — `ncr_date`, `issue_date` and `capa_type` are
+ * aliased out of the canonical columns — so any caller written against the old
+ * response keeps working. The STATUS VOCABULARY is not preserved, because the
+ * old one ('Open'/'Closed') was never read by anything: canonical is
+ * open|under-review|resolved|closed for an NCR and open|in_progress|completed|
+ * verified for a CAPA, and a caller sending the old values is mapped rather than
+ * rejected.
+ */
+const NCR_STATUS = (s) => {
+  const v = String(s ?? '').toLowerCase();
+  if (v === 'closed') return 'closed';
+  if (v === 'resolved') return 'resolved';
+  if (v === 'under-review' || v === 'under review') return 'under-review';
+  return 'open';
+};
+// The vocabulary the NCR close-out gate in quality.routes.js actually tests
+// (`status NOT IN ('completed','verified')`), which is what makes a CAPA count
+// as closed on the supplier scorecard.
+const CAPA_STATUS = (s) => {
+  const v = String(s ?? '').toLowerCase();
+  if (v === 'closed' || v === 'completed') return 'completed';
+  if (v === 'verified') return 'verified';
+  if (v === 'in_progress' || v === 'in progress') return 'in_progress';
+  return 'open';
+};
+// Matches quality.routes.js. The old `COUNT(*) + 1` scheme restarts at NCR-0001
+// per tenant and would now collide with the numbers migrated in from vendor_ncr.
+const docNumber = (prefix) => `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+
 router.get('/vendors/:vendorId/ncr', requireProcurement('view', 'qc_manager', 'qc_engineer'), scopeVendor, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM vendor_ncr WHERE vendor_id=$1 ORDER BY ncr_date DESC`,
-      [req.params.vendorId]
+      `SELECT *, created_at AS ncr_date, resolved_at AS closed_at
+         FROM ncr_reports
+        WHERE vendor_id=$1 AND ($2::int IS NULL OR company_id = $2)
+        ORDER BY created_at DESC`,
+      [req.params.vendorId, cid(req)]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -603,15 +662,22 @@ router.post('/ncr', requireProcurement('add', 'qc_manager', 'qc_engineer'), asyn
   try {
     const { vendor_id, grn_id, po_id, defect_type, description, quantity_rejected, severity } = req.body;
     const companyId = cid(req);
-    const { rows: [ct] } = await pool.query(
-      `SELECT COUNT(*) AS cnt FROM vendor_ncr WHERE company_id=$1 OR company_id IS NULL`,
-      [companyId]
-    );
-    const ncrNumber = `NCR-${String(Number(ct.cnt) + 1).padStart(4, '0')}`;
     const { rows: [ncr] } = await pool.query(`
-      INSERT INTO vendor_ncr (ncr_number, vendor_id, grn_id, po_id, defect_type, description, quantity_rejected, severity, company_id, raised_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *
-    `, [ncrNumber, vendor_id, grn_id || null, po_id || null, defect_type, description, quantity_rejected || null, severity || 'Minor', companyId, uid(req)]);
+      INSERT INTO ncr_reports (ncr_number, title, vendor_id, grn_id, po_id, defect_type, description,
+                               quantity_rejected, severity, status, source, company_id, detected_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open','procurement',$10,$11)
+      RETURNING *, created_at AS ncr_date
+    `, [
+      docNumber('NCR'),
+      // ncr_reports.title is NOT NULL and vendor_ncr had no title at all.
+      defect_type || 'Supplier non-conformance',
+      vendor_id, grn_id || null, po_id || null, defect_type || null, description,
+      quantity_rejected || null,
+      String(severity || 'minor').toLowerCase(),
+      companyId,
+      // detected_by is a name, not an id — this table records who reported it.
+      req.user?.name || req.user?.username || null,
+    ]);
     res.status(201).json(ncr);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -619,17 +685,15 @@ router.post('/ncr', requireProcurement('add', 'qc_manager', 'qc_engineer'), asyn
 router.put('/ncr/:id', requireProcurement('edit', 'qc_manager', 'qc_engineer'), async (req, res) => {
   try {
     const { status, root_cause, disposition } = req.body;
-    // Same interpolated actor id as the CAPA update below, and the same missing
-    // company predicate: any authenticated caller could close any tenant's
-    // non-conformance report.
-    const isClosed = status === 'Closed';
+    const next = NCR_STATUS(status);
+    const isClosed = next === 'closed';
     const { rows: [ncr] } = await pool.query(`
-      UPDATE vendor_ncr SET status=$1, root_cause=$2, disposition=$3,
-             closed_at = CASE WHEN $5::boolean THEN NOW() ELSE closed_at END,
-             closed_by = CASE WHEN $5::boolean THEN $6::int ELSE closed_by END,
+      UPDATE ncr_reports SET status=$1, root_cause=$2, disposition=$3,
+             resolved_at = CASE WHEN $5::boolean THEN NOW() ELSE resolved_at END,
              updated_at=NOW()
-      WHERE id=$4 AND ($7::int IS NULL OR company_id = $7) RETURNING *
-    `, [status, root_cause, disposition, req.params.id, isClosed, uid(req), cid(req)]);
+      WHERE id=$4 AND ($6::int IS NULL OR company_id = $6)
+      RETURNING *, created_at AS ncr_date, resolved_at AS closed_at
+    `, [next, root_cause, disposition, req.params.id, isClosed, cid(req)]);
     if (!ncr) return res.status(404).json({ error: 'NCR not found' });
     res.json(ncr);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -642,9 +706,13 @@ router.put('/ncr/:id', requireProcurement('edit', 'qc_manager', 'qc_engineer'), 
 router.get('/vendors/:vendorId/capa', requireProcurement('view', 'qc_manager', 'qc_engineer'), scopeVendor, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT c.*, n.ncr_number FROM vendor_capa c LEFT JOIN vendor_ncr n ON n.id=c.ncr_id
-        WHERE c.vendor_id=$1 AND ($2::int IS NULL OR c.company_id = $2 OR c.company_id IS NULL)
-        ORDER BY c.issue_date DESC`,
+      `SELECT c.*, c.action_type AS capa_type, c.created_at AS issue_date,
+              c.verified_at AS closed_at, n.ncr_number
+         FROM capa_actions c
+         LEFT JOIN ncr_reports n ON n.id = c.ncr_id
+        WHERE COALESCE(c.vendor_id, n.vendor_id) = $1
+          AND ($2::int IS NULL OR c.company_id = $2 OR c.company_id IS NULL)
+        ORDER BY c.created_at DESC`,
       [req.params.vendorId, cid(req)]
     );
     res.json(rows);
@@ -655,35 +723,42 @@ router.post('/capa', requireProcurement('add', 'qc_manager', 'qc_engineer'), asy
   try {
     const { ncr_id, vendor_id, capa_type, due_date, description, root_cause, action_plan, verification_method } = req.body;
     const companyId = cid(req);
-    const { rows: [ct] } = await pool.query(
-      `SELECT COUNT(*) AS cnt FROM vendor_capa WHERE company_id=$1 OR company_id IS NULL`,
-      [companyId]
-    );
-    const capaNumber = `CAPA-${String(Number(ct.cnt) + 1).padStart(4, '0')}`;
     const { rows: [capa] } = await pool.query(`
-      INSERT INTO vendor_capa (capa_number, ncr_id, vendor_id, capa_type, due_date, description, root_cause, action_plan, verification_method, company_id, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
-    `, [capaNumber, ncr_id || null, vendor_id, capa_type || 'Corrective', due_date || null, description, root_cause, action_plan, verification_method, companyId, uid(req)]);
+      INSERT INTO capa_actions (capa_number, ncr_id, vendor_id, action_type, due_date, description,
+                                root_cause, action_plan, verification_method, status, company_id, assigned_to)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open',$10,$11)
+      RETURNING *, action_type AS capa_type, created_at AS issue_date
+    `, [
+      docNumber('CAPA'), ncr_id || null, vendor_id || null,
+      String(capa_type || 'corrective').toLowerCase(),
+      due_date || null, description, root_cause, action_plan, verification_method, companyId,
+      req.user?.name || req.user?.username || null,
+    ]);
     res.status(201).json(capa);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/capa/:id', requireProcurement('edit', 'qc_manager', 'qc_engineer'), async (req, res) => {
+router.put('/capa/:id', requireProcurement('edit', 'qc_manager', 'qc_engineer'), captureBefore('capa_actions'), async (req, res) => {
   try {
     const { status, effectiveness_rating, root_cause, action_plan } = req.body;
-    // `closed_by=${uid(req)}` interpolated a value straight into the SQL string.
-    // It is an integer from a signed token today, so it was not exploitable —
-    // but an unparameterised value in a SQL string is a habit, not an accident,
-    // and a NULL actor produced the literal text `closed_by=null`. Bound as a
-    // parameter, with the column set unconditionally so the shape is stable.
-    const isClosed = status === 'Closed';
+    // The old `closed_by=${uid(req)}` interpolated a value straight into the SQL
+    // string. capa_actions has no closed_by/closed_at pair — completion is
+    // `completion_date` and verification is `verified_at` + `verifier_id`, which
+    // is the distinction the NCR close-out gate depends on. Bound, not
+    // interpolated, and the actor is recorded on the verification.
+    const next = CAPA_STATUS(status);
+    const isDone     = next === 'completed' || next === 'verified';
+    const isVerified = next === 'verified';
     const { rows: [capa] } = await pool.query(`
-      UPDATE vendor_capa SET status=$1, effectiveness_rating=$2, root_cause=$3, action_plan=$4,
-             closed_at = CASE WHEN $6::boolean THEN NOW() ELSE closed_at END,
-             closed_by = CASE WHEN $6::boolean THEN $7::int ELSE closed_by END,
+      UPDATE capa_actions SET status=$1, effectiveness_rating=$2, root_cause=$3, action_plan=$4,
+             completion_date = CASE WHEN $6::boolean THEN COALESCE(completion_date, CURRENT_DATE) ELSE completion_date END,
+             verified_at     = CASE WHEN $7::boolean THEN COALESCE(verified_at, NOW()) ELSE verified_at END,
+             verifier_id     = CASE WHEN $7::boolean THEN COALESCE(verifier_id, $8::int) ELSE verifier_id END,
              updated_at=NOW()
-      WHERE id=$5 AND ($8::int IS NULL OR company_id = $8) RETURNING *
-    `, [status, effectiveness_rating || null, root_cause, action_plan, req.params.id, isClosed, uid(req), cid(req)]);
+      WHERE id=$5 AND ($9::int IS NULL OR company_id = $9)
+      RETURNING *, action_type AS capa_type, created_at AS issue_date
+    `, [next, effectiveness_rating || null, root_cause, action_plan, req.params.id,
+        isDone, isVerified, uid(req), cid(req)]);
     if (!capa) return res.status(404).json({ error: 'CAPA not found' });
     res.json(capa);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -729,6 +804,86 @@ router.post('/vendors/:vendorId/risk', requireProcurement('edit', 'qc_manager'),
 // CEO TRACEABILITY (49C-25)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/* ── PUT /vendors/:vendorId/approve ── record approval for a master vendor ──
+ *
+ * The four-stage review above promotes a REGISTRATION into the vendor master and
+ * stamps approved_by/approved_at as it does. A vendor that entered the master any
+ * other way — seeded, imported, created directly — has no registration to review,
+ * and so had no path to an approval record at all.
+ *
+ * That is not cosmetic. The traceability score below requires
+ * `approved_by AND approved_at`, so every such vendor scored INCOMPLETE
+ * permanently, with nothing a user could do about it. All six vendors on this
+ * database are in exactly that position: registration_id IS NULL on every one.
+ *
+ * ⚠ This records a REAL decision by the caller — it is deliberately not a
+ * backfill. Stamping approved_by from a script would manufacture an approval
+ * nobody gave, which is precisely the fiction the traceability score exists to
+ * expose. The endpoint therefore requires the procurement 'approve' permission
+ * and writes the caller's own id.
+ */
+router.put('/vendors/:vendorId/approve', requireProcurement('approve', 'department_head'), scopeVendor, captureBefore('vendors'), async (req, res) => {
+  const { classification, remarks } = req.body || {};
+
+  // The same vocabulary the registration flow writes, plus the two states a
+  // master vendor can be moved to without a registration behind it.
+  const ALLOWED = ['Approved', 'Conditional Approval', 'Watchlist', 'Critical', 'Blacklisted', 'Unrated'];
+  if (classification !== undefined && !ALLOWED.includes(classification)) {
+    return res.status(422).json({ error: `classification must be one of: ${ALLOWED.join(', ')}` });
+  }
+
+  const approver = uid(req);
+  if (!approver) return res.status(401).json({ error: 'Could not identify the approver' });
+
+  try {
+    const { rows: [before] } = await pool.query(
+      `SELECT id, vendor_name, approved_by, approved_at, classification FROM vendors WHERE id = $1`,
+      [req.params.vendorId]
+    );
+    if (!before) return res.status(404).json({ error: 'Vendor not found' });
+
+    // Re-approving is allowed (an approver changing a classification is a real
+    // action), but it must not silently rewrite WHO first approved and WHEN —
+    // that is the audit trail. The original stamp is preserved and the new
+    // decision is recorded in the audit log instead.
+    const isFirstApproval = !before.approved_by || !before.approved_at;
+
+    const sets = ['classification = COALESCE($1, classification)'];
+    const vals = [classification ?? null];
+    if (isFirstApproval) {
+      vals.push(approver);
+      sets.push(`approved_by = $${vals.length}`);
+      sets.push('approved_at = NOW()');
+    }
+    vals.push(req.params.vendorId);
+
+    const { rows: [vendor] } = await pool.query(
+      `UPDATE vendors SET ${sets.join(', ')} WHERE id = $${vals.length}
+       RETURNING id, vendor_name, vendor_code, classification, approved_by, approved_at`,
+      vals
+    );
+
+    logAudit({
+      userId: approver, module: 'vendor_approval',
+      recordId: vendor.id, recordType: 'vendor',
+      action: isFirstApproval ? 'vendor_approved' : 'vendor_reclassified',
+      oldData: before,
+      newData: { ...vendor, remarks: remarks || null },
+      req,
+    });
+
+    res.json({
+      ...vendor,
+      first_approval: isFirstApproval,
+      message: isFirstApproval
+        ? 'Approval recorded'
+        : 'Vendor reclassified — the original approval stamp was kept',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/vendors/:vendorId/traceability', requireProcurement('view'), scopeVendor, async (req, res) => {
   try {
     const { vendorId } = req.params;
@@ -749,8 +904,10 @@ router.get('/vendors/:vendorId/traceability', requireProcurement('view'), scopeV
       // `$1::text` cast made Postgres compare integer = text and threw
       // `operator does not exist`, so this endpoint had never returned once.
       pool.query(`SELECT COALESCE(SUM(total_amount),0) AS total_spend, COUNT(*) AS po_count FROM purchase_orders WHERE supplier_id=$1`, [vendorId]),
-      pool.query(`SELECT * FROM vendor_ncr WHERE vendor_id=$1 ORDER BY ncr_date DESC`, [vendorId]),
-      pool.query(`SELECT * FROM vendor_capa WHERE vendor_id=$1 ORDER BY issue_date DESC`, [vendorId]),
+      pool.query(`SELECT *, created_at AS ncr_date FROM ncr_reports WHERE vendor_id=$1 ORDER BY created_at DESC`, [vendorId]),
+      pool.query(`SELECT c.*, c.action_type AS capa_type, c.created_at AS issue_date
+                    FROM capa_actions c LEFT JOIN ncr_reports n ON n.id = c.ncr_id
+                   WHERE COALESCE(c.vendor_id, n.vendor_id)=$1 ORDER BY c.created_at DESC`, [vendorId]),
       pool.query(`SELECT * FROM vendor_scorecards WHERE vendor_id=$1 ORDER BY period_year DESC, period_quarter DESC LIMIT 1`, [vendorId]),
       pool.query(`SELECT * FROM vendor_risk_assessments WHERE vendor_id=$1 ORDER BY assessment_date DESC LIMIT 1`, [vendorId]),
       pool.query(`SELECT DISTINCT p.id, p.project_number, p.project_name FROM projects p JOIN purchase_orders po ON po.project_id=p.id WHERE po.supplier_id=$1 LIMIT 20`, [vendorId]).catch(() => ({ rows: [] })),
@@ -878,9 +1035,13 @@ router.get('/dashboard/stats', requireProcurement('view'), async (req, res) => {
         SELECT
           COUNT(*) AS total_vendors,
           COUNT(*) FILTER (WHERE classification='Preferred') AS preferred,
-          COUNT(*) FILTER (WHERE classification='Blocked' OR status='Blocked') AS blocked,
+          COUNT(*) FILTER (WHERE classification='Blocked' OR LOWER(status)='blocked') AS blocked,
           COUNT(*) FILTER (WHERE risk_rating IN ('High','Critical')) AS high_risk,
-          COUNT(*) FILTER (WHERE status='Active') AS active
+          -- LOWER(): same drift as vendor.repository.getStats(). Counting
+          -- status='Active' against a column whose canonical value is 'active'
+          -- reported only the rows this router itself had created and called
+          -- that the active vendor population.
+          COUNT(*) FILTER (WHERE LOWER(status)='active') AS active
         FROM vendors ${vWhere}
       `, vParams),
       pool.query(`
@@ -889,7 +1050,9 @@ router.get('/dashboard/stats', requireProcurement('view'), async (req, res) => {
           COUNT(*) FILTER (WHERE status='Approved') AS approved
         FROM vendor_registrations ${cf}
       `, params),
-      pool.query(`SELECT COUNT(*) AS open_ncr FROM vendor_ncr WHERE status='Open' AND (company_id=$1 OR company_id IS NULL)`, [companyId || 0]).catch(() => ({ rows: [{ open_ncr: 0 }] })),
+      // Supplier NCRs only: ncr_reports also carries production non-conformances,
+      // which are not a supplier's to answer for. vendor_id IS NOT NULL is the filter.
+      pool.query(`SELECT COUNT(*) AS open_ncr FROM ncr_reports WHERE vendor_id IS NOT NULL AND LOWER(status) <> 'closed' AND (company_id=$1 OR company_id IS NULL)`, [companyId || 0]).catch(() => ({ rows: [{ open_ncr: 0 }] })),
     ]);
 
     res.json({
@@ -999,10 +1162,10 @@ router.get('/reports/ncr-summary', requireProcurement('export', 'qc_manager'), a
     const companyId = cid(req);
     const { rows } = await pool.query(`
       SELECT n.*, v.vendor_name, v.vendor_code
-      FROM vendor_ncr n
+      FROM ncr_reports n
       JOIN vendors v ON v.id=n.vendor_id
       WHERE (n.company_id=$1 OR n.company_id IS NULL)
-      ORDER BY n.ncr_date DESC
+      ORDER BY n.created_at DESC
     `, [companyId]);
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }

@@ -8,7 +8,7 @@ import { scoreProjectHealth, narrateProjectHealth } from './projectHealthNarrato
 import { narrateTicketThread } from './ticketThreadNarrator.js';
 import {
   EMPLOYEE_ACTIVE, EMPLOYEE_EXITED, INVOICE_PAID, BILL_PAID,
-  LEAVE_APPROVED, LEAVE_PENDING, isIn, notIn,
+  LEAVE_APPROVED, LEAVE_PENDING, isIn, notIn, sqlOpportunityOpen,
 } from '../../shared/statusSets.js';
 
 const router = express.Router();
@@ -302,15 +302,20 @@ router.post('/chat', async (req, res) => {
       const rows = await ask(`
         -- inventory_items has no 'name' column (it is item_name), so this query
         -- threw and the catch turned every answer into "no items below reorder
-        -- point" even when there were. reorder_level is the populated column;
-        -- reorder_point is kept as a fallback for rows that only set that one.
+        -- point" even when there were.
+        -- The COALESCE(reorder_level, reorder_point) fallback that used to sit
+        -- here is GONE: 20260911000010_sca_spine_identity dropped reorder_point
+        -- (0.000 on every row, so every raw reader evaluated "stock < 0" and
+        -- could never return anything) after carrying its values into
+        -- reorder_level. Naming a dropped column in a COALESCE still throws
+        -- 42703 — a fallback to nothing is not a fallback.
         SELECT item_name AS name, current_stock,
-               COALESCE(reorder_level, reorder_point) AS reorder_point
+               reorder_level AS reorder_point
         FROM inventory_items
-        WHERE current_stock <= COALESCE(reorder_level, reorder_point)
-          AND COALESCE(reorder_level, reorder_point) > 0
+        WHERE current_stock <= reorder_level
+          AND reorder_level > 0
           AND ($1::int IS NULL OR company_id = $1)
-        ORDER BY (current_stock::float / NULLIF(COALESCE(reorder_level, reorder_point),0)) ASC LIMIT 15
+        ORDER BY (current_stock::float / NULLIF(reorder_level,0)) ASC LIMIT 15
       `, [cid]);
       if (rows === null) return unavailable('Inventory levels', 'inventory_items WHERE stock <= reorder_point');
       if (!rows.length)
@@ -603,10 +608,15 @@ router.get('/predictions', async (req, res) => {
   // Stockout risk — items below 1.5× reorder point
   try {
     const { rows } = await pool.query(
-      `SELECT item_name AS name, current_stock, reorder_point, unit_of_measure AS unit
+      // reorder_level, not reorder_point — the latter was dropped by
+      // 20260911000010_sca_spine_identity. This is the Stockout Risk panel the
+      // migration's own header names as having been "silently empty forever".
+      `SELECT item_name AS name, current_stock,
+              reorder_level AS reorder_point, unit_of_measure AS unit
          FROM inventory_items
-        WHERE current_stock < reorder_point*1.5${cAnd()}
-        ORDER BY current_stock::float/NULLIF(reorder_point,0) ASC LIMIT 8`, cArgs
+        WHERE reorder_level > 0
+          AND current_stock < reorder_level*1.5${cAnd()}
+        ORDER BY current_stock::float/NULLIF(reorder_level,0) ASC LIMIT 8`, cArgs
     );
     predictions.stockout_risk = {
       title: 'Inventory Stockout Risk',
@@ -1046,7 +1056,7 @@ router.get('/predict/lead-priority', async (req, res) => {
              expected_closing_date, assigned_to, created_at, updated_at, next_step
       FROM opportunities
       WHERE deleted_at IS NULL
-        AND LOWER(stage) NOT IN ('closed_won', 'closed_lost')
+        AND ${sqlOpportunityOpen('stage')}
         AND ($1::int IS NULL OR company_id = $1)
     `, [cid]);
 
@@ -1258,14 +1268,16 @@ router.get('/prescriptive', async (req, res) => {
     pool.query(`
       -- inventory_items has no "name" column (it is item_name), so this threw
       -- 42703 on every call and the catch dropped the recommendation entirely.
-      -- reorder_level is the populated column; reorder_point is the fallback.
+      -- The reorder_point half of the old COALESCE is gone for the same reason:
+      -- 20260911000010_sca_spine_identity dropped that column, and naming it
+      -- even as a fallback still throws 42703.
       SELECT item_name AS name, current_stock,
-             COALESCE(reorder_level, reorder_point) AS reorder_point
+             reorder_level AS reorder_point
       FROM inventory_items
-      WHERE current_stock <= COALESCE(reorder_level, reorder_point)
-        AND COALESCE(reorder_level, reorder_point) > 0
+      WHERE current_stock <= reorder_level
+        AND reorder_level > 0
         AND ($1::int IS NULL OR company_id = $1)
-      ORDER BY current_stock::float / NULLIF(COALESCE(reorder_level, reorder_point),0) ASC
+      ORDER BY current_stock::float / NULLIF(reorder_level,0) ASC
       LIMIT 5
     `, [cid]).then(({ rows }) => {
       if (!rows.length) return;

@@ -119,7 +119,12 @@ if (FILES.length === 0) {
  * deleting the short-circuit while leaving the queries turns the gate red.
  */
 const UNIMPLEMENTED_TABLES = new Set([
-  'sla_config', 'sla_tracking', 'dashboard_widgets', 'documents',
+  // `dashboard_widgets` was here until 10 Sep 2026. It is now a real table
+  // (migration 20260910000002_dashboard_builder) with `dashboards` above it,
+  // and its routes execute through shared/metricRegistry.js. Leaving it listed
+  // would exempt a LIVE table from the gate — so if the migration is ever
+  // reverted, this gate goes red, which is the correct outcome.
+  'sla_config', 'sla_tracking', 'documents',
   'project_costs', 'budget_vs_actual', 'profit_tracker', 'masters',
   'insights_cache',
 ]);
@@ -333,7 +338,11 @@ for (const rel of FILES) {
   const src = fs.readFileSync(file, 'utf8');
 
   // CTE names declared in this file are legitimate FROM targets.
-  const ctes = new Set([...src.matchAll(/(?:WITH|,)\s+([a-z_][a-z0-9_]*)\s+AS\s*\(/gi)].map(m => m[1].toLowerCase()));
+  // `WITH RECURSIVE <name> AS (` puts RECURSIVE between the keyword and the
+  // name, so the optional group is required — without it a recursive CTE's
+  // own name is reported as a missing table, which is what happened to the
+  // account-hierarchy query (`WITH RECURSIVE up AS ...` -> MISSING TABLE up).
+  const ctes = new Set([...src.matchAll(/(?:WITH|,)\s+(?:RECURSIVE\s+)?([a-z_][a-z0-9_]*)\s+AS\s*\(/gi)].map(m => m[1].toLowerCase()));
 
   // ── tables ──────────────────────────────────────────────────────────────
   //

@@ -63,16 +63,110 @@ function appliedBy() {
 
 // ── Tamper detection ──────────────────────────────────────────────────────────
 
+/**
+ * An applied migration whose file is gone is USUALLY benign: someone ran a
+ * migration, spotted a mistake within the minute, wrote a corrected one, ran
+ * that, and deleted the original. The ledger keeps both — correctly, because
+ * both DDL runs really happened — and the deleted one warns forever.
+ *
+ * Reported undifferentiated, those warnings train the reader to ignore the
+ * whole block, which is where a genuinely unexplained gap hides. So a missing
+ * file is classified: if another migration sharing its timestamp prefix is also
+ * applied AND its file is on disk, the row is a tombstone of superseded work
+ * and is reported as such. Anything else is called out as unexplained.
+ *
+ * Nothing is deleted from the ledger. Those rows are the only surviving record
+ * that the DDL ran — dropping them would let a restored copy of the file
+ * re-run it.
+ */
+/**
+ * The migrations the committed baseline snapshot claims to embody.
+ *
+ * Read lazily and cached: this runs inside the warning path on every migrate
+ * and every /api/health call, and the file does not change while the process
+ * lives. A missing or malformed manifest yields an empty set — the caller then
+ * falls through to the name-based rules, which is the pre-existing behaviour,
+ * so a broken manifest degrades the explanation rather than the run.
+ */
+let baselineNamesCache = null;
+function baselineManifestNames() {
+  if (baselineNamesCache) return baselineNamesCache;
+  try {
+    const raw = JSON.parse(fs.readFileSync(BASELINE_MANIFEST_PATH, 'utf8'));
+    baselineNamesCache = new Set(Array.isArray(raw?.migrations) ? raw.migrations : []);
+  } catch {
+    baselineNamesCache = new Set();
+  }
+  return baselineNamesCache;
+}
+
+function classifyMissingFile(name, appliedNames) {
+  const split = (n) => {
+    const i = String(n).indexOf('_');
+    return i === -1 ? [String(n), ''] : [String(n).slice(0, i), String(n).slice(i + 1)];
+  };
+  const [prefix, body] = split(name);
+  const onDisk = (n) => fs.existsSync(path.join(MIGRATIONS_DIR, n));
+
+  const candidates = appliedNames.filter((other) => other !== name && onDisk(other));
+
+  // Identical name after the prefix — the same migration renumbered. Matching
+  // on the full descriptive body keeps this from firing on unrelated files.
+  //
+  // Checked BEFORE the same-prefix rule because an identical body is strictly
+  // stronger evidence than a shared sequence number. Two unrelated migrations
+  // authored on the same day can collide on a prefix by accident — which is
+  // exactly what happened to 20260902000003, where a renumbered file and an
+  // unrelated data repair shared a number and the prefix rule reported the
+  // renumber as having been "replaced by" the repair.
+  const renumbered = candidates.find((other) => split(other)[1] === body && body !== '');
+  if (renumbered) return { successor: renumbered, how: 'renumbered to' };
+
+  // Same timestamp prefix — a corrected migration written moments after the
+  // original and given the same sequence number.
+  const replaced = candidates.find((other) => split(other)[0] === prefix);
+  if (replaced) return { successor: replaced, how: 'replaced by' };
+
+  // Absorbed into the baseline snapshot. Checked LAST because a named successor
+  // still on disk is the more useful thing to tell someone — but this is the
+  // rule that resolves the rows nothing else can.
+  //
+  // The manifest is a written claim that baseline.sql contains this migration's
+  // effects, so a fresh database gets the schema AND records that it has it.
+  // Without this rule such a row is unexplainable by any action available: the
+  // file is gone, so it can never be restored to disk, and no successor shares
+  // its name. 20260530000003_payroll_settings.js warned on every migrate run
+  // for months for exactly that reason, while `payroll_settings` sat in
+  // baseline.sql the whole time.
+  if (baselineManifestNames().has(name)) {
+    return { line: 'absorbed into baseline.sql — a fresh database gets it from the snapshot' };
+  }
+
+  return null;
+}
+
 async function detectTamperedMigrations(client) {
   const { rows } = await client.query(
     'SELECT name, checksum FROM schema_migrations WHERE checksum IS NOT NULL'
   );
+  const { rows: allApplied } = await client.query('SELECT name FROM schema_migrations');
+  const appliedNames = allApplied.map((r) => r.name);
 
   const warnings = [];
+  const superseded = [];
   for (const { name, checksum } of rows) {
     const filePath = path.join(MIGRATIONS_DIR, name);
     if (!fs.existsSync(filePath)) {
-      warnings.push(`  ⚠️  Applied migration file missing from disk: ${name}`);
+      const match = classifyMissingFile(name, appliedNames);
+      if (match) {
+        superseded.push(
+          match.line
+            ? `  ℹ️   Superseded: ${name} — ${match.line}`
+            : `  ℹ️   Superseded: ${name} — ${match.how} ${match.successor}, which is applied and on disk`
+        );
+      } else {
+        warnings.push(`  ⚠️  Applied migration file missing from disk, with no successor: ${name}`);
+      }
       continue;
     }
     const current = fileChecksum(filePath);
@@ -80,9 +174,12 @@ async function detectTamperedMigrations(client) {
       warnings.push(`  ❌  Checksum mismatch — ${name} was modified after it was applied`);
       warnings.push(`       stored : ${checksum}`);
       warnings.push(`       current: ${current}`);
+      warnings.push(`       Verify the schema matches the file before running migrate:repair-checksums —`);
+      warnings.push(`       repairing only restamps the ledger, it does not apply anything.`);
     }
   }
-  return warnings;
+  // Superseded rows are noted after the real warnings so they cannot bury one.
+  return [...warnings, ...superseded];
 }
 
 // ── Public: migration status report ──────────────────────────────────────────

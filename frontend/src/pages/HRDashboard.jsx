@@ -20,7 +20,7 @@ import {
   getHrFilterOptions, isErrored, errorOf,
 } from '@/features/hr-analytics/services/hrAnalyticsApi';
 import useDashboardFilters from '@/hooks/useDashboardFilters';
-import { DashboardFilterBar } from '@/components/pulse-ui';
+import { DashboardFilterBar, PageHero, PageShell, SectionTitle, Stat, StatBand } from '@/components/pulse-ui';
 import { generateInsights } from '@/features/analytics/services/insightsEngine';
 import HeadcountCard           from '@/features/hr-analytics/components/HeadcountCard';
 import AttritionRateCard       from '@/features/hr-analytics/components/AttritionRateCard';
@@ -387,8 +387,78 @@ export default function HRDashboard({ setPage }) {
     </ResponsiveContainer>
   );
 
+  // ── Page chrome ────────────────────────────────────────────────────────────
+  // Hero + tab strip + filter bar, frozen in the PageShell dock. This page used
+  // to draw its own <h1> header, a loose filter bar and a bespoke grey tab pill
+  // inside a plain padded <div> — which is what made it the one dashboard that
+  // did not look like the rest of the app.
+  const chrome = (
+    <>
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="HR Dashboard"
+        subtitle="Workforce strength, hiring, attrition and approvals across People & Culture"
+        meta={[
+          { value: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }), label: '' },
+          { value: s.total || 0, label: 'employees' },
+          { value: s.active || 0, label: 'active', tone: 'good' },
+          { value: `${attritionRate}%`, label: 'attrition', tone: attritionRate > 12 ? 'bad' : 'good' },
+          { value: pendingLeaves, label: 'pending approvals', tone: pendingLeaves > 0 ? 'warn' : 'good' },
+          ...(activeTab === 'analytics' && lastRefresh ? [{ value: lastRefresh, label: 'updated' }] : []),
+        ]}
+        actions={
+          <>
+            {activeTab === 'overview' && canManage && (
+              <button className="plh-cta" onClick={() => setPage('AddEmployee')}>
+                <Plus size={14} /> Add Employee
+              </button>
+            )}
+            <button
+              className="plh-cta plh-cta--ghost plh-cta--icon"
+              title="Refresh"
+              aria-label="Refresh"
+              onClick={() => (activeTab === 'overview' ? loadOverview() : loadAnalytics())}
+              disabled={activeTab === 'overview' ? loading : aLoading}
+            >
+              <RefreshCw size={14} className={(activeTab === 'overview' ? loading : aLoading) ? 'plh-spin' : undefined} />
+            </button>
+          </>
+        }
+      />
+
+      <div className="tax-tabs" role="tablist" style={{ marginBottom: 10 }}>
+        {TABS.map(t => (
+          <button
+            key={t.key}
+            role="tab"
+            aria-selected={activeTab === t.key}
+            className={`tax-tab${activeTab === t.key ? ' is-on' : ''}`}
+            onClick={() => handleTabSwitch(t.key)}
+          >
+            <t.icon size={14} />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Canonical filter bar — period + department, both applied server-side. */}
+      {activeTab === 'analytics' && (
+        <DashboardFilterBar
+          filters={filters}
+          dimensions={[{
+            key: 'department',
+            label: 'Department',
+            allLabel: 'All Departments',
+            options: deptOptions.map(d => ({ value: d, label: d })),
+          }]}
+        />
+      )}
+    </>
+  );
+
   return (
-    <div style={{ padding:'16px 18px 20px', background:'#f8f9fc', minHeight:'100vh' }}>
+    <PageShell dock={chrome}>
       <style>{`@keyframes hr-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
 
       {/* Toast */}
@@ -404,72 +474,6 @@ export default function HRDashboard({ setPage }) {
           {toast.msg}
         </div>
       )}
-
-      {/* ── Header ───────────────────────────────────────────────────────────── */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16 }}>
-        <div>
-          <h1 style={{ margin:0, fontSize:22, fontWeight:700, color:'#111827' }}>HR Dashboard</h1>
-          <p style={{ margin:'4px 0 0', color:'#6b7280', fontSize:13 }}>
-            {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
-            {' · '}<span style={{ color:P, fontWeight:500 }}>People & Culture</span>
-            {activeTab === 'analytics' && lastRefresh && (
-              <span style={{ marginLeft:8, color:'#d1d5db' }}>· Updated {lastRefresh}</span>
-            )}
-          </p>
-        </div>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-
-          {activeTab === 'overview' && canManage && (
-            <button onClick={() => setPage('AddEmployee')} style={{
-              padding:'7px 12px', background:P, color:'#fff', border:'none',
-              borderRadius:8, cursor:'pointer', fontSize:12, display:'flex', alignItems:'center', gap:5,
-            }}>
-              <Plus size={13} /> Add Employee
-            </button>
-          )}
-          <button
-            onClick={() => activeTab === 'overview' ? loadOverview() : loadAnalytics()}
-            disabled={activeTab === 'overview' ? loading : aLoading}
-            style={{ padding:'7px 10px', background:'#fff', border:`1px solid ${BORDER}`, borderRadius:8, cursor:'pointer', color:'#6b7280' }}
-          >
-            <RefreshCw size={14} />
-          </button>
-        </div>
-      </div>
-
-      {/* Canonical filter bar — period + department, both applied server-side. */}
-      {activeTab === 'analytics' && (
-        <DashboardFilterBar
-          filters={filters}
-          dimensions={[{
-            key: 'department',
-            label: 'Department',
-            allLabel: 'All Departments',
-            options: deptOptions.map(d => ({ value: d, label: d })),
-          }]}
-        />
-      )}
-
-      {/* ── Tab switcher ──────────────────────────────────────────────────────── */}
-      <div style={{ display:'flex', gap:2, background:'#f3f4f6', borderRadius:10, padding:3, marginBottom:14, width:'fit-content' }}>
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            onClick={() => handleTabSwitch(t.key)}
-            style={{
-              display:'flex', alignItems:'center', gap:6,
-              padding:'6px 16px', borderRadius:8, border:'none', cursor:'pointer', fontSize:13, fontWeight:500,
-              background: activeTab === t.key ? '#fff' : 'transparent',
-              color: activeTab === t.key ? P : '#6b7280',
-              boxShadow: activeTab === t.key ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
-              transition: 'all 0.15s',
-            }}
-          >
-            <t.icon size={14} />
-            {t.label}
-          </button>
-        ))}
-      </div>
 
       {/* ════════════════════════════════════════════════════════════════════════
           OVERVIEW TAB
@@ -500,38 +504,34 @@ export default function HRDashboard({ setPage }) {
             </div>
           </div>
 
-          {/* KPI Cards */}
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, marginBottom:12 }}>
+          {/* KPI band — the canonical <StatBand>/<Stat> pair from the hero kit.
+              Hand-rolled cards carrying their own hover shadow used to live here. */}
+          <StatBand cols={5}>
             {[
-              { icon:Users,        label:'Total Employees', value:s.total||0,          sub:`${s.active||0} active`,                                                    color:P,         page:'EmployeesData',      statusFilter: null          },
-              { icon:UserCheck,    label:'On Probation',    value:s.probation||0,       sub:'Pending confirmation',                                                     color:'#d97706', page:'EmployeesData',      statusFilter: 'Probation'   },
-              { icon:Calendar,     label:'New Hires (Mo)',  value:newHires,             sub:'This month',                                                               color:'#10b981', page:'EmployeesDashboard', statusFilter: null          },
+              { icon:Users,        label:'Total Employees', value:s.total||0,          sub:`${s.active||0} active`, color:P,         page:'EmployeesData',      statusFilter: null        },
+              { icon:UserCheck,    label:'On Probation',    value:s.probation||0,      sub:'Pending confirmation',  color:'#d97706', page:'EmployeesData',      statusFilter: 'Probation' },
+              { icon:Calendar,     label:'New Hires (Mo)',  value:newHires,            sub:'This month',            color:'#10b981', page:'EmployeesDashboard', statusFilter: null        },
               { icon:TrendingDown, label:'Attrition Rate',  value:`${attritionRate}%`, sub:attritionRate>12?'Above benchmark':'Within range', color:attritionRate>12?'#dc2626':'#10b981', page:'ExEmployees', statusFilter: null },
-              { icon:Clock,        label:'Pending Leaves',  value:pendingLeaves,        sub:'Awaiting approval',                                                        color:'#ef4444', page:'LeaveApprovals',     statusFilter: null          },
+              { icon:Clock,        label:'Pending Leaves',  value:pendingLeaves,       sub:'Awaiting approval',     color:'#ef4444', page:'LeaveApprovals',     statusFilter: null        },
             ].map((k, i) => (
-              <div key={i} className="dk-anim"
+              <Stat
+                key={k.label}
+                index={i}
+                icon={k.icon}
+                label={k.label}
+                value={k.value}
+                sub={k.sub}
+                color={k.color}
+                loading={loading}
                 onClick={() => {
                   if (k.statusFilter) sessionStorage.setItem('employeeStatusFilter', k.statusFilter);
                   if (k.page) setPage(k.page);
                 }}
-                onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 6px 16px rgba(107,63,219,0.13)')}
-                onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
-                style={{ '--dk-i': i, background:'#fff', border:`1px solid ${BORDER}`, borderRadius:11, padding:'11px 13px', cursor:'pointer', transition:'box-shadow 0.15s', display:'flex', alignItems:'center', gap:11 }}
-              >
-                <div style={{ width:36, height:36, borderRadius:9, background:k.color+'18', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                  <k.icon size={17} color={k.color} />
-                </div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:11, color:'#9ca3af', marginBottom:2 }}>{k.label}</div>
-                  {loading ? <div style={{ ...shimmerStyle, width:50, marginBottom:4 }} /> : (
-                    <div style={{ fontSize:20, fontWeight:700, color:'#111827' }}>{k.value}</div>
-                  )}
-                  <div style={{ fontSize:11, color:k.color, fontWeight:500, marginTop:1 }}>{k.sub}</div>
-                </div>
-                <ChevronRight size={14} color="#d1d5db" />
-              </div>
+              />
             ))}
-          </div>
+          </StatBand>
+
+          <SectionTitle rule>Workforce Composition</SectionTitle>
 
           {/* Row 2: Dept + Gender + Hires Trend */}
           <div style={{ display:'grid', gridTemplateColumns:'6fr 3fr 3fr', gap:12, marginBottom:12 }}>
@@ -611,6 +611,8 @@ export default function HRDashboard({ setPage }) {
             <ComplianceWidget data={compliance} loading={loading} />
             <OrgSummaryWidget setPage={setPage} />
           </div>
+
+          <SectionTitle rule>Alerts &amp; Actions</SectionTitle>
 
           {/* Row 4: Alerts + Pending Approvals + Quick Actions */}
           <div style={{ display:'grid', gridTemplateColumns:'4fr 5fr 3fr', gap:12 }}>
@@ -771,6 +773,6 @@ export default function HRDashboard({ setPage }) {
           <InsightsPanel insights={analyticsInsights} loading={aLoading} />
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

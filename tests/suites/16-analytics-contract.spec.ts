@@ -96,9 +96,13 @@ test.describe('@P0 KPI reconciliation — one name, one number', () => {
   });
 
   test('Offer acceptance agrees between HR Dashboard and HR Benchmarking', async () => {
+    // period=all, because HR Benchmarking's cards now sit under a period filter
+    // (default last12m) while /analytics/offer-acceptance is an all-time KPI.
+    // Comparing them unwindowed is the only like-for-like check; the point of
+    // the test is that both read offer_letters, not that they share a window.
     const [hrDash, hrBench] = await Promise.all([
       get('/analytics/offer-acceptance'),
-      get('/analytics/hr-benchmarks'),
+      get('/analytics/hr-benchmarks?period=all'),
     ]);
     const a = Number(hrDash.body?.data?.rate ?? hrDash.body?.rate);
     const b = Number(hrBench.body.recruitment.offerAcceptanceRate);

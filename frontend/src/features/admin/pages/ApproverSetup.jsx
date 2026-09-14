@@ -6,15 +6,20 @@ import {
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useRoleCatalog } from '@/config/roleCatalog';
 
 const MODULES = [
   'leave', 'project_creation', 'expense', 'purchase_order',
   'travel', 'recruitment', 'asset', 'payroll', 'general',
 ];
-const ROLES = ['manager', 'hr', 'finance', 'admin', 'super_admin', 'ceo', 'cfo'];
+// Approver roles come from the registry (config/roleCatalog.js). The list
+// hardcoded here previously offered 'ceo' and 'cfo' — codes no migration ever
+// seeds and no allowRoles() accepts, so a chain routed to one of them would
+// sit unapproved forever with nobody able to act on it.
 const EMPTY   = { module: '', approver_role: '', approver_email: '', sequence: 1 };
 
 export default function ApproverSetup({ setPage }) {
+  const ROLES = useRoleCatalog();
   const [rows,          setRows]          = useState([]);
   const [loading,       setLoading]       = useState(false);
   const [saving,        setSaving]        = useState(false);
@@ -156,7 +161,7 @@ export default function ApproverSetup({ setPage }) {
               <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Approver Role *</span>
               <select value={form.approver_role} onChange={e => setForm(f => ({ ...f, approver_role: e.target.value }))} style={sel}>
                 <option value="">— select —</option>
-                {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
               </select>
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -226,7 +231,7 @@ export default function ApproverSetup({ setPage }) {
                       <td style={{ padding: '10px 14px', fontWeight: 600, color: '#111827' }}>
                         {isEditing ? (
                           <select value={editRow.approver_role} onChange={e => setEditRow(r => ({ ...r, approver_role: e.target.value }))} style={{ ...editInp, cursor: 'pointer' }}>
-                            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                            {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
                           </select>
                         ) : (row?.approver_role ?? 'manager')}
                       </td>

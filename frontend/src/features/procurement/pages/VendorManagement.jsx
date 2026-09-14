@@ -278,7 +278,28 @@ const VENDOR_CATEGORIES = [
   'Import Agents / CHA',
 ];
 
-const EMPTY_VENDOR = { vendor_name: '', category: 'Raw Materials', gstin: '', pan: '', bank_name: '', account_number: '', ifsc: '', contact_person: '', email: '', phone: '', city: '', state: '', address: '', lead_time_days: 14, credit_limit: 0, payment_terms_days: 30, status: 'active' };
+// The internal add/edit form collected fourteen fields while `vendors` carries
+// the full trading identity a supplier needs before it can be paid. Vendor type,
+// MSME/Udyam status, IEC, CIN, website, country/postal code, turnover, headcount
+// and the commercial terms were reachable only through the external
+// vendor-registration flow, so a vendor a buyer added here was permanently a
+// thinner record than the same vendor who self-registered — and the gap only
+// surfaced when finance needed the MSME flag for payment-terms compliance.
+// payment_terms_days is left blank on purpose: the backend fills it from
+// procurement_settings.default_payment_terms_days when the form does not say
+// otherwise, which is what makes that setting mean anything.
+const EMPTY_VENDOR = {
+  vendor_name: '', category: 'Raw Materials', vendor_type: '', vendor_code: '',
+  gstin: '', pan: '', udyam_number: '', msme_status: false, iec: '', cin: '',
+  bank_name: '', account_number: '', ifsc: '',
+  contact_person: '', email: '', phone: '', website: '',
+  address: '', city: '', state: '', country: 'India', postal_code: '',
+  year_established: '', employee_count: '', annual_turnover: '',
+  lead_time_days: 14, credit_limit: 0, payment_terms_days: '',
+  status: 'active',
+};
+
+const VENDOR_TYPES = ['Manufacturer', 'Distributor', 'Trader', 'Service Provider', 'Contractor', 'Consultant'];
 const EMPTY_RFQ_ITEM = { item_id: null, item_description: '', quantity: '', unit: 'Nos' };
 const EMPTY_RFQ    = { items: [{ ...EMPTY_RFQ_ITEM }], required_by: '', linked_pr_id: '', vendor_ids: [] };
 const EMPTY_MATCH  = { po_id: '', grn_id: '', vendor_invoice_no: '', vendor_invoice_date: '', vendor_invoice_amount: '' };
@@ -999,6 +1020,26 @@ export default function VendorManagement() {
                 {INDIAN_STATES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>)}
               {fieldRow('Status', <select style={inp} value={vendorForm.status} onChange={e => setVendorForm(f => ({ ...f, status: e.target.value }))}><option value="active">Active</option><option value="inactive">Inactive</option></select>)}
+              {fieldRow('Vendor Type', <select style={inp} value={vendorForm.vendor_type || ''} onChange={e => setVendorForm(f => ({ ...f, vendor_type: e.target.value }))}>
+                <option value="">-- Select Type --</option>
+                {VENDOR_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>)}
+              {fieldRow('Vendor Code', <input style={inp} value={vendorForm.vendor_code || ''} onChange={e => setVendorForm(f => ({ ...f, vendor_code: e.target.value }))} placeholder="Optional internal code" />)}
+              {fieldRow('Udyam / MSME No.', <input style={inp} value={vendorForm.udyam_number || ''} onChange={e => setVendorForm(f => ({ ...f, udyam_number: e.target.value }))} placeholder="UDYAM-XX-00-0000000" />)}
+              {fieldRow('MSME Registered', <select style={inp} value={vendorForm.msme_status ? 'yes' : 'no'} onChange={e => setVendorForm(f => ({ ...f, msme_status: e.target.value === 'yes' }))}><option value="no">No</option><option value="yes">Yes</option></select>)}
+              {fieldRow('IEC', <input style={inp} value={vendorForm.iec || ''} onChange={e => setVendorForm(f => ({ ...f, iec: e.target.value }))} placeholder="Import-Export Code" />)}
+              {fieldRow('CIN', <input style={inp} value={vendorForm.cin || ''} onChange={e => setVendorForm(f => ({ ...f, cin: e.target.value }))} placeholder="U00000XX0000PTC000000" />)}
+              {fieldRow('Website', <input style={inp} value={vendorForm.website || ''} onChange={e => setVendorForm(f => ({ ...f, website: e.target.value }))} placeholder="https://" />)}
+              {fieldRow('Country', <input style={inp} value={vendorForm.country || ''} onChange={e => setVendorForm(f => ({ ...f, country: e.target.value }))} />)}
+              {fieldRow('Postal Code', <input style={inp} value={vendorForm.postal_code || ''} onChange={e => setVendorForm(f => ({ ...f, postal_code: e.target.value }))} />)}
+              {fieldRow('Year Established', <input style={inp} type="number" value={vendorForm.year_established ?? ''} onChange={e => setVendorForm(f => ({ ...f, year_established: e.target.value }))} placeholder="e.g. 2011" />)}
+              {fieldRow('Employee Count', <input style={inp} type="number" value={vendorForm.employee_count ?? ''} onChange={e => setVendorForm(f => ({ ...f, employee_count: e.target.value }))} />)}
+              {fieldRow('Annual Turnover (₹)', <input style={inp} type="number" value={vendorForm.annual_turnover ?? ''} onChange={e => setVendorForm(f => ({ ...f, annual_turnover: e.target.value }))} />)}
+              {fieldRow('Lead Time (days)', <input style={inp} type="number" value={vendorForm.lead_time_days ?? ''} onChange={e => setVendorForm(f => ({ ...f, lead_time_days: e.target.value }))} />)}
+              {fieldRow('Credit Limit (₹)', <input style={inp} type="number" value={vendorForm.credit_limit ?? ''} onChange={e => setVendorForm(f => ({ ...f, credit_limit: e.target.value }))} />)}
+              {/* Blank means "use the company default from Procurement Settings" —
+                  say so, rather than showing a hardcoded 30 that overrides it. */}
+              {fieldRow('Payment Terms (days)', <input style={inp} type="number" value={vendorForm.payment_terms_days ?? ''} onChange={e => setVendorForm(f => ({ ...f, payment_terms_days: e.target.value }))} placeholder="Default from settings" />)}
             </div>
             {fieldRow('Address', <textarea style={{ ...inp, height: 60, resize: 'vertical' }} value={vendorForm.address} onChange={e => setVendorForm(f => ({ ...f, address: e.target.value }))} />)}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>

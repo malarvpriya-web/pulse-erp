@@ -74,6 +74,25 @@
 /* A dock with nothing frozen under it (no filter bar) needs no bottom gap. */
 .plh-dock > .plh-hero:last-child { margin-bottom: 12px; }
 
+/* ── EMBEDDED SHELL (a shell page mounted as another page's tab panel) ───────
+   Both offsets above are calibrated against `.page-content` being the parent.
+   Nested one page deep they misfire: the -20px margin makes the panel 40px
+   wider than the host, and the sticky dock freezes ON TOP of the host's tab
+   strip — opaque and `z-index: 20`, so it covers the tabs and swallows their
+   clicks (measured on Finance ▸ Payments: all five tabs were unclickable on
+   every tab but the first). Embedded, the host owns the gutters and the
+   scroll; this shell is just a block in its body. */
+.plh-page--embed { margin: 0; min-height: 0; background: transparent; }
+.plh-page--embed > .plh-dock {
+  position: static;
+  top: auto;
+  z-index: auto;
+  padding: 0;
+  background: transparent;
+}
+.plh-page--embed > .plh-dock::after { display: none; }
+.plh-page--embed > .plh-body { padding: 0; }
+
 /* ══════════════════════════════════════════════════════════════════════
    HERO BAND
 ══════════════════════════════════════════════════════════════════════ */

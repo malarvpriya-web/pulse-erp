@@ -34,6 +34,38 @@ const sqN = async (sql, params = []) => {
   catch (e) { console.error('[analytics] sqN failed:', e.message); return []; }
 };
 
+/**
+ * performance_reviews ratings are on a FIVE-POINT scale.
+ *
+ * Every rating column on that table (overall/calibrated/final/self/manager/l2)
+ * is NUMERIC(3,1) holding 1.0-5.0, and manager.routes.js /team says so
+ * explicitly by sending rating_scale:5 to its caller. This file banded and
+ * benchmarked the same columns as if they were 0-100, so on live data
+ * (3.5-4.3) EVERY review fell through to the lowest band: the HR Benchmarking
+ * appraisal chart reported 100% of the workforce on a PIP, and the engagement
+ * card printed "3.8%" against a 75% benchmark with 0 employees "engaged".
+ *
+ * Normalising rather than hard-multiplying keeps a 0-100 row (should one ever
+ * be written) honest instead of scaling it to 2000 - the same both-scales-at-
+ * once trap vendor_scorecards hit. 5 is the boundary because it is the top of
+ * the 5-point scale; a genuine 0-100 score of 5 would be indistinguishable
+ * either way.
+ *
+ * COALESCE has NO zero fallback on purpose: an unrated review is unmeasured,
+ * not a zero. It must drop out of the average and the distribution, never land
+ * in the bottom band.
+ *
+ * @param {string} [a='pr.'] table alias prefix
+ */
+const REVIEW_RATING = (a = 'pr.') =>
+  `COALESCE(${a}overall_rating, ${a}calibrated_rating, ${a}final_rating)`;
+
+/** REVIEW_RATING rebased onto 0-100 so it can be benchmarked as a percentage. */
+const REVIEW_RATING_PCT = (a = 'pr.') => {
+  const r = REVIEW_RATING(a);
+  return `(CASE WHEN ${r} IS NULL THEN NULL WHEN ${r} <= 5 THEN ${r} * 20 ELSE ${r} END)`;
+};
+
 /* Build company_id scope fragments for raw SQL endpoints */
 function scopeFrags(company_id) {
   if (company_id == null) return { where: '', and: '', params: [] };
@@ -1025,7 +1057,9 @@ router.get('/hr-benchmarks', async (req, res) => {
       // page reported 0% acceptance while HR Dashboard, reading the correct table
       // through recruitmentRepository, reported the true rate for the same KPI.
       // Both surfaces now call the same function, so they cannot disagree again.
-      recruitmentRepository.getOfferAcceptanceRate(cid),
+      // `range` windows it on the offer's issue date: unlike /offer-acceptance,
+      // which is an all-time KPI, these cards sit under this page's period filter.
+      recruitmentRepository.getOfferAcceptanceRate(cid, range),
 
       // [2] Revenue for revenue-per-employee.
       //
@@ -1052,26 +1086,31 @@ router.get('/hr-benchmarks', async (req, res) => {
            FROM assessment_attempts
            WHERE score_pct IS NOT NULL AND submitted_at IS NOT NULL ${s3.and} ${w3}`, s3.params),
 
-      // [4] Performance appraisal rating distribution
+      // [4] Performance appraisal rating distribution.
+      //
+      // Banded on REVIEW_RATING_PCT, not the raw column — see that helper. The
+      // NOT NULL guard replaces the old COALESCE(...,0): an unrated review used
+      // to count as a 0 and land in PIP.
       sqN(`SELECT
              CASE
-               WHEN COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 90 THEN 'Exceptional'
-               WHEN COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 75 THEN 'Exceeds'
-               WHEN COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 60 THEN 'Meets'
-               WHEN COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 40 THEN 'Below'
+               WHEN ${REVIEW_RATING_PCT()} >= 90 THEN 'Exceptional'
+               WHEN ${REVIEW_RATING_PCT()} >= 75 THEN 'Exceeds'
+               WHEN ${REVIEW_RATING_PCT()} >= 60 THEN 'Meets'
+               WHEN ${REVIEW_RATING_PCT()} >= 40 THEN 'Below'
                ELSE 'PIP'
              END AS band,
              COUNT(*) AS count
            FROM performance_reviews pr
            JOIN employees e ON e.id = pr.employee_id
            WHERE ${isIn('e.status', EMPLOYEE_ACTIVE)}
+             AND ${REVIEW_RATING()} IS NOT NULL
              ${s4.and} ${w4}
            -- GROUP BY 1, not "band": employees.band is a real column, and
            -- Postgres resolves a bare GROUP BY name to the INPUT column ahead of
            -- the output alias. That grouped by e.band and made the CASE
            -- expression unaggregated, so this query always errored out.
            GROUP BY 1
-           ORDER BY MIN(COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0)) DESC`, s4.params),
+           ORDER BY MIN(${REVIEW_RATING_PCT()}) DESC`, s4.params),
 
       // [5] Turnover / attrition — departures within the period; the active
       // headcount it is measured against is point-in-time, so only the
@@ -1082,9 +1121,14 @@ router.get('/hr-benchmarks', async (req, res) => {
              COUNT(*) FILTER (WHERE ${isIn('status', EMPLOYEE_ACTIVE)})          AS active
            FROM employees WHERE deleted_at IS NULL ${s5.and}`, s5.params),
 
-      // [6] Engagement score from performance reviews
-      sq1(`SELECT ROUND(AVG(COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0))::numeric, 1) AS score,
-                  COUNT(*) FILTER (WHERE COALESCE(pr.overall_rating, pr.calibrated_rating, pr.final_rating, 0) >= 75) AS engaged
+      // [6] Engagement score from performance reviews.
+      //
+      // Rebased to 0-100 so the 75% benchmark on the card means something, and
+      // `reviewed` is returned so a 0 can be told apart from "nobody has been
+      // reviewed in this window".
+      sq1(`SELECT ROUND(AVG(${REVIEW_RATING_PCT()})::numeric, 1) AS score,
+                  COUNT(*) FILTER (WHERE ${REVIEW_RATING_PCT()} >= 75) AS engaged,
+                  COUNT(*) FILTER (WHERE ${REVIEW_RATING()} IS NOT NULL) AS reviewed
            FROM performance_reviews pr
            JOIN employees e ON e.id = pr.employee_id
            WHERE ${isIn('e.status', EMPLOYEE_ACTIVE)}
@@ -1096,8 +1140,13 @@ router.get('/hr-benchmarks', async (req, res) => {
              COUNT(*) FILTER (WHERE ${isIn('status', EMPLOYEE_ACTIVE)})       AS active_count
            FROM employees WHERE deleted_at IS NULL ${s7.and}`, s7.params),
 
-      // [8] Salary statistics for compa-ratio
+      // [8] Salary statistics for compa-ratio.
+      //
+      // `rated` is the number of employees the percentiles were computed over.
+      // Only a fraction of the roster carries a basic_salary, so a median with
+      // no sample size beside it reads as a company-wide figure when it is not.
       sq1(`SELECT
+             COUNT(*) AS rated,
              ROUND(AVG(COALESCE(basic_salary,0))::numeric,0) AS avg_salary,
              ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY COALESCE(basic_salary,0))::numeric,0) AS median_salary,
              ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY COALESCE(basic_salary,0))::numeric,0) AS p25,
@@ -1106,24 +1155,41 @@ router.get('/hr-benchmarks', async (req, res) => {
            WHERE ${isIn('status', EMPLOYEE_ACTIVE)}
              AND deleted_at IS NULL AND basic_salary > 0 ${s8.and}`, s8.params),
 
-      // [9] Gender diversity (overall)
+      // [9] Gender diversity (overall).
+      //
+      // `known` is the headcount with a gender on file. Percentages used to be
+      // taken over the FULL roster, so a company that had recorded gender for 5
+      // of 34 employees reported "6.1% female" against a 40% benchmark — an
+      // unmeasured field rendered as a diversity failure. The ratio is over
+      // `known` now and the coverage travels with it.
       sq1(`SELECT
              COUNT(*) FILTER (WHERE LOWER(gender) IN ('female','f','woman')) AS female,
              COUNT(*) FILTER (WHERE LOWER(gender) IN ('male','m','man'))     AS male,
+             COUNT(*) FILTER (WHERE NULLIF(TRIM(gender), '') IS NOT NULL)    AS known,
              COUNT(*) AS total
            FROM employees
            WHERE ${isIn('status', EMPLOYEE_ACTIVE)} AND deleted_at IS NULL ${s9.and}`, s9.params),
 
-      // [10] Leadership gender diversity (representation in senior roles)
+      // [10] Leadership gender diversity (representation in senior roles).
+      //
+      // Two fixes. (a) `male_leaders` is counted rather than inferred — the UI
+      // was drawing the male share as 100 minus the female share, which is only
+      // true when every leader has a gender on file. (b) The LIKE list spelled
+      // out 'chief' and 'president' but not the acronyms actually stored in
+      // this column, so a roster whose only two C-level rows read 'CEO' and
+      // 'CTO' excluded both and reported a leadership population of ONE.
       sq1(`SELECT
              COUNT(*) FILTER (WHERE LOWER(gender) IN ('female','f','woman')) AS female_leaders,
+             COUNT(*) FILTER (WHERE LOWER(gender) IN ('male','m','man'))     AS male_leaders,
+             COUNT(*) FILTER (WHERE NULLIF(TRIM(gender), '') IS NOT NULL)    AS known_leaders,
              COUNT(*) AS total_leaders
            FROM employees
            WHERE ${isIn('status', EMPLOYEE_ACTIVE)} AND deleted_at IS NULL
              AND (LOWER(designation) LIKE '%manager%' OR LOWER(designation) LIKE '%director%'
                OR LOWER(designation) LIKE '%head%'    OR LOWER(designation) LIKE '%vp%'
                OR LOWER(designation) LIKE '%chief%'   OR LOWER(designation) LIKE '%president%'
-               OR LOWER(designation) LIKE '%lead%')
+               OR LOWER(designation) LIKE '%lead%'
+               OR LOWER(TRIM(designation)) ~ '^(ceo|cto|cfo|coo|cio|ciso|chro|cmo|md|gm|avp|svp|evp)$')
              ${s10.and}`, s10.params),
 
       // [11] Leave utilization (proxy for benefits utilization)
@@ -1131,8 +1197,10 @@ router.get('/hr-benchmarks', async (req, res) => {
            FROM leave_applications
            WHERE 1=1 ${s11.and} ${w11}`, s11.params),
 
-      // [12] Time to fill from job_openings (if table exists)
-      sq1(`SELECT ROUND(AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 86400)) AS avg_fill_days
+      // [12] Time to fill from job_openings. `filled` is the sample size: one
+      // closed requisition is not a company average and the card has to say so.
+      sq1(`SELECT ROUND(AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 86400)) AS avg_fill_days,
+                  COUNT(*) AS filled
            FROM job_openings
            WHERE LOWER(status) IN ('filled','closed')
              ${s12.and} ${w12}`, s12.params),
@@ -1166,23 +1234,46 @@ router.get('/hr-benchmarks', async (req, res) => {
     const ttf = s(12, null);
     const cph = s(13, null);
 
-    const offered      = parseInt(off?.offered      || 0);
-    const accepted     = parseInt(off?.accepted     || 0);
-    const declined     = parseInt(off?.declined     || 0);
-    const costPerHire  = cph == null ? null : (parseInt(cph.cost_per_hire || 0) || null);
-    const departed     = parseInt(att?.departed     || 0);
-    const activeHC     = Math.max(parseInt(att?.active || 0), 1);
-    const newHires     = parseInt(acq?.new_hires    || 0);
-    const totalActive  = Math.max(parseInt(acq?.active_count || 0), 1);
-    const female       = parseInt(gen?.female       || 0);
-    const male         = parseInt(gen?.male         || 0);
-    const genTotal     = Math.max(parseInt(gen?.total || 0), 1);
-    const leaderFemale = parseInt(ldg?.female_leaders || 0);
-    const leaderTotal  = Math.max(parseInt(ldg?.total_leaders || 0), 1);
-    const avgSalary    = parseFloat(sal?.avg_salary    || 0);
-    const medianSalary = parseFloat(sal?.median_salary || 0);
-    const utilizers    = parseInt(lvu?.utilizers || 0);
-    const totalRevenue = parseFloat(rev?.total_revenue || 0);
+    /* A metric with no rows behind it is UNMEASURED, not zero.
+     *
+     * Every figure below used to be coerced with parseInt(x || 0) and every
+     * denominator floored with Math.max(n, 1), so an empty source produced a
+     * confident 0 that the UI then judged against a benchmark: "0 days to hire
+     * — Below target" on a roster with no matched candidate records, "0%
+     * engagement" before anyone had been reviewed. Each metric now carries an
+     * explicit *Available flag and emits null when it has no sample, and the
+     * page renders those as "Not measured" instead of as a failing score. */
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+    const int = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0; };
+    const pct = (n, d, dp = 1) => d > 0 ? parseFloat(((n / d) * 100).toFixed(dp)) : null;
+
+    const offered      = int(off?.offered);
+    const accepted     = int(off?.accepted);
+    const declined     = int(off?.declined);
+    const costPerHire  = cph == null ? null : (int(cph.cost_per_hire) || null);
+    const timeToHireN  = int(tth?.matched);
+    const timeToFillN  = int(ttf?.filled);
+    const departed     = int(att?.departed);
+    // The REAL headcount — no Math.max(...,1) floor. A zero here means the
+    // ratio has no denominator, so the metric is null rather than 0%.
+    const activeHC     = int(att?.active);
+    const newHires     = int(acq?.new_hires);
+    const totalActive  = int(acq?.active_count);
+    const female       = int(gen?.female);
+    const male         = int(gen?.male);
+    const genKnown     = int(gen?.known);
+    const genTotal     = int(gen?.total);
+    const leaderFemale = int(ldg?.female_leaders);
+    const leaderMale   = int(ldg?.male_leaders);
+    const leaderKnown  = int(ldg?.known_leaders);
+    const leaderTotal  = int(ldg?.total_leaders);
+    const salaryN      = int(sal?.rated);
+    const avgSalary    = salaryN > 0 ? num(sal?.avg_salary)    : null;
+    const medianSalary = salaryN > 0 ? num(sal?.median_salary) : null;
+    const utilizers    = int(lvu?.utilizers);
+    const reviewed     = int(sat?.reviewed);
+    const appraisals   = rdt.reduce((t, r) => t + int(r.count), 0);
+    const totalRevenue = num(rev?.total_revenue) ?? 0;
 
     res.json({
       // Echoed so the cards can name the window they measured instead of
@@ -1190,13 +1281,19 @@ router.get('/hr-benchmarks', async (req, res) => {
       period:       range.period,
       period_label: range.label,
       recruitment: {
-        avgDaysToHire:       parseInt(tth?.avg_days || 0),
-        timeToFill:          parseInt(ttf?.avg_fill_days || 0),
-        offerAcceptanceRate: offered > 0 ? parseFloat(((accepted / offered) * 100).toFixed(1)) : 0,
+        // null, not 0 — no matched application/joining pair means the interval
+        // was never measured for anyone.
+        avgDaysToHire:        timeToHireN > 0 ? int(tth?.avg_days) : null,
+        timeToHireAvailable:  timeToHireN > 0,
+        timeToHireSample:     timeToHireN,
+        timeToFill:           timeToFillN > 0 ? int(ttf?.avg_fill_days) : null,
+        timeToFillAvailable:  timeToFillN > 0,
+        timeToFillSample:     timeToFillN,
+        offerAcceptanceRate: pct(accepted, offered),
         // `offerExceptionRate` used to be emitted here as a second name for the
         // identical declined/offered expression, and the UI presented the two as
         // different metrics. One number, one name.
-        offerDeclineRate:    offered > 0 ? parseFloat(((declined / offered) * 100).toFixed(1)) : 0,
+        offerDeclineRate:    pct(declined, offered),
         costPerHire,
         costPerHireAvailable: costPerHire != null,
         totalOffered:        offered,
@@ -1205,43 +1302,73 @@ router.get('/hr-benchmarks', async (req, res) => {
         offerDataAvailable:  offered > 0,
       },
       performance: {
-        revenuePerEmployee:         activeHC > 1 ? parseFloat((totalRevenue / activeHC).toFixed(0)) : 0,
+        // Guarded on activeHC > 0. The old "> 1" guard silently returned 0 for a
+        // one-person company, which is a real (if small) figure, not a blank.
+        revenuePerEmployee:          activeHC > 0 ? Math.round(totalRevenue / activeHC) : null,
+        revenuePerEmployeeAvailable: activeHC > 0 && totalRevenue > 0,
         revenueBasis:               'paid invoices in period',
-        trainingEffectivenessScore: parseFloat(trn?.avg_score || 0),
+        headcount:                  activeHC,
+        trainingEffectivenessScore: num(trn?.avg_score),
         // Lets the card tell "0% pass rate" apart from "no assessments recorded".
         trainingDataAvailable:      parseInt(trn?.total || 0) > 0,
         totalAssessments:           parseInt(trn?.total   || 0),
-        trainingPassRate:           parseInt(trn?.total   || 0) > 0
-          ? parseFloat(((parseInt(trn?.passed || 0) / parseInt(trn.total)) * 100).toFixed(1)) : 0,
-        appraisalDistribution: rdt.map(r => ({ band: r.band, count: parseInt(r.count || 0) })),
+        trainingPassRate:           pct(int(trn?.passed), int(trn?.total)),
+        appraisalDistribution:      rdt.map(r => ({ band: r.band, count: int(r.count) })),
+        appraisalTotal:             appraisals,
+        appraisalDataAvailable:     appraisals > 0,
+        // The bands above are cut on a 0-100 rebase of a 5-point column; the UI
+        // states the scale rather than leaving the reader to assume percent.
+        appraisalScale:             5,
       },
       retention: {
-        turnoverRate:    parseFloat(((departed / activeHC) * 100).toFixed(1)),
-        engagementScore: parseFloat(sat?.score    || 0),
-        engagedCount:    parseInt(sat?.engaged    || 0),
-        acquisitionRate: parseFloat(((newHires / totalActive) * 100).toFixed(1)),
+        turnoverRate:    pct(departed, activeHC),
+        // 0-100 rebase of the 5-point review scale, so the 75% benchmark on the
+        // card compares like with like. Was the raw average — "3.8%".
+        engagementScore: reviewed > 0 ? num(sat?.score) : null,
+        engagedCount:    int(sat?.engaged),
+        engagementReviewed:  reviewed,
+        engagementAvailable: reviewed > 0,
+        acquisitionRate: pct(newHires, totalActive),
         newHires,
         departed,
+        headcount:       activeHC,
       },
       compensation: {
         avgSalary,
         medianSalary,
-        p25Salary:              parseFloat(sal?.p25 || 0),
-        p75Salary:              parseFloat(sal?.p75 || 0),
-        compaRatio:             medianSalary > 0 ? parseFloat((avgSalary / medianSalary).toFixed(2)) : 0,
-        benefitsUtilizationRate: totalActive > 1
-          ? parseFloat(((utilizers / totalActive) * 100).toFixed(1)) : 0,
+        p25Salary:              salaryN > 0 ? num(sal?.p25) : null,
+        p75Salary:              salaryN > 0 ? num(sal?.p75) : null,
+        compaRatio:             medianSalary > 0
+          ? parseFloat((avgSalary / medianSalary).toFixed(2)) : null,
+        // How many of the roster actually carry a basic_salary. The percentiles
+        // are over THIS population, not over headcount.
+        salarySample:           salaryN,
+        salaryDataAvailable:    salaryN > 0,
+        salaryCoveragePct:      pct(salaryN, totalActive, 0),
+        benefitsUtilizationRate: pct(utilizers, totalActive),
+        benefitsUtilizers:      utilizers,
       },
       diversity: {
         female,
         male,
-        total:           parseInt(gen?.total || 0),
-        femalePct:       parseFloat(((female / genTotal) * 100).toFixed(1)),
-        malePct:         parseFloat(((male   / genTotal) * 100).toFixed(1)),
+        total:            genTotal,
+        // Ratios are over the headcount with a gender ON FILE. Taken over the
+        // full roster they read as a diversity result when they were really a
+        // data-entry gap: 2 female of 34 employees is 5.9% "against a 40%
+        // target", but 29 of those 34 have no gender recorded at all.
+        genderKnown:         genKnown,
+        genderCoveragePct:   pct(genKnown, genTotal, 0),
+        genderDataAvailable: genKnown > 0,
+        femalePct:        pct(female, genKnown),
+        malePct:          pct(male,   genKnown),
         leaderFemale,
-        leaderTotal:     parseInt(ldg?.total_leaders || 0),
-        leaderFemalePct: parseInt(ldg?.total_leaders || 0) > 0
-          ? parseFloat(((leaderFemale / leaderTotal) * 100).toFixed(1)) : 0,
+        leaderMale,
+        leaderKnown,
+        leaderTotal,
+        leaderDataAvailable: leaderKnown > 0,
+        leaderCoveragePct:   pct(leaderKnown, leaderTotal, 0),
+        leaderFemalePct:  pct(leaderFemale, leaderKnown),
+        leaderMalePct:    pct(leaderMale,   leaderKnown),
       },
     });
   } catch (e) {

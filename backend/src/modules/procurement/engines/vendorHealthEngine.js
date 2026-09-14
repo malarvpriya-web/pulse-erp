@@ -26,6 +26,23 @@ const WEIGHTS = {
   risk_events: 0.05,
 };
 
+/**
+ * The fewest observations a KPI needs before it may call itself measured.
+ *
+ * ⚠ ONE OBSERVATION IS AN ANECDOTE, NOT A RATE. Found live: every supplier had
+ * exactly one NCR with exactly one CAPA behind it, and the gap between them was
+ * 0.55 days — not because anyone responded quickly, but because the seed script
+ * wrote both rows in the same run, thirteen hours apart. That single pair rated
+ * five suppliers "excellent" on responsiveness, lifted one from 51.8 to 60.3, and
+ * took its coverage to 100%. A rating band should not turn on one row.
+ *
+ * This is ordinary supplier-scorecard practice quite apart from the seed data: a
+ * fill rate off one line or a PPV off one price is not yet a supplier's record.
+ * Below the threshold the KPI reports NULL and the dimension abstains, which the
+ * renormalisation over measured weights already handles correctly.
+ */
+const MIN_OBSERVATIONS = 2;
+
 // ── Health status thresholds ────────────────────────────────────────────────────
 /**
  * `hasEvidence` is whether this supplier has any operational history at all --
@@ -98,13 +115,42 @@ export function scoreQuality({ totalInspections = 0, passedInspections = 0,
               || openNCR > 0 || repeatNCR > 0 || criticalNCR > 0 || totalCAPAs > 0,
     openNCR,
     criticalNCR,
+    // Exposed because supplierDevelopmentEngine distinguishes a recurrence from
+    // a one-off: the same defect coming back is a supplier PROCESS problem, and
+    // that is what a development programme is for. It was an input that the
+    // result never published, so a consumer reading it got `undefined` and the
+    // trigger silently never fired.
+    repeatNCR,
   };
 }
 
 // ── 49G-4  DELIVERY SCORE (0–100) ──────────────────────────────────────────────
 // Inputs: { totalGRNs, onTimeGRNs, delayedGRNs, avgDelayDays, partialDeliveries }
 export function scoreDelivery({ totalGRNs = 0, onTimeGRNs = 0,
-  delayedGRNs = 0, avgDelayDays = 0, partialDeliveries = 0 } = {}) {
+  delayedGRNs = 0, avgDelayDays = 0, partialDeliveries = 0,
+  // How many of those receipts were judged against a date the supplier actually
+  // committed to (a quoted lead time on the winning bid, or a date agreed on the
+  // order) rather than one derived from vendors.lead_time_days. The formula does
+  // not change — an OTD is still an OTD — but a number measured against our own
+  // assumption must say so, or a generous lead time reads as a supplier keeping
+  // its promises. Defaults to 0: an unmigrated caller claims nothing.
+  promisedDateGRNs = 0,
+
+  // ── FILL RATE ──────────────────────────────────────────────────────────────
+  // Quantity ordered against quantity actually received, from purchase_order_items
+  // and grn_items. `partialDeliveries` above counts ORDERS FLAGGED partial and says
+  // nothing about how short they were: a supplier that ships 40% of every line and
+  // one that ships 99% scored identically on it.
+  orderedQty = 0, receivedQty = 0, orderedLines = 0,
+
+  // ── LEAD-TIME ADHERENCE ────────────────────────────────────────────────────
+  // Distinct from OTD, which is binary — late or not. Adherence asks whether the
+  // actual lead time TRACKS the promised one. A supplier reliably 12 days early is
+  // not "on time", it is unpredictable, and it ties up working capital and inbound
+  // space. Only a receipt against a date the supplier committed to can be judged,
+  // so this shares OTD's promised-date gate.
+  promisedLeadTimeReceipts = 0, onScheduleLeadTimeReceipts = 0,
+  avgLeadTimeVarianceDays = null } = {}) {
 
   const otdPct = totalGRNs > 0 ? (onTimeGRNs / totalGRNs) * 100 : 75;
 
@@ -125,12 +171,61 @@ export function scoreDelivery({ totalGRNs = 0, onTimeGRNs = 0,
   if (partialRate > 20) penalty += 10;
   else if (partialRate > 10) penalty += 5;
 
+  // ── Fill rate ──────────────────────────────────────────────────────────────
+  // Capped at 100: an over-shipment is a different problem (and often a costing
+  // one), not evidence of a supplier that fills its orders better than fully.
+  const fillRateMeasured = orderedQty > 0 && orderedLines >= MIN_OBSERVATIONS;
+  const fillRatePct = fillRateMeasured
+    ? Math.min(100, (receivedQty / orderedQty) * 100) : null;
+  if (fillRateMeasured) {
+    if (fillRatePct < 80)      penalty += 15;
+    else if (fillRatePct < 95) penalty += 7;
+  }
+
+  // ── Lead-time adherence ────────────────────────────────────────────────────
+  const leadTimeMeasured = promisedLeadTimeReceipts >= MIN_OBSERVATIONS;
+  const leadTimeAdherencePct = leadTimeMeasured
+    ? (onScheduleLeadTimeReceipts / promisedLeadTimeReceipts) * 100 : null;
+  if (leadTimeMeasured) {
+    if (leadTimeAdherencePct < 70)      penalty += 10;
+    else if (leadTimeAdherencePct < 90) penalty += 5;
+  }
+
+  // What the OTD above was actually measured against.
+  //   promised  every receipt had a committed due date
+  //   mixed     some did
+  //   implied   none did — the due dates are order_date + our own lead-time master data
+  //   none      no receipts at all; otdPct is the 75 prior, not a reading
+  const promisedCoveragePct = totalGRNs > 0
+    ? (Math.min(promisedDateGRNs, totalGRNs) / totalGRNs) * 100 : 0;
+  const otdBasis = totalGRNs === 0 ? 'none'
+    : promisedCoveragePct >= 100 ? 'promised'
+    : promisedCoveragePct > 0    ? 'mixed'
+    : 'implied';
+
   return {
     score: Math.max(0, Math.min(100, base - penalty)),
     otdPct: parseFloat(otdPct.toFixed(2)),
     // See scoreQuality: 75 is the no-receipts prior, not a delivery record.
     otdMeasured: totalGRNs > 0,
-    measured: totalGRNs > 0,
+    // ⚠ otdMeasured only says receipts exist. otdBasis says whether the due date
+    // they were judged against came from the supplier or from us. A consumer that
+    // publishes or alerts on otdPct must show the basis alongside it — an
+    // 'implied' 100% is not a supplier keeping its word.
+    otdBasis,
+    promisedCoveragePct: parseFloat(promisedCoveragePct.toFixed(1)),
+    // Unmeasured reports NULL, never a default — the same rule the dimension
+    // scores follow. A 0% fill rate is the worst possible reading of "nobody has
+    // ordered from them yet".
+    fillRatePct: fillRatePct == null ? null : parseFloat(fillRatePct.toFixed(2)),
+    fillRateMeasured,
+    orderedQty, receivedQty,
+    leadTimeAdherencePct: leadTimeAdherencePct == null ? null : parseFloat(leadTimeAdherencePct.toFixed(2)),
+    leadTimeMeasured,
+    avgLeadTimeVarianceDays: avgLeadTimeVarianceDays == null ? null : parseFloat(Number(avgLeadTimeVarianceDays).toFixed(1)),
+    // Fill rate is evidence about delivery even with no GRN-level OTD to compute
+    // — a line ordered and never received is a delivery fact.
+    measured: totalGRNs > 0 || fillRateMeasured,
     totalGRNs,
     avgDelayDays: parseFloat(avgDelayDays.toFixed(1)),
   };
@@ -143,7 +238,23 @@ export function scoreCost({ priceVariancePct = 0, rfqCompetitive = true,
   // Explicit, because a priceVariancePct of 0 is produced BOTH by a supplier
   // whose prices never moved and by one with no price history to compare --
   // and the first deserves 100 while the second deserves no vote at all.
-  hasPriceHistory = true } = {}) {
+  hasPriceHistory = true,
+
+  // ── PURCHASE PRICE VARIANCE ────────────────────────────────────────────────
+  // What we paid this supplier against the item's standard cost, weighted by
+  // quantity. `priceVariancePct` above is a different measure and was the only
+  // one here: it compares this supplier's recent prices to its OWN earlier
+  // prices, so a supplier that has always been 30% over standard looks perfectly
+  // "stable". PPV is the one a cost accountant means — actual versus standard —
+  // and it is the only one that can say a supplier is expensive rather than
+  // merely inconsistent.
+  //
+  // Positive = paying ABOVE standard cost. Measured only over lines whose item
+  // carries a standard cost; an item with none is excluded rather than assumed
+  // to cost zero, which would report every purchase as infinitely unfavourable.
+  ppvPct = null, ppvPricedLines = 0 } = {}) {
+
+  const ppvMeasured = ppvPct != null && ppvPricedLines >= MIN_OBSERVATIONS;
 
   // Price stability: variance < 5% is stable
   let base;
@@ -158,42 +269,100 @@ export function scoreCost({ priceVariancePct = 0, rfqCompetitive = true,
   if (escalationRate > 30) penalty += 20;
   else if (escalationRate > 15) penalty += 10;
 
+  // PPV, applied only where there is a standard cost to have varied from.
+  if (ppvMeasured && ppvPct != null) {
+    if (ppvPct > 10)       penalty += 20;
+    else if (ppvPct > 5)   penalty += 10;
+    else if (ppvPct < -5)  penalty -= 5;   // favourable: consistently under standard
+  }
+
   return {
     score: Math.max(0, Math.min(100, base - penalty)),
-    measured: hasPriceHistory,
+    // Either evidence base makes the dimension votable. Without both, cost has
+    // nothing to say and must not vote its 100 default — a supplier with no
+    // history is not a cheap one.
+    measured: hasPriceHistory || ppvMeasured,
     priceVariancePct: parseFloat(priceVariancePct.toFixed(2)),
+    ppvPct: ppvPct == null ? null : parseFloat(Number(ppvPct).toFixed(2)),
+    ppvMeasured,
     escalationCount,
   };
 }
 
 // ── 49G-6  SUPPORT SCORE (0–100) ────────────────────────────────────────────────
-// Inputs: { storedSupportScore, avgResponseHours, openIssues, resolvedIssues }
+/**
+ * Responsiveness, from the clocks this system already keeps.
+ *
+ * ⚠ THIS DIMENSION USED TO BE A SLIDER. `storedSupportScore` is a number a buyer
+ * dragged on the scorecard entry screen, and it took precedence over everything.
+ * Failing that, the score fell out of `avgResponseHours`, which defaulted to 24
+ * and which NOTHING IN THIS SCHEMA EVER MEASURED — so every supplier without a
+ * hand-typed score got the same 70, and `measured` was gated on issue counts that
+ * were never populated either. An opinion and a constant, wearing a KPI's name.
+ *
+ * Two real clocks exist and are now used:
+ *   quoteTurnaroundDays  rfqs.created_at -> rfq_quotes.created_at. How long this
+ *                        supplier takes to come back with a price.
+ *   ncrResponseDays      ncr_reports.created_at -> its first capa_actions row.
+ *                        How long it takes to answer a non-conformance.
+ *
+ * MEASURED EVIDENCE BEATS THE SLIDER. That inverts the old precedence
+ * deliberately: the point of a scorecard fed by ERP transactions is that a fact
+ * outranks a recollection. The stored value stays as the fallback so a supplier
+ * judged by hand is still judged, and `source` says which was used.
+ */
 export function scoreSupport({ storedSupportScore = null,
-  avgResponseHours = 24, openIssues = 0, resolvedIssues = 0 } = {}) {
+  quoteTurnaroundDays = null, quotesConsidered = 0,
+  ncrResponseDays = null, ncrsConsidered = 0,
+  openIssues = 0, resolvedIssues = 0 } = {}) {
 
-  // Prefer stored scorecard value if available
-  if (storedSupportScore != null && storedSupportScore > 0) {
-    return { score: Math.min(100, parseFloat(storedSupportScore)), measured: true, source: 'stored' };
+  const band = (days, fast, ok, slow) =>
+    days <= fast ? 100 : days <= ok ? 75 : days <= slow ? 50 : 20;
+
+  const parts = [];
+  if (quotesConsidered >= MIN_OBSERVATIONS && quoteTurnaroundDays != null) {
+    // A quote back inside two days is fast; a fortnight is not.
+    parts.push(band(quoteTurnaroundDays, 2, 5, 14));
+  }
+  if (ncrsConsidered >= MIN_OBSERVATIONS && ncrResponseDays != null) {
+    // A non-conformance answered within three days is a supplier taking it
+    // seriously; three weeks is one hoping it goes away.
+    parts.push(band(ncrResponseDays, 3, 7, 21));
   }
 
-  // Compute from response time
-  let base;
-  if (avgResponseHours <= 4) base = 100;         // Excellent
-  else if (avgResponseHours <= 24) base = 70;    // Good
-  else if (avgResponseHours <= 72) base = 50;    // Average
-  else base = 0;                                  // Poor
+  if (parts.length > 0) {
+    let base = parts.reduce((a, b) => a + b, 0) / parts.length;
+    const closed = openIssues + resolvedIssues;
+    if (closed > 0) {
+      const resolutionRate = (resolvedIssues / closed) * 100;
+      if (resolutionRate >= 90)     base = Math.min(100, base + 10);
+      else if (resolutionRate < 50) base = Math.max(0, base - 10);
+    }
+    return {
+      score: Math.max(0, Math.min(100, base)),
+      measured: true,
+      source: 'measured',
+      quoteTurnaroundDays: quoteTurnaroundDays == null ? null : parseFloat(Number(quoteTurnaroundDays).toFixed(1)),
+      ncrResponseDays:     ncrResponseDays     == null ? null : parseFloat(Number(ncrResponseDays).toFixed(1)),
+      quotesConsidered, ncrsConsidered,
+    };
+  }
 
-  // Issue resolution bonus
-  const resolutionRate = (openIssues + resolvedIssues) > 0
-    ? (resolvedIssues / (openIssues + resolvedIssues)) * 100 : 80;
-  if (resolutionRate >= 90) base = Math.min(100, base + 10);
+  if (storedSupportScore != null && storedSupportScore > 0) {
+    return {
+      score: Math.min(100, parseFloat(storedSupportScore)),
+      measured: true, source: 'stored',
+      quoteTurnaroundDays: null, ncrResponseDays: null,
+      quotesConsidered, ncrsConsidered,
+    };
+  }
 
-  // avgResponseHours defaults to 24 and nothing in this schema measures it, so
-  // without a stored scorecard value the whole dimension is the 70 default.
+  // No clock and no opinion. The dimension abstains rather than voting a default
+  // — renormalisation over the measured weights is what makes that safe.
   return {
-    score: Math.max(0, Math.min(100, base)),
-    measured: openIssues + resolvedIssues > 0,
-    source: 'computed',
+    score: 0, measured: false, source: 'unmeasured',
+    quoteTurnaroundDays: null, ncrResponseDays: null,
+    quotesConsidered, ncrsConsidered,
   };
 }
 

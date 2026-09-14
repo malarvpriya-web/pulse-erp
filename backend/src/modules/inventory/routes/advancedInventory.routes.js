@@ -150,7 +150,7 @@ router.post('/reservations', requirePermission('inventory', 'add'), async (req, 
 
 router.get('/reservations', requirePermission('inventory', 'view'), async (req, res) => {
   try {
-    const reservations = await repo.getReservations(req.query);
+    const reservations = await repo.getReservations({ ...req.query, company_id: companyOf(req) });
     res.json(reservations);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message });
@@ -343,7 +343,7 @@ router.get('/material-consumption', requirePermission('inventory', 'view'), asyn
 
 router.get('/reserved-vs-available', requirePermission('inventory', 'view'), async (req, res) => {
   try {
-    const data = await repo.getReservedVsAvailableStock(req.query.warehouse_id);
+    const data = await repo.getReservedVsAvailableStock(req.query.warehouse_id, companyOf(req));
     res.json(data);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message });

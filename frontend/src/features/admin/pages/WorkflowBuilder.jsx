@@ -3,6 +3,7 @@ import { ClipboardList, Bell, Zap, Settings, Users, CheckSquare } from 'lucide-r
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useRoleCatalog } from '@/config/roleCatalog';
 
 /* ─── constants ─────────────────────────────────────────────── */
 const MODULES = ['Leave','Expense','Purchase Order','Invoice','Recruitment','Travel'];
@@ -10,7 +11,13 @@ const EVENTS  = ['Created','Updated','Status Changed','Amount Exceeds'];
 const OPERATORS = ['equals','not equals','greater than','less than','contains','is empty','is not empty'];
 const LOGIC_OPS = ['AND','OR'];
 const ACTION_TYPES = ['Send Email','Send Notification','Update Field','Create Task','Escalate To'];
-const ROLES = ['Manager','HR Head','Finance Head','Department Head','Admin','CEO'];
+// Roles come from the registry (config/roleCatalog.js). This list used to hold
+// DISPLAY LABELS — 'HR Head', 'Finance Head', 'CEO' — and the <option>s carried
+// no value attribute, so those exact strings were persisted into
+// workflow_rules.approval_chain[].approver_role. No role code by those names
+// exists, so every chain built here escalated to a role nobody could hold.
+// Options now carry the real code; a rule saved under an old label shows an
+// empty picker, which is the truth about where it was routing.
 const REJECT_ACTIONS = ['stop','skip to next','notify manager'];
 const APPROVAL_TYPES = ['any one','all must approve'];
 
@@ -60,6 +67,7 @@ function ConditionRow({ cond, idx, onChange, onRemove }) {
 }
 
 function ActionRow({ action, idx, onChange, onRemove }) {
+  const ROLES = useRoleCatalog();
   const cfg = action.config || {};
   const set = (key, val) => onChange({ ...action, config: { ...cfg, [key]: val } });
   return (
@@ -82,7 +90,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
             <select value={cfg.to_role||''} onChange={e => set('to_role', e.target.value)}
               style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
               <option value=''>Select Role</option>
-              {ROLES.map(r => <option key={r}>{r}</option>)}
+              {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -104,7 +112,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
             <select value={cfg.to_role||''} onChange={e => set('to_role', e.target.value)}
               style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
               <option value=''>Select Role</option>
-              {ROLES.map(r => <option key={r}>{r}</option>)}
+              {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -135,7 +143,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
             <select value={cfg.assignee_role||''} onChange={e => set('assignee_role', e.target.value)}
               style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
               <option value=''>Select</option>
-              {ROLES.map(r => <option key={r}>{r}</option>)}
+              {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -157,7 +165,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
             <select value={cfg.role||''} onChange={e => set('role', e.target.value)}
               style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
               <option value=''>Select</option>
-              {ROLES.map(r => <option key={r}>{r}</option>)}
+              {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -172,6 +180,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
 }
 
 function ApprovalLevelRow({ level, idx, onChange, onRemove }) {
+  const ROLES = useRoleCatalog();
   return (
     <div style={{ display:'flex', gap:8, alignItems:'flex-start', padding:'10px 12px', background:'#f5f3ff', borderRadius:8, marginBottom:8 }}>
       <span style={{ width:22, height:22, minWidth:22, background:'#6B3FDB', color:'#fff', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, marginTop:2 }}>
@@ -183,7 +192,7 @@ function ApprovalLevelRow({ level, idx, onChange, onRemove }) {
           <select value={level.approver_role||''} onChange={e => onChange({ ...level, approver_role: e.target.value })}
             style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
             <option value=''>Select</option>
-            {ROLES.map(r => <option key={r}>{r}</option>)}
+            {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
           </select>
         </div>
         <div>

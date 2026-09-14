@@ -3,6 +3,7 @@ import express from 'express';
 import net from 'net';
 import { createRequire } from 'module';
 import pool from '../../config/db.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const require = createRequire(import.meta.url);
@@ -330,7 +331,7 @@ router.post('/biometric/devices', async (req, res) => {
 });
 
 /* ─── PUT /biometric/devices/:id ─────────────────────────────── */
-router.put('/biometric/devices/:id', async (req, res) => {
+router.put('/biometric/devices/:id', captureBefore('biometric_devices'), async (req, res) => {
   const { device_name, device_type, location, ip_address, port, vendor, serial_number, attendance_direction } = req.body;
   if (!device_name || !ip_address) return res.status(400).json({ message: 'device_name and ip_address required' });
   const companyId = cid(req);
@@ -352,7 +353,7 @@ router.put('/biometric/devices/:id', async (req, res) => {
 });
 
 /* ─── DELETE /biometric/devices/:id ──────────────────────────── */
-router.delete('/biometric/devices/:id', async (req, res) => {
+router.delete('/biometric/devices/:id', captureBefore('biometric_devices'), async (req, res) => {
   const companyId = cid(req);
   try {
     const { rowCount } = await pool.query(
@@ -554,7 +555,7 @@ router.post('/gate-passes', async (req, res) => {
 });
 
 /* ─── PUT /gate-passes/:id/approve ───────────────────────────── */
-router.put('/gate-passes/:id/approve', async (req, res) => {
+router.put('/gate-passes/:id/approve', captureBefore('gate_passes'), async (req, res) => {
   const { approved_by } = req.body;
   const companyId = cid(req);
   const passNumber = `GP-${new Date().getFullYear()}-${String(req.params.id).padStart(4, '0')}`;
@@ -601,7 +602,7 @@ router.post('/visitors', async (req, res) => {
 });
 
 /* ─── PUT /visitors/:id/checkout ─────────────────────────────── */
-router.put('/visitors/:id/checkout', async (req, res) => {
+router.put('/visitors/:id/checkout', captureBefore('visitors'), async (req, res) => {
   const companyId = cid(req);
   try {
     const { rows } = await pool.query(

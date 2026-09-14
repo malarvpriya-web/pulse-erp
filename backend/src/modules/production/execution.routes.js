@@ -4,6 +4,9 @@ import { logAudit } from '../../services/AuditService.js';
 import { nextProdOrderNumber } from '../../shared/docNumber.js';
 import { requirePermission, hasRole } from '../../middlewares/auth.middleware.js';
 import { postStock } from './subcontracting.routes.js';
+import prRepo from '../procurement/repositories/purchaseRequest.repository.js';
+import { employeeOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -680,7 +683,7 @@ router.post('/orders', requirePermission('production', 'add'), async (req, res) 
 });
 
 /* ── PATCH /orders/:id/plan — move new order to planned ── */
-router.patch('/orders/:id/plan', requirePermission('production', 'edit'), async (req, res) => {
+router.patch('/orders/:id/plan', requirePermission('production', 'edit'), captureBefore('production_orders'), async (req, res) => {
   try {
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
     const cid = req.scope?.company_id;
@@ -778,6 +781,40 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
       VALUES ($1,$2,'complete',$3,$4,$5,'pcs',$6,$7,'Finished Goods Store')
     `, [cid, order.id, order.product_id, order.product_name, qty, a.id, a.name]).catch(() => {});
 
+    // ── Report completion back to the master schedule ───────────────────────
+    // master_production_schedule.quantity_produced was written ONLY by a manual
+    // PUT, so "MPS vs actual production" compared a planned figure against a
+    // hand-typed one and could never be true. Worse, somebody had typed it equal
+    // to quantity on every row, which nets MPS demand to zero and is the direct
+    // cause of fourteen MRP runs planning nothing.
+    //
+    // Completion now reports itself. An order linked to an MPS line updates that
+    // line; an unlinked order falls back to the oldest open MPS line for the same
+    // product, which is how a planner would attribute it by hand.
+    try {
+      let mpsId = order.mps_id;
+      if (!mpsId && order.product_id) {
+        const { rows: [open] } = await client.query(`
+          SELECT id FROM master_production_schedule
+           WHERE product_id = $1 AND ($2::int IS NULL OR company_id = $2)
+             AND COALESCE(quantity,0) - COALESCE(quantity_produced,0) > 0
+             AND LOWER(COALESCE(status,'')) NOT IN ('cancelled','closed')
+           ORDER BY due_date NULLS LAST, id LIMIT 1`, [order.product_id, cid]);
+        mpsId = open?.id ?? null;
+      }
+      if (mpsId) {
+        await client.query(`
+          UPDATE master_production_schedule
+             SET quantity_produced = LEAST(COALESCE(quantity_produced,0) + $2, COALESCE(quantity,0)),
+                 status = CASE WHEN COALESCE(quantity_produced,0) + $2 >= COALESCE(quantity,0)
+                               THEN 'closed' ELSE status END,
+                 updated_at = NOW()
+           WHERE id = $1`, [mpsId, qty]);
+        await client.query(
+          `UPDATE production_orders SET mps_id = $2 WHERE id = $1 AND mps_id IS NULL`, [order.id, mpsId]);
+      }
+    } catch (e) { console.warn('[production/complete] MPS report-back skipped:', e.message); }
+
     // Co-/by-products: stock in the additional outputs of this BOM at completion.
     if (order.bom_id) {
       try {
@@ -841,7 +878,7 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
 });
 
 /* ── PATCH /orders/:id/issue-materials — issue all pending materials at once ── */
-router.patch('/orders/:id/issue-materials', requirePermission('production', 'edit'), async (req, res) => {
+router.patch('/orders/:id/issue-materials', requirePermission('production', 'edit'), captureBefore('material_reservations'), async (req, res) => {
   const client = await pool.connect();
   try {
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
@@ -888,7 +925,7 @@ router.patch('/orders/:id/issue-materials', requirePermission('production', 'edi
 });
 
 // FIX: Lock edit when status is released/in_progress/completed unless supervisor
-router.put('/orders/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.put('/orders/:id', requirePermission('production', 'edit'), captureBefore('production_orders'), async (req, res) => {
   try {
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
     const cid = req.scope?.company_id;
@@ -1260,13 +1297,86 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
       }).catch(() => {});
     }
 
-    // Log material issue
-    await client.query(`
-      INSERT INTO material_issue_logs
-        (company_id, production_order_id, reservation_id, item_id, item_name, qty_issued, unit, unit_cost, total_cost, issued_by, issued_by_name, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-    `, [cid, req.params.id, reservation_id, res_row.item_id, res_row.item_name,
-        qty_issued, res_row.unit, unitCost, totalCost, a.id, a.name, remarks || null]);
+    // ── Lot selection: WHICH lot is leaving the store ───────────────────────
+    // This is the link the whole traceability chain hangs from. Until
+    // 20260911000010 there was no batch_id on the issue log, so the system
+    // recorded that material left without recording which lot — and genealogy
+    // had to guess by listing every batch of the item.
+    //
+    // An explicit batch_id is honoured; otherwise lots are drawn in FEFO order
+    // where the item carries expiry dates and FIFO where it does not, which is
+    // the correct default for both perishable and non-perishable stock. One
+    // issue can legitimately span several lots, so each lot consumed is its own
+    // log row — a single row averaging two lots would destroy the trace it
+    // exists to record.
+    const { batch_id, work_centre_id, operation_id } = req.body;
+    let remainingToIssue = parseFloat(qty_issued);
+    const lots = [];
+
+    if (batch_id) {
+      const { rows: [b] } = await client.query(
+        `SELECT id, batch_number, quantity_available, status FROM inventory_batches
+          WHERE id = $1 AND item_id = $2 AND deleted_at IS NULL`, [batch_id, res_row.item_id]);
+      if (!b) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Batch not found for this item' }); }
+      lots.push(b);
+    } else {
+      const { rows } = await client.query(`
+        SELECT id, batch_number, quantity_available, status, expiry_date
+          FROM inventory_batches
+         WHERE item_id = $1 AND deleted_at IS NULL
+           AND COALESCE(quantity_available,0) > 0
+           AND LOWER(COALESCE(status,'available')) NOT IN ('rejected','quarantine','hold','blocked')
+         ORDER BY (expiry_date IS NULL), expiry_date ASC, received_date ASC, id ASC`,
+        [res_row.item_id]);
+      lots.push(...rows);
+    }
+
+    // Quality gate: a lot that failed inspection must not reach the shop floor.
+    // Rejected and quarantined stock was previously issuable — the QC status was
+    // recorded and then ignored at the point it mattered.
+    const blocked = lots.find(b => ['rejected', 'quarantine', 'hold', 'blocked']
+      .includes(String(b.status || '').toLowerCase()));
+    if (blocked) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `Lot ${blocked.batch_number || blocked.id} is ${blocked.status} and cannot be issued to production.`,
+        code: 'QC_BLOCKED',
+      });
+    }
+
+    const issuedLots = [];
+    for (const b of lots) {
+      if (remainingToIssue <= 0.000001) break;
+      const take = Math.min(parseFloat(b.quantity_available || 0), remainingToIssue);
+      if (take <= 0) continue;
+      await client.query(`
+        UPDATE inventory_batches
+           SET quantity_available = COALESCE(quantity_available,0) - $2,
+               quantity_consumed  = COALESCE(quantity_consumed,0)  + $2,
+               updated_at = NOW()
+         WHERE id = $1`, [b.id, take]);
+      issuedLots.push({ batch_id: b.id, batch_number: b.batch_number, qty: take });
+      remainingToIssue -= take;
+    }
+
+    // Whatever no lot could cover is still issued and still logged, with a NULL
+    // batch_id that says plainly the lot is unknown. Refusing the issue would
+    // block the shop floor over a stock-record gap; silently attributing it to
+    // an arbitrary lot would corrupt the trace. Neither is acceptable.
+    if (remainingToIssue > 0.000001) issuedLots.push({ batch_id: null, batch_number: null, qty: remainingToIssue });
+
+    for (const lot of issuedLots) {
+      await client.query(`
+        INSERT INTO material_issue_logs
+          (company_id, production_order_id, reservation_id, item_id, item_name, batch_id,
+           work_centre_id, operation_id, qty_issued, unit, unit_cost, total_cost,
+           issued_by, issued_by_name, notes)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      `, [cid, req.params.id, reservation_id, res_row.item_id, res_row.item_name, lot.batch_id,
+          work_centre_id ?? null, operation_id ?? null, lot.qty, res_row.unit, unitCost,
+          unitCost * lot.qty, a.id, a.name,
+          lot.batch_id ? (remarks || null) : `${remarks ? remarks + ' — ' : ''}lot not identified`]);
+    }
 
     // WIP transaction
     await client.query(`
@@ -1966,15 +2076,26 @@ router.post('/mrp/requirements/generate-prs', requirePermission('production', 'a
     if (!shortages.length) return res.json({ created: 0, prs: [] });
 
     const prs = [];
+    // Resolved once outside the loop — one DB round trip, not one per shortage.
+    const requesterEmpId = await employeeOf(req, pool);
     for (const item of shortages) {
       try {
-        const { rows: [pr] } = await pool.query(
-          `INSERT INTO purchase_requests (company_id, item_name, quantity, unit, estimated_cost, status, requested_by_employee_id, notes)
-           VALUES ($1,$2,$3,$4,$5,'draft',$6,$7) RETURNING id`,
-          [cid, item.item_name, item.suggested_po_qty, item.unit,
-           item.suggested_po_qty * item.unit_cost, a.id,
-           `MRP requirement: ${item.required_qty} ${item.unit} needed${from_date ? ` from ${from_date}` : ''}${to_date ? ` to ${to_date}` : ''}`]
-        );
+        // `a.id` is a users.id and requested_by_employee_id FKs employees(id):
+        // this INSERT raised a foreign key violation for every account whose
+        // users.id was not coincidentally a valid employees.id — 55 of the 62 in
+        // this database — and the bare catch below swallowed it, so the action
+        // reported success and raised nothing. employeeOf() returns the caller's
+        // real employees.id, or NULL when they have no employee record.
+        // It also minted no request_number, leaving the row blank in the register.
+        const pr = await prRepo.createSystemRequest(pool, {
+          company_id: cid,
+          item_name: item.item_name,
+          quantity: item.suggested_po_qty,
+          unit: item.unit,
+          estimated_cost: item.suggested_po_qty * item.unit_cost,
+          requested_by_employee_id: requesterEmpId,
+          notes: `MRP requirement: ${item.required_qty} ${item.unit} needed${from_date ? ` from ${from_date}` : ''}${to_date ? ` to ${to_date}` : ''}`,
+        });
         prs.push({ pr_id: pr.id, item: item.item_name, qty: item.suggested_po_qty });
       } catch { /* non-fatal: skip item */ }
     }

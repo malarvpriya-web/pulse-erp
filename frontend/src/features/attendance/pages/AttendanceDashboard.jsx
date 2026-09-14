@@ -7,7 +7,9 @@ import {
 import api from '@/services/api/client';
 import { getPosition } from '@/mobile/native';
 import { useAuth } from '@/context/AuthContext';
-import FaceClockModal from '@/components/attendance/FaceClockModal';
+import CameraClockModal from '@/components/attendance/CameraClockModal';
+import PunchModeNotice from '@/components/attendance/PunchModeNotice';
+import usePunchMode from '@/hooks/usePunchMode';
 import './AttendanceDashboard.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
@@ -113,7 +115,7 @@ const AttendanceDashboard = () => {
   const [showRegForm, setShowRegForm]         = useState(false);
   const [regForm, setRegForm]                 = useState({ date: '', reason: '', check_in: '', check_out: '' });
   const [clocking, setClocking]               = useState(false);
-  const [faceOpen, setFaceOpen]               = useState(false);
+  const [cameraOpen, setCameraOpen]           = useState(false);
   const [loading, setLoading]                 = useState(false);
   const [liveTime, setLiveTime]               = useState(new Date());
   const [toast, setToast]                     = useState(null);
@@ -123,8 +125,9 @@ const AttendanceDashboard = () => {
   const [breaks,       setBreaks]       = useState([]);
   const [breakType,    setBreakType]    = useState('lunch');
   const [breakLoading, setBreakLoading] = useState(false);
-  const videoRef  = useRef(null);
-  const canvasRef = useRef(null);
+  // Only field employees punch from the app; everyone else uses the office
+  // face/biometric device.
+  const punch = usePunchMode(user?.employee_id);
 
   const isMounted = useRef(true);
   useEffect(() => {
@@ -247,26 +250,6 @@ const AttendanceDashboard = () => {
     }
   };
 
-  // ── selfie capture ─────────────────────────────────────────────────────────
-  const captureSelfie = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: 320, height: 240 },
-      });
-      const video = videoRef.current;
-      video.srcObject = stream;
-      await new Promise((resolve) => {
-        video.onloadedmetadata = () => { video.play(); setTimeout(resolve, 600); };
-      });
-      const canvas = canvasRef.current;
-      canvas.getContext('2d').drawImage(video, 0, 0, 320, 240);
-      setSelfieDataUrl(canvas.toDataURL('image/jpeg', 0.7));
-      stream.getTracks().forEach((t) => t.stop());
-    } catch {
-      showToast('Camera unavailable — clocking in without selfie', 'error');
-    }
-  };
-
   // ── offline queue helpers ──────────────────────────────────────────────────
   const openIDB = () => new Promise((resolve, reject) => {
     const req = indexedDB.open('pulse_attendance', 1);
@@ -286,7 +269,11 @@ const AttendanceDashboard = () => {
   }, []);
 
   // ── clock in / out ─────────────────────────────────────────────────────────
-  const handleClockAction = async (faceData = null) => {
+  // `proof` is what CameraClockModal captured: { selfie_url, location }. Both
+  // are read straight off the argument, never off state — the modal sets
+  // selfieDataUrl and calls this in the same tick, so a state read here would
+  // still see the previous (null) selfie and the server would 400.
+  const handleClockAction = async (proof = null) => {
     if (clocking) return;
     setClocking(true);
 
@@ -294,7 +281,15 @@ const AttendanceDashboard = () => {
     const timeStr = formatTime12Short(new Date());
 
     let loc = null;
-    if (isIn) loc = await captureLocation();
+    if (proof?.location) {
+      const [lat, lng] = String(proof.location).split(',').map(Number);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        loc = { lat, lng, accuracy: null };
+        setLocationData(loc);
+        setLocationStatus('acquired');
+      }
+    }
+    if (isIn && !loc) loc = await captureLocation();
 
     // snapshot for rollback on failure
     const prevStatus = todayStatus;
@@ -315,8 +310,7 @@ const AttendanceDashboard = () => {
         time:        timeStr,
         work_mode:   workMode,
         location:    loc ? `${loc.lat.toFixed(6)},${loc.lng.toFixed(6)}` : null,
-        selfie_url:  selfieDataUrl || undefined,
-        ...(faceData?.face_token ? { face_token: faceData.face_token } : {}),
+        selfie_url:  proof?.selfie_url || undefined,
       });
       if (isMounted.current) {
         showToast(isIn ? `Clocked in at ${timeStr}` : `Clocked out at ${timeStr}`, 'success');
@@ -674,26 +668,13 @@ const AttendanceDashboard = () => {
               </div>
             )}
 
-            {/* selfie capture — optional, only before clock-in */}
-            {!todayStatus?.check_in && (
-              <div style={{ marginTop: 6 }}>
-                {!selfieDataUrl ? (
-                  <button
-                    onClick={captureSelfie}
-                    style={{ background: 'none', border: '1px dashed #d1d5db', borderRadius: 6, padding: '4px 10px', fontSize: 12, color: '#6b7280', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}
-                    title="Optional: take a selfie for attendance verification"
-                  >
-                    📷 Take Selfie (optional)
-                  </button>
-                ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <img src={selfieDataUrl} alt="selfie" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', border: '2px solid #10b981' }} />
-                    <span style={{ fontSize: 12, color: '#059669' }}>Selfie captured</span>
-                    <button onClick={() => setSelfieDataUrl(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 14 }}>✕</button>
-                  </div>
-                )}
-                <video ref={videoRef} style={{ display: 'none' }} autoPlay playsInline muted />
-                <canvas ref={canvasRef} style={{ display: 'none' }} width={320} height={240} />
+            {/* selfie preview — captured inside the camera modal, mandatory for
+                a field clock-in (the server rejects a punch without one) */}
+            {!todayStatus?.check_in && selfieDataUrl && (
+              <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <img src={selfieDataUrl} alt="Captured selfie" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', border: '2px solid #10b981' }} />
+                <span style={{ fontSize: 12, color: '#059669' }}>Selfie captured</span>
+                <button onClick={() => setSelfieDataUrl(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 14 }} aria-label="Discard selfie">✕</button>
               </div>
             )}
 
@@ -703,16 +684,20 @@ const AttendanceDashboard = () => {
                 <MapPin size={11} />
                 {locationStatus === 'acquiring' && 'Getting location…'}
                 {locationStatus === 'acquired' && locationData &&
-                  `${locationData.lat.toFixed(4)}, ${locationData.lng.toFixed(4)} (±${locationData.accuracy}m)`}
+                  `${locationData.lat.toFixed(4)}, ${locationData.lng.toFixed(4)}${Number.isFinite(locationData.accuracy) ? ` (±${locationData.accuracy}m)` : ''}`}
                 {locationStatus === 'denied' && 'Location unavailable — clocked in without GPS'}
               </div>
             )}
 
-            {/* clock button */}
-            {!todayStatus?.check_in ? (
+            {/* clock button — in-app punching is field-employee only */}
+            {punch.loading ? (
+              <div style={{ fontSize: 12, color: '#6b7280', padding: '8px 0' }}>Checking your attendance setup…</div>
+            ) : !punch.canPunch ? (
+              <PunchModeNotice reason={punch.reason} message={punch.message} />
+            ) : !todayStatus?.check_in ? (
               <button
                 className="atd-clock-btn atd-clock-btn-in"
-                onClick={() => (user?.employee_id ? setFaceOpen(true) : handleClockAction())}
+                onClick={() => setCameraOpen(true)}
                 disabled={clocking}
               >
                 <LogIn size={16} />
@@ -738,13 +723,17 @@ const AttendanceDashboard = () => {
               </button>
             )}
 
-            {/* face-verified clock-in */}
-            {faceOpen && user?.employee_id && (
-              <FaceClockModal
+            {/* camera clock-in for field staff — selfie + GPS, enforced server-side */}
+            {cameraOpen && user?.employee_id && punch.canPunch && (
+              <CameraClockModal
                 employeeId={user.employee_id}
                 action="in"
-                onVerified={(fd) => { setFaceOpen(false); handleClockAction(fd); }}
-                onClose={() => setFaceOpen(false)}
+                onCaptured={(proof) => {
+                  setCameraOpen(false);
+                  setSelfieDataUrl(proof.selfie_url);
+                  handleClockAction(proof);
+                }}
+                onClose={() => setCameraOpen(false)}
               />
             )}
 

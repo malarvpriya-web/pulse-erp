@@ -41,7 +41,7 @@ const EMPTY_FORM = {
   is_primary: false, branch: '',
 };
 
-export default function BankAccounts() {
+export default function BankAccounts({ embedded = false }) {
   const [accounts,       setAccounts]       = useState([]);
   const [loading,        setLoading]        = useState(true);
   const [activeAcct,     setActiveAcct]     = useState(null);
@@ -282,7 +282,7 @@ export default function BankAccounts() {
   const needsRecon    = accounts.filter(a => parseInt(a.unreconciled_count || 0) > 0).length;
 
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={
       <PageHero
         icon={Landmark}
         eyebrow="Finance"

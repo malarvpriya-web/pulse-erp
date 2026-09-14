@@ -4,12 +4,20 @@ import { Bell, Mail, MessageCircle, Plus, Edit2, Trash2, X, Check,
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useRoleCatalog } from '@/config/roleCatalog';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const CHANNEL_OPTIONS = ['in_app', 'email', 'whatsapp'];
-const ROLE_OPTIONS    = ['employee', 'manager', 'hr', 'finance', 'admin', 'super_admin',
-                         'approver', 'service_desk', 'self'];
+// Real roles come from the registry (config/roleCatalog.js). These three are NOT
+// roles — they are dynamic routing targets the notification engine resolves at
+// send time ('self' = the subject of the event, 'approver' = whoever holds the
+// pending step), so they are listed separately and appended to the picker.
+const PSEUDO_RECIPIENTS = [
+  { code: 'self',         label: 'Subject of the event' },
+  { code: 'approver',     label: 'Pending approver'     },
+  { code: 'service_desk', label: 'Service desk queue'   },
+];
 
 const MODULE_GROUPS = [
   { key: 'hr',         label: 'HR',            prefixes: ['leave', 'attendance', 'recruitment'] },
@@ -95,14 +103,15 @@ function ChannelCheckboxes({ value, onChange }) {
 }
 
 function RoleSelect({ value, onChange }) {
+  const options = [...useRoleCatalog(), ...PSEUDO_RECIPIENTS];
   const roles = Array.isArray(value) ? value : [];
   const toggle = (r) => onChange(roles.includes(r) ? roles.filter(x => x !== r) : [...roles, r]);
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-      {ROLE_OPTIONS.map(r => (
+      {options.map(({ code: r, label }) => (
         <label key={r} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 12 }}>
           <input type="checkbox" checked={roles.includes(r)} onChange={() => toggle(r)} />
-          {r}
+          {label}
         </label>
       ))}
     </div>

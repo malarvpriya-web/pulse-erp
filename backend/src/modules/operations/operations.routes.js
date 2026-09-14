@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pool from '../shared/db.js';
 import { dimension } from '../../shared/dashboardFilters.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -152,7 +153,7 @@ router.post('/workflows', async (req, res) => {
 });
 
 // PUT /api/operations/workflows/:id
-router.put('/workflows/:id', async (req, res) => {
+router.put('/workflows/:id', captureBefore('workflows'), async (req, res) => {
   try {
     const { name, description, trigger_module, trigger_event, is_active } = req.body;
     const companyId = cid(req);
@@ -166,7 +167,7 @@ router.put('/workflows/:id', async (req, res) => {
 });
 
 // PUT /api/operations/workflows/:id/toggle
-router.put('/workflows/:id/toggle', async (req, res) => {
+router.put('/workflows/:id/toggle', captureBefore('workflows'), async (req, res) => {
   try {
     const companyId = cid(req);
     const r = await pool.query(

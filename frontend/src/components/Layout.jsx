@@ -152,7 +152,14 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
       }
     }
     const Page = route.component;
-    const extraProps = route.props ? route.props(ctx) : {};
+    // A route that declares no `props` function still needs the navigation
+    // context. Defaulting to {} meant `setPage` arrived undefined on every
+    // auto-discovered page and on manual entries written without a `props`
+    // function: guarded call sites (`if (setPage)`, `setPage?.()`) silently
+    // did nothing — a dead row click with no error — and unguarded ones threw
+    // "setPage is not a function". An explicit `props` function still wins,
+    // so nothing that already declares its own props changes.
+    const extraProps = route.props ? route.props(ctx) : { setPage, urlParams };
     return <Page {...extraProps} />;
   };
 

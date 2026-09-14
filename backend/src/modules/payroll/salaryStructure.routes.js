@@ -4,6 +4,7 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { computePayroll, getMonthName, generateForm16Summary } from './payrollEngine.js';
 import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -171,7 +172,7 @@ router.get('/:id', verifyToken, allowRoles(...HR_ROLES), async (req, res) => {
 });
 
 /* ─── PUT /:id ── update structure ───────────────────────────── */
-router.put('/:id', verifyToken, allowRoles(...HR_ROLES), async (req, res) => {
+router.put('/:id', verifyToken, allowRoles(...HR_ROLES), captureBefore('salary_structures'), async (req, res) => {
   const { name, description, is_default, components } = req.body;
   try {
     if (is_default) await pool.query('UPDATE salary_structures SET is_default=false WHERE id!=$1', [req.params.id]);

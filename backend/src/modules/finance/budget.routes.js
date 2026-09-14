@@ -3,6 +3,7 @@ import pool from '../../config/db.js';
 import { allowRoles, requirePermission } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 router.use(requirePermission('finance', 'view'));
@@ -928,7 +929,7 @@ router.post('/sync-actuals', requirePermission('finance', 'approve'), async (req
 });
 
 // ── PUT /budgets/:id — edit draft budget ─────────────────────────────────────
-router.put('/:id', requirePermission('finance', 'edit'), async (req, res) => {
+router.put('/:id', requirePermission('finance', 'edit'), captureBefore('budgets'), async (req, res) => {
   const { name, department, budget_type, total_amount, notes } = req.body;
   const companyId = companyOf(req);
   try {
@@ -966,7 +967,7 @@ router.put('/:id', requirePermission('finance', 'edit'), async (req, res) => {
 });
 
 // ── DELETE /budgets/:id — delete draft budget ─────────────────────────────────
-router.delete('/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/:id', requirePermission('finance', 'delete'), captureBefore('budgets'), async (req, res) => {
   const companyId = companyOf(req);
   const client = await pool.connect();
   try {

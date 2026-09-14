@@ -9,6 +9,7 @@ import useAppStore from '@/store/useAppStore';
 import { matchesSearch } from '../shared/search';
 import './JobOpenings.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import MasterSelect from '@/components/core/MasterSelect';
 
 const STATUS_META = {
   open:             { bg: '#dcfce7', color: '#15803d', label: 'Open'     },
@@ -27,7 +28,10 @@ const TYPE_META = {
 };
 const tm = t => TYPE_META[(t || '').toLowerCase()] || TYPE_META.full_time;
 
-const DEPARTMENTS = ['Engineering', 'Finance', 'HR', 'Sales', 'Operations', 'Marketing', 'Product', 'Legal'];
+// Departments come from the master via <MasterSelect>, which also offers an
+// inline add so a missing one does not mean a trip to Master Setup.
+// The hardcoded array that was here disagreed with every other screen's, so a
+// record created here could carry a department name no report could group by.
 const EMP_TYPES   = ['full_time', 'contract', 'intern', 'part_time'];
 
 const emptyForm = () => ({
@@ -265,10 +269,13 @@ export default function JobOpenings({ setPage }) {
                 </div>
                 <div className="jo-field">
                   <label>Department <span className="jo-req">*</span></label>
-                  <select value={form.department} onChange={e => setF('department', e.target.value)}>
-                    <option value="">Select…</option>
-                    {DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
-                  </select>
+                  <MasterSelect
+                    endpoint="/master/departments"
+                    label="Department"
+                    value={form.department}
+                    onChange={v => setF('department', v)}
+                    placeholder="Select…"
+                  />
                 </div>
               </div>
               <div className="jo-row2">

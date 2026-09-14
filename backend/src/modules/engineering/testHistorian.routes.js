@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { getHarmonicLimit, THD_I_LIMIT_PERCENT, THD_V_LIMIT_PERCENT } from '../quality/iecLimits.js';
 import { nextTestRunNumber } from '../../shared/docNumber.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
 
 // pdfkit is a CommonJS package — use createRequire for ESM compatibility.
 // Graceful degradation: if not yet installed, the /certificate endpoint returns 503.
@@ -43,7 +44,7 @@ async function recomputeRunResult(client, runId) {
   return overall;
 }
 
-router.get('/runs', async (req, res) => {
+router.get('/runs', requirePermission('engineering', 'view'), async (req, res) => {
   try {
     const { production_order_id, serial_number, test_stage, overall_result } = req.query;
     const companyId = cid(req);
@@ -68,7 +69,7 @@ router.get('/runs', async (req, res) => {
   }
 });
 
-router.post('/runs', async (req, res) => {
+router.post('/runs', requirePermission('engineering', 'add'), async (req, res) => {
   try {
     const {
       production_order_id,
@@ -100,7 +101,7 @@ router.post('/runs', async (req, res) => {
   }
 });
 
-router.get('/runs/:id', async (req, res) => {
+router.get('/runs/:id', requirePermission('engineering', 'view'), async (req, res) => {
   try {
     const [run, measurements, attachments] = await Promise.all([
       pool.query(`SELECT * FROM test_runs WHERE id = $1`, [req.params.id]),
@@ -114,7 +115,7 @@ router.get('/runs/:id', async (req, res) => {
   }
 });
 
-router.post('/runs/:id/measurements', async (req, res) => {
+router.post('/runs/:id/measurements', requirePermission('engineering', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -155,7 +156,7 @@ router.post('/runs/:id/measurements', async (req, res) => {
   }
 });
 
-router.post('/runs/:id/attachments', async (req, res) => {
+router.post('/runs/:id/attachments', requirePermission('engineering', 'add'), async (req, res) => {
   try {
     const { file_name, file_path, file_type } = req.body;
     if (!file_name) return res.status(400).json({ error: 'file_name is required' });
@@ -173,7 +174,7 @@ router.post('/runs/:id/attachments', async (req, res) => {
   }
 });
 
-router.post('/runs/:id/complete', async (req, res) => {
+router.post('/runs/:id/complete', requirePermission('engineering', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { remarks } = req.body;
@@ -221,7 +222,7 @@ router.post('/runs/:id/complete', async (req, res) => {
    measurements. Compares THD-I, THD-V, and per-harmonic values (H3, H5 …)
    against Class A/B/C/D limits from iecLimits.js.
    All limit values are fixed IEC constants — no runtime estimation.         */
-router.get('/runs/:id/compliance-score', async (req, res) => {
+router.get('/runs/:id/compliance-score', requirePermission('engineering', 'view'), async (req, res) => {
   try {
     const [runRes, measRes] = await Promise.all([
       pool.query(
@@ -307,7 +308,7 @@ router.get('/runs/:id/compliance-score', async (req, res) => {
    The SHA-256 hash of the measurement snapshot is embedded in the footer and
    stored back on the test_run row for future audit verification.
    Requires: npm install pdfkit (in backend/).                               */
-router.get('/runs/:id/certificate', async (req, res) => {
+router.get('/runs/:id/certificate', requirePermission('engineering', 'view'), async (req, res) => {
   if (!PDFDocument) {
     return res.status(503).json({
       error: 'PDF generation not available.',
