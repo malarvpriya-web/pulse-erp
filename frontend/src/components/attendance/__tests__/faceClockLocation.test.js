@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { getLocationString } from '../geo';
 
 // getLocationString routes through @/mobile/native getPosition(). With no

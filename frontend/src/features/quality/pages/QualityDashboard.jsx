@@ -31,7 +31,7 @@ export default function QualityDashboard() {
       ]);
       if (dash.status === 'fulfilled') setData(dash.value.data);
       if (alerts.status === 'fulfilled') setCalAlerts(alerts.value.data?.data || []);
-    } catch (e) {
+    } catch {
       toast.error('Failed to load quality dashboard');
     } finally {
       setLoading(false);

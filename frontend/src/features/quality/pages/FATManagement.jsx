@@ -88,7 +88,7 @@ function TestRunDetail({ run, onClose, onRefresh }) {
       toast.success('Punch point added');
       setNewPunch({ description: '', severity: 'minor', due_date: '' });
       onRefresh();
-    } catch (e) { toast.error('Failed to add punch point'); }
+    } catch { toast.error('Failed to add punch point'); }
   };
 
   const closePunch = async (ppId) => {
@@ -104,7 +104,7 @@ function TestRunDetail({ run, onClose, onRefresh }) {
       await api.put(`/quality/test-runs/${run.id}`, { customer_accepted: true, customer_accepted_at: new Date().toISOString() });
       toast.success('Customer acceptance recorded');
       onRefresh(); onClose();
-    } catch (e) { toast.error('Failed'); }
+    } catch { toast.error('Failed'); }
   };
 
   const inp = { padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' };

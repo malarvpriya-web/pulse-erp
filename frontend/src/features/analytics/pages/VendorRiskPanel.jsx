@@ -91,7 +91,7 @@ export default function VendorRiskPanel({ highRisk = [] }) {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((v, i) => {
+              {sorted.map((v) => {
                 const riskCfg = RISK_BADGE[v.risk_level] || RISK_BADGE.Low;
                 const rowBg = RISK_ROW_COLOR[v.risk_level] || '#fff';
                 const revenueAtRisk = v.projects_impacted * 2000000; // estimate ₹20L per project

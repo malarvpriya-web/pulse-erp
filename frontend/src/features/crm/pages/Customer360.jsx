@@ -321,7 +321,7 @@ function SalesFunnel({ summary }) {
   const max = Math.max(...stages.map(s => s.value), 1);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '16px 20px' }}>
-      {stages.map((s, i) => (
+      {stages.map((s) => (
         <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', width: 100, textAlign: 'right' }}>{s.label}</span>
           <div style={{

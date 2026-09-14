@@ -71,7 +71,7 @@ export default function AllTickets() {
       ]);
       if (filRes.status === 'fulfilled') setFilters(filRes.value.data);
       if (engRes.status === 'fulfilled') setEngineers(engRes.value.data || []);
-    } catch (err) { showToast('Could not load filter options', 'error'); }
+    } catch { showToast('Could not load filter options', 'error'); }
   };
 
   const load = useCallback(async () => {

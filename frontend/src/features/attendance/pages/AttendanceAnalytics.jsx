@@ -630,7 +630,7 @@ export default function AttendanceAnalytics() {
                         </div>
                       ) : (
                         <>
-                          {perfectAtt.slice(0, 10).map((e, i) => (
+                          {perfectAtt.slice(0, 10).map((e) => (
                             <div key={e.employee_id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f9fafb' }}>
                               <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#ede9fe', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                 <Star size={11} color="#7c5cf0" fill="#7c5cf0" />

@@ -123,7 +123,7 @@ export default function ProductionOrders({ setPage, setSelectedProduction }) {
       ]);
       setOrders(Array.isArray(ordersRes.data) ? ordersRes.data : []);
       setStats(statsRes.data || {});
-    } catch (e) {
+    } catch {
       toast.error('Failed to load production orders');
     } finally {
       setLoading(false);

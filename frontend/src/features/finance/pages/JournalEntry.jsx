@@ -125,7 +125,7 @@ export default function JournalEntry() {
         params: { date_from: glDateFrom, date_to: glDateTo },
       });
       setGlData(res.data);
-    } catch(e) {
+    } catch {
       showToast('Failed to load general ledger', 'error');
       setGlData(null);
     } finally { setGlLoading(false); }

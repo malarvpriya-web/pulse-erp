@@ -126,7 +126,7 @@ export default function CRMActivities() {
     try {
       await api.delete(`/crm/activities/${id}`);
       load();
-    } catch (e) {
+    } catch {
       toast.error('Failed to delete activity');
     }
   };

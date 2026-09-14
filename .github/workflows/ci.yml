@@ -121,6 +121,14 @@ jobs:
           set -o pipefail
           node scripts/audit/sql-failure-probe.mjs 2>&1 | tee sql-failures.log
         working-directory: backend
+        env:
+          # The probe mints a token before it can call a single route. The
+          # minter defaults to superadmin@manifest.in, which exists on a
+          # developer database but never on a CI one — seed-test-fixtures.mjs
+          # creates admin@test.com. Without this the probe died before
+          # reaching any route, and the job then failed with "could not mint a
+          # token" while never running the test suite at all.
+          E2E_LOGIN_EMAIL: admin@test.com
       - name: Annotate swallowed query failures
         if: failure()
         run: |

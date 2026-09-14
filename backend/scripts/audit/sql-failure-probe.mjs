@@ -60,10 +60,21 @@ function discoverGets() {
 const mintToken = () => new Promise((resolve, reject) => {
   const p = spawn(process.execPath, [path.join(BACKEND, 'scripts/e2e-mint-token.mjs')], { cwd: BACKEND });
   let out = '';
+  let err = '';
   p.stdout.on('data', d => (out += d));
+  // The minter explains itself on stderr — "No user <email>", a missing
+  // JWT_SECRET, an inactive account. Swallowing that turned every cause into
+  // the same four words and made a CI-only failure undiagnosable from the
+  // annotations alone.
+  p.stderr.on('data', d => (err += d));
   p.on('exit', () => {
     const m = out.match(/---E2E_AUTH_BEGIN---\s*([\s\S]*?)\s*---E2E_AUTH_END---/);
-    if (!m) return reject(new Error('could not mint a token'));
+    if (!m) {
+      const why = err.trim().split(/\r?\n/).filter(Boolean).pop() || 'no output from the minter';
+      return reject(new Error(
+        `could not mint a token: ${why} ` +
+        `(set E2E_LOGIN_EMAIL to an active account that exists on this database)`));
+    }
     resolve(JSON.parse(m[1]).token);
   });
 });

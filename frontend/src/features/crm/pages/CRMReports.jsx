@@ -77,7 +77,7 @@ export default function CRMReports() {
         topCustomers:   g(9) || [],
         pursuitList:    g(10) || [],
       });
-    } catch (e) {
+    } catch {
       if (isMounted.current) setError('Failed to load reports');
     } finally {
       if (isMounted.current) setLoading(false);

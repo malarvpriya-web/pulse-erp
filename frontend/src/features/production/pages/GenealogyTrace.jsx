@@ -4,7 +4,7 @@
 // Provides bidirectional traceability (Upstream Supplier -> Downstream Customer),
 // As-Built Physical BOM vs Planned BOM, Immediate Where-Used & Recall Impact Analysis,
 // Quality / FAT / SAT Test Runs with Measurements, and Chronological Location History.
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback} from 'react';
 import { 
   ScrollText, Network, Layers, ShieldAlert, CheckCircle2, 
   History, MapPin, AlertTriangle, Box, ArrowUpRight, ArrowDownRight,

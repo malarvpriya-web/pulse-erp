@@ -118,7 +118,7 @@ export default function ProjectEVMDashboard({ setPage }) {
       setEvm(evmData);
       const sc = scurveRes.status === 'fulfilled' ? (scurveRes.value.data?.scurve || scurveRes.value.data || []) : [];
       setScurve(sc);
-    } catch (e) {
+    } catch {
       if (isMounted.current) showToast('Failed to load EVM data', 'error');
     }
     if (isMounted.current) setLoading(false);

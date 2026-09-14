@@ -136,7 +136,7 @@ export default function EquipmentCalibration() {
   const deleteEq = async (id) => {
     if (!confirm('Delete this equipment?')) return;
     try { await api.delete(`/quality/calibration/equipment/${id}`); toast.success('Deleted'); load(); }
-    catch (e) { toast.error('Delete failed'); }
+    catch { toast.error('Delete failed'); }
   };
 
   const calibrated = equipment.filter(e => e.status === 'calibrated').length;

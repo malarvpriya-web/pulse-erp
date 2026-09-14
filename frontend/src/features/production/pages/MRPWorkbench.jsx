@@ -61,7 +61,7 @@ export default function MRPWorkbench() {
     try {
       const { data } = await api.get(`/mrp/runs/${id}`);
       setRun(data.run); setPlanned(data.planned_orders || []); setExceptions(data.exceptions || []); setTimePhased(data.time_phased || []);
-    } catch (e) { toast.error('Failed to load run'); }
+    } catch { toast.error('Failed to load run'); }
   }, [toast]);
 
   const loadItems = useCallback(async () => {

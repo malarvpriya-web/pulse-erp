@@ -166,7 +166,7 @@ export default function CollectionRiskPanel({ data, serviceData }) {
                 </tr>
               </thead>
               <tbody>
-                {expiring.map((c, i) => {
+                {expiring.map((c) => {
                   const urgentColor = c.days_to_expiry <= 30 ? C.red : c.days_to_expiry <= 60 ? C.amber : C.amber;
                   return (
                     <tr key={c.id} style={{ borderBottom: '1px solid #f3f4f6', background: c.days_to_expiry <= 30 ? '#fff8f8' : '#fff' }}>

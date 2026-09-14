@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Search, Package, Users, IndianRupee, Percent, Building2 } from 'lucide-react';
 import api from '@/services/api/client';
-import { getVendorPriceComparison, getCategories } from '../services/inventoryService';
+import { getCategories } from '../services/inventoryService';
 import { PageLayout, PageHeader, KPICardGrid, KPICard, ContentCard, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 const ABC_COLORS = { A: ['#d1fae5', '#16a34a'], B: ['#ede9fe', '#6d28d9'], C: ['#f3f4f6', '#6b7280'], Unclassified: ['#f3f4f6', '#9ca3af'] };

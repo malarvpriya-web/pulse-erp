@@ -83,7 +83,7 @@ export default function WarrantyManagement({ setPage }) {
       });
       showToast('AMC contract created — set cost in AMC Management');
       if (setPage) setPage('amc-management');
-    } catch (e) { showToast('Conversion failed', 'error'); }
+    } catch { showToast('Conversion failed', 'error'); }
   };
 
   const active   = warranties.filter(w => w.status === 'active').length;

@@ -137,7 +137,7 @@ export default function AIInsightsPanel() {
       const res = await api.get('/ceo-intelligence/ai-insights');
       if (ctrl.signal.aborted) return;
       setData(res.data);
-    } catch (e) {
+    } catch {
       if (!ctrl.signal.aborted) setError('Failed to load AI insights');
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);

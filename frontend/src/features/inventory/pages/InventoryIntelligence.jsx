@@ -152,7 +152,7 @@ export default function InventoryIntelligence() {
         ? (vendorsRes.value.data?.vendors || vendorsRes.value.data?.data || vendorsRes.value.data || [])
         : [];
       setVendors(rawVendors);
-    } catch (err) {
+    } catch {
       toast.error('Failed to load items for rule setup');
     }
   };

@@ -63,7 +63,7 @@ export default function CustomerPortalManagement() {
       await api.put(`/customer-portal/accounts/${id}`, { is_active: !current });
       showToast(`Account ${!current ? 'activated' : 'deactivated'}`);
       load();
-    } catch (err) { showToast('Failed', 'error'); }
+    } catch { showToast('Failed', 'error'); }
   };
 
   const addEquipment = async () => {
@@ -82,7 +82,7 @@ export default function CustomerPortalManagement() {
       await api.put(`/customer-portal/tickets/${id}`, { status });
       showToast('Ticket updated');
       load();
-    } catch (err) { showToast('Failed', 'error'); }
+    } catch { showToast('Failed', 'error'); }
   };
 
   const STATUS_COLOR = { open:'#ede9fe', in_progress:'#dbeafe', closed:'#d1fae5', resolved:'#d1fae5' };

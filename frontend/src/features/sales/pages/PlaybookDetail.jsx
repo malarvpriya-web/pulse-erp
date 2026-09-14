@@ -160,7 +160,7 @@ export default function PlaybookDetail({ setPage, urlParams }) {
       await api.put(`/sales/playbooks/${playbookId}/steps/reorder`, {
         ordered_ids: newSteps.map(s => s.id),
       });
-    } catch (err) {
+    } catch {
       toast.error('Reorder failed');
       load(); // revert
     }
