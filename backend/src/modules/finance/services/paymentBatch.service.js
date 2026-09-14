@@ -12,13 +12,13 @@ class PaymentBatchService {
     try {
       await client.query('BEGIN');
 
-      const batchNumber = await paymentBatchRepo.getNextBatchNumber();
+      const batchNumber = await paymentBatchRepo.getNextBatchNumber(client);
       const batch = await paymentBatchRepo.create({
         ...data,
         batch_number: batchNumber,
         created_by: userId,
         status: data.status || 'draft',
-      });
+      }, client);
 
       const items = data.items || [];
       for (const item of items) {

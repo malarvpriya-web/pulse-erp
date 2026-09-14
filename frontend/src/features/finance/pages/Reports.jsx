@@ -35,9 +35,8 @@ function buildExportData(tab, pl, bs, cf, trialBalance, arAging, apAging) {
         { Section: 'Gross Profit', Item: '', Amount: pl.grossProfit },
         ...pl.opex.items.map(i => ({ Section: 'Operating Expenses', Item: i.name, Amount: i.amount })),
         { Section: 'Total OpEx', Item: '', Amount: pl.opex.total },
-        { Section: 'EBITDA', Item: '', Amount: pl.ebitda },
-        { Section: 'Interest Expense', Item: '', Amount: pl.interest },
-        { Section: 'Tax Provision', Item: '', Amount: pl.tax },
+        { Section: 'Operating Profit', Item: '', Amount: pl.operatingProfit },
+        { Section: 'Other Income', Item: '', Amount: pl.otherIncome },
         { Section: 'Net Profit', Item: '', Amount: pl.netProfit },
       ],
       name: 'profit-loss',
@@ -59,19 +58,17 @@ function buildExportData(tab, pl, bs, cf, trialBalance, arAging, apAging) {
       ],
       name: 'balance-sheet',
     };
+    // Exports the same per-account cash movement the Cash Flow tab renders —
+    // the screen and the CSV must not be built from different figures.
     case 'cf': return {
       rows: [
-        { Section: 'Opening Balance', Item: '', Amount: cf.openingBalance },
-        ...cf.operating.items.map(i => ({ Section: 'Operating Activities', Item: i.name, Amount: i.amount })),
-        { Section: 'Net Operating CF', Item: '', Amount: cf.operating.total },
-        ...cf.investing.items.map(i => ({ Section: 'Investing Activities', Item: i.name, Amount: i.amount })),
-        { Section: 'Net Investing CF', Item: '', Amount: cf.investing.total },
-        ...cf.financing.items.map(i => ({ Section: 'Financing Activities', Item: i.name, Amount: i.amount })),
-        { Section: 'Net Financing CF', Item: '', Amount: cf.financing.total },
-        { Section: 'Net Change in Cash', Item: '', Amount: cf.netChange },
-        { Section: 'Closing Balance', Item: '', Amount: cf.closingBalance },
+        ...cf.accounts.map(a => ({
+          Account_Code: a.code, Account: a.name,
+          Cash_In: a.cashIn, Cash_Out: a.cashOut, Net_Movement: a.net,
+        })),
+        { Account_Code: '', Account: 'TOTAL', Cash_In: cf.totalIn, Cash_Out: cf.totalOut, Net_Movement: cf.netChange },
       ],
-      name: 'cash-flow',
+      name: 'cash-movement',
     };
     case 'tb': return {
       rows: trialBalance.map(r => ({ Account_Code: r.code, Account: r.account, Debit: r.debit || 0, Credit: r.credit || 0 })),
@@ -146,6 +143,124 @@ const LineRow = ({ label, value, indent=0, bold=false, total=false, negative=fal
   </div>
 );
 
+// ── API → view-model adapters ────────────────────────────────────────────────
+// This page used to fall back to a hardcoded specimen company (₹378,000 revenue,
+// ₹66,000 net profit) whenever the response did not carry the exact key it
+// probed for — and because it probed `data.pl?.revenue` while the API returns
+// `total_revenue`, the specimen won on EVERY successful load. The trial balance
+// was hardcoded outright and never requested at all.
+//
+// These adapters map the real Accounting Engine responses onto the shapes the
+// render layer already expects. They return zeroed structures when there is no
+// data and never invent a figure; `hasData` lets the UI say so explicitly
+// rather than present zeros as a finished report.
+const num = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : 0; };
+const groupOf = (rows, nameKey, amountKey) => {
+  const items = (rows || [])
+    .map(r => ({ name: r[nameKey] ?? r.account_name ?? '—', amount: num(r[amountKey]) }))
+    .filter(i => i.amount !== 0);
+  return { items, total: items.reduce((s, i) => s + i.amount, 0) };
+};
+
+const EMPTY_PL = {
+  revenue: { total: 0, items: [] }, cogs: { total: 0, items: [] },
+  opex: { total: 0, items: [] }, grossProfit: 0, operatingProfit: 0,
+  otherIncome: 0, netProfit: 0, hasData: false,
+};
+
+// Source: GET /finance/accounting/profit-loss (GL, company-scoped).
+// The chart of accounts only models the `cogs` and `other` sub-types, so there
+// is no ledger basis for an interest/tax/depreciation split — the page no
+// longer claims EBITDA, Interest Expense or Tax Provision lines it cannot
+// derive. Operating Profit and Other Income are what the GL actually gives.
+function adaptPL(d) {
+  if (!d) return EMPTY_PL;
+  const revenue = groupOf((d.revenue_accounts || []).filter(a => a.sub_type !== 'other'), 'account_name', 'net_amount');
+  const cogsRows = (d.expense_accounts || []).filter(a => a.sub_type === 'cogs');
+  const cogs = groupOf(cogsRows, 'account_name', 'net_amount');
+  const opex = groupOf(d.operating_expenses || [], 'account_name', 'net_amount');
+  return {
+    revenue: { items: revenue.items, total: num(d.total_revenue) || revenue.total },
+    cogs:    { items: cogs.items,    total: num(d.cogs)          || cogs.total },
+    opex:    { items: opex.items,    total: num(d.total_opex)    || opex.total },
+    grossProfit:     num(d.gross_profit),
+    operatingProfit: num(d.operating_profit),
+    otherIncome:     num(d.other_income),
+    netProfit:       num(d.net_profit),
+    hasData: (d.revenue_accounts?.length || 0) + (d.expense_accounts?.length || 0) > 0,
+  };
+}
+
+const EMPTY_BS = {
+  assets: { current: { total: 0, items: [] }, fixed: { total: 0, items: [] }, total: 0 },
+  liabilities: { current: { total: 0, items: [] }, longterm: { total: 0, items: [] }, total: 0 },
+  equity: { total: 0, items: [] }, balanced: true, hasData: false,
+};
+
+// Source: GET /finance/accounting/balance-sheet (GL, company-scoped).
+function adaptBS(d) {
+  if (!d) return EMPTY_BS;
+  const cur  = groupOf(d.current_assets, 'name', 'balance');
+  const fix  = groupOf(d.fixed_assets, 'name', 'balance');
+  const cl   = groupOf(d.current_liabilities, 'name', 'balance');
+  const ltl  = groupOf(d.long_term_liabilities, 'name', 'balance');
+  const eq   = groupOf(d.equity_accounts, 'name', 'balance');
+  const retained = num(d.retained_earnings);
+  const equityItems = retained !== 0
+    ? [...eq.items, { name: 'Retained Earnings (prior years)', amount: retained }]
+    : eq.items;
+  return {
+    assets: {
+      current: { items: cur.items, total: num(d.total_current_assets) },
+      fixed:   { items: fix.items, total: num(d.total_fixed_assets) },
+      total:   num(d.total_assets),
+    },
+    liabilities: {
+      current:  { items: cl.items,  total: num(d.total_current_liabilities) },
+      longterm: { items: ltl.items, total: num(d.total_long_term_liabilities) },
+      total:    num(d.total_current_liabilities) + num(d.total_long_term_liabilities),
+    },
+    equity: { items: equityItems, total: num(d.total_equity) },
+    balanced: d.balanced !== false,
+    hasData: cur.items.length + fix.items.length + cl.items.length + ltl.items.length + equityItems.length > 0,
+  };
+}
+
+// Source: GET /finance/reports/cash-flow — posted GL movement on the cash and
+// bank accounts. It reports movement per account; it does NOT classify activity
+// into operating/investing/financing, so this page no longer presents those
+// three sections. A classified statement needs the accounts tagged first.
+function adaptCF(d) {
+  const rows = (d?.accounts || []).map(a => ({
+    code: a.account_code, name: a.account_name,
+    cashIn: num(a.cash_in), cashOut: num(a.cash_out), net: num(a.net_movement),
+  }));
+  return {
+    accounts: rows,
+    totalIn:  num(d?.total_cash_in),
+    totalOut: num(d?.total_cash_out),
+    netChange: num(d?.net_change),
+    hasData: rows.length > 0,
+  };
+}
+
+// Source: GET /finance/accounting/trial-balance — closing DR/CR per account.
+function adaptTB(d) {
+  const byType = d?.accounts_by_type || {};
+  const rows = Object.values(byType).flat().map(a => ({
+    code: a.account_code, account: a.account_name, type: a.account_type,
+    debit: num(a.closing_dr), credit: num(a.closing_cr),
+  })).filter(r => r.debit !== 0 || r.credit !== 0);
+  rows.sort((a, b) => String(a.code).localeCompare(String(b.code)));
+  return {
+    rows,
+    debitTotal:  num(d?.grand_total_closing_debit),
+    creditTotal: num(d?.grand_total_closing_credit),
+    balanced: d?.balanced !== false,
+    hasData: rows.length > 0,
+  };
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function FinancialReports() {
   const { fyParams } = useFY();
@@ -168,21 +283,30 @@ export default function FinancialReports() {
   const [apAgingLive, setApAgingLive] = useState(null);
   const [arAgingLive, setArAgingLive] = useState(null);
 
+  // P&L, balance sheet and trial balance come from the Accounting Engine
+  // (/finance/accounting/*): those handlers are company-scoped and read the
+  // posted GL. /finance/reports/* returns a flat, unscoped shape this page
+  // could not consume, which is what silently triggered the specimen figures.
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const [pl, bs, cf] = await Promise.allSettled([
-        api.get('/finance/reports/profit-loss',  { params: { start_date: dateRange.start, end_date: dateRange.end } }),
-        api.get('/finance/reports/balance-sheet',{ params: { as_of_date: dateRange.end } }),
-        api.get('/finance/reports/cash-flow',    { params: { start_date: dateRange.start, end_date: dateRange.end } }),
-      ]);
-      setData({
-        pl: pl.status==='fulfilled' ? pl.value.data : null,
-        bs: bs.status==='fulfilled' ? bs.value.data : null,
-        cf: cf.status==='fulfilled' ? cf.value.data : null,
-      });
-    } catch(e) { console.error(e); }
-    finally { setLoading(false); }
+    const [pl, bs, cf, tb] = await Promise.allSettled([
+      api.get('/finance/accounting/profit-loss',   { params: { period_from: dateRange.start, period_to: dateRange.end } }),
+      api.get('/finance/accounting/balance-sheet', { params: { as_of_date: dateRange.end } }),
+      api.get('/finance/reports/cash-flow',        { params: { start_date: dateRange.start, end_date: dateRange.end } }),
+      api.get('/finance/accounting/trial-balance', { params: { date_from: dateRange.start, date_to: dateRange.end } }),
+    ]);
+    // A failed request is reported, not silently rendered as zero.
+    const errOf = (r) => r.status === 'rejected'
+      ? (r.reason?.response?.data?.error || r.reason?.message || 'Request failed')
+      : null;
+    setData({
+      pl: pl.status==='fulfilled' ? pl.value.data : null,
+      bs: bs.status==='fulfilled' ? bs.value.data : null,
+      cf: cf.status==='fulfilled' ? cf.value.data : null,
+      tb: tb.status==='fulfilled' ? tb.value.data : null,
+      errors: { pl: errOf(pl), bs: errOf(bs), cf: errOf(cf), tb: errOf(tb) },
+    });
+    setLoading(false);
   }, [dateRange]);
 
   useEffect(() => { load(); }, [load]);
@@ -259,150 +383,45 @@ export default function FinancialReports() {
     setDateRange({ start, end });
   };
 
-  // ── Static sample data (used when API returns nothing) ──────────────────
-  const pl = data.pl?.revenue ? data.pl : {
-    revenue: { total: 378000, items: [
-      { name:'Product Sales',    amount: 295000 },
-      { name:'Service Revenue',  amount:  62000 },
-      { name:'Other Income',     amount:  21000 },
-    ]},
-    cogs:    { total: 98000, items: [
-      { name:'Raw Materials',    amount:  58000 },
-      { name:'Direct Labour',    amount:  28000 },
-      { name:'Manufacturing OH', amount:  12000 },
-    ]},
-    grossProfit: 280000,
-    opex: { total: 174000, items: [
-      { name:'Salaries & Wages',  amount: 110000 },
-      { name:'Rent & Utilities',  amount:  22000 },
-      { name:'Marketing',         amount:  18000 },
-      { name:'Travel & Conveyance',amount:  8000 },
-      { name:'IT & Software',     amount:  10000 },
-      { name:'Depreciation',      amount:   6000 },
-    ]},
-    ebitda: 114000,
-    interest: 4000,
-    tax: 36000,
-    netProfit: 66000,
-  };
+  // ── Live report data ────────────────────────────────────────────────────
+  // Every figure below comes from the API response. There is no specimen
+  // fallback: when a report has no data or its request failed, the UI says so.
+  const pl = adaptPL(data.pl);
+  const bs = adaptBS(data.bs);
+  const cf = adaptCF(data.cf);
+  const tb = adaptTB(data.tb);
+  const trialBalance  = tb.rows;
+  const tbDebitTotal  = tb.debitTotal;
+  const tbCreditTotal = tb.creditTotal;
 
-  const bs = data.bs?.assets ? data.bs : {
-    assets: {
-      current: { total: 285000, items: [
-        { name:'Cash & Bank',          amount: 125000 },
-        { name:'Accounts Receivable',  amount: 112000 },
-        { name:'Inventory',            amount:  38000 },
-        { name:'Prepaid Expenses',     amount:  10000 },
-      ]},
-      fixed: { total: 195000, items: [
-        { name:'Property & Equipment', amount: 150000 },
-        { name:'Vehicles',             amount:  35000 },
-        { name:'Computer Equipment',   amount:  10000 },
-      ]},
-      total: 480000,
-    },
-    liabilities: {
-      current: { total: 128000, items: [
-        { name:'Accounts Payable',     amount:  72000 },
-        { name:'Short-term Loans',     amount:  32000 },
-        { name:'Accrued Expenses',     amount:  14000 },
-        { name:'Tax Payable',          amount:  10000 },
-      ]},
-      longterm: { total: 72000, items: [
-        { name:'Term Loan',            amount:  60000 },
-        { name:'Deferred Tax',         amount:  12000 },
-      ]},
-      total: 200000,
-    },
-    equity: {
-      total: 280000, items: [
-        { name:'Share Capital',        amount: 150000 },
-        { name:'Retained Earnings',    amount:  64000 },
-        { name:'Current Year Profit',  amount:  66000 },
-      ],
-    },
-  };
+  const arAging = arAgingLive ?? [];
+  const apAging = apAgingLive ?? [];
 
-  const cf = data.cf?.operating ? data.cf : {
-    operating: { total: 122000, items: [
-      { name:'Net Income',                amount:  66000 },
-      { name:'Add: Depreciation',         amount:   6000 },
-      { name:'Change in Receivables',     amount: -18000 },
-      { name:'Change in Inventory',       amount:  -8000 },
-      { name:'Change in Payables',        amount:  12000 },
-      { name:'Other Operating Changes',   amount:  64000 },
-    ]},
-    investing: { total: -48000, items: [
-      { name:'Purchase of Equipment',     amount: -38000 },
-      { name:'Purchase of Investments',   amount: -12000 },
-      { name:'Sale of Assets',            amount:   2000 },
-    ]},
-    financing: { total: -18000, items: [
-      { name:'Loan Repayment',            amount: -12000 },
-      { name:'Dividends Paid',            amount:  -8000 },
-      { name:'New Borrowings',            amount:   2000 },
-    ]},
-    netChange:     56000,
-    openingBalance: 69000,
-    closingBalance: 125000,
-  };
-
-  const trialBalance = [
-    { account:'Cash & Bank',         code:'1010', debit:125000, credit:0 },
-    { account:'Accounts Receivable', code:'1200', debit:112000, credit:0 },
-    { account:'Inventory',           code:'1300', debit:38000,  credit:0 },
-    { account:'Fixed Assets',        code:'1500', debit:195000, credit:0 },
-    { account:'Accounts Payable',    code:'2100', debit:0,      credit:72000 },
-    { account:'Short-term Loans',    code:'2200', debit:0,      credit:32000 },
-    { account:'Tax Payable',         code:'2400', debit:0,      credit:10000 },
-    { account:'Term Loan',           code:'2500', debit:0,      credit:60000 },
-    { account:'Share Capital',       code:'3100', debit:0,      credit:150000 },
-    { account:'Retained Earnings',   code:'3200', debit:0,      credit:64000 },
-    { account:'Sales Revenue',       code:'4100', debit:0,      credit:295000 },
-    { account:'Service Revenue',     code:'4200', debit:0,      credit:62000 },
-    { account:'Cost of Goods Sold',  code:'5100', debit:98000,  credit:0 },
-    { account:'Salaries',            code:'6100', debit:110000, credit:0 },
-    { account:'Rent & Utilities',    code:'6200', debit:22000,  credit:0 },
-    { account:'Marketing Expense',   code:'6300', debit:18000,  credit:0 },
-    { account:'IT & Software',       code:'6400', debit:10000,  credit:0 },
-    { account:'Depreciation',        code:'6500', debit:6000,   credit:0 },
-    { account:'Interest Expense',    code:'7100', debit:4000,   credit:0 },
-    { account:'Tax Expense',         code:'7200', debit:36000,  credit:0 },
-  ];
-  const tbDebitTotal  = trialBalance.reduce((s,r)=>s+r.debit,0);
-  const tbCreditTotal = trialBalance.reduce((s,r)=>s+r.credit,0);
-
-  const arAging = arAgingLive ?? [
-    { party:'TechCorp Ltd',      current:45000, d30:28000, d60:12000, d90:0,    over90:0     },
-    { party:'Alpha Solutions',   current:32000, d30:0,     d60:0,     d90:8000, over90:0     },
-    { party:'Gamma Corp',        current:0,     d30:18000, d60:0,     d90:0,    over90:15000 },
-    { party:'Beta Systems',      current:22000, d30:0,     d60:9000,  d90:0,    over90:0     },
-    { party:'Epsilon Tech',      current:18000, d30:0,     d60:0,     d90:0,    over90:0     },
-  ];
-
-  const apAging = apAgingLive ?? [
-    { party:'Office Supplies Co', current:12000, d30:0,    d60:5000, d90:0,    over90:0 },
-    { party:'Cloud Services Ltd', current:28000, d30:8000, d60:0,    d90:0,    over90:0 },
-    { party:'Marketing Agency',   current:0,     d30:0,    d60:0,    d90:12000,over90:8000 },
-  ];
+  const errors   = data.errors || {};
+  const tabError = errors[activeTab] || null;
+  const tabHasData = {
+    pl: pl.hasData, bs: bs.hasData, cf: cf.hasData, tb: tb.hasData,
+    ar: arAging.length > 0, ap: apAging.length > 0,
+  }[activeTab];
 
   const plChartData = [
-    { name:'Revenue', value: pl.revenue.total,  fill:'#6366f1' },
-    { name:'COGS',    value: pl.cogs.total,      fill:'#ef4444' },
-    { name:'OpEx',    value: pl.opex.total,      fill:'#7c5cf0' },
-    { name:'Net Profit',value: pl.netProfit,     fill:'#10b981' },
+    { name:'Revenue',    value: pl.revenue.total, fill:'#6366f1' },
+    { name:'COGS',       value: pl.cogs.total,    fill:'#ef4444' },
+    { name:'OpEx',       value: pl.opex.total,    fill:'#7c5cf0' },
+    { name:'Net Profit', value: pl.netProfit,     fill:'#10b981' },
   ];
 
-  const cfChartData = [
-    { name:'Operating', value: cf.operating.total, fill: cf.operating.total >= 0 ? '#10b981' : '#ef4444' },
-    { name:'Investing',  value: cf.investing.total,  fill: cf.investing.total  >= 0 ? '#10b981' : '#ef4444' },
-    { name:'Financing',  value: cf.financing.total,  fill: cf.financing.total  >= 0 ? '#10b981' : '#ef4444' },
-  ];
+  const cfChartData = cf.accounts.map(a => ({
+    name: a.name, value: a.net, fill: a.net >= 0 ? '#10b981' : '#ef4444',
+  }));
 
-  const profitMargin  = ((pl.netProfit  / pl.revenue.total) * 100).toFixed(1);
-  const grossMargin   = ((pl.grossProfit/ pl.revenue.total) * 100).toFixed(1);
-  const currentRatio  = (bs.assets.current.total / bs.liabilities.current.total).toFixed(2);
-  const debtToEquity  = (bs.liabilities.total / bs.equity.total).toFixed(2);
+  // A ratio with no denominator is N/A, never a hardcoded reassuring number.
+  const ratio = (n, d, digits = 2) => (d > 0 ? (n / d).toFixed(digits) : null);
+  const pctOf = (n, d, digits = 1) => (d > 0 ? ((n / d) * 100).toFixed(digits) : null);
+  const profitMargin = pctOf(pl.netProfit,   pl.revenue.total);
+  const grossMargin  = pctOf(pl.grossProfit, pl.revenue.total);
+  const currentRatio = ratio(bs.assets.current.total, bs.liabilities.current.total);
+  const debtToEquity = ratio(bs.liabilities.total,    bs.equity.total);
 
   return (
     <PageShell dock={
@@ -489,36 +508,36 @@ export default function FinancialReports() {
           <BarChart2 size={16} color="#8b5cf6"/>
           <div>
             <p className="rpt-kpi-label">Gross Margin</p>
-            <p className="rpt-kpi-val">{grossMargin}%</p>
+            <p className="rpt-kpi-val">{grossMargin === null ? <span className="rpt-kpi-na">N/A</span> : `${grossMargin}%`}</p>
           </div>
         </div>
         <div className="rpt-kpi">
           <Activity size={16} color="#3b82f6"/>
           <div>
             <p className="rpt-kpi-label">Net Margin</p>
-            <p className="rpt-kpi-val">{profitMargin}%</p>
+            <p className="rpt-kpi-val">{profitMargin === null ? <span className="rpt-kpi-na">N/A</span> : `${profitMargin}%`}</p>
           </div>
         </div>
         <div className="rpt-kpi">
           <Scale size={16} color="#7c5cf0"/>
           <div>
             <p className="rpt-kpi-label">Current Ratio</p>
-            <p className="rpt-kpi-val">{currentRatio}x</p>
+            <p className="rpt-kpi-val">{currentRatio === null ? <span className="rpt-kpi-na">N/A</span> : `${currentRatio}x`}</p>
           </div>
         </div>
         <div className="rpt-kpi">
           <IndianRupee size={16} color="#ef4444"/>
           <div>
             <p className="rpt-kpi-label">Debt / Equity</p>
-            <p className="rpt-kpi-val">{debtToEquity}</p>
+            <p className="rpt-kpi-val">{debtToEquity === null ? <span className="rpt-kpi-na">N/A</span> : debtToEquity}</p>
           </div>
         </div>
-        <div className="rpt-kpi" title={!data.cf ? 'Add bank accounts to track real cash position' : undefined}>
+        <div className="rpt-kpi" title={!cf.hasData ? 'No posted movement on any cash or bank account in this period' : 'Net posted movement across cash and bank accounts'}>
           <Activity size={16} color="#10b981"/>
           <div>
-            <p className="rpt-kpi-label">Cash Position</p>
+            <p className="rpt-kpi-label">Net Cash Movement</p>
             <p className="rpt-kpi-val">
-              {data.cf ? fmt(cf.closingBalance) : <span className="rpt-kpi-na">N/A</span>}
+              {cf.hasData ? fmt(cf.netChange) : <span className="rpt-kpi-na">N/A</span>}
             </p>
           </div>
         </div>
@@ -536,6 +555,33 @@ export default function FinancialReports() {
       </div>
 
       {loading && <div className="rpt-loading"><div className="rpt-spinner"/><p>Loading report…</p></div>}
+
+      {/* An unavailable report and an empty one are different facts, and neither
+          is "zero". Both are stated instead of being papered over with specimen
+          figures — the report is still rendered underneath so the period and
+          headings stay visible. */}
+      {!loading && tabError && (
+        <div className="rpt-state rpt-state-error" role="alert">
+          <strong>This report could not be loaded.</strong>
+          <span>{tabError}</span>
+          <button className="rpt-btn-outline" onClick={load}>
+            <RefreshCw size={14}/> Retry
+          </button>
+        </div>
+      )}
+
+      {!loading && !tabError && !tabHasData && (
+        <div className="rpt-state rpt-state-empty">
+          <strong>No posted transactions in this period.</strong>
+          <span>
+            Nothing has been posted to the ledger between{' '}
+            {new Date(dateRange.start).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'2-digit'})}
+            {' and '}
+            {new Date(dateRange.end).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'2-digit'})}.
+            Widen the period, or post entries first.
+          </span>
+        </div>
+      )}
 
       {!loading && (
         <div className="rpt-body">
@@ -570,7 +616,9 @@ export default function FinancialReports() {
                 <div className="rpt-gross-profit">
                   <span>Gross Profit</span>
                   <div>
-                    <span className="rpt-margin-badge">{grossMargin}% margin</span>
+                    {grossMargin !== null && (
+                      <span className="rpt-margin-badge">{grossMargin}% margin</span>
+                    )}
                     <span className="rpt-gp-val">{fmtFull(pl.grossProfit)}</span>
                   </div>
                 </div>
@@ -582,20 +630,27 @@ export default function FinancialReports() {
                   <LineRow label="Total OpEx" value={-pl.opex.total} bold total negative/>
                 </Section>
 
+                {/* EBITDA, Interest Expense and Tax Provision are not shown:
+                    the chart of accounts models only the `cogs` and `other`
+                    sub-types, so there is no ledger basis for a depreciation,
+                    interest or tax split. These are what the GL does give. */}
                 <div className="rpt-ebitda">
-                  <span>EBITDA</span>
-                  <span>{fmtFull(pl.ebitda)}</span>
+                  <span>Operating Profit</span>
+                  <span>{fmtFull(pl.operatingProfit)}</span>
                 </div>
 
-                <div className="rpt-below-ebitda">
-                  <LineRow label="Interest Expense"  value={-pl.interest} negative/>
-                  <LineRow label="Tax Provision"      value={-pl.tax}     negative/>
-                </div>
+                {pl.otherIncome !== 0 && (
+                  <div className="rpt-below-ebitda">
+                    <LineRow label="Other Income" value={pl.otherIncome}/>
+                  </div>
+                )}
 
                 <div className="rpt-net-profit">
                   <div>
                     <span>Net Profit / (Loss)</span>
-                    <span className="rpt-np-margin">{profitMargin}% net margin</span>
+                    {profitMargin !== null && (
+                      <span className="rpt-np-margin">{profitMargin}% net margin</span>
+                    )}
                   </div>
                   <span className={pl.netProfit >= 0 ? 'rpt-np-pos' : 'rpt-np-neg'}>
                     {fmtFull(pl.netProfit)}
@@ -621,22 +676,25 @@ export default function FinancialReports() {
                 <div className="rpt-ratios-card">
                   <h4>Key Metrics</h4>
                   {(() => {
-                    const ebt = pl.ebitda - pl.interest;
-                    const taxRateVal = ebt > 0 ? ((pl.tax / ebt) * 100).toFixed(1) : null;
+                    // Only metrics this period's ledger actually supports.
+                    // 'Revenue Growth (MoM)' used to render a fixed '+18%' and
+                    // EBITDA/Tax Rate depended on splits the GL does not model.
+                    const opMargin    = pctOf(pl.operatingProfit, pl.revenue.total);
+                    const expenseRatio = pctOf(pl.cogs.total + pl.opex.total, pl.revenue.total, 0);
                     return [
-                      {label:'Gross Margin',    value:`${grossMargin}%`,  good: parseFloat(grossMargin) > 30 },
-                      {label:'Net Margin',      value:`${profitMargin}%`, good: parseFloat(profitMargin) > 15 },
-                      {label:'EBITDA Margin',   value:`${((pl.ebitda/pl.revenue.total)*100).toFixed(1)}%`, good:true},
-                      {label:'Revenue Growth (MoM)', value:'+18%', good:true },
-                      {label:'Expense Ratio',   value:`${(((pl.cogs.total+pl.opex.total)/pl.revenue.total)*100).toFixed(0)}%`, good:false,
+                      {label:'Gross Margin',     value: grossMargin,   suffix:'%', good: parseFloat(grossMargin) > 30 },
+                      {label:'Net Margin',       value: profitMargin,  suffix:'%', good: parseFloat(profitMargin) > 15 },
+                      {label:'Operating Margin', value: opMargin,      suffix:'%', good: parseFloat(opMargin) > 10,
+                        tooltip:'Operating Profit ÷ Revenue' },
+                      {label:'Expense Ratio',    value: expenseRatio,  suffix:'%', good:false,
                         tooltip:'Total Expenses (COGS + OpEx) as % of Revenue' },
-                      {label:'Tax Rate',        value: taxRateVal !== null ? `${taxRateVal}%` : 'N/A', good:true,
-                        tooltip:'Effective Tax Rate = Tax Provision ÷ EBT (EBITDA − Interest)' },
                     ];
                   })().map((m,i)=>(
                     <div key={i} className="rpt-metric-row" title={m.tooltip}>
                       <span>{m.label}</span>
-                      <span className={m.good ? 'rpt-metric-good' : 'rpt-metric-warn'}>{m.value}</span>
+                      <span className={m.value === null ? 'rpt-metric-na' : (m.good ? 'rpt-metric-good' : 'rpt-metric-warn')}>
+                        {m.value === null ? 'N/A' : `${m.value}${m.suffix ?? ''}`}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -702,10 +760,12 @@ export default function FinancialReports() {
                       <span>TOTAL LIABILITIES & EQUITY</span>
                       <span>{fmtFull(bs.liabilities.total + bs.equity.total)}</span>
                     </div>
-                    <div className={`rpt-bs-balanced ${bs.assets.total === bs.liabilities.total + bs.equity.total ? 'balanced' : 'unbalanced'}`}>
-                      {bs.assets.total === bs.liabilities.total + bs.equity.total
+                    {/* The API decides this with a rounding tolerance; an exact
+                        JS equality check on floats reported false imbalances. */}
+                    <div className={`rpt-bs-balanced ${bs.balanced ? 'balanced' : 'unbalanced'}`}>
+                      {bs.balanced
                         ? '✓ Balance sheet is balanced'
-                        : '⚠ Balance sheet does not balance'}
+                        : `⚠ Balance sheet does not balance — difference ${fmtFull(Math.abs(bs.assets.total - (bs.liabilities.total + bs.equity.total)))}`}
                     </div>
                   </div>
                 </div>
@@ -714,30 +774,49 @@ export default function FinancialReports() {
               <div className="rpt-side">
                 <div className="rpt-chart-card">
                   <h4>Asset Composition</h4>
-                  <div className="rpt-bs-bar">
-                    <div className="rpt-bs-bar-fill" style={{width:`${(bs.assets.current.total/bs.assets.total)*100}%`,background:'#3b82f6'}}/>
-                    <div className="rpt-bs-bar-fill" style={{width:`${(bs.assets.fixed.total/bs.assets.total)*100}%`,background:'#6366f1'}}/>
-                  </div>
-                  <div className="rpt-bs-bar-legend">
-                    <span><span style={{background:'#3b82f6'}} className="rpt-dot"/>Current {((bs.assets.current.total/bs.assets.total)*100).toFixed(0)}%</span>
-                    <span><span style={{background:'#6366f1'}} className="rpt-dot"/>Fixed {((bs.assets.fixed.total/bs.assets.total)*100).toFixed(0)}%</span>
-                  </div>
+                  {/* Guarded: with no assets these divisions produced NaN%. */}
+                  {(() => {
+                    const share = (part) => (bs.assets.total > 0 ? (part / bs.assets.total) * 100 : 0);
+                    const cur = share(bs.assets.current.total);
+                    const fix = share(bs.assets.fixed.total);
+                    return (
+                      <>
+                        <div className="rpt-bs-bar">
+                          <div className="rpt-bs-bar-fill" style={{width:`${cur}%`,background:'#3b82f6'}}/>
+                          <div className="rpt-bs-bar-fill" style={{width:`${fix}%`,background:'#6366f1'}}/>
+                        </div>
+                        <div className="rpt-bs-bar-legend">
+                          <span><span style={{background:'#3b82f6'}} className="rpt-dot"/>Current {cur.toFixed(0)}%</span>
+                          <span><span style={{background:'#6366f1'}} className="rpt-dot"/>Fixed {fix.toFixed(0)}%</span>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
                 <div className="rpt-ratios-card">
                   <h4>Balance Sheet Ratios</h4>
+                  {/* Quick Ratio is omitted, not faked: it needs inventory
+                      separated from other current assets, which this response
+                      does not carry. It previously rendered a fixed '1.8x'. */}
                   {[
-                    {label:'Current Ratio',    value:`${currentRatio}x`,  good: parseFloat(currentRatio) >= 2},
-                    {label:'Quick Ratio',       value:'1.8x',  good: true },
-                    {label:'Debt-to-Equity',    value:`${debtToEquity}`,   good: parseFloat(debtToEquity) < 1},
-                    {label:'Debt-to-Assets',    value:`${((bs.liabilities.total/bs.assets.total)).toFixed(2)}`, good:true},
-                    {label:'Working Capital',   value:fmt(bs.assets.current.total-bs.liabilities.current.total), good:true},
-                    {label:'Equity Ratio',      value:`${((bs.equity.total/bs.assets.total)*100).toFixed(0)}%`, good:true},
+                    {label:'Current Ratio',  value: currentRatio, suffix:'x', good: parseFloat(currentRatio) >= 2},
+                    {label:'Debt-to-Equity', value: debtToEquity, good: parseFloat(debtToEquity) < 1},
+                    {label:'Debt-to-Assets', value: ratio(bs.liabilities.total, bs.assets.total), good:true},
+                    {label:'Equity Ratio',   value: pctOf(bs.equity.total, bs.assets.total, 0), suffix:'%', good:true},
                   ].map((m,i)=>(
                     <div key={i} className="rpt-metric-row">
                       <span>{m.label}</span>
-                      <span className={m.good ? 'rpt-metric-good' : 'rpt-metric-warn'}>{m.value}</span>
+                      <span className={m.value === null ? 'rpt-metric-na' : (m.good ? 'rpt-metric-good' : 'rpt-metric-warn')}>
+                        {m.value === null ? 'N/A' : `${m.value}${m.suffix ?? ''}`}
+                      </span>
                     </div>
                   ))}
+                  <div className="rpt-metric-row">
+                    <span>Working Capital</span>
+                    <span className="rpt-metric-good">
+                      {fmt(bs.assets.current.total - bs.liabilities.current.total)}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -746,43 +825,36 @@ export default function FinancialReports() {
           {/* ── Cash Flow ───────────────────────────────────────── */}
           {activeTab === 'cf' && (
             <div className="rpt-two-col">
+              {/* This was headed "Cash Flow Statement — Indirect Method" over
+                  operating/investing/financing sections. No endpoint classifies
+                  cash movement that way; the specimen numbers underneath it did.
+                  What /finance/reports/cash-flow actually returns is posted GL
+                  movement per cash and bank account, so that is what is shown,
+                  under its real name. A classified statement needs the cash
+                  accounts tagged by activity first. */}
               <div className="rpt-report-wrap">
                 <div className="rpt-report-hd">
-                  <h3>Cash Flow Statement</h3>
-                  <span className="rpt-report-period">Indirect Method</span>
+                  <h3>Cash Movement by Account</h3>
+                  <span className="rpt-report-period">Posted general ledger</span>
                 </div>
+
+                <Section title="Cash &amp; Bank Accounts" total={cf.netChange} accent="#10b981">
+                  {cf.accounts.map((a,i)=>(
+                    <LineRow key={i} label={`${a.code} · ${a.name}`} value={a.net} indent={1}
+                      negative={a.net < 0}/>
+                  ))}
+                  <LineRow label="Net Movement" value={cf.netChange} bold total/>
+                </Section>
 
                 <div className="rpt-cf-opening">
-                  <span>Opening Cash Balance</span>
-                  <strong>{fmtFull(cf.openingBalance)}</strong>
+                  <span>Total Cash In</span>
+                  <strong>{fmtFull(cf.totalIn)}</strong>
                 </div>
 
-                <Section title="Operating Activities" total={cf.operating.total}
-                  accent={cf.operating.total >= 0 ? '#10b981' : '#ef4444'}>
-                  {cf.operating.items.map((item,i)=>(
-                    <LineRow key={i} label={item.name} value={item.amount} indent={1}
-                      negative={item.amount < 0}/>
-                  ))}
-                  <LineRow label="Net Cash from Operating" value={cf.operating.total} bold total/>
-                </Section>
-
-                <Section title="Investing Activities" total={cf.investing.total}
-                  accent={cf.investing.total >= 0 ? '#10b981' : '#7c5cf0'}>
-                  {cf.investing.items.map((item,i)=>(
-                    <LineRow key={i} label={item.name} value={item.amount} indent={1}
-                      negative={item.amount < 0}/>
-                  ))}
-                  <LineRow label="Net Cash from Investing" value={cf.investing.total} bold total/>
-                </Section>
-
-                <Section title="Financing Activities" total={cf.financing.total}
-                  accent={cf.financing.total >= 0 ? '#10b981' : '#8b5cf6'}>
-                  {cf.financing.items.map((item,i)=>(
-                    <LineRow key={i} label={item.name} value={item.amount} indent={1}
-                      negative={item.amount < 0}/>
-                  ))}
-                  <LineRow label="Net Cash from Financing" value={cf.financing.total} bold total/>
-                </Section>
+                <div className="rpt-cf-closing">
+                  <span>Total Cash Out</span>
+                  <strong>{fmtFull(cf.totalOut)}</strong>
+                </div>
 
                 <div className="rpt-cf-net">
                   <span>Net Change in Cash</span>
@@ -790,16 +862,11 @@ export default function FinancialReports() {
                     {cf.netChange >= 0 ? '+' : ''}{fmtFull(cf.netChange)}
                   </span>
                 </div>
-
-                <div className="rpt-cf-closing">
-                  <span>Closing Cash Balance</span>
-                  <strong className="rpt-np-pos">{fmtFull(cf.closingBalance)}</strong>
-                </div>
               </div>
 
               <div className="rpt-side">
                 <div className="rpt-chart-card">
-                  <h4>Cash Flow by Activity</h4>
+                  <h4>Net Movement by Account</h4>
                   <ResponsiveContainer width="100%" height={200}>
                     <BarChart data={cfChartData} margin={{top:5,right:5,left:0,bottom:5}}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
@@ -812,15 +879,17 @@ export default function FinancialReports() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+                {/* 'Cash Ratio 1.8x' and 'Cash Coverage 8.4x' were fixed
+                    strings — they never varied with the data. Removed rather
+                    than re-derived: both need current liabilities, which this
+                    endpoint does not return. */}
                 <div className="rpt-ratios-card">
-                  <h4>Cash Flow Health</h4>
+                  <h4>Cash Summary</h4>
                   {[
-                    {label:'Operating CF',  value: fmt(cf.operating.total),  good: cf.operating.total > 0 },
-                    {label:'Free Cash Flow',value: fmt(cf.operating.total + cf.investing.total), good: (cf.operating.total + cf.investing.total) > 0},
-                    {label:'Cash Ratio',    value:'1.8x', good:true},
-                    {label:'Cash Coverage', value:'8.4x', good:true},
-                    {label:'Opening Bal',   value: fmt(cf.openingBalance), good:true},
-                    {label:'Closing Bal',   value: fmt(cf.closingBalance), good: cf.closingBalance > cf.openingBalance},
+                    {label:'Total Cash In',  value: fmt(cf.totalIn),   good: true },
+                    {label:'Total Cash Out', value: fmt(cf.totalOut),  good: true },
+                    {label:'Net Movement',   value: fmt(cf.netChange), good: cf.netChange >= 0 },
+                    {label:'Accounts',       value: String(cf.accounts.length), good: true },
                   ].map((m,i)=>(
                     <div key={i} className="rpt-metric-row">
                       <span>{m.label}</span>
@@ -866,9 +935,11 @@ export default function FinancialReports() {
                     <td className="rpt-tb-debit">{fmtFull(tbDebitTotal)}</td>
                     <td className="rpt-tb-credit">{fmtFull(tbCreditTotal)}</td>
                   </tr>
-                  <tr className={`rpt-tb-balance ${tbDebitTotal === tbCreditTotal ? 'balanced' : 'unbalanced'}`}>
+                  {/* `balanced` comes from the API, which compares with a
+                      rounding tolerance rather than exact float equality. */}
+                  <tr className={`rpt-tb-balance ${tb.balanced ? 'balanced' : 'unbalanced'}`}>
                     <td colSpan={4}>
-                      {tbDebitTotal === tbCreditTotal
+                      {tb.balanced
                         ? `✓ Trial balance is balanced — Total: ${fmtFull(tbDebitTotal)}`
                         : `⚠ Imbalance detected — Difference: ${fmtFull(Math.abs(tbDebitTotal - tbCreditTotal))}`}
                     </td>

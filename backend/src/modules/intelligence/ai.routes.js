@@ -6,6 +6,8 @@ import { detectAnomalies } from './anomalyDetector.js';
 import { getSalesDashboard, getServiceDashboard } from '../crm/customerHealth.service.js';
 import { scoreProjectHealth, narrateProjectHealth } from './projectHealthNarrator.js';
 import { narrateTicketThread } from './ticketThreadNarrator.js';
+import { iotScope, denyScope } from '../iot/scope.js';
+import { conditionRisk, linearTrend, daysToThreshold, TREND_MIN } from '../iot/trend.js';
 import {
   EMPLOYEE_ACTIVE, EMPLOYEE_EXITED, INVOICE_PAID, BILL_PAID,
   LEAVE_APPROVED, LEAVE_PENDING, isIn, notIn, sqlOpportunityOpen,
@@ -844,158 +846,181 @@ router.get('/predict/inventory', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-/* ─── Device-failure prediction (IoT predictive maintenance) ───────────────────
- * A DB-grounded heuristic risk score, in the same spirit as the other /predict/*
- * endpoints — no ML, no invented data. Every point in the score traces to a live
- * signal: open/critical alerts, connection health, breach frequency, an upward
- * trend in a "rising-is-bad" metric (regr_slope over 14 days), and warranty/AMC
- * status. Reads the Phase 1-3 telemetry tables. */
-
-const RISING_BAD = ['thd_i', 'thd_v', 'temp']; // metrics where an upward trend signals degradation
-
-function scoreDevice(d, slopesByMetric) {
-  const drivers = [];
-  const add = (points, factor) => { if (points > 0) drivers.push({ factor, points: Math.round(points) }); };
-
-  if (d.critical_open > 0) add(40, `${d.critical_open} critical alert(s) open`);
-  add(Math.min(d.open_alerts - d.critical_open, 2) * 10, 'unresolved warnings');
-  if (d.connection_state === 'offline') add(25, 'device offline');
-  else if (d.connection_state === 'stale') add(12, 'telemetry stale');
-  else if (d.connection_state === 'never') add(5, 'never reported');
-  add(Math.min(d.alerts_30d, 4) * 5, `${d.alerts_30d} alert(s) in last 30 days`);
-
-  // Upward trend in a degradation metric — scale the per-day slope relative to
-  // the metric's own magnitude, cap the contribution at 20.
-  let trend = null;
-  for (const m of RISING_BAD) {
-    const s = slopesByMetric.get(`${d.id}:${m}`);
-    if (!s || !(s.slopePerDay > 0) || !s.latest) continue;
-    const pctPerDay = (s.slopePerDay / Math.abs(s.latest)) * 100;
-    const pts = Math.min(pctPerDay * 4, 20);
-    if (pts >= 1 && (!trend || pts > trend.pts)) trend = { metric: m, pts, pctPerDay, ...s };
-  }
-  if (trend) add(trend.pts, `${trend.metric} rising ~${trend.pctPerDay.toFixed(1)}%/day`);
-
-  if (d.warranty_status && d.warranty_status !== 'active') add(10, `warranty ${d.warranty_status}`);
-  if (!d.amc_status || d.amc_status === 'none') add(5, 'no AMC cover');
-
-  const score = Math.min(100, drivers.reduce((s, x) => s + x.points, 0));
-  const band = score >= 60 ? 'high' : score >= 30 ? 'medium' : 'low';
-  drivers.sort((a, b) => b.points - a.points);
-
-  const recommendation =
-    d.critical_open > 0        ? 'Dispatch a service engineer — critical condition active'
-    : d.connection_state === 'offline' ? 'Check site connectivity / power — device is dark'
-    : trend                    ? `Schedule an inspection — ${trend.metric} trending up`
-    : band === 'medium'        ? 'Monitor closely; review at next AMC visit'
-    : 'No action needed';
-
-  return { score, band, drivers, recommendation, trend: trend ? { metric: trend.metric, slope_per_day: trend.slopePerDay } : null };
-}
-
-async function loadSlopes(cid, equipmentId = null) {
-  const params = [cid, RISING_BAD];
-  let where = `ts > NOW() - INTERVAL '14 days' AND metric = ANY($2) AND ($1::int IS NULL OR company_id = $1)`;
-  if (equipmentId != null) { params.push(equipmentId); where += ` AND equipment_id = $3`; }
-  const { rows } = await pool.query(`
-    SELECT equipment_id, metric,
-           regr_slope(value, EXTRACT(EPOCH FROM ts)) AS slope_per_sec,
-           COUNT(*) AS n,
-           (ARRAY_AGG(value ORDER BY ts DESC))[1] AS latest
-      FROM device_telemetry
-     WHERE ${where}
-     GROUP BY equipment_id, metric
-    HAVING COUNT(*) >= 5`, params);
-  const map = new Map();
-  for (const r of rows) {
-    map.set(`${r.equipment_id}:${r.metric}`, {
-      slopePerDay: Number(r.slope_per_sec) * 86400,
-      latest: Number(r.latest),
-      n: Number(r.n),
-    });
-  }
-  return map;
-}
+/* --- Device condition risk (IoT) ---------------------------------------------
+ * Two defects were fixed here on 2026-09-14 and both are worth naming, because
+ * both produced confident output from no evidence:
+ *
+ *  1. SCOPE FAILED OPEN. `const cid = req.scope?.company_id ?? null` followed by
+ *     `($1::int IS NULL OR company_id = $1)` meant a caller with NO company scope
+ *     -- every authenticated user without a user_scope row -- got EVERY company's
+ *     devices. iotScope() now denies instead.
+ *
+ *  2. NO DATA SCORED ZERO. scoreDevice() summed its drivers; a device with no
+ *     telemetry, no alerts and no connection history had no drivers, scored 0,
+ *     landed in the "low" band, and the UI printed "No action needed" about a
+ *     machine nobody was monitoring. conditionRisk() returns INSUFFICIENT_DATA.
+ *
+ * The score is also no longer called a failure probability. It is a transparent
+ * weighted sum of observable signals -- see modules/iot/trend.js. */
 
 async function loadDevices(cid, equipmentId = null) {
-  const params = [cid];
-  let extra = '';
-  if (equipmentId != null) { params.push(equipmentId); extra = ` AND ce.id = $2`; }
+  const params = [];
+  let where = `ce.device_uid IS NOT NULL`;
+  if (cid != null) { params.push(cid); where += ` AND ce.company_id = $${params.length}`; }
+  if (equipmentId != null) { params.push(equipmentId); where += ` AND ce.id = $${params.length}`; }
   const { rows } = await pool.query(`
-    SELECT ce.id, ce.equipment_name, ce.model_number, ce.serial_number,
+    SELECT ce.id, ce.equipment_name, ce.model_number, ce.serial_number, ce.company_id,
            ce.connection_state, ce.last_seen_at, ce.warranty_status, ce.amc_status,
            COALESCE(oa.open_alerts, 0)::int   AS open_alerts,
            COALESCE(oa.critical_open, 0)::int AS critical_open,
-           COALESCE(r30.alerts_30d, 0)::int   AS alerts_30d
+           COALESCE(r30.alerts_30d, 0)::int   AS alerts_30d,
+           COALESCE(t30.samples, 0)::int      AS telemetry_samples_30d
       FROM customer_equipment ce
       LEFT JOIN (SELECT equipment_id, COUNT(*) AS open_alerts,
                         COUNT(*) FILTER (WHERE severity = 'critical') AS critical_open
-                   FROM device_alerts WHERE state <> 'resolved' GROUP BY equipment_id) oa ON oa.equipment_id = ce.id
+                   FROM device_alerts
+                  WHERE state IN ('pending_confirmation','active','acknowledged','recovery_pending')
+                  GROUP BY equipment_id) oa ON oa.equipment_id = ce.id
       LEFT JOIN (SELECT equipment_id, COUNT(*) AS alerts_30d
-                   FROM device_alerts WHERE opened_at > NOW() - INTERVAL '30 days' GROUP BY equipment_id) r30 ON r30.equipment_id = ce.id
-     WHERE ce.device_uid IS NOT NULL AND ($1::int IS NULL OR ce.company_id = $1)${extra}`, params);
+                   FROM device_alerts WHERE opened_at > NOW() - INTERVAL '30 days'
+                  GROUP BY equipment_id) r30 ON r30.equipment_id = ce.id
+      LEFT JOIN (SELECT equipment_id, COUNT(*) AS samples
+                   FROM device_telemetry WHERE ts > NOW() - INTERVAL '30 days'
+                  GROUP BY equipment_id) t30 ON t30.equipment_id = ce.id
+     WHERE ${where}`, params);
   return rows;
 }
 
-/* ─── GET /api/ai/predict/device-failure — fleet risk ranking ──────────────────*/
+/**
+ * Trend points per (device, metric) for metrics the registry marks rising_is_bad.
+ * The old version used regr_slope with HAVING COUNT(*) >= 5 -- five points is not
+ * a trend, and the result was extrapolated into "reaches the threshold in N days".
+ * linearTrend() applies a real sufficiency test (30 samples over 6h, R2 >= 0.3).
+ */
+async function loadTrendPoints(cid, equipmentIds) {
+  if (!equipmentIds.length) return new Map();
+  const params = [equipmentIds];
+  let where = `t.equipment_id = ANY($1) AND t.ts > NOW() - INTERVAL '14 days' AND t.quality_code = 'VALID'`;
+  if (cid != null) { params.push(cid); where += ` AND t.company_id = $${params.length}`; }
+  const { rows } = await pool.query(`
+    SELECT t.equipment_id, t.metric, t.ts, t.value::float AS value
+      FROM device_telemetry t
+      JOIN iot_metric_definitions m
+        ON m.metric_code = t.metric AND (m.company_id = t.company_id OR m.company_id IS NULL)
+     WHERE ${where} AND m.rising_is_bad = TRUE
+     ORDER BY t.equipment_id, t.metric, t.ts`, params);
+  const byKey = new Map();
+  for (const r of rows) {
+    const k = `${r.equipment_id}:${r.metric}`;
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push({ ts: r.ts, value: r.value });
+  }
+  return byKey;
+}
+
+function trendsFor(equipmentId, pointsByKey) {
+  const out = [];
+  for (const [k, pts] of pointsByKey) {
+    if (!k.startsWith(`${equipmentId}:`)) continue;
+    out.push({ metric: k.slice(String(equipmentId).length + 1), rising_is_bad: true, trend: linearTrend(pts) });
+  }
+  return out;
+}
+
+/* --- GET /api/ai/predict/device-failure -- fleet condition ranking ----------*/
 router.get('/predict/device-failure', async (req, res) => {
+  const scope = iotScope(req);
+  if (!scope.ok) return denyScope(res, scope);
   try {
-    const cid = req.scope?.company_id ?? null;
-    const [devices, slopes] = await Promise.all([loadDevices(cid), loadSlopes(cid)]);
+    const cid = scope.isGlobal ? null : scope.companyId;
+    const devices = await loadDevices(cid);
+    const pointsByKey = await loadTrendPoints(cid, devices.map((d) => d.id));
+
     const scored = devices
       .map((d) => {
-        const r = scoreDevice(d, slopes);
+        const r = conditionRisk(d, trendsFor(d.id, pointsByKey));
         return {
           equipment_id: d.id, equipment_name: d.equipment_name, model_number: d.model_number,
           connection_state: d.connection_state, open_alerts: d.open_alerts,
-          risk_score: r.score, risk_band: r.band, top_driver: r.drivers[0]?.factor || null,
+          risk_score: r.score, risk_band: r.band, risk_state: r.state,
+          top_driver: r.drivers[0]?.factor || null,
           recommendation: r.recommendation,
         };
       })
-      .sort((a, b) => b.risk_score - a.risk_score);
-    const summary = {
-      total: scored.length,
-      high: scored.filter((s) => s.risk_band === 'high').length,
-      medium: scored.filter((s) => s.risk_band === 'medium').length,
-    };
-    res.json({ success: true, summary, data: scored });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+      // INSUFFICIENT_DATA sorts to the top, not the bottom: a device whose
+      // condition is unknown needs attention before one that is merely quiet.
+      .sort((a, b) => {
+        if (a.risk_state !== b.risk_state) return a.risk_state === 'INSUFFICIENT_DATA' ? -1 : 1;
+        return (b.risk_score ?? 0) - (a.risk_score ?? 0);
+      });
+
+    res.json({
+      success: true,
+      summary: {
+        total: scored.length,
+        high: scored.filter((s) => s.risk_band === 'high').length,
+        medium: scored.filter((s) => s.risk_band === 'medium').length,
+        insufficient_data: scored.filter((s) => s.risk_state === 'INSUFFICIENT_DATA').length,
+      },
+      metric_name: 'Condition Risk Score',
+      definition: 'A transparent weighted sum of observed alert, connectivity, trend and contract-cover signals, capped at 100. NOT a validated failure probability.',
+      data: scored,
+    });
+  } catch (err) {
+    console.error('[ai device-failure]', err.message);
+    res.status(500).json({ error: 'failed to compute condition risk' });
+  }
 });
 
-/* ─── GET /api/ai/predict/device-failure/:id — one device, with drivers ────────*/
+/* --- GET /api/ai/predict/device-failure/:id -- one device, with drivers -----*/
 router.get('/predict/device-failure/:id', async (req, res) => {
+  const scope = iotScope(req);
+  if (!scope.ok) return denyScope(res, scope);
   try {
-    const cid = req.scope?.company_id ?? null;
-    const [devices, slopes] = await Promise.all([
-      loadDevices(cid, req.params.id), loadSlopes(cid, req.params.id),
-    ]);
+    const cid = scope.isGlobal ? null : scope.companyId;
+    const devices = await loadDevices(cid, parseInt(req.params.id, 10));
     if (!devices.length) return res.status(404).json({ error: 'device not found' });
     const d = devices[0];
-    const r = scoreDevice(d, slopes);
 
-    // Per-metric trend + projected time to cross a configured threshold, if any.
+    const pointsByKey = await loadTrendPoints(cid, [d.id]);
+    const trends = trendsFor(d.id, pointsByKey);
+    const r = conditionRisk(d, trends);
+
+    // Thresholds come from rules in the DEVICE's company, not the caller's
+    // ambient one, and only for this device or a company-wide rule.
     const { rows: rules } = await pool.query(
-      `SELECT metric, threshold FROM device_alert_rules
+      `SELECT metric, threshold::float AS threshold FROM device_alert_rules
         WHERE is_active = TRUE AND operator IN ('>','>=') AND threshold IS NOT NULL
-          AND (equipment_id = $1 OR equipment_id IS NULL)
-          AND ($2::int IS NULL OR company_id = $2)`,
-      [d.id, cid]);
+          AND company_id = $2 AND (equipment_id = $1 OR equipment_id IS NULL)`,
+      [d.id, d.company_id]);
     const threshBy = new Map(rules.map((x) => [x.metric, Number(x.threshold)]));
-    const trends = RISING_BAD.map((m) => {
-      const s = slopes.get(`${d.id}:${m}`);
-      if (!s) return null;
-      const thr = threshBy.get(m);
-      const daysToThreshold = (thr != null && s.slopePerDay > 0 && s.latest < thr)
-        ? Math.round((thr - s.latest) / s.slopePerDay) : null;
-      return { metric: m, latest: s.latest, slope_per_day: Number(s.slopePerDay.toFixed(4)), threshold: thr ?? null, days_to_threshold: daysToThreshold };
-    }).filter(Boolean);
 
-    res.json({ success: true, data: {
-      equipment_id: d.id, equipment_name: d.equipment_name,
-      risk_score: r.score, risk_band: r.band, recommendation: r.recommendation,
-      drivers: r.drivers, trends,
-    } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json({
+      success: true,
+      metric_name: 'Condition Risk Score',
+      definition: r.definition ?? null,
+      data: {
+        equipment_id: d.id, equipment_name: d.equipment_name,
+        risk_score: r.score, risk_band: r.band, risk_state: r.state,
+        recommendation: r.recommendation, drivers: r.drivers,
+        trends: trends.map((t) => ({
+          metric: t.metric,
+          state: t.trend.state,
+          latest: t.trend.latest,
+          slope_per_day: t.trend.slopePerDay,
+          r2: t.trend.r2,
+          sample_count: t.trend.n,
+          coverage_hours: t.trend.coverageHours,
+          threshold: threshBy.get(t.metric) ?? null,
+          projection: daysToThreshold(t.trend, threshBy.get(t.metric) ?? null),
+        })),
+        trend_requirements: TREND_MIN,
+      },
+    });
+  } catch (err) {
+    console.error('[ai device-failure/:id]', err.message);
+    res.status(500).json({ error: 'failed to compute condition risk' });
+  }
 });
 
 /* ─── Lead / opportunity prioritization (Automation Opportunity Audit §27.2) ────

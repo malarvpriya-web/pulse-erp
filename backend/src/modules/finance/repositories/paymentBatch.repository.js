@@ -2,13 +2,19 @@ import pool from '../db.js';
 import { nextPaymentBatchNumber } from '../../../shared/docNumber.js';
 
 class PaymentBatchRepository {
-  async create(data) {
+  /**
+   * `executor` lets a caller that already owns a transaction insert the header
+   * inside it. Defaulting to the pool used to be the only option, which meant
+   * createBatch()'s BEGIN/ROLLBACK could not undo the header it had just
+   * written — a failing item left an orphan batch committed.
+   */
+  async create(data, executor = pool) {
     const {
       batch_number, batch_date, scheduled_date, bank_account_id, payment_mode,
       notes, created_by, company_id, payment_count, items,
     } = data;
 
-    const result = await pool.query(
+    const result = await executor.query(
       `INSERT INTO payment_batches
          (batch_number, batch_date, scheduled_date, bank_account_id, payment_mode,
           notes, created_by, company_id, payment_count, status, total_amount)
@@ -193,8 +199,8 @@ class PaymentBatchRepository {
     return result.rows[0];
   }
 
-  async getNextBatchNumber() {
-    return nextPaymentBatchNumber();
+  async getNextBatchNumber(client) {
+    return nextPaymentBatchNumber(client);
   }
 }
 

@@ -148,3 +148,15 @@
   .rpt-two-col { grid-template-columns: 1fr; }
   .rpt-aging-table, .rpt-tb-table { font-size: 11px; }
 }
+/* ── Explicit empty / error states ────────────────────────────────────────── */
+/* These replace the specimen figures the page used to render when a report was
+   empty or its request failed. "Unavailable" and "no activity" must read
+   differently from a real zero. */
+.rpt-state{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;margin-bottom:16px;border-radius:10px;font-size:13px;border:1px solid;}
+.rpt-state strong{font-weight:600;}
+.rpt-state span{color:#6b7280;}
+.rpt-state-error{background:#fef2f2;border-color:#fecaca;}
+.rpt-state-error strong{color:#b91c1c;}
+.rpt-state-empty{background:#f9fafb;border-color:#e5e7eb;}
+.rpt-state-empty strong{color:#374151;}
+.rpt-metric-na{color:#9ca3af;font-weight:600;}

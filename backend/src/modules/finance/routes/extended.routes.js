@@ -296,7 +296,11 @@ router.post('/bank-accounts/:id/reconcile', requirePermission('finance', 'approv
 // =====================================================
 // PAYMENT BATCHES
 // =====================================================
-router.post('/payment-batches', requirePermission('finance', 'write'), async (req, res) => {
+// 'write' is not a permission action this app defines — requirePermission maps
+// view/add/edit/delete/approve/export and rejects anything else with a 400
+// before it ever consults the matrix, so this route was unreachable for every
+// caller regardless of role. Creating a batch is 'add'.
+router.post('/payment-batches', requirePermission('finance', 'add'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const uid = req.user?.userId ?? req.user?.id;
@@ -366,7 +370,10 @@ router.get('/payment-batches/:id', requirePermission('finance', 'view'), async (
   }
 });
 
-router.post('/payment-batches/:id/submit', requirePermission('finance', 'write'), async (req, res) => {
+// Submitting is the maker's action, not the checker's — deliberately 'edit' and
+// not 'approve', so submitting for approval cannot also approve. (Previously
+// 'write', which is not a defined action and always returned 400.)
+router.post('/payment-batches/:id/submit', requirePermission('finance', 'edit'), async (req, res) => {
   try {
     const batch = await paymentBatchService.submitForApproval(req.params.id);
     res.json(batch);

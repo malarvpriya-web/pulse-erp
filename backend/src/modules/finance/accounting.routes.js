@@ -414,19 +414,32 @@ router.get('/trial-balance', requirePermission('finance', 'view'), async (req, r
       const baseOpening = parseFloat(acc.opening_balance) || 0;
       const isDebitNormal = ['Asset', 'Expense'].includes(acc.account_type);
 
+      // `opening_balance` and `closing_balance` are NATURAL balances: positive
+      // means the account sits on its own normal side. Converting one back to a
+      // DR/CR column therefore depends on which side that is — a revenue account
+      // with a natural +1000 is a CREDIT of 1000, not a debit.
+      //
+      // Placing every positive natural balance in the debit column put revenue,
+      // liabilities and equity on the wrong side, so a clean Dr 100 / Cr 100 book
+      // reported closing debit 200, closing credit 0 and balanced:false.
+      const toDrCr = (natural) => {
+        const amount = Math.abs(natural);
+        const onNormalSide = natural >= 0;
+        const isDr = isDebitNormal ? onNormalSide : !onNormalSide;
+        return isDr ? { dr: amount, cr: 0 } : { dr: 0, cr: amount };
+      };
+
       const opening_balance = isDebitNormal
         ? baseOpening + preDr - preCr
         : baseOpening - preDr + preCr;
 
-      const opening_dr = opening_balance > 0 ? opening_balance : 0;
-      const opening_cr = opening_balance < 0 ? Math.abs(opening_balance) : 0;
+      const { dr: opening_dr, cr: opening_cr } = toDrCr(opening_balance);
 
       const closing_balance = isDebitNormal
         ? opening_balance + mDr - mCr
         : opening_balance - mDr + mCr;
 
-      const closing_dr = closing_balance > 0 ? closing_balance : 0;
-      const closing_cr = closing_balance < 0 ? Math.abs(closing_balance) : 0;
+      const { dr: closing_dr, cr: closing_cr } = toDrCr(closing_balance);
 
       grand_total_debit += mDr;
       grand_total_credit += mCr;
@@ -1164,9 +1177,29 @@ router.post('/year-end-close', requirePermission('finance', 'approve'), async (r
     const jeCidFilter = companyId ? `AND je.company_id = ${parseInt(companyId)}` : '';
     const coaCidFilter = companyId ? `AND (coa.company_id = ${parseInt(companyId)} OR coa.company_id IS NULL)` : '';
 
+    // Refuse to close twice. The closing journal moves the whole year's P&L, so a
+    // second run would move it again and double Retained Earnings.
+    const { rows: priorClose } = await pool.query(
+      `SELECT entry_number FROM journal_entries je
+        WHERE je.reference_type = 'year_end_close'
+          AND je.entry_date = $1
+          AND je.status = 'posted'
+          AND je.deleted_at IS NULL
+          ${jeCidFilter}
+        LIMIT 1`,
+      [fyEnd]
+    );
+    if (priorClose.length) {
+      return res.status(409).json({
+        error: `FY ${financial_year} is already closed by journal ${priorClose[0].entry_number}. Reverse that entry before closing again.`,
+      });
+    }
+
     // Check no open draft entries in this FY
+    // `jeCidFilter` is written against the alias `je`, so the table must carry it.
     const { rows: drafts } = await pool.query(
-      `SELECT COUNT(*) FROM journal_entries WHERE status='draft' AND entry_date BETWEEN $1 AND $2 ${jeCidFilter ? jeCidFilter.replace('AND ', 'AND ') : ''}`,
+      `SELECT COUNT(*) FROM journal_entries je
+        WHERE je.status = 'draft' AND je.entry_date BETWEEN $1 AND $2 ${jeCidFilter}`,
       [fyStart, fyEnd]
     );
     if (parseInt(drafts[0].count) > 0) {
@@ -1187,8 +1220,10 @@ router.post('/year-end-close', requirePermission('finance', 'approve'), async (r
     const netProfit = parseFloat(plRows[0]?.net_profit) || 0;
 
     // Look up account IDs for 3002 (Retained Earnings) and 3004 (Current Year P/L)
+    // `coaCidFilter` is written against the alias `coa`, so the table must carry it.
     const { rows: accts } = await pool.query(
-      `SELECT id, code, name FROM chart_of_accounts WHERE code IN ('3002','3004') AND is_active = true ${coaCidFilter ? coaCidFilter.replace('AND (', 'AND (') : ''}`
+      `SELECT coa.id, coa.code, coa.name FROM chart_of_accounts coa
+        WHERE coa.code IN ('3002','3004') AND coa.is_active = true ${coaCidFilter}`
     );
     const acctMap = accts.reduce((m, a) => { m[a.code] = a; return m; }, {});
     if (!acctMap['3002']) return res.status(400).json({ error: 'Account 3002 (Retained Earnings) not found in Chart of Accounts. Add it before year-end close.' });
@@ -1241,26 +1276,21 @@ router.post('/year-end-close', requirePermission('finance', 'approve'), async (r
         );
       }
 
-      // Close all open periods in this FY
+      // Close all open periods in this FY — this company's periods only.
+      // Without the company predicate, closing one company's year locked every
+      // other company's periods over the same dates.
       await client.query(
         `UPDATE accounting_periods SET status='closed', closed_by=$1, closed_at=NOW()
-         WHERE start_date >= $2 AND end_date <= $3 AND status='open'`,
-        [userId, fyStart, fyEnd]
+          WHERE start_date >= $2 AND end_date <= $3 AND status='open'
+            AND ($4::int IS NULL OR company_id = $4::int)`,
+        [userId, fyStart, fyEnd, companyId]
       );
 
-      // Reset Current Year P/L account opening_balance to 0 (new FY starts fresh)
-      if (acctMap['3004']) {
-        await client.query(
-          `UPDATE chart_of_accounts SET opening_balance = 0 WHERE id = $1`,
-          [acctMap['3004'].id]
-        );
-      }
-
-      // Add net profit to Retained Earnings opening_balance
-      await client.query(
-        `UPDATE chart_of_accounts SET opening_balance = COALESCE(opening_balance, 0) + $1 WHERE id = $2`,
-        [netProfit, acctMap['3002'].id]
-      );
+      // chart_of_accounts.opening_balance is deliberately NOT touched here.
+      // The closing journal above already moves the year's P&L into Retained
+      // Earnings, and every report adds `opening_balance` on top of posted
+      // journal movements — so bumping the master column counted the same
+      // profit twice from the next report run onwards.
 
       await client.query('COMMIT');
       res.json({
@@ -1284,9 +1314,16 @@ router.post('/year-end-close', requirePermission('finance', 'approve'), async (r
 
 // ─── POST /opening-balances ────────────────────────────────────────────────────
 // Sets opening balances when migrating from a legacy system.
-// Accepts an array of { account_id, balance } and:
-//   1. Updates chart_of_accounts.opening_balance for each account
-//   2. Creates a single "Opening Balance" journal entry so the GL has an audit trail
+// Accepts an array of { account_id, balance } and creates ONE dated
+// "Opening Balance" journal entry. That journal is the only source of the
+// opening position.
+//
+// It deliberately does NOT also write chart_of_accounts.opening_balance.
+// Every report in this file derives opening as `chart_of_accounts.opening_balance`
+// PLUS posted journal movements before the from-date (see GET /trial-balance and
+// GET /ledger), so writing both made the same opening balance count twice in any
+// report whose range starts after as_of_date. The master column also stored
+// Math.abs(balance), which silently discarded the sign of a contra account.
 //
 // Balance sign convention: positive = debit-normal accounts carry debit balance,
 // credit-normal accounts carry credit balance. Pass a negative value to indicate
@@ -1298,6 +1335,7 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
     if (!Array.isArray(balances) || balances.length === 0) {
       return res.status(400).json({ error: 'balances must be a non-empty array of { account_id, balance }' });
     }
+    const companyId = cid(req);
 
     // Resolve accounts and build JE lines
     const lines = [];
@@ -1309,8 +1347,10 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
       if (!account_id || balance === undefined || balance === null) continue;
 
       const { rows } = await pool.query(
-        'SELECT id, code, name, account_type FROM chart_of_accounts WHERE id=$1 AND is_active=true',
-        [account_id]
+        `SELECT id, code, name, account_type FROM chart_of_accounts
+          WHERE id = $1 AND is_active = true
+            AND ($2::int IS NULL OR company_id = $2::int OR company_id IS NULL)`,
+        [account_id, companyId]
       );
       if (rows.length === 0) {
         return res.status(400).json({ error: `Account ID ${account_id} not found or inactive.` });
@@ -1337,7 +1377,12 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
     const diff = Math.round((totalDebit - totalCredit) * 100) / 100;
     if (Math.abs(diff) > 0.01) {
       const { rows: reRows } = await pool.query(
-        `SELECT id, code, name FROM chart_of_accounts WHERE code='3001' AND is_active=true LIMIT 1`
+        `SELECT id, code, name FROM chart_of_accounts
+          WHERE code = '3001' AND is_active = true
+            AND ($1::int IS NULL OR company_id = $1::int OR company_id IS NULL)
+          ORDER BY company_id NULLS LAST
+          LIMIT 1`,
+        [companyId]
       );
       if (reRows.length === 0) {
         return res.status(400).json({
@@ -1361,15 +1406,9 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
     try {
       await client.query('BEGIN');
 
-      // 1. Update opening_balance on each account
-      for (const line of lines) {
-        await client.query(
-          `UPDATE chart_of_accounts SET opening_balance = $1 WHERE id = $2`,
-          [line.abs_balance, line.account_id]
-        );
-      }
-
-      // 2. Create an audit-trail journal entry
+      // The dated opening journal below is the single source of the opening
+      // position. chart_of_accounts.opening_balance is deliberately left alone —
+      // see the note above this handler.
       const entry_number = await getNextEntryNumber();
       const { rows: entryRows } = await client.query(
         `INSERT INTO journal_entries
@@ -1377,17 +1416,17 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
             total_debit, total_credit, company_id)
          VALUES ($1,$2,'OpeningBalance',$3,'opening_balance','posted',$4,$5,$6) RETURNING *`,
         [entry_number, as_of_date, description || `Opening balances as of ${as_of_date}`,
-         totalDebit, totalCredit, companyOf(req)]
+         totalDebit, totalCredit, companyId]
       );
       const entry = entryRows[0];
 
       const insertedLines = [];
       for (const line of lines) {
         const { rows: lr } = await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
           [entry.id, line.account_id, line._account_code, line._account_name,
-           line.debit, line.credit, 'Opening balance migration']
+           line.debit, line.credit, 'Opening balance migration', companyId]
         );
         insertedLines.push(lr[0]);
       }

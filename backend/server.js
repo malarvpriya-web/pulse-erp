@@ -131,6 +131,8 @@ import lifecycleRoutes       from "./src/modules/operations/lifecycle.routes.js"
 import maintenanceRoutes      from "./src/modules/maintenance/maintenance.routes.js";
 import iotIngestRoutes        from "./src/modules/iot/routes/ingest.routes.js";
 import iotDevicesRoutes       from "./src/modules/iot/routes/devices.routes.js";
+import iotAlertsRoutes        from "./src/modules/iot/routes/alerts.routes.js";
+import iotOpsRoutes           from "./src/modules/iot/routes/ops.routes.js";
 import complianceRoutes       from "./src/modules/compliance/compliance.routes.js";
 import unifiedAssetsRoutes     from "./src/modules/assets/assets.routes.js";
 import rdRoutes                from "./src/modules/rd/rd.routes.js";
@@ -248,6 +250,8 @@ import { startDeliveryFollowupCron } from "./src/jobs/deliveryFollowup.cron.js";
 import { startEsignReminderCron } from "./src/jobs/esignReminder.cron.js";
 import { startBackupCron }     from "./src/jobs/backup.cron.js";
 import { startIotMonitorCron } from "./src/jobs/iotMonitor.cron.js";
+import { startIotOutboxCron } from "./src/jobs/iotOutbox.cron.js";
+import { startIotPartitionCron } from "./src/jobs/iotPartitions.cron.js";
 import { startAmcRenewalCron } from "./src/jobs/amcRenewal.cron.js";
 import { startSubscriptionRenewalCron } from "./src/jobs/subscriptionRenewal.cron.js";
 import { startWarrantyExpiryCron } from "./src/jobs/warrantyExpiry.cron.js";
@@ -779,9 +783,14 @@ v1Router.use("/service-analytics",  verifyToken, serviceAnalyticsRoutes);
 v1Router.use("/failure-analytics",  verifyToken, auditMutations('servicedesk'), failureAnalyticsRoutes);
 v1Router.use("/voc",                auditMutations('servicedesk'), vocRoutes);                  // POST /responses is public (portal submit)
 
-// IoT / Device Telemetry (Phase 1) — device-token auth inside the router, NOT verifyToken
-v1Router.use("/iot",                auditMutations('iot'), iotIngestRoutes);            // POST /iot/ingest is device-token-gated
-v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotDevicesRoutes); // fleet API — falls through from ingest, user-authed
+// IoT / Device Telemetry — device-token auth inside the ingest router, NOT verifyToken.
+// Order matters: the ingest router claims only POST /iot/ingest and
+// POST /iot/gateway/heartbeat; everything else falls through to the user-authed
+// routers below, each of which denies a caller with no company scope (scope.js).
+v1Router.use("/iot",                auditMutations('iot'), iotIngestRoutes);              // device-token-gated
+v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotDevicesRoutes); // fleet + device 360 + provisioning
+v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotAlertsRoutes);  // alert centre + rule management
+v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotOpsRoutes);     // platform health, data quality, exports
 v1Router.use("/compliance",         verifyToken, auditMutations('compliance'), complianceRoutes);
 v1Router.use("/assets",             verifyToken, auditMutations('assets'), unifiedAssetsRoutes); // read-only consolidation over fixed_assets/assets_register/allocations
 v1Router.use("/rd",                 verifyToken, auditMutations('rd'), rdRoutes); // R&D artifact repo + patents + product lifecycle (PLM)
@@ -1041,6 +1050,8 @@ async function startServer() {
     startEsignReminderCron();
     startBackupCron();
     startIotMonitorCron();
+    startIotOutboxCron();
+    startIotPartitionCron();
     startAmcRenewalCron();
     startSubscriptionRenewalCron();
     startWarrantyExpiryCron();

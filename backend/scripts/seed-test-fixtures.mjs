@@ -120,10 +120,17 @@ try {
         WHERE NOT EXISTS (SELECT 1 FROM vendors WHERE vendor_code = $1)`,
       [code, name]);
   }
+  // rated_at is backdated deliberately. One test cleans up the rating it files
+  // with `DELETE FROM vendor_ratings WHERE vendor_id = $1 AND overall_score = 4
+  // AND rated_at > NOW() - INTERVAL '2 minutes'` — a fresh baseline scored 4
+  // matches both predicates, so the suite deleted its own fixture partway
+  // through and every describe whose beforeAll ran afterwards failed with
+  // "No rated company-1 vendor". A rating dated last month is also the more
+  // honest fixture: it is history, not something that happened this second.
   await client.query(
     `INSERT INTO vendor_ratings (company_id, vendor_id, quality_score, delivery_score,
-                                 price_score, overall_score, comments)
-     SELECT 1, v.id, 4, 4, 4, 4, 'Seeded baseline rating'
+                                 price_score, overall_score, comments, rated_at)
+     SELECT 1, v.id, 4, 4, 4, 4, 'Seeded baseline rating', NOW() - INTERVAL '30 days'
        FROM vendors v
       WHERE v.vendor_code = 'TSTV-1'
         AND NOT EXISTS (SELECT 1 FROM vendor_ratings r WHERE r.vendor_id = v.id)`);
