@@ -89,7 +89,7 @@ else {
   try { if (!(await fetch(BASE + '/health')).ok) throw new Error('unhealthy'); }
   catch { console.error('No server on ' + BASE + ' — start one, or run with PROBE_RESTART=1'); process.exit(2); }
 }
-const emp   = token('test.autoqa@manifest.in');       // plain `employee`
+const emp   = token(process.env.PROBE_LOW_EMAIL || 'test.autoqa@manifest.in');  // plain `employee`
 const admin = token(process.env.E2E_LOGIN_EMAIL || 'superadmin@manifest.in');
 console.log(`\nemployee = ${emp.user.email} (employee_id ${emp.user.employee_id})`);
 
