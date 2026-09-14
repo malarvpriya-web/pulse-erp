@@ -71,7 +71,7 @@ else {
   try { if (!(await fetch(BASE + '/health')).ok) throw new Error('unhealthy'); }
   catch { console.error('No server on ' + BASE + ' — start one, or run with PROBE_RESTART=1'); process.exit(2); }
 }
-const admin = token('superadmin@manifest.in');
+const admin = token(process.env.E2E_LOGIN_EMAIL || 'superadmin@manifest.in');
 
 console.log('\n== setup: an HR policy to edit ==');
 sql("DELETE FROM hr_policies WHERE title LIKE 'BEFORE-IMAGE-VERIFY%'");

@@ -83,7 +83,7 @@ async function cleanup() {
   ]) await pool.query(sql).catch((e) => process.stderr.write(`  (skip) ${e.message}\n`));
 }
 
-const SA = await tokenFor(process.env.PROBE_ADMIN_EMAIL || 'superadmin@manifest.in');
+const SA = await tokenFor(process.env.PROBE_ADMIN_EMAIL || process.env.E2E_LOGIN_EMAIL || 'superadmin@manifest.in');
 const LOW = await tokenFor(process.env.PROBE_LOW_EMAIL || 'john.doe@manifest.in');
 
 try {

@@ -24,7 +24,7 @@ const pool = (await import(pathToFileURL(path.join(BACKEND, 'src/config/db.js'))
 // a product failure. PROBE_API still overrides, for pointing at a scratch
 // instance deliberately.
 const API = process.env.PROBE_API || process.env.PULSE_API || 'http://localhost:5000/api/v1';
-const EMAIL = process.env.RECON_EMAIL || 'superadmin@manifest.in';
+const EMAIL = process.env.RECON_EMAIL || process.env.E2E_LOGIN_EMAIL || 'superadmin@manifest.in';
 
 const { rows: [u] } = await pool.query(
   'SELECT id, email, role, employee_id, company_id FROM users WHERE email=$1', [EMAIL]);

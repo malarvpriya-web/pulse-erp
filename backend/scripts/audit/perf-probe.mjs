@@ -45,7 +45,7 @@ const ENDPOINTS = [
 
 const { rows: [u] } = await pool.query(
   "SELECT id, email, role, employee_id, company_id FROM users WHERE email = $1",
-  [process.env.PERF_EMAIL || 'superadmin@manifest.in']);
+  [process.env.PERF_EMAIL || process.env.E2E_LOGIN_EMAIL || 'superadmin@manifest.in']);
 const { rows: rr } = await pool.query(
   'SELECT LOWER(r.code) c FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1', [u.id]);
 const TOKEN = jwt.sign({
