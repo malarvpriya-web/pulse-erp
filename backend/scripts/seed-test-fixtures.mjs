@@ -178,6 +178,26 @@ try {
      SELECT 'TSTC-1', 'customer', 'Test Customer Industries', 1
       WHERE NOT EXISTS (SELECT 1 FROM parties WHERE party_code = 'TSTC-1')`);
 
+  // Per-company settings rows. Their absence is not equivalent to their
+  // defaults: the IQC gate reads
+  //   holdForIqc = settings ? settings.require_iqc_before_stock !== false : true
+  // so NO ROW means hold, and the helper that flips the toggle for a test is a
+  // plain UPDATE — with no row it changes nothing and the test silently
+  // exercises the opposite path. The same goes for notify_po_approval and the
+  // three-way-match tolerances. Columns otherwise take their own DB defaults,
+  // so this seeds the documented behaviour rather than a second opinion about
+  // what those defaults should be — with one deliberate exception below.
+  await client.query(
+    `INSERT INTO quality_settings (company_id) SELECT 1
+      WHERE NOT EXISTS (SELECT 1 FROM quality_settings WHERE company_id = 1)`);
+  // notify_po_approval defaults to false, and the fixture tenant is meant to be
+  // one that has the toggle ON: the delivery test exists to prove an approved
+  // order reaches somebody, and with the default it would assert against a
+  // tenant that has switched notifications off.
+  await client.query(
+    `INSERT INTO procurement_settings (company_id, notify_po_approval) SELECT 1, true
+      WHERE NOT EXISTS (SELECT 1 FROM procurement_settings WHERE company_id = 1)`);
+
   // An opportunity, so the CRM graph tests have a second kind of parent to
   // attach a team member to — the constraint they exercise is that a row may
   // name an account or an opportunity, never both. opportunity_number is
