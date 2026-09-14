@@ -303,6 +303,9 @@ jobs:
           # name for these and its own developer-database default.
           E2E_LOGIN_EMAIL: admin@test.com
           PROBE_LOW_EMAIL: employee@test.com
+          # A fifth name for the same unprivileged identity, this one read by
+          # the spec file itself rather than by a probe it shells out to.
+          PULSE_LOW_PRIV_EMAIL: employee@test.com
           TENANT_A_EMAIL: admin@test.com
           PULSE_API: http://localhost:5000/api/v1
           PULSE_API_BASE: http://localhost:5000
