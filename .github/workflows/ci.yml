@@ -274,6 +274,12 @@ jobs:
       - name: Install E2E dependencies
         run: |
           npm ci
+          # The Playwright suites spawn backend/scripts/e2e-mint-token.mjs to get
+          # a token. That script runs on the RUNNER, not inside the container, so
+          # it needs the backend's own dependencies — dotenv, jsonwebtoken and pg,
+          # all production deps. Without this the suite died on
+          # ERR_MODULE_NOT_FOUND before its first assertion.
+          npm ci --prefix backend --omit=dev
           npx playwright install --with-deps chromium
 
       - name: Analytics & AI — contract, tenant isolation, browser
