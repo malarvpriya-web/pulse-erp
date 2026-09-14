@@ -282,8 +282,22 @@ jobs:
           npm ci --prefix backend --omit=dev
           npx playwright install --with-deps chromium
 
+      # The composed database has only what the migrations create — no login
+      # accounts. The suite mints a token before its first request, so without
+      # this the minter reported 'No user superadmin@manifest.in' and every
+      # analytics spec was skipped behind one failure.
+      - name: Seed E2E fixture accounts
+        env:
+          DB_HOST: localhost
+          DB_PORT: "5433"
+          DB_USER: pulse
+          DB_NAME: pulse
+        run: node scripts/seed-test-fixtures.mjs
+        working-directory: backend
+
       - name: Analytics & AI — contract, tenant isolation, browser
         env:
+          E2E_LOGIN_EMAIL: admin@test.com
           PULSE_API: http://localhost:5000/api/v1
           PULSE_API_BASE: http://localhost:5000
           PULSE_FRONT_BASE: http://localhost:8080
