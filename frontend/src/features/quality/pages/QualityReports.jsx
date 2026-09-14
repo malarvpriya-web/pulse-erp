@@ -1,7 +1,13 @@
 // frontend/src/features/quality/pages/QualityReports.jsx
 import { useState, useEffect, useCallback } from 'react';
+import {
+  BarChart3, Download, Search, CheckCircle2, AlertTriangle, Layers,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import {
+  PageHero, PageShell, StatBand, Stat, MeterCard, MeterGrid, SectionTitle,
+} from '@/components/pulse-ui';
 
 function SimpleBarChart({ data, labelKey, valueKey, color = '#2563eb', height = 160 }) {
   if (!data?.length) return <div style={{ color: '#9ca3af', fontSize: 13, padding: 16 }}>No data</div>;
@@ -53,15 +59,32 @@ export default function QualityReports() {
   const totalPass        = inspSummary.reduce((s, r) => s + (parseInt(r.passed) || 0), 0);
   const passRate         = totalInspections > 0 ? Math.round(totalPass * 100 / totalInspections) : 0;
 
+  const totalNcrs = ncrTrend.reduce((s, r) => s + (parseInt(r.count) || 0), 0);
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Quality Reports</h2>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <a href={ncrCsvUrl} target="_blank" style={{ padding: '8px 14px', background: '#f3f4f6', border: 'none', borderRadius: 8, fontSize: 12, textDecoration: 'none', color: '#374151' }}>⬇ NCR CSV</a>
-          <a href={capaCsvUrl} target="_blank" style={{ padding: '8px 14px', background: '#f3f4f6', border: 'none', borderRadius: 8, fontSize: 12, textDecoration: 'none', color: '#374151' }}>⬇ CAPA CSV</a>
-        </div>
-      </div>
+    <PageShell dock={
+        <PageHero
+          icon={BarChart3}
+          eyebrow="Quality"
+          title="Quality Reports"
+          subtitle="Inspection pass rates, NCR trend and stage-wise quality performance"
+          meta={[
+            { value: totalInspections.toLocaleString(), label: 'inspections' },
+            { value: `${passRate}%`, label: 'pass rate', tone: passRate >= 95 ? 'good' : passRate >= 80 ? 'warn' : 'bad' },
+            { value: totalNcrs, label: 'NCRs in period', tone: totalNcrs ? 'warn' : 'good' },
+          ]}
+          actions={
+            <>
+              <a className="plh-cta plh-cta--ghost" href={ncrCsvUrl} target="_blank" rel="noreferrer">
+                <Download size={14} /> NCR CSV
+              </a>
+              <a className="plh-cta plh-cta--ghost" href={capaCsvUrl} target="_blank" rel="noreferrer">
+                <Download size={14} /> CAPA CSV
+              </a>
+            </>
+          }
+        />
+    }>
 
       {/* Date filter */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, alignItems: 'center' }}>
@@ -76,28 +99,45 @@ export default function QualityReports() {
       {loading ? <div style={{ color: '#6b7280', padding: 20 }}>Loading…</div> : (
         <>
           {/* KPI summary */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14, marginBottom: 28 }}>
-            {[
-              { label: 'Total Inspections', value: totalInspections, color: '#2563eb' },
-              { label: 'Pass Rate', value: `${passRate}%`, color: passRate >= 95 ? '#16a34a' : passRate >= 80 ? '#d97706' : '#dc2626' },
-              { label: 'Total NCRs (period)', value: ncrTrend.reduce((s, r) => s + (parseInt(r.count) || 0), 0), color: '#dc2626' },
-            ].map(k => (
-              <div key={k.label} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '16px 20px' }}>
-                <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>{k.label}</div>
-                <div style={{ fontSize: 26, fontWeight: 700, color: k.color }}>{k.value}</div>
-              </div>
-            ))}
-          </div>
+          <StatBand cols={4}>
+            <Stat index={0} icon={Search}        tone="info"    label="Total Inspections" value={totalInspections.toLocaleString()} sub="in period" />
+            <Stat index={1} icon={CheckCircle2}  tone={passRate >= 95 ? 'success' : passRate >= 80 ? 'warning' : 'danger'} label="Pass Rate" value={`${passRate}%`} sub={`${totalPass.toLocaleString()} passed`} />
+            <Stat index={2} icon={AlertTriangle} tone="danger"  label="Total NCRs"        value={totalNcrs} sub="raised in period" />
+            <Stat index={3} icon={Layers}        tone="primary" label="Stages Covered"    value={inspSummary.length} sub="IQC / IPQC / FQC" />
+          </StatBand>
+
+          <MeterGrid>
+            <MeterCard
+              title="Inspection Pass Rate"
+              value={passRate}
+              legend={[
+                { value: totalPass.toLocaleString(), label: 'passed', color: '#16a34a' },
+                { value: (totalInspections - totalPass).toLocaleString(), label: 'failed', color: '#dc2626' },
+              ]}
+            />
+            <MeterCard
+              title="NCR Load"
+              caption={`${totalNcrs} in period`}
+              tone={totalNcrs ? 'warning' : 'success'}
+              value={totalInspections ? Math.min(100, (totalNcrs / totalInspections) * 100) : 0}
+              legend={[
+                { value: totalNcrs, label: 'NCRs', color: '#dc2626' },
+                { value: totalInspections.toLocaleString(), label: 'inspections', color: '#475569' },
+              ]}
+            />
+          </MeterGrid>
+
+          <SectionTitle rule>Trend Analysis</SectionTitle>
 
           {/* NCR trend chart */}
-          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20, marginBottom: 24 }}>
-            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 16 }}>NCR Trend (by Month)</div>
+          <div style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 12, padding: 20, marginBottom: 24, boxShadow: '0 1px 5px rgba(0,0,0,.06)' }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 16 }}>NCR Trend (by Month)</div>
             <SimpleBarChart data={ncrTrend} labelKey="month" valueKey="count" color="#dc2626" height={180} />
           </div>
 
           {/* Inspection summary by stage */}
-          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20, marginBottom: 24 }}>
-            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 14 }}>Inspection Summary by Stage</div>
+          <div style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 12, padding: 20, marginBottom: 24, boxShadow: '0 1px 5px rgba(0,0,0,.06)' }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 14 }}>Inspection Summary by Stage</div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
@@ -118,9 +158,9 @@ export default function QualityReports() {
                         <td style={{ padding: '9px 14px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <div style={{ width: 60, height: 6, background: '#e5e7eb', borderRadius: 3 }}>
-                              <div style={{ width: `${rate}%`, height: '100%', background: rate >= 95 ? '#16a34a' : rate >= 80 ? '#d97706' : '#dc2626', borderRadius: 3 }} />
+                              <div style={{ width: `${rate}%`, height: '100%', background: rate >= 95 ? '#16a34a' : rate >= 80 ? '#6d28d9' : '#dc2626', borderRadius: 3 }} />
                             </div>
-                            <span style={{ fontWeight: 700, color: rate >= 95 ? '#16a34a' : rate >= 80 ? '#d97706' : '#dc2626' }}>{rate}%</span>
+                            <span style={{ fontWeight: 700, color: rate >= 95 ? '#16a34a' : rate >= 80 ? '#6d28d9' : '#dc2626' }}>{rate}%</span>
                           </div>
                         </td>
                       </tr>
@@ -148,7 +188,7 @@ export default function QualityReports() {
                       <td style={{ padding: '9px 14px', fontWeight: 500 }}>{r.month}</td>
                       <td style={{ padding: '9px 14px', fontWeight: 700 }}>{r.count}</td>
                       <td style={{ padding: '9px 14px', color: '#dc2626' }}>{r.critical || 0}</td>
-                      <td style={{ padding: '9px 14px', color: '#d97706' }}>{r.major || 0}</td>
+                      <td style={{ padding: '9px 14px', color: '#6d28d9' }}>{r.major || 0}</td>
                       <td style={{ padding: '9px 14px', color: '#16a34a' }}>{r.minor || 0}</td>
                       <td style={{ padding: '9px 14px', color: '#6b7280' }}>{r.closed || 0}</td>
                     </tr>
@@ -159,6 +199,6 @@ export default function QualityReports() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

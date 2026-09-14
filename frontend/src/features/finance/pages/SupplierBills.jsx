@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Plus, Search, X, CheckCircle, AlertTriangle, Eye,
-  Download, Printer, Clock, FileText,
-  Calendar, RefreshCw,
-  ThumbsUp, ThumbsDown, CreditCard, AlertCircle, RotateCcw,
+  Plus, Search, X, CheckCircle, AlertTriangle, Eye, Download, Printer,
+  Clock, FileText, Calendar, RefreshCw, ThumbsUp, ThumbsDown,
+  CreditCard, AlertCircle, RotateCcw, Building2,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmt, fmtFull, today, addDays, GST_RATES, emptyItem, calcItem, statusColor } from '../financeUtils';
 import { useFY } from '@/context/FYContext';
 import FYSelector from '@/components/core/FYSelector';
 import './SupplierBills.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PAYMENT_METHODS = ['Bank Transfer', 'NEFT', 'RTGS', 'Cheque', 'UPI', 'Cash'];
 
@@ -313,7 +313,20 @@ export default function SupplierBills() {
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 
   return (
-    <div className="sb-root">
+    <PageShell dock={
+      <PageHero
+        icon={Building2}
+        eyebrow="Finance"
+        title="Bills & Payables"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load} title="Refresh"><RefreshCw size={13}/></button>
+          <button className="plh-cta plh-cta--ghost" onClick={handleExport}><Download size={14}/> Export</button>
+          <button className="plh-cta" onClick={() => setDrawer('create')}>
+            <Plus size={15}/> Record Bill
+          </button>
+        </>}
+      />
+    }>
 
       {/* Toast */}
       {toast && (
@@ -323,21 +336,6 @@ export default function SupplierBills() {
         </div>
       )}
 
-      {/* Header */}
-      <div className="sb-header">
-        <div>
-          <h2 className="sb-title">Bills &amp; Payables</h2>
-          <p className="sb-sub">{stats.totalCount} bills · Supplier invoices tracking</p>
-        </div>
-        <div className="sb-header-r">
-          <FYSelector />
-          <button className="sb-btn-outline" onClick={load} title="Refresh"><RefreshCw size={13}/></button>
-          <button className="sb-btn-outline" onClick={handleExport}><Download size={14}/> Export</button>
-          <button className="sb-btn-primary" onClick={() => setDrawer('create')}>
-            <Plus size={15}/> Record Bill
-          </button>
-        </div>
-      </div>
 
       {/* KPI Cards */}
       <div className="sb-stats">
@@ -352,7 +350,7 @@ export default function SupplierBills() {
           </div>
         </div>
         <div className="sb-stat sb-stat-amber">
-          <div className="sb-stat-icon" style={{ background: '#fef3c7', color: '#d97706' }}>
+          <div className="sb-stat-icon" style={{ background: '#ede9fe', color: '#6d28d9' }}>
             <Clock size={16}/>
           </div>
           <div>
@@ -1088,6 +1086,6 @@ export default function SupplierBills() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

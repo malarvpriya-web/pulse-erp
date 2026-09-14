@@ -1,9 +1,13 @@
 // frontend/src/features/quality/pages/EquipmentCalibration.jsx
 import { useState, useEffect, useCallback } from 'react';
+import {
+  Ruler, Plus, CheckCircle2, CalendarClock, AlertTriangle, HelpCircle,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell, StatBand, Stat, MeterCard, MeterGrid } from '@/components/pulse-ui';
 
-const STATUS_COLORS = { calibrated: ['#d1fae5','#16a34a'], due: ['#fef3c7','#d97706'], overdue: ['#fee2e2','#dc2626'], 'not-calibrated': ['#f3f4f6','#6b7280'] };
+const STATUS_COLORS = { calibrated: ['#d1fae5','#16a34a'], due: ['#ede9fe','#6d28d9'], overdue: ['#fee2e2','#dc2626'], 'not-calibrated': ['#f3f4f6','#6b7280'] };
 
 function Badge({ label }) {
   const [bg, color] = STATUS_COLORS[label] || ['#f3f4f6','#6b7280'];
@@ -132,26 +136,77 @@ export default function EquipmentCalibration() {
   const deleteEq = async (id) => {
     if (!confirm('Delete this equipment?')) return;
     try { await api.delete(`/quality/calibration/equipment/${id}`); toast.success('Deleted'); load(); }
-    catch (e) { toast.error('Delete failed'); }
+    catch { toast.error('Delete failed'); }
   };
 
+  const calibrated = equipment.filter(e => e.status === 'calibrated').length;
+  const due        = equipment.filter(e => e.status === 'due').length;
+  const overdue    = equipment.filter(e => e.status === 'overdue').length;
+  const uncal      = equipment.filter(e => e.status === 'not-calibrated').length;
+  const compliance = equipment.length ? Math.round((calibrated / equipment.length) * 100) : 0;
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Equipment Calibration</h2>
-        <button onClick={() => { setEditItem(null); setShowForm(true); }} style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 20px', cursor: 'pointer', fontWeight: 600 }}>+ Add Equipment</button>
-      </div>
+    <PageShell dock={
+        <PageHero
+          icon={Ruler}
+          eyebrow="Quality"
+          title="Equipment Calibration"
+          subtitle="Measuring instrument calibration register, due dates and compliance status"
+          meta={[
+            { value: equipment.length, label: 'instruments' },
+            { value: `${compliance}%`, label: 'compliant', tone: compliance >= 95 ? 'good' : compliance >= 80 ? 'warn' : 'bad' },
+            { value: overdue, label: 'overdue', tone: overdue ? 'bad' : 'good' },
+          ]}
+          actions={
+            <button className="plh-cta" onClick={() => { setEditItem(null); setShowForm(true); }}>
+              <Plus size={14} /> Add Equipment
+            </button>
+          }
+        />
+    }>
+
+      <StatBand cols={5}>
+        <Stat index={0} icon={Ruler}         tone="primary" label="Instruments"     value={equipment.length} sub="in register" />
+        <Stat index={1} icon={CheckCircle2}  tone="success" label="Calibrated"      value={calibrated}       sub={`${compliance}% compliant`} />
+        <Stat index={2} icon={CalendarClock} tone="warning" label="Due"             value={due}              sub="calibration approaching" />
+        <Stat index={3} icon={AlertTriangle} tone={overdue ? 'danger' : 'success'} label="Overdue" value={overdue} sub="past due date" />
+        <Stat index={4} icon={HelpCircle}    tone="neutral" label="Not Calibrated"  value={uncal}            sub="never calibrated" />
+      </StatBand>
+
+      <MeterGrid>
+        <MeterCard
+          title="Calibration Compliance"
+          value={compliance}
+          legend={[
+            { value: calibrated, label: 'calibrated', color: '#16a34a' },
+            { value: due,        label: 'due',        color: '#6d28d9' },
+            { value: overdue,    label: 'overdue',    color: '#dc2626' },
+          ]}
+        />
+        <MeterCard
+          title="Upcoming Workload"
+          caption={`${alerts.length} in next 60 days`}
+          tone="warning"
+          value={equipment.length ? (alerts.length / equipment.length) * 100 : 0}
+          legend={[
+            { value: alerts.length, label: 'due for calibration', color: '#6d28d9' },
+            { value: equipment.length, label: 'total instruments', color: '#475569' },
+          ]}
+        />
+      </MeterGrid>
 
       {alerts.length > 0 && (
-        <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 10, padding: 14, marginBottom: 20 }}>
-          <div style={{ fontWeight: 600, fontSize: 13, color: '#92400e', marginBottom: 8 }}>⚠ {alerts.length} instruments due for calibration (next 60 days)</div>
+        <div style={{ background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: 12, padding: 14, marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 700, fontSize: 13, color: '#5b21b6', marginBottom: 8 }}>
+            <CalendarClock size={14} /> {alerts.length} instruments due for calibration (next 60 days)
+          </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {alerts.slice(0,6).map((a, i) => (
-              <span key={i} style={{ background: '#fff', border: '1px solid #fcd34d', borderRadius: 6, padding: '3px 10px', fontSize: 11 }}>
+              <span key={i} style={{ background: '#fff', border: '1px solid #c4b5fd', borderRadius: 6, padding: '3px 10px', fontSize: 11 }}>
                 <strong>{a.name}</strong> ({a.equipment_id}) — Due {a.next_calibration_date ? new Date(a.next_calibration_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'N/A'}
               </span>
             ))}
-            {alerts.length > 6 && <span style={{ fontSize: 11, color: '#d97706', alignSelf: 'center' }}>+{alerts.length - 6} more</span>}
+            {alerts.length > 6 && <span style={{ fontSize: 11, color: '#6d28d9', alignSelf: 'center' }}>+{alerts.length - 6} more</span>}
           </div>
         </div>
       )}
@@ -214,12 +269,12 @@ export default function EquipmentCalibration() {
                 : alerts.map(a => {
                   const days = a.next_calibration_date ? Math.ceil((new Date(a.next_calibration_date) - new Date()) / 86400000) : 999;
                   return (
-                    <tr key={a.id} style={{ borderTop: '1px solid #f3f4f6', background: days < 0 ? '#fff5f5' : days < 14 ? '#fffbeb' : 'transparent' }}>
+                    <tr key={a.id} style={{ borderTop: '1px solid #f3f4f6', background: days < 0 ? '#fff5f5' : days < 14 ? '#f5f3ff' : 'transparent' }}>
                       <td style={{ padding: '10px 14px', fontWeight: 600 }}>{a.equipment_id}</td>
                       <td style={{ padding: '10px 14px' }}>{a.name}</td>
                       <td style={{ padding: '10px 14px', color: '#6b7280' }}>{a.location || '—'}</td>
                       <td style={{ padding: '10px 14px' }}>{a.next_calibration_date ? new Date(a.next_calibration_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
-                      <td style={{ padding: '10px 14px', fontWeight: 700, color: days < 0 ? '#dc2626' : days < 14 ? '#d97706' : '#16a34a' }}>{days < 0 ? `${Math.abs(days)}d overdue` : `${days}d`}</td>
+                      <td style={{ padding: '10px 14px', fontWeight: 700, color: days < 0 ? '#dc2626' : days < 14 ? '#6d28d9' : '#16a34a' }}>{days < 0 ? `${Math.abs(days)}d overdue` : `${days}d`}</td>
                       <td style={{ padding: '10px 14px' }}><Badge label={a.calibration_status || 'not-calibrated'} /></td>
                     </tr>
                   );
@@ -232,6 +287,6 @@ export default function EquipmentCalibration() {
 
       {showForm && <EquipmentForm item={editItem} onClose={() => { setShowForm(false); setEditItem(null); }} onSaved={() => { setShowForm(false); setEditItem(null); load(); }} />}
       {recordFor && <RecordForm equipmentId={recordFor} onClose={() => setRecordFor(null)} onSaved={() => { setRecordFor(null); load(); }} />}
-    </div>
+    </PageShell>
   );
 }

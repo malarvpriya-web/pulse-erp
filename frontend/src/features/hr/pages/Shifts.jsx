@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, X, Clock, Edit2 } from 'lucide-react';
+import { Plus, X, Clock, Edit2, CalendarClock } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DEFAULT_ROLE_GRACE = { office: 15, field: 25, manager: 10 };
@@ -267,7 +268,16 @@ export default function Shifts({ setPage: _setPage }) {
   };
 
   return (
-    <div style={{ padding: '24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Human Resources"
+        title="Shift Management"
+        actions={<button className="plh-cta" onClick={openCreate}>
+          <Plus size={14} /> Add Shift
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingCancelAssignment}
         title="Remove Assignment"
@@ -317,15 +327,7 @@ export default function Shifts({ setPage: _setPage }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 700 }}>Shift Management</h2>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: '13px' }}>{loading ? 'Loading…' : `${shifts.length} shifts configured`}</p>
-        </div>
-        <button onClick={openCreate} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: '8px', padding: '8px 16px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>
-          <Plus size={14} /> Add Shift
-        </button>
-      </div>
+
 
       {!loading && !error && shifts.length === 0 && (
         <div style={{ color: '#9ca3af', fontSize: 13, padding: 32, textAlign: 'center', background: '#f9fafb', borderRadius: 8 }}>No shifts configured yet</div>
@@ -620,6 +622,6 @@ export default function Shifts({ setPage: _setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

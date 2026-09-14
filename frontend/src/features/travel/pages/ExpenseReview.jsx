@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
+import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import { fmt as fmtAmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_STYLE = {
   Approved:  { background: '#dcfce7', color: '#166534' },
-  Pending:   { background: '#fef9c3', color: '#854d0e' },
+  Pending:   { background: '#ede9fe', color: '#5b21b6' },
   Rejected:  { background: '#fee2e2', color: '#991b1b' },
   Cancelled: { background: '#f3f4f6', color: '#374151' },
 };
@@ -42,8 +44,14 @@ export default function ExpenseReview() {
   };
 
   return (
-    <div style={{ padding: 24 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20 }}>Expense Review</h1>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Travel"
+        title="Expense Review"
+      />
+    }>
+
 
       {loading && (
         <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading…</div>
@@ -124,6 +132,6 @@ export default function ExpenseReview() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

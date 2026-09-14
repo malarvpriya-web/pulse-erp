@@ -1,15 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, BookOpen, Search, Copy, Trash2, Eye, MoreHorizontal } from 'lucide-react';
+import {
+  Plus, BookOpen, Search, Copy, Trash2, Eye, MoreHorizontal,
+  ShoppingCart,
+} from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const CATEGORIES = ['All', 'Prospecting', 'Qualification', 'Proposal', 'Negotiation', 'Closing', 'General'];
 const STAGES     = ['prospecting', 'qualification', 'proposal', 'negotiation', 'closing', 'won'];
 
 const CAT_COLORS = {
   prospecting:  { bg: '#dbeafe', color: '#1d4ed8' },
-  qualification:{ bg: '#fef3c7', color: '#92400e' },
+  qualification:{ bg: '#ede9fe', color: '#5b21b6' },
   proposal:     { bg: '#ede9fe', color: '#6B3FDB' },
   negotiation:  { bg: '#fee2e2', color: '#b91c1c' },
   closing:      { bg: '#d1fae5', color: '#065f46' },
@@ -121,8 +125,18 @@ export default function SalesPlaybooks({ setPage }) {
   const displayedPlaybooks = playbooks;
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100%' }}
-         onClick={() => menuOpen && setMenuOpen(null)}>
+    <PageShell
+      onClick={() => menuOpen && setMenuOpen(null)}
+      dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Sales Playbooks"
+        actions={<button className="plh-cta" onClick={openModal}>
+          <Plus size={15} /> New Playbook
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingHandleDelete}
         title="Delete Playbook"
@@ -134,20 +148,7 @@ export default function SalesPlaybooks({ setPage }) {
       />
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Sales Playbooks</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            {playbooks.length} playbook{playbooks.length !== 1 ? 's' : ''}
-          </p>
-        </div>
-        <button onClick={openModal}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px',
-                   background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8,
-                   cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          <Plus size={15} /> New Playbook
-        </button>
-      </div>
+
 
       {/* Search + Category pills */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' }}>
@@ -374,6 +375,6 @@ export default function SalesPlaybooks({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

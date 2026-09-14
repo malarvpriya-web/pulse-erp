@@ -5,7 +5,7 @@
   --neon-purple: #7B3FE4;
   --neon-green: #10b981;
   --neon-red: #ef4444;
-  --neon-amber: #f59e0b;
+  --neon-amber: #7c5cf0;
   --glass-bg: rgba(255, 255, 255, 0.05);
   --glass-border: rgba(255, 255, 255, 0.1);
 }
@@ -379,7 +379,7 @@
 .alert-chip.sev-medium {
   background: rgba(245, 158, 11, 0.1);
   border: 1px solid rgba(245, 158, 11, 0.3);
-  color: #fcd34d;
+  color: #c4b5fd;
 }
 
 /* KPI cards */
@@ -493,7 +493,7 @@
 }
 
 .prio-badge-high   { background: rgba(239,68,68,0.15);   color: #fca5a5; }
-.prio-badge-medium { background: rgba(245,158,11,0.15);  color: #fcd34d; }
+.prio-badge-medium { background: rgba(245,158,11,0.15);  color: #c4b5fd; }
 .prio-badge-low    { background: rgba(107,114,128,0.15); color: #9ca3af; }
 
 .prec-action {

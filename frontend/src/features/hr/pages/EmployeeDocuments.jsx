@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { FileText, Trash2, CheckCircle, XCircle, ExternalLink, X, ChevronDown } from 'lucide-react';
+import {
+  FileText, Trash2, CheckCircle, XCircle, ExternalLink, X, ChevronDown,
+  Users,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DOC_TYPES = [
   'Offer Letter', 'Appointment Letter', 'Contract', 'NDA',
@@ -13,7 +17,7 @@ const DOC_TYPES = [
 
 const STATUS_META = {
   verified: { bg: '#dcfce7', color: '#15803d', label: 'Verified' },
-  pending:  { bg: '#fef3c7', color: '#92400e', label: 'Pending' },
+  pending:  { bg: '#ede9fe', color: '#5b21b6', label: 'Pending' },
   rejected: { bg: '#fee2e2', color: '#dc2626', label: 'Rejected' },
 };
 
@@ -165,7 +169,19 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
   const expiringSoon  = docs.filter(d => isExpiringSoon(d.expiry_date)).length;
 
   return (
-    <div style={{ padding: '24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title={canManage ? 'Employee Documents' : 'My Documents'}
+        actions={canManage && (
+          <button className="plh-cta"
+            onClick={() => setDrawer(true)}>
+            + Add Document Record
+          </button>
+        )}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -188,34 +204,15 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
       )}
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
-            {canManage ? 'Employee Documents' : 'My Documents'}
-          </h2>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>
-            {canManage
-              ? 'Cross-employee document audit — view, verify, and track all HR documents'
-              : 'View your documents on record — contact HR for changes'}
-          </p>
-        </div>
-        {canManage && (
-          <button
-            onClick={() => setDrawer(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
-          >
-            + Add Document Record
-          </button>
-        )}
-      </div>
+
 
       {/* Summary chips */}
       {docs.length > 0 && (
         <div style={{ display: 'flex', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
           <Chip label={`${docs.length} total`} bg="#f3f4f6" color="#374151" />
-          {pendingCount > 0  && <Chip label={`${pendingCount} pending verification`} bg="#fef3c7" color="#92400e" onClick={() => setFilterStatus('pending')} />}
+          {pendingCount > 0  && <Chip label={`${pendingCount} pending verification`} bg="#ede9fe" color="#5b21b6" onClick={() => setFilterStatus('pending')} />}
           {expiredCount > 0  && <Chip label={`${expiredCount} expired`}             bg="#fee2e2" color="#dc2626" />}
-          {expiringSoon > 0  && <Chip label={`${expiringSoon} expiring in 30 days`} bg="#fff7ed" color="#c2410c" />}
+          {expiringSoon > 0  && <Chip label={`${expiringSoon} expiring in 30 days`} bg="#fff7ed" color="#5b21b6" />}
         </div>
       )}
 
@@ -303,10 +300,10 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
                       </span>
                     </td>
                     {/* Expiry */}
-                    <td style={{ padding: '11px 14px', fontSize: 13, whiteSpace: 'nowrap', color: expired ? '#dc2626' : expireSoon ? '#c2410c' : '#6b7280', fontWeight: (expired || expireSoon) ? 600 : 400 }}>
+                    <td style={{ padding: '11px 14px', fontSize: 13, whiteSpace: 'nowrap', color: expired ? '#dc2626' : expireSoon ? '#5b21b6' : '#6b7280', fontWeight: (expired || expireSoon) ? 600 : 400 }}>
                       {doc.expiry_date || '—'}
                       {expired    && <span style={{ marginLeft: 4, fontSize: 10, background: '#fee2e2', color: '#dc2626', padding: '1px 5px', borderRadius: 4 }}>EXPIRED</span>}
-                      {!expired && expireSoon && <span style={{ marginLeft: 4, fontSize: 10, background: '#fff7ed', color: '#c2410c', padding: '1px 5px', borderRadius: 4 }}>SOON</span>}
+                      {!expired && expireSoon && <span style={{ marginLeft: 4, fontSize: 10, background: '#fff7ed', color: '#5b21b6', padding: '1px 5px', borderRadius: 4 }}>SOON</span>}
                     </td>
                     <td style={{ padding: '11px 14px', fontSize: 12, color: '#9ca3af', whiteSpace: 'nowrap' }}>{doc.uploaded_at}</td>
                     {/* Status badge */}
@@ -464,7 +461,7 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Hammer, CheckCircle, Clock, AlertTriangle, RefreshCw, Download, MapPin } from 'lucide-react';
+import {
+  Hammer, CheckCircle, Clock, AlertTriangle, RefreshCw, Download,
+  MapPin, LayoutDashboard,
+} from 'lucide-react';
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, LabelList,
 } from 'recharts';
@@ -11,10 +14,11 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import * as XLSX from 'xlsx';
 import api from '@/services/api/client';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   active:      { label: 'Active',      bg: '#ede9fe', color: '#4f46e5' },
-  planning:    { label: 'Planning',    bg: '#fef3c7', color: '#92400e' },
+  planning:    { label: 'Planning',    bg: '#ede9fe', color: '#5b21b6' },
   completed:   { label: 'Completed',   bg: '#dcfce7', color: '#15803d' },
   on_hold:     { label: 'On Hold',     bg: '#f3f4f6', color: '#6b7280' },
   cancelled:   { label: 'Cancelled',   bg: '#fee2e2', color: '#dc2626' },
@@ -23,12 +27,12 @@ const STATUS_META = {
 const COMMISSION_META = {
   completed:   { label: 'Done',        bg: '#dcfce7', color: '#15803d' },
   in_progress: { label: 'In Progress', bg: '#ede9fe', color: '#4f46e5' },
-  scheduled:   { label: 'Scheduled',   bg: '#fef3c7', color: '#92400e' },
+  scheduled:   { label: 'Scheduled',   bg: '#ede9fe', color: '#5b21b6' },
   pending:     { label: 'Pending',     bg: '#f3f4f6', color: '#6b7280' },
 };
 
 // Categorical palette (brand purple lead; blue/green/amber series follow).
-const PALETTE = ['#6B3FDB', '#2563eb', '#059669', '#f59e0b', '#dc2626', '#0891b2', '#8b5cf6', '#db2777', '#65a30d'];
+const PALETTE = ['#6B3FDB', '#2563eb', '#059669', '#7c5cf0', '#dc2626', '#0891b2', '#8b5cf6', '#db2777', '#65a30d'];
 const UNASSIGNED = 'Unassigned';
 
 function Badge({ value, meta }) {
@@ -46,7 +50,7 @@ function Badge({ value, meta }) {
 
 function ProgressBar({ pct }) {
   const p = Math.min(100, Math.max(0, Number(pct) || 0));
-  const color = p >= 80 ? '#059669' : p >= 40 ? '#6B3FDB' : '#d97706';
+  const color = p >= 80 ? '#059669' : p >= 40 ? '#6B3FDB' : '#6d28d9';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 120 }}>
       <div style={{ flex: 1, height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
@@ -97,7 +101,7 @@ function InstallationMap({ sites }) {
       const count = s.projects.length;
       // Marker size + colour scale with the installation count at this site.
       const size  = count >= 5 ? 42 : count >= 3 ? 36 : count >= 2 ? 30 : 24;
-      const color = count >= 5 ? '#dc2626' : count >= 3 ? '#ea580c' : count >= 2 ? '#6B3FDB' : '#8b5cf6';
+      const color = count >= 5 ? '#dc2626' : count >= 3 ? '#6d28d9' : count >= 2 ? '#6B3FDB' : '#8b5cf6';
       const icon = L.divIcon({
         className: '',
         html: `<div style="width:${size}px;height:${size}px;background:${color};color:#fff;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;font-size:${size > 30 ? 13 : 11}px;font-weight:700">${count}</div>`,
@@ -229,46 +233,28 @@ export default function InstallationDashboard() {
   const hasData = !loading && !error && data.length > 0;
 
   return (
-    <div style={{ padding: '16px 18px 20px', minHeight: '100vh', background: '#f8f9fb' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Hammer size={18} color="#6B3FDB" />
-          </div>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Installation Dashboard</h1>
-            <p style={{ margin: 0, fontSize: 12.5, color: '#6b7280' }}>Where Manifest&rsquo;s SST, HVDC, STATCOM &amp; EPC installations are deployed</p>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Projects"
+        title="Installation Dashboard"
+        subtitle="Where Manifest’s SST, HVDC, STATCOM & EPC installations are deployed"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost"
             onClick={exportXlsx}
-            disabled={!hasData}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '7px 14px', border: '1px solid #e5e7eb', borderRadius: 8,
-              background: '#fff', cursor: hasData ? 'pointer' : 'not-allowed', fontSize: 13,
-              color: hasData ? '#374151' : '#c0c4cc',
-            }}
-          >
+            disabled={!hasData}>
             <Download size={14} />
             Export
           </button>
-          <button
-            onClick={() => load(filters)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '7px 14px', border: '1px solid #e5e7eb', borderRadius: 8,
-              background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151',
-            }}
-          >
+          <button className="plh-cta"
+            onClick={() => load(filters)}>
             <RefreshCw size={14} />
             Refresh
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
 
       {/* Filter bar */}
       <div style={{ ...CARD, padding: 14, marginBottom: 14, display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-end' }}>
@@ -317,9 +303,9 @@ export default function InstallationDashboard() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
           {[
             { label: 'Total Projects',    value: summary.total,              icon: Hammer,        bg: '#f5f3ff', ic: '#6B3FDB' },
-            { label: 'Active',            value: summary.active,             icon: Clock,         bg: '#fef3c7', ic: '#92400e' },
+            { label: 'Active',            value: summary.active,             icon: Clock,         bg: '#ede9fe', ic: '#5b21b6' },
             { label: 'Commissioned',      value: summary.commissioned,       icon: CheckCircle,   bg: '#dcfce7', ic: '#059669' },
-            { label: 'Avg. Completion',   value: `${summary.avgCompletion}%`,icon: AlertTriangle, bg: '#fff7ed', ic: '#f97316' },
+            { label: 'Avg. Completion',   value: `${summary.avgCompletion}%`,icon: AlertTriangle, bg: '#fff7ed', ic: '#7c5cf0' },
           ].map(({ label, value, icon: Icon, bg, ic }, i) => (
             <div key={label} className="dk-anim" style={{
               background: '#fff', border: '1px solid #f0f0f4', borderRadius: 11,
@@ -484,6 +470,6 @@ export default function InstallationDashboard() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -28,8 +28,12 @@
   /* Semantic status colors (salvaged from unused design-system.css) */
   --color-success:        #15803d;
   --color-success-bg:     #dcfce7;
-  --color-warning:        #d97706;
-  --color-warning-bg:     #fef3c7;
+  /* ★ 2026-08-20: `warning` is LAVENDER, not amber (owner: "avoid orange
+     colour, use shades of violet and lavender to match the theme"). Retinted
+     at the token so nothing can render amber through it. Danger red and
+     success green are unchanged — those carry meaning theming must not erase. */
+  --color-warning:        #6d28d9;
+  --color-warning-bg:     #ede9fe;
   --color-danger:         #dc2626;
   --color-danger-bg:      #fee2e2;
   --color-info:           #1d4ed8;
@@ -178,6 +182,7 @@ td, th {
 /* ── Modals / overlays ───────────────────────────────────────── */
 .page-content div[style*="position:'fixed'"][style*="rgba(0,0,0,0.5)"],
 .page-content div[style*='position:"fixed"'][style*="rgba(0,0,0,0.5)"] {
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
 .page-content div[style*="borderRadius:16"],
@@ -429,6 +434,19 @@ td, th {
 [class*="-grid-wrap"] {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+/* ── Leaflet — keep map stacking inside the map ──
+   Leaflet paints its panes at z-index 400 and its controls/popups at 800–1000,
+   while its container is position:relative with z-index:auto. Neither the
+   container nor .page-content opens a stacking context, so those values escape
+   into the root context and cover the app chrome — the sidebar flyout
+   (.submenu-panel, capped at the sidebar's z-index:10) and the topbar dropdowns
+   (capped at the topbar's z-index:20). Giving the container its own stacking
+   context at z-index 0 keeps every map layer underneath. */
+.leaflet-container {
+  position: relative;
+  z-index: 0;
 }
 
 /* ── @media 768px — drawer full-width on mobile ── */

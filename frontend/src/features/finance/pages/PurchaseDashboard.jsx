@@ -1,15 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ShoppingCart, AlertTriangle, Clock, CheckCircle, FileText } from 'lucide-react';
+import {
+  ShoppingCart, AlertTriangle, Clock, CheckCircle, FileText,
+  LayoutDashboard,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useFY } from '@/context/FYContext';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = (n) => '₹' + (+n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 
 const STATUS_STYLE = {
   draft:    { background: '#f3f4f6', color: '#6b7280' },
-  pending:  { background: '#fef3c7', color: '#d97706' },
+  pending:  { background: '#ede9fe', color: '#6d28d9' },
   approved: { background: '#dbeafe', color: '#2563eb' },
   overdue:  { background: '#fee2e2', color: '#dc2626' },
   paid:     { background: '#dcfce7', color: '#16a34a' },
@@ -54,13 +58,19 @@ export default function PurchaseDashboard() {
   const kpiCards = kpis ? [
     { label: 'Total Payable',   value: fmt(kpis.total_payable),  icon: <ShoppingCart size={20} />, color: '#6366f1', bg: '#eef2ff' },
     { label: 'Overdue',         value: fmt(kpis.overdue),         icon: <AlertTriangle size={20} />, color: '#dc2626', bg: '#fef2f2' },
-    { label: 'Due in 30 Days',  value: fmt(kpis.due_in_30_days),  icon: <Clock size={20} />,        color: '#d97706', bg: '#fffbeb' },
+    { label: 'Due in 30 Days',  value: fmt(kpis.due_in_30_days),  icon: <Clock size={20} />,        color: '#6d28d9', bg: '#f5f3ff' },
   ] : [];
 
   return (
-    <div style={{ padding: '16px 18px 20px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Finance"
+        title="Purchase Dashboard"
+      />
+    }>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Purchase Dashboard</h1>
+
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <select
             value={fyFilter}
@@ -159,6 +169,6 @@ export default function PurchaseDashboard() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

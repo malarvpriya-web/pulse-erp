@@ -1,27 +1,29 @@
 // frontend/src/features/hr/pages/SuccessionPlanning.jsx
 import React, { useState, useEffect, useCallback } from 'react';
+import { Users } from 'lucide-react';
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ─── constants ─────────────────────────────────────────────── */
 
 const NINE_BOX_META = {
-  '1_3': { label: 'Question Marks',    color: '#f59e0b', bg: '#fffbeb', desc: 'High potential, low performance'    },
+  '1_3': { label: 'Question Marks',    color: '#7c5cf0', bg: '#f5f3ff', desc: 'High potential, low performance'    },
   '2_3': { label: 'Diamonds',          color: '#8b5cf6', bg: '#f5f3ff', desc: 'High potential, medium performance' },
   '3_3': { label: '★ Stars',            color: '#6B3FDB', bg: '#ede9fe', desc: 'High performance & high potential'  },
   '1_2': { label: 'Underperformers',   color: '#ef4444', bg: '#fef2f2', desc: 'Medium potential, low performance'  },
   '2_2': { label: 'Core Contributors', color: '#2563eb', bg: '#eff6ff', desc: 'Solid performance & potential'      },
   '3_2': { label: 'High Performers',   color: '#16a34a', bg: '#f0fdf4', desc: 'High performance, medium potential' },
   '1_1': { label: 'Deadwood',          color: '#6b7280', bg: '#f9fafb', desc: 'Low performance & potential'        },
-  '2_1': { label: 'Inconsistent',      color: '#d97706', bg: '#fffbeb', desc: 'Low potential, medium performance'  },
+  '2_1': { label: 'Inconsistent',      color: '#6d28d9', bg: '#f5f3ff', desc: 'Low potential, medium performance'  },
   '3_1': { label: 'Workhorses',        color: '#0891b2', bg: '#ecfeff', desc: 'High performance, lower potential'  },
 };
 const PERF_LABELS  = { 1: 'Low', 2: 'Medium', 3: 'High' };
-const RISK_COLORS  = { high: '#dc2626', medium: '#d97706', low: '#16a34a' };
+const RISK_COLORS  = { high: '#dc2626', medium: '#6d28d9', low: '#16a34a' };
 const READY_LABELS = {
   'ready-now':  'Ready Now',
   '1-2-years':  '1–2 Years',
@@ -29,10 +31,10 @@ const READY_LABELS = {
   'not_ready':  'Not Ready',
 };
 const READY_COLORS = {
-  'ready-now': '#16a34a', '1-2-years': '#d97706',
+  'ready-now': '#16a34a', '1-2-years': '#6d28d9',
   '3-5-years': '#6b7280', 'not_ready': '#ef4444',
 };
-const PIE_COLORS     = ['#16a34a', '#d97706', '#dc2626'];
+const PIE_COLORS     = ['#16a34a', '#6d28d9', '#dc2626'];
 const SUCCESSOR_TYPES = ['primary', 'secondary', 'tertiary', 'emergency'];
 const MOBILITY_OPTS   = ['flexible', 'local_only', 'regional', 'international', 'remote_only'];
 const TALENT_CLASS    = ['HiPo', 'Solid Performer', 'Emerging Talent', 'Specialist', 'Future Leader', 'At Risk'];
@@ -517,7 +519,14 @@ export default function SuccessionPlanning() {
 
   /* ────────────────────────────────────────────────────────── */
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Succession Planning"
+        subtitle="9-box talent grid · critical role tracking · bench strength analytics"
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeleteAssessment}
         title="Delete Assessment"
@@ -547,12 +556,7 @@ export default function SuccessionPlanning() {
       />
 
       {/* Page header */}
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Succession Planning</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-          9-box talent grid · critical role tracking · bench strength analytics
-        </p>
-      </div>
+
 
       {/* Flash message */}
       {msg.text && (
@@ -570,8 +574,8 @@ export default function SuccessionPlanning() {
       {/* Unread alerts banner */}
       {dashData?.unread_alerts > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8,
-                      background: '#fff7ed', border: '1px solid #fed7aa',
-                      color: '#c2410c', fontSize: 13, fontWeight: 500 }}>
+                      background: '#fff7ed', border: '1px solid #ddd6fe',
+                      color: '#5b21b6', fontSize: 13, fontWeight: 500 }}>
           {dashData.unread_alerts} succession alert{dashData.unread_alerts > 1 ? 's' : ''} need attention
           {dashData.zero_successor_count > 0 &&
             ` — ${dashData.zero_successor_count} critical role${dashData.zero_successor_count > 1 ? 's' : ''} without any successor`}
@@ -599,7 +603,7 @@ export default function SuccessionPlanning() {
                   <div>
                     <h3 style={{ margin: 0, color: '#4c1d95' }}>9-Box Talent Grid</h3>
                     <div style={{ fontSize: 12, color: '#6b7280', marginTop: 5, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                      {[['#16a34a','Low'],['#d97706','Medium'],['#dc2626','High']].map(([c, l]) => (
+                      {[['#16a34a','Low'],['#6d28d9','Medium'],['#dc2626','High']].map(([c, l]) => (
                         <span key={l}>
                           <span style={{ display:'inline-block', width:8, height:8, borderRadius:'50%',
                                          background:c, marginRight:4 }} />
@@ -1060,8 +1064,8 @@ export default function SuccessionPlanning() {
                             </td>
                             <td style={{ padding: '9px 12px' }}>
                               <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
-                                             background: r.has_ready_now ? '#d1fae5' : r.has_any_successor ? '#fef3c7' : '#fee2e2',
-                                             color: r.has_ready_now ? '#16a34a' : r.has_any_successor ? '#d97706' : '#dc2626' }}>
+                                             background: r.has_ready_now ? '#d1fae5' : r.has_any_successor ? '#ede9fe' : '#fee2e2',
+                                             color: r.has_ready_now ? '#16a34a' : r.has_any_successor ? '#6d28d9' : '#dc2626' }}>
                                 {r.has_ready_now ? 'Ready Now' : r.has_any_successor ? 'Developing' : 'No Successor'}
                               </span>
                             </td>
@@ -1114,13 +1118,13 @@ export default function SuccessionPlanning() {
                       </div>
                     )}
                     {selRole.expected_vacancy_date && (
-                      <div style={{ fontSize: 12, color: '#d97706', marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, color: '#6d28d9', marginBottom: 8 }}>
                         Expected vacancy: {new Date(selRole.expected_vacancy_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
                       </div>
                     )}
                     {selRole.reason && (
-                      <div style={{ background: '#fef3c7', borderRadius: 8, padding: '8px 12px',
-                                    marginBottom: 12, fontSize: 12, color: '#92400e' }}>
+                      <div style={{ background: '#ede9fe', borderRadius: 8, padding: '8px 12px',
+                                    marginBottom: 12, fontSize: 12, color: '#5b21b6' }}>
                         {selRole.reason}
                       </div>
                     )}
@@ -1230,7 +1234,7 @@ export default function SuccessionPlanning() {
                       <div key={c.id}
                         style={{ background: c.is_emergency_successor ? '#fff7ed' : '#f5f3ff',
                                  borderRadius: 10, padding: 14, marginBottom: 10,
-                                 border: `1px solid ${c.is_emergency_successor ? '#fed7aa' : '#e9e4ff'}` }}>
+                                 border: `1px solid ${c.is_emergency_successor ? '#ddd6fe' : '#e9e4ff'}` }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between',
                                       alignItems: 'flex-start', marginBottom: 8 }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
@@ -1238,7 +1242,7 @@ export default function SuccessionPlanning() {
                               {rankMedal(c.rank)} {c.candidate_name}
                               {c.is_emergency_successor && (
                                 <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600,
-                                               background: '#fed7aa', color: '#c2410c',
+                                               background: '#ddd6fe', color: '#5b21b6',
                                                padding: '1px 6px', borderRadius: 8 }}>
                                   EMERGENCY
                                 </span>
@@ -1307,7 +1311,7 @@ export default function SuccessionPlanning() {
                     { label: 'Critical Roles',    value: dashData?.total_critical_roles || 0, color: '#4c1d95' },
                     { label: 'Ready Now',          value: dashData?.ready_now_count || 0,     color: '#16a34a' },
                     { label: 'No Successor',       value: dashData?.zero_successor_count || 0, color: '#dc2626' },
-                    { label: 'Bench Strength',     value: `${benchPct}%`,                     color: benchPct >= 75 ? '#16a34a' : benchPct >= 40 ? '#d97706' : '#dc2626' },
+                    { label: 'Bench Strength',     value: `${benchPct}%`,                     color: benchPct >= 75 ? '#16a34a' : benchPct >= 40 ? '#6d28d9' : '#dc2626' },
                     { label: 'Active Dev Plans',   value: dashData?.development_summary?.active_plans || 0, color: '#0891b2' },
                     { label: 'Avg Plan Progress',  value: `${dashData?.development_summary?.avg_progress || 0}%`, color: '#6B3FDB' },
                   ].map(({ label, value, color }) => (
@@ -1335,7 +1339,7 @@ export default function SuccessionPlanning() {
                             data={[{ value: benchPct || 0.01 }, { value: 100 - (benchPct || 0.01) }]}
                             cx="50%" cy="50%" innerRadius={50} outerRadius={70}
                             startAngle={90} endAngle={-270} dataKey="value">
-                            <Cell fill={benchPct >= 75 ? '#16a34a' : benchPct >= 40 ? '#d97706' : '#6B3FDB'} />
+                            <Cell fill={benchPct >= 75 ? '#16a34a' : benchPct >= 40 ? '#6d28d9' : '#6B3FDB'} />
                             <Cell fill="#e9e4ff" />
                           </Pie>
                         </PieChart>
@@ -1343,7 +1347,7 @@ export default function SuccessionPlanning() {
                       <div style={{ position: 'absolute', top: '50%', left: '50%',
                                     transform: 'translate(-50%,-50%)', textAlign: 'center' }}>
                         <div style={{ fontSize: 28, fontWeight: 900,
-                                      color: benchPct >= 75 ? '#16a34a' : benchPct >= 40 ? '#d97706' : '#6B3FDB' }}>
+                                      color: benchPct >= 75 ? '#16a34a' : benchPct >= 40 ? '#6d28d9' : '#6B3FDB' }}>
                           {benchPct}%
                         </div>
                         <div style={{ fontSize: 10, color: '#6b7280' }}>critical roles<br />covered</div>
@@ -1501,6 +1505,6 @@ export default function SuccessionPlanning() {
           </>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

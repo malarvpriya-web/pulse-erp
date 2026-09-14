@@ -1,15 +1,23 @@
 import express from 'express';
 import pool from '../../../config/db.js';
-import { allowRoles } from '../../../middlewares/auth.middleware.js';
+import { requirePermission, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { sqlPoCommitted } from '../../../shared/statusSets.js';
+import { poSpendInr } from '../../procurement/services/spendAnalytics.service.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
 
 // ── GET /project-profitability/cost-lines ──────────────────────────────────────
-router.get('/cost-lines', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied projects in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/cost-lines', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const { project_id, customer_id, po_number, cost_type, from_date, to_date, limit = 200 } = req.query;
     const companyId = cid(req);
@@ -32,7 +40,7 @@ router.get('/cost-lines', async (req, res) => {
 });
 
 // ── POST /project-profitability/cost-lines ────────────────────────────────────
-router.post('/cost-lines', async (req, res) => {
+router.post('/cost-lines', requirePermission('projects', 'add'), async (req, res) => {
   try {
     const {
       cost_type, description, customer_id, customer_name, project_id, project_number,
@@ -57,7 +65,7 @@ router.post('/cost-lines', async (req, res) => {
 });
 
 // ── GET /project-profitability/summary/:project_id ────────────────────────────
-router.get('/summary/:project_id', async (req, res) => {
+router.get('/summary/:project_id', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const pid = req.params.project_id;
     const companyId = cid(req);
@@ -82,10 +90,24 @@ router.get('/summary/:project_id', async (req, res) => {
         SELECT COALESCE(SUM(budget),0) AS travel_cost
         FROM travel_requests WHERE project_id=$1 AND status='Approved'
       `, [pid]).catch(() => ({ rows: [{ travel_cost: 0 }] })),
+      // Three defects in one line, all of which INFLATED a project's cost:
+      //
+      //  1. `status NOT IN ('Cancelled','Rejected')` — Capitalised, while
+      //     purchase_orders.status is lower case throughout. The predicate
+      //     therefore excluded NOTHING, so every cancelled and rejected order
+      //     was still charged to the project. It also counted DRAFTS, which are
+      //     not commitments at all.
+      //  2. `SUM(total_amount)` is the figure in the order's OWN currency, so a
+      //     $12,000 order added 12,000 to a rupee cost (the §137/§138 defect).
+      //     poSpendInr() is the shared expression every other spend figure uses.
+      //  3. No company predicate and no deleted_at filter.
       pool.query(`
-        SELECT COALESCE(SUM(total_amount),0) AS procurement_cost
-        FROM purchase_orders WHERE project_id=$1 AND status NOT IN ('Cancelled','Rejected')
-      `, [pid]).catch(() => ({ rows: [{ procurement_cost: 0 }] })),
+        SELECT COALESCE(SUM(${poSpendInr('po')}),0) AS procurement_cost
+        FROM purchase_orders po
+        WHERE po.project_id=$1 AND po.deleted_at IS NULL
+          AND ${sqlPoCommitted('po.status')}
+          AND ($2::int IS NULL OR po.company_id = $2)
+      `, [pid, cid(req)]).catch(() => ({ rows: [{ procurement_cost: 0 }] })),
     ]);
 
     if (!project.rows.length) return res.status(404).json({ error: 'Project not found' });
@@ -142,7 +164,7 @@ router.get('/summary/:project_id', async (req, res) => {
 });
 
 // ── GET /project-profitability/all ───────────────────────────────────────────
-router.get('/all', async (req, res) => {
+router.get('/all', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cFilter = companyId ? `WHERE p.company_id=${companyId}` : '';
@@ -177,7 +199,7 @@ router.get('/all', async (req, res) => {
 });
 
 // ── GET /project-profitability/top-customers ──────────────────────────────────
-router.get('/top-customers', async (req, res) => {
+router.get('/top-customers', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cFilter = companyId ? `WHERE company_id=${companyId}` : '';
@@ -198,7 +220,7 @@ router.get('/top-customers', async (req, res) => {
 });
 
 // ── GET /project-profitability/dashboard-kpis ────────────────────────────────
-router.get('/dashboard-kpis', async (req, res) => {
+router.get('/dashboard-kpis', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cWhere = companyId ? `WHERE p.company_id=${companyId}` : '';
@@ -206,9 +228,9 @@ router.get('/dashboard-kpis', async (req, res) => {
       pool.query(`
         SELECT
           COUNT(*) AS total_projects,
-          COALESCE(SUM(p.contract_value),0) AS total_revenue,
+          COALESCE(SUM(p.budget_amount),0) AS total_revenue,
           COALESCE(SUM(pcs.material_cost + pcs.labour_cost + pcs.travel_cost + pcs.procurement_overhead),0) AS total_cost,
-          COALESCE(AVG(CASE WHEN p.contract_value > 0 THEN pcs.actual_profit / p.contract_value * 100 END),0) AS avg_margin_pct,
+          COALESCE(AVG(CASE WHEN p.budget_amount > 0 THEN pcs.actual_profit / p.budget_amount * 100 END),0) AS avg_margin_pct,
           COUNT(CASE WHEN pcs.actual_profit < 0 THEN 1 END) AS loss_making_count,
           COUNT(CASE WHEN p.status = 'active' THEN 1 END) AS active_count
         FROM projects p
@@ -243,14 +265,14 @@ router.get('/dashboard-kpis', async (req, res) => {
 });
 
 // ── GET /project-profitability/budget-vs-actual ──────────────────────────────
-router.get('/budget-vs-actual', async (req, res) => {
+router.get('/budget-vs-actual', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cWhere = companyId ? `WHERE p.company_id=${companyId}` : '';
     const { rows } = await pool.query(`
-      SELECT p.id, p.name AS project_name, p.project_number, p.customer_name,
-             COALESCE(p.contract_value, 0) AS budget_revenue,
-             COALESCE(p.budget, p.contract_value, 0) AS budget_cost,
+      SELECT p.id, p.project_name AS project_name, p.project_number, p.customer_name,
+             COALESCE(p.budget_amount, 0) AS budget_revenue,
+             COALESCE(p.budget, p.budget_amount, 0) AS budget_cost,
              COALESCE(pcs.material_cost,0) + COALESCE(pcs.labour_cost,0) + COALESCE(pcs.travel_cost,0) + COALESCE(pcs.procurement_overhead,0) AS actual_cost,
              COALESCE(pcs.profit, 0) AS actual_profit,
              p.status
@@ -274,22 +296,22 @@ router.get('/budget-vs-actual', async (req, res) => {
 });
 
 // ── GET /project-profitability/loss-makers ───────────────────────────────────
-router.get('/loss-makers', async (req, res) => {
+router.get('/loss-makers', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cWhere = companyId ? `WHERE p.company_id=${companyId}` : '';
     const { rows } = await pool.query(`
-      SELECT p.id, p.name AS project_name, p.project_number, p.customer_name, p.status,
-             COALESCE(p.contract_value, 0) AS revenue,
+      SELECT p.id, p.project_name AS project_name, p.project_number, p.customer_name, p.status,
+             COALESCE(p.budget_amount, 0) AS revenue,
              COALESCE(pcs.material_cost,0)+COALESCE(pcs.labour_cost,0)+COALESCE(pcs.travel_cost,0)+COALESCE(pcs.procurement_overhead,0) AS total_cost,
              COALESCE(pcs.profit, 0) AS actual_profit,
-             CASE WHEN COALESCE(p.contract_value,0) > 0
-               THEN ROUND((COALESCE(pcs.actual_profit,0) / p.contract_value) * 100, 2)
+             CASE WHEN COALESCE(p.budget_amount,0) > 0
+               THEN ROUND((COALESCE(pcs.actual_profit,0) / p.budget_amount) * 100, 2)
                ELSE 0 END AS margin_pct
       FROM projects p
       LEFT JOIN project_cost_summary pcs ON pcs.project_id = p.id
       ${cWhere}
-      HAVING (COALESCE(pcs.actual_profit, 0) < 0 OR (COALESCE(pcs.material_cost,0)+COALESCE(pcs.labour_cost,0)) > COALESCE(p.contract_value,0)*0.9)
+      HAVING (COALESCE(pcs.actual_profit, 0) < 0 OR (COALESCE(pcs.material_cost,0)+COALESCE(pcs.labour_cost,0)) > COALESCE(p.budget_amount,0)*0.9)
       ORDER BY actual_profit ASC LIMIT 10
     `).catch(() => ({ rows: [] }));
     res.json(rows.map(r => ({
@@ -303,7 +325,7 @@ router.get('/loss-makers', async (req, res) => {
 });
 
 // ── GET /project-profitability/cost-lines/:id (update) ───────────────────────
-router.put('/cost-lines/:id', async (req, res) => {
+router.put('/cost-lines/:id', requirePermission('projects', 'edit'), captureBefore('project_cost_lines'), async (req, res) => {
   try {
     const { amount, description, cost_date, cost_type } = req.body;
     const { rows: [cl] } = await pool.query(`
@@ -316,7 +338,7 @@ router.put('/cost-lines/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/cost-lines/:id', async (req, res) => {
+router.delete('/cost-lines/:id', requirePermission('projects', 'delete'), captureBefore('project_cost_lines'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM project_cost_lines WHERE id=$1`, [req.params.id]);
     logAudit({ userId: uid(req), module: 'project_profitability', recordId: req.params.id, recordType: 'cost_line', action: 'delete' });

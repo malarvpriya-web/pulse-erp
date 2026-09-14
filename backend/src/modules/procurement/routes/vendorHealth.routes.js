@@ -8,13 +8,35 @@
 import express from 'express';
 import svc from '../services/vendorHealth.service.js';
 import { companyOf } from '../../../shared/scope.js';
+import { requireProcurement } from '../procurement.authz.js';
+/**
+ * AUTHORIZATION. This router was mounted behind `verifyToken` and NOTHING else,
+ * so every route below was reachable by any authenticated account regardless of
+ * role — including the writes. `requireProcurement(action, ...alsoAllowRoles)`
+ * ORs the role_permissions matrix with named roles, which is how the rest of the
+ * module is gated; the named roles are the documented exceptions, not a bypass.
+ */
 
 const router = express.Router();
+
+/**
+ * `:vendorId` reaches an integer column. A non-numeric segment used to be passed
+ * straight through to the query, so `/vendor-health/undefined` — which a client
+ * produces the moment a vendor id is missing from its state — answered 500 with
+ * the raw `invalid input syntax for type integer` from Postgres. That reads to
+ * the user as "the system broke" and leaks the column type; it is a bad request.
+ */
+router.param('vendorId', (req, res, next, value) => {
+  if (!/^\d+$/.test(String(value))) {
+    return res.status(400).json({ error: 'vendorId must be a numeric vendor id.' });
+  }
+  next();
+});
 
 // ── Static routes ─────────────────────────────────────────────────────────────────
 
 // GET /vendor-health/dashboard — procurement dashboard cards + charts
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', requireProcurement('view'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const data = await svc.getDashboard(cid);
@@ -25,7 +47,7 @@ router.get('/dashboard', async (req, res) => {
 });
 
 // GET /vendor-health/heatmap — supplier risk heatmap (sorted highest risk first)
-router.get('/heatmap', async (req, res) => {
+router.get('/heatmap', requireProcurement('view'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const rows = await svc.getHeatmap(cid);
@@ -36,7 +58,7 @@ router.get('/heatmap', async (req, res) => {
 });
 
 // GET /vendor-health/early-warnings — active early warnings for SCM/Quality/Management
-router.get('/early-warnings', async (req, res) => {
+router.get('/early-warnings', requireProcurement('view'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const rows = await svc.getEarlyWarnings(cid);
@@ -47,7 +69,7 @@ router.get('/early-warnings', async (req, res) => {
 });
 
 // GET /vendor-health/ceo-command-center — CEO summary view
-router.get('/ceo-command-center', async (req, res) => {
+router.get('/ceo-command-center', requireProcurement('view'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const data = await svc.getCEOCommandCenter(cid);
@@ -58,7 +80,7 @@ router.get('/ceo-command-center', async (req, res) => {
 });
 
 // POST /vendor-health/recalculate-all — bulk recalculate all vendors
-router.post('/recalculate-all', async (req, res) => {
+router.post('/recalculate-all', requireProcurement('approve'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const { rows: vendors } = await import('../../../config/db.js')
@@ -84,7 +106,7 @@ router.post('/recalculate-all', async (req, res) => {
 });
 
 // PATCH /vendor-health/warnings/:warningId/acknowledge
-router.patch('/warnings/:warningId/acknowledge', async (req, res) => {
+router.patch('/warnings/:warningId/acknowledge', requireProcurement('edit'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const row = await svc.acknowledgeWarning(
@@ -102,7 +124,7 @@ router.patch('/warnings/:warningId/acknowledge', async (req, res) => {
 // ── Per-vendor routes (must come after static routes) ────────────────────────────
 
 // GET /vendor-health/:vendorId — fetch stored health (no recalculate)
-router.get('/:vendorId', async (req, res) => {
+router.get('/:vendorId', requireProcurement('view'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const data = await svc.getVendorHealth(req.params.vendorId, cid);
@@ -114,7 +136,7 @@ router.get('/:vendorId', async (req, res) => {
 });
 
 // POST /vendor-health/:vendorId/recalculate — force full recalculation
-router.post('/:vendorId/recalculate', async (req, res) => {
+router.post('/:vendorId/recalculate', requireProcurement('edit'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const data = await svc.computeAndSave(req.params.vendorId, cid);
@@ -126,7 +148,7 @@ router.post('/:vendorId/recalculate', async (req, res) => {
 });
 
 // GET /vendor-health/:vendorId/trend — 12-month health timeline
-router.get('/:vendorId/trend', async (req, res) => {
+router.get('/:vendorId/trend', requireProcurement('view'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? companyOf(req);
     const rows = await svc.getHealthTrend(req.params.vendorId, cid);

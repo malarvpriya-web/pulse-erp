@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  Download, Plus, Trash2, Search, X, FolderOpen,
-  FileText, FileSpreadsheet, FileImage, FileArchive, File,
-  ExternalLink, Edit2, Clock, ChevronRight,
-} from "lucide-react";
+  Download, Plus, Trash2, Search, X, FolderOpen, FileText,
+  FileSpreadsheet, FileImage, FileArchive, File, ExternalLink, Edit2,
+  Clock, ChevronRight, Users,
+} from 'lucide-react';
 import api from "@/services/api/client";
 import { useAuth } from "@/context/AuthContext";
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -17,7 +18,7 @@ const CATEGORY_META = {
   Letters:    { emoji: "✉️",  bg: "#ede9fe", color: "#6B3FDB", desc: "Offer, Appointment, Experience & more" },
   Forms:      { emoji: "📋", bg: "#e0f2fe", color: "#0369a1", desc: "Leave, Expense, Asset & Feedback forms" },
   Onboarding: { emoji: "🚀", bg: "#dcfce7", color: "#15803d", desc: "Checklists, NDA & Data forms" },
-  Templates:  { emoji: "📊", bg: "#fef3c7", color: "#92400e", desc: "Attendance, KPI & Review templates" },
+  Templates:  { emoji: "📊", bg: "#ede9fe", color: "#5b21b6", desc: "Attendance, KPI & Review templates" },
   Policies:   { emoji: "📄", bg: "#fee2e2", color: "#dc2626", desc: "HR policies, Code of Conduct & more" },
   Other:      { emoji: "📁", bg: "#f3f4f6", color: "#6b7280", desc: "Miscellaneous HR documents" },
 };
@@ -66,7 +67,7 @@ function TypeBadge({ type }) {
 function VisibilityBadge({ v }) {
   const MAP = {
     hr_only:  { label: "HR Only",   bg: "#fee2e2", color: "#dc2626" },
-    managers: { label: "Managers",  bg: "#fef3c7", color: "#92400e" },
+    managers: { label: "Managers",  bg: "#ede9fe", color: "#5b21b6" },
     all:      { label: "All Staff", bg: "#dcfce7", color: "#15803d" },
   };
   const m = MAP[v] ?? MAP.all;
@@ -349,18 +350,25 @@ export default function Downloads() {
 
   const showToast = (message, type = "success") => setToast({ message, type });
 
+  // The controller is held in a local, not read back off the ref, so a
+  // superseded call can tell it no longer owns the page state: its rejection
+  // lands AFTER the replacement request has started, and clearing `loading`
+  // there renders the empty state mid-load (StrictMode's double mount triggers
+  // this on every dev page load). Stale calls now return without touching state.
   const fetchDownloads = async () => {
     abortRef.current?.abort();
-    abortRef.current = new AbortController();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    const isStale = () => myCtrl.signal.aborted || abortRef.current !== myCtrl;
     setLoading(true); setError(null);
     try {
-      const res = await api.get("/hr/downloads", { signal: abortRef.current.signal });
+      const res = await api.get("/hr/downloads", { signal: myCtrl.signal });
+      if (isStale()) return;
       setItems(Array.isArray(res.data) ? res.data : []);
     } catch (e) {
-      if (e.name !== "CanceledError" && e.code !== "ERR_CANCELED") {
-        setError(e.response?.data?.error || e.message || "Failed to load documents");
-      }
-    } finally { setLoading(false); }
+      if (isStale() || e.name === "CanceledError" || e.code === "ERR_CANCELED") return;
+      setError(e.response?.data?.error || e.message || "Failed to load documents");
+    } finally { if (!isStale()) setLoading(false); }
   };
 
   useEffect(() => {
@@ -431,29 +439,22 @@ export default function Downloads() {
     .slice(0, 5);
 
   return (
-    <div style={{ padding: 24, background: "#f8f9fc", minHeight: "100vh", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-
-      {/* ── Header ── */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 24, gap: 16, flexWrap: "wrap" }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: "#111827", margin: "0 0 4px" }}>HR Documents</h1>
-          <p style={{ fontSize: 13, color: "#6b7280", margin: 0 }}>
-            {items.length} document{items.length !== 1 ? "s" : ""} available · Powered by Google Drive
-          </p>
-        </div>
-        {isHR && (
-          <button
-            onClick={openAdd}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 6,
-              background: "#6B3FDB", color: "#fff", border: "none",
-              borderRadius: 8, padding: "8px 16px", fontSize: 13,
-              fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
-            }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="HR Documents"
+        actions={isHR && (
+          <button className="plh-cta"
+            onClick={openAdd}>
             <Plus size={14} /> Register Document
           </button>
         )}
-      </div>
+      />
+    }>
+
+      {/* ── Header ── */}
+
 
       {/* ── Google Drive Quick Access (HR only — folder links are writable) ── */}
       {isHR && <DriveAccessPanel />}
@@ -658,6 +659,6 @@ export default function Downloads() {
       )}
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-    </div>
+    </PageShell>
   );
 }

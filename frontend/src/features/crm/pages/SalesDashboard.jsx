@@ -4,12 +4,13 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts';
 import {
-  Users, TrendingUp, CheckCircle, Target,
-  RefreshCw, ArrowUpRight, Plus, ChevronRight, Inbox,
+  Users, TrendingUp, CheckCircle, Target, RefreshCw, ArrowUpRight,
+  Plus, ChevronRight, Inbox, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import './SalesDashboard.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = n => {
   const v = parseFloat(n || 0);
@@ -25,7 +26,7 @@ const axisMoney = v => (v ? fmt(v) : '0');
 const STAGE_COLORS = {
   Prospecting:   '#6366f1',
   Qualification: '#3b82f6',
-  Proposal:      '#f59e0b',
+  Proposal:      '#7c5cf0',
   Negotiation:   '#ef4444',
   Won:           '#10b981',
 };
@@ -36,7 +37,7 @@ const STAGE_COLORS = {
 // "Unassigned" is deliberately a neutral: it is an absence, not a region.
 const ZONE_COLORS = {
   North:      '#6B3FDB',
-  South:      '#d97706',
+  South:      '#6d28d9',
   East:       '#0d9488',
   West:       '#db2777',
   Central:    '#0284c7',
@@ -350,24 +351,26 @@ export default function SalesDashboard({ setPage }) {
   const fySub = selectedFy ? fyLabel(selectedFy) : '';
 
   return (
-    <div className="csd-root">
-
-      {/* header */}
-      <div className="csd-header">
-        <div>
-          <h2 className="csd-title">CRM Dashboard</h2>
-          <p className="csd-sub">Sales pipeline overview &amp; lead performance</p>
-        </div>
-        <div className="csd-header-r">
-          <button className="csd-btn-outline" onClick={() => setPage && setPage('Leads')}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="CRM"
+        title="CRM Dashboard"
+        subtitle="Sales pipeline overview & lead performance"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('Leads')}>
             All Leads <ChevronRight size={13} />
           </button>
-          <button className="csd-btn-primary" onClick={() => setPage && setPage('Leads')}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('Leads')}>
             <Plus size={14} /> New Lead
           </button>
-          <button className="csd-icon-btn" onClick={refresh} aria-label="Refresh"><RefreshCw size={14} /></button>
-        </div>
-      </div>
+          <button className="plh-cta" onClick={refresh} aria-label="Refresh"><RefreshCw size={14} /></button>
+        </>}
+      />
+    }>
+
+      {/* header */}
+
 
       {/* filters */}
       <div className="csd-filters">
@@ -415,7 +418,7 @@ export default function SalesDashboard({ setPage }) {
             ? `${s.pipeline_change >= 0 ? '+' : ''}${s.pipeline_change}% vs last month`
             : 'No prior month data'} />
         <KPI icon={CheckCircle} label="Won Deals"       value={s.won_deals ?? 0}      color="#10b981" sub="Closed won" />
-        <KPI icon={Target}      label="Conversion Rate" value={s.conversion_rate != null ? `${s.conversion_rate}%` : 'N/A'} color="#f59e0b" sub="Leads converted" />
+        <KPI icon={Target}      label="Conversion Rate" value={s.conversion_rate != null ? `${s.conversion_rate}%` : 'N/A'} color="#7c5cf0" sub="Leads converted" />
       </div>
 
       <div className="csd-grid">
@@ -574,7 +577,7 @@ export default function SalesDashboard({ setPage }) {
             { label: 'Leads',    sub: `${s.total_leads ?? 0} total`,        page: 'Leads',               color: '#6366f1', Icon: Users },
             { label: 'Pipeline', sub: fmt(s.pipeline_value),                page: 'OpportunitiesKanban', color: '#3b82f6', Icon: TrendingUp },
             { label: 'Accounts', sub: `${s.total_accounts ?? 0} companies`, page: 'Accounts',            color: '#10b981', Icon: CheckCircle },
-            { label: 'Contacts', sub: `${s.total_contacts ?? 0} contacts`,  page: 'Contacts',            color: '#f59e0b', Icon: Target },
+            { label: 'Contacts', sub: `${s.total_contacts ?? 0} contacts`,  page: 'Contacts',            color: '#7c5cf0', Icon: Target },
           ].map(({ label, sub, page, color, Icon: NavIcon }) => (
             <div key={label} className="csd-nav-card" onClick={() => setPage && setPage(page)} style={{ '--c': color }}>
               <div className="csd-nav-icon"><NavIcon size={20} /></div>
@@ -586,6 +589,6 @@ export default function SalesDashboard({ setPage }) {
         </div>
 
       </div>
-    </div>
+    </PageShell>
   );
 }

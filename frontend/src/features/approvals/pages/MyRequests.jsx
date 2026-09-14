@@ -1,22 +1,24 @@
 import { useState, useEffect, useRef } from "react";
+import { CheckSquare } from 'lucide-react';
 import api from "@/services/api/client";
 import { fmtDate } from "@/utils/dateFormatter";
 import "./MyRequests.css";
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TYPE_META = {
   leave:           { bg: '#eef2ff', color: '#4338ca' },
-  expense:         { bg: '#fef3c7', color: '#92400e' },
+  expense:         { bg: '#ede9fe', color: '#5b21b6' },
   travel:          { bg: '#f0fdf4', color: '#166534' },
   purchase:        { bg: '#fce7f3', color: '#9d174d' },
-  regularization:  { bg: '#fff7ed', color: '#c2410c' },
-  ot:              { bg: '#fef9c3', color: '#854d0e' },
+  regularization:  { bg: '#fff7ed', color: '#5b21b6' },
+  ot:              { bg: '#ede9fe', color: '#5b21b6' },
 };
 const typeMeta = t => TYPE_META[(t || '').toLowerCase()] || { bg: '#f3f4f6', color: '#374151' };
 
 const STATUS_META = {
   approved: { bg: '#dcfce7', color: '#15803d' },
   rejected: { bg: '#fee2e2', color: '#dc2626' },
-  pending:  { bg: '#fef3c7', color: '#92400e' },
+  pending:  { bg: '#ede9fe', color: '#5b21b6' },
 };
 const statusMeta = s => STATUS_META[(s || '').toLowerCase()] || { bg: '#f3f4f6', color: '#374151' };
 
@@ -47,8 +49,14 @@ export default function MyRequests() {
   }, []);
 
   return (
-    <div className="pulse-page my-requests-page">
-      <h1>My Requests</h1>
+    <PageShell dock={
+      <PageHero
+        icon={CheckSquare}
+        eyebrow="Approvals"
+        title="My Requests"
+      />
+    }>
+
       <p className="mr-subtitle">Status and history of what you've submitted — view only.</p>
 
       {error && <div className="mr-empty mr-error">Could not load your requests — try again.</div>}
@@ -120,6 +128,6 @@ export default function MyRequests() {
           </div>
         )}
       </section>
-    </div>
+    </PageShell>
   );
 }

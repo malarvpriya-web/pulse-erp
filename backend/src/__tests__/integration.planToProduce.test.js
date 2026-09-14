@@ -67,7 +67,7 @@ beforeAll(async () => {
   const { rows } = await pool.query(
     `SELECT u.id FROM users u
        JOIN user_scope us ON us.user_id = u.id AND us.is_primary = true
-      WHERE u.is_active = true AND u.logout_at IS NULL AND us.company_id = 1
+      WHERE u.is_active = true AND (u.logout_at IS NULL OR u.logout_at <= NOW()) AND us.company_id = 1
         AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
                      WHERE ur.user_id = u.id AND LOWER(r.code) IN ('admin','super_admin'))
       ORDER BY u.id LIMIT 1`

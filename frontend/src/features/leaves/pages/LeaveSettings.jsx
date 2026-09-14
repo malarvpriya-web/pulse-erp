@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Pencil, Trash2, X, Plus, Zap, Settings, RefreshCw } from 'lucide-react';
+import { Pencil, Trash2, X, Plus, Zap, Settings, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import '../../crm/pages/Leads.css';
 import './LeaveSettings.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TABS = ['Leave Types', 'Allocations', 'Policy Rules', 'Accrual & Carry Forward'];
 
@@ -349,13 +350,13 @@ function PolicyRulesTab({ leaveTypes, showToast, canManage = true }) {
                   <td>{pol?.min_notice_days ?? lt.min_notice_days ?? <span style={{ color:'#d1d5db' }}>—</span>}</td>
                   <td>{pol?.max_consecutive_days ?? lt.max_consecutive_days ?? <span style={{ color:'#d1d5db' }}>—</span>}</td>
                   <td>{(pol?.carry_forward_allowed ?? lt.carry_forward_allowed) ? <span style={{ color:'#059669' }}>✓ {pol?.max_carry_forward_days ?? lt.max_carry_forward_days ?? '?'}d</span> : '—'}</td>
-                  <td>{pol?.sandwich_rule ? <span style={{ color:'#d97706' }}>Yes</span> : '—'}</td>
+                  <td>{pol?.sandwich_rule ? <span style={{ color:'#6d28d9' }}>Yes</span> : '—'}</td>
                   <td>{(pol?.probation_allowed ?? lt.allowed_in_probation) !== false ? <span style={{ color:'#059669' }}>✓</span> : <span style={{ color:'#ef4444' }}>✗</span>}</td>
                   <td style={{ fontSize:11 }}>{(pol?.gender_restriction ?? lt.gender_restriction) || <span style={{ color:'#d1d5db' }}>All</span>}</td>
                   <td>
                     {configured(lt)
                       ? <span style={{ background:'#d1fae5', color:'#065f46', padding:'2px 8px', borderRadius:10, fontSize:11, fontWeight:600 }}>Active</span>
-                      : <span style={{ background:'#fef3c7', color:'#92400e', padding:'2px 8px', borderRadius:10, fontSize:11, fontWeight:600 }}>Default</span>}
+                      : <span style={{ background:'#ede9fe', color:'#5b21b6', padding:'2px 8px', borderRadius:10, fontSize:11, fontWeight:600 }}>Default</span>}
                   </td>
                   {canManage && (
                     <td>
@@ -591,7 +592,7 @@ const LeaveSettings = ({ setPage }) => {
                   <td style={{ fontSize:11, color:'#6b7280' }}>{t.accrual_type || 'manual'}{t.accrual_days_per_month > 0 ? ` (${t.accrual_days_per_month}/mo)` : ''}</td>
                   <td>{t.carry_forward_allowed ? <span style={{ color:'#059669' }}>✓ {t.max_carry_forward_days}d</span> : '—'}</td>
                   <td>{t.allow_half_day ? <span style={{ color:'#059669' }}>✓</span> : '—'}</td>
-                  <td>{t.is_encashable ? <span style={{ color:'#d97706' }}>✓</span> : '—'}</td>
+                  <td>{t.is_encashable ? <span style={{ color:'#6d28d9' }}>✓</span> : '—'}</td>
                   <td>{t.is_paid !== false ? <span style={{ color:'#059669' }}>Paid</span> : <span style={{ color:'#ef4444' }}>Unpaid</span>}</td>
                   <td>{t.requires_attachment ? <span style={{ color:'#6366f1' }}>Reqd</span> : '—'}</td>
                   {canManage && (
@@ -655,7 +656,20 @@ const LeaveSettings = ({ setPage }) => {
   ];
 
   return (
-    <div className="leads-page">
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Leave"
+        title="Leave Settings"
+        actions={setPage && canManage && (
+          <div style={{ display:'flex', gap:10 }}>
+            <button className="plh-cta" onClick={() => setPage('WorkflowBuilder')}>
+              <Zap size={14}/> Automation Rules
+            </button>
+          </div>
+        )}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeleteType}
         title="Delete Leave Type"
@@ -676,17 +690,7 @@ const LeaveSettings = ({ setPage }) => {
       />
       <Toast msg={toast?.msg} type={toast?.type} onClose={() => setToast(null)} />
 
-      <div className="leads-header">
-        <h1>Leave Settings</h1>
-        {setPage && canManage && (
-          <div style={{ display:'flex', gap:10 }}>
-            <button onClick={() => setPage('WorkflowBuilder')}
-              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', background:'#f5f3ff', color:'#6B3FDB', border:'1px solid #ddd6fe', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
-              <Zap size={14}/> Automation Rules
-            </button>
-          </div>
-        )}
-      </div>
+
 
       {/* Tabs */}
       <div style={{ display:'flex', gap:0, borderBottom:'2px solid #e5e7eb', marginBottom:24 }}>
@@ -749,7 +753,7 @@ const LeaveSettings = ({ setPage }) => {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 };
 

@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
+import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useFY } from '@/context/FYContext';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 const fmt = v =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(v || 0);
@@ -12,7 +14,7 @@ const fmtDate = d => {
 };
 
 const STATUS_COLOR = {
-  pending:   { bg: '#fef9c3', color: '#854d0e' },
+  pending:   { bg: '#ede9fe', color: '#5b21b6' },
   deposited: { bg: '#dbeafe', color: '#1e40af' },
   cleared:   { bg: '#dcfce7', color: '#166534' },
   bounced:   { bg: '#fee2e2', color: '#991b1b' },
@@ -30,14 +32,9 @@ function StatusBadge({ status }) {
 }
 
 function KpiCard({ label, value, sub, color }) {
-  return (
-    <div style={{ background: '#fff', borderRadius: 12, padding: '18px 22px',
-      boxShadow: '0 1px 4px rgba(0,0,0,.08)', borderLeft: `4px solid ${color}`, minWidth: 0 }}>
-      <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 500, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} sub={sub} color={color} />;
 }
 
 // ── Outstanding Tab ────────────────────────────────────────────────────────────
@@ -105,7 +102,7 @@ function OutstandingTab() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 24 }}>
         <KpiCard label="Receivable PDCs" value={fmt(summary?.receivable_total)} sub={`${summary?.receivable_count ?? 0} cheques`} color="#3b82f6" />
         <KpiCard label="Payable PDCs"    value={fmt(summary?.payable_total)}    sub={`${summary?.payable_count ?? 0} cheques`}    color="#8b5cf6" />
-        <KpiCard label="Due This Week"   value={fmt(summary?.due_week)}         sub="across all pending"                           color="#f59e0b" />
+        <KpiCard label="Due This Week"   value={fmt(summary?.due_week)}         sub="across all pending"                           color="#7c5cf0" />
         <KpiCard label="Bounced Amount"  value={fmt(summary?.bounced_amount)}   sub={`${summary?.bounced_count ?? 0} cheques`}    color="#ef4444" />
       </div>
 
@@ -156,7 +153,7 @@ function OutstandingTab() {
                     <td style={{ padding: '9px 14px', fontFamily: 'monospace' }}>{r.cheque_number || '—'}</td>
                     <td style={{ padding: '9px 14px' }}>{r.bank_name || r.account_bank || '—'}</td>
                     <td style={{ padding: '9px 14px', whiteSpace: 'nowrap' }}>{fmtDate(r.cheque_date)}</td>
-                    <td style={{ padding: '9px 14px', color: r.days_until_due < 0 ? '#dc2626' : r.days_until_due <= 7 ? '#d97706' : '#374151' }}>
+                    <td style={{ padding: '9px 14px', color: r.days_until_due < 0 ? '#dc2626' : r.days_until_due <= 7 ? '#6d28d9' : '#374151' }}>
                       {r.days_until_due != null ? `${r.days_until_due}d` : '—'}
                     </td>
                     <td style={{ padding: '9px 14px', fontWeight: 600, textAlign: 'right' }}>{fmt(r.amount)}</td>
@@ -426,8 +423,13 @@ export default function PDCOutstanding() {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20 }}>PDC Management</h1>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="PDC Management"
+      />
+    }>
 
       {/* Tab bar */}
       <div style={{ display: 'flex', borderBottom: '2px solid #e5e7eb', marginBottom: 24, gap: 0 }}>
@@ -446,6 +448,6 @@ export default function PDCOutstanding() {
 
       {tab === 'outstanding' && <OutstandingTab />}
       {tab === 'history'     && <HistoryTab />}
-    </div>
+    </PageShell>
   );
 }

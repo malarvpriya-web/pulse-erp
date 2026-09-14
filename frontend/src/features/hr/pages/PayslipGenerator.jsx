@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Wallet } from 'lucide-react';
 import jsPDF from 'jspdf';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ── constants ────────────────────────────────────────────────────────────── */
 
@@ -30,7 +32,7 @@ const STATUS_COLOR = { queued: '#9ca3af', sending: '#6B3FDB', sent: '#16a34a', f
 const MSG_STYLE = {
   success: { background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' },
   error:   { background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' },
-  warning: { background: '#fffbeb', color: '#d97706', border: '1px solid #fde68a' },
+  warning: { background: '#f5f3ff', color: '#6d28d9', border: '1px solid #ddd6fe' },
 };
 
 const PRINT_CSS = `
@@ -362,18 +364,18 @@ export default function PayslipGenerator() {
 
   /* ── render ─────────────────────────────────────────────────────────────── */
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Wallet}
+        eyebrow="Human Resources"
+        title="Payslip Generator"
+        subtitle="Compute, preview and distribute payslips with full statutory breakup"
+      />
+    }>
       <style>{PRINT_CSS}</style>
 
       {/* Header */}
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22, fontWeight: 800 }}>
-          Payslip Generator
-        </h2>
-        <p style={{ margin: '3px 0 0', color: '#6b7280', fontSize: 13 }}>
-          Compute, preview and distribute payslips with full statutory breakup
-        </p>
-      </div>
+
 
       {/* Deadline banners */}
       {payrollOverdue && (
@@ -551,7 +553,7 @@ export default function PayslipGenerator() {
           <div style={{ marginLeft: 'auto' }}>
             <button
               onClick={openBulkEmail}
-              style={btnStyle('#d97706')}
+              style={btnStyle('#6d28d9')}
               aria-label={`Bulk email payslips for ${MONTHS[month - 1]} ${year}`}
             >
               Bulk Email — {MONTHS[month - 1]} {year}
@@ -858,7 +860,7 @@ export default function PayslipGenerator() {
           </p>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 
@@ -944,7 +946,7 @@ const colHStyle = (color, align) => ({
 function bannerStyle(variant) {
   const map = {
     error:   { background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' },
-    warning: { background: '#fffbeb', color: '#d97706', border: '1px solid #fde68a' },
+    warning: { background: '#f5f3ff', color: '#6d28d9', border: '1px solid #ddd6fe' },
   };
   return {
     marginBottom: 12,

@@ -2,6 +2,7 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 router.use(requirePermission('finance', 'view'));
@@ -65,26 +66,38 @@ router.post('/rates/fetch', async (req, res) => {
     try {
       await client.query('BEGIN');
       let count = 0;
+      let held  = 0;
       for (const [code, inrPerUnit] of Object.entries(data.rates)) {
         // data.rates[code] = how many of that currency 1 INR buys
         // We want rate_vs_inr = how many INR 1 unit of that currency costs
         const rateVsInr = parseFloat((1 / inrPerUnit).toFixed(6));
         const name = CURRENCY_NAMES[code] || code;
-        await client.query(`
+        // Same guard as the manual route below: the provider quotes the last
+        // business day, so a Monday fetch must not walk a rate a treasury user
+        // entered by hand for today back to Friday's number.
+        const { rowCount } = await client.query(`
           INSERT INTO forex_rates (company_id, currency_code, currency_name, rate_vs_inr, rate_date, source, fetched_at, is_active)
           VALUES ($1,$2,$3,$4,$5,'api',$6,true)
           ON CONFLICT (company_id, currency_code)
           DO UPDATE SET rate_vs_inr=$4, rate_date=$5, source='api', fetched_at=$6, updated_at=$6
+          WHERE EXCLUDED.rate_date >= forex_rates.rate_date
         `, [companyId, code, name, rateVsInr, rateDate, now]);
         await client.query(`
           INSERT INTO forex_rate_history (company_id, currency_code, rate_vs_inr, rate_date, source)
           VALUES ($1,$2,$3,$4,'api')
-          ON CONFLICT (company_id, currency_code, rate_date) DO UPDATE SET rate_vs_inr=$3
+          ON CONFLICT (company_id, currency_code, rate_date)
+          DO UPDATE SET rate_vs_inr=$3, source=EXCLUDED.source
         `, [companyId, code, rateVsInr, rateDate]);
-        count++;
+        // Count what actually moved, not what was attempted.
+        if (rowCount > 0) count++;
+        else held++;
       }
       await client.query('COMMIT');
-      res.json({ message: `Rates updated — ${count} currencies refreshed`, last_updated: now.toISOString() });
+      res.json({
+        message: `Rates updated — ${count} currencies refreshed`
+          + (held ? `; ${held} left as-is (a more recent rate is already on file)` : ''),
+        last_updated: now.toISOString(),
+      });
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -106,18 +119,36 @@ router.post('/rates', async (req, res) => {
   const rateVal = parseFloat(rate);
   const dateVal = rate_date || new Date().toISOString().split('T')[0];
   try {
-    await pool.query(`
+    // forex_rates holds the CURRENT rate, one row per currency. The effective
+    // date on the form is freely editable, so without the WHERE guard a
+    // backdated correction overwrites today's rate with an older number:
+    // USD 88.42@09-09 then 87.60@09-05 left the table saying 87.60 as of 5 Sep
+    // while the history this route also writes still had 88.42 for the 9th —
+    // the page contradicting its own sparkline, and every conversion stale.
+    // The history table below is keyed by date and always takes the row, so a
+    // backdated correction is still recorded, it just no longer becomes "now".
+    const { rowCount } = await pool.query(`
       INSERT INTO forex_rates (company_id, currency_code, currency_name, rate_vs_inr, rate_date, source, fetched_at, is_active)
       VALUES ($1,$2,$3,$4,$5,'manual',NOW(),true)
       ON CONFLICT (company_id, currency_code)
       DO UPDATE SET rate_vs_inr=$4, rate_date=$5, source='manual', fetched_at=NOW(), updated_at=NOW()
+      WHERE EXCLUDED.rate_date >= forex_rates.rate_date
     `, [companyId, code, name, rateVal, dateVal]);
     await pool.query(`
       INSERT INTO forex_rate_history (company_id, currency_code, rate_vs_inr, rate_date, source)
       VALUES ($1,$2,$3,$4,'manual')
-      ON CONFLICT (company_id, currency_code, rate_date) DO UPDATE SET rate_vs_inr=$3
+      ON CONFLICT (company_id, currency_code, rate_date)
+      DO UPDATE SET rate_vs_inr=$3, source=EXCLUDED.source
     `, [companyId, code, rateVal, dateVal]);
-    res.status(201).json({ message: 'Rate saved' });
+    // Say which of the two happened. Answering "Rate saved" to a backdated post
+    // that deliberately did not move the current rate is how the caller comes to
+    // believe the headline number changed when it did not.
+    res.status(201).json({
+      message: rowCount > 0
+        ? 'Rate saved'
+        : `Recorded in rate history for ${dateVal}. The current ${code} rate is more recent and was left unchanged.`,
+      current_rate_updated: rowCount > 0,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -311,7 +342,7 @@ function buildRevalLine(r, rateMap) {
 }
 
 // ── PUT /forex/revaluations/:id/post ─ post revaluation journal entries ────────
-router.put('/revaluations/:id/post', async (req, res) => {
+router.put('/revaluations/:id/post', captureBefore('forex_revaluations'), async (req, res) => {
   const companyId = companyOf(req);
   const { id } = req.params;
   try {
@@ -379,7 +410,12 @@ router.get('/convert', async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT currency_code, rate_vs_inr FROM forex_rates WHERE company_id = $1 AND is_active = true`,
+      // rate_date is SELECTed because the response reports it. It used to be
+      // absent from this list while the handler still read `r.rate_date`, so the
+      // lookup was always undefined and the `||` fallback stamped TODAY on every
+      // conversion — the page printed "as of 09 Sep" over a rate dated the 5th.
+      // A field the caller is shown has to come from the row.
+      `SELECT currency_code, rate_vs_inr, rate_date FROM forex_rates WHERE company_id = $1 AND is_active = true`,
       [companyId]
     );
     const rateMap = { INR: 1 };
@@ -403,7 +439,10 @@ router.get('/convert', async (req, res) => {
       from: fromCode,
       to: toCode,
       amount: parseFloat(amount),
-      rate_date: rows.find(r => r.currency_code === fromCode)?.rate_date || new Date().toISOString().split('T')[0],
+      // null, never today's date, when the source currency is INR: the base has
+      // no forex_rates row and therefore no rate date to report. The UI already
+      // guards this field on truthiness and simply drops the "as of" line.
+      rate_date: rows.find(r => r.currency_code === fromCode)?.rate_date ?? null,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

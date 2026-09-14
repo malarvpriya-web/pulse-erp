@@ -9,6 +9,7 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { runCRP } from './crpEngine.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const actor = (req) => ({ id: req.user?.userId || req.user?.id || null, name: req.user?.name || req.user?.email || 'System' });
@@ -96,7 +97,7 @@ router.get('/work-centre-capacity', requirePermission('production', 'view'), asy
 });
 
 /* PUT /crp/work-centre-capacity/:id */
-router.put('/work-centre-capacity/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.put('/work-centre-capacity/:id', requirePermission('production', 'edit'), captureBefore('work_centres'), async (req, res) => {
   try {
     const f = req.body || {};
     const { rows: [row] } = await pool.query(`

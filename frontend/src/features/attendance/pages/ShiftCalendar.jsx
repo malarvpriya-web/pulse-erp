@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  ChevronLeft, ChevronRight, RefreshCw, Sun, Moon,
-  X, Printer, ArrowRightLeft, AlertCircle, CheckCircle2,
-  Edit3, Clock, Calendar,
+  ChevronLeft, ChevronRight, RefreshCw, Sun, Moon, X, Printer,
+  ArrowRightLeft, AlertCircle, CheckCircle2, Edit3, Clock, Calendar,
+  CalendarClock,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const P = '#6B3FDB';
@@ -21,12 +22,12 @@ const DAY_STR_TO_DOW = {
 
 const STATUS_META = {
   present:  { bg: '#dcfce7', dot: '#10b981', text: '#166534', label: 'Present'  },
-  late:     { bg: '#fef3c7', dot: '#f59e0b', text: '#92400e', label: 'Late'     },
+  late:     { bg: '#ede9fe', dot: '#7c5cf0', text: '#5b21b6', label: 'Late'     },
   absent:   { bg: '#fee2e2', dot: '#ef4444', text: '#991b1b', label: 'Absent'   },
   wfh:      { bg: '#dbeafe', dot: '#3b82f6', text: '#1e40af', label: 'WFH'      },
   leave:    { bg: '#ede9fe', dot: '#8b5cf6', text: '#5b21b6', label: 'Leave'    },
   on_leave: { bg: '#ede9fe', dot: '#8b5cf6', text: '#5b21b6', label: 'Leave'    },
-  holiday:  { bg: '#fef9c3', dot: '#eab308', text: '#854d0e', label: 'Holiday'  },
+  holiday:  { bg: '#ede9fe', dot: '#8b5cf6', text: '#5b21b6', label: 'Holiday'  },
 };
 
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 20 };
@@ -294,35 +295,30 @@ export default function ShiftCalendar() {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div style={{ padding: 24, margin: '0 auto' }} id="shift-calendar-root">
-
-      {/* Page header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }} className="no-print">
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>
-            {isAdminRole ? 'Shift Calendar' : 'My Shift Calendar'}
-          </h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-            {isAdminRole
-              ? 'Select an employee to view their shift schedule and attendance'
-              : 'View your shift schedule, working days, and attendance status'}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => window.print()} style={btnStyle}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title={isAdminRole ? 'Shift Calendar' : 'My Shift Calendar'}
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => window.print()}>
             <Printer size={13} /> Print
           </button>
           {effectiveEmpId && (
-            <button onClick={() => openSCR()} style={btnStyle}>
+            <button className="plh-cta plh-cta--ghost" onClick={() => openSCR()}>
               <ArrowRightLeft size={13} /> Request Shift Change
             </button>
           )}
-          <button onClick={load} style={btnStyle}>
+          <button className="plh-cta" onClick={load}>
             <RefreshCw size={13} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
             Refresh
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      {/* Page header */}
+
 
       {/* Admin employee selector */}
       {isAdminRole && (
@@ -441,11 +437,11 @@ export default function ShiftCalendar() {
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 20, padding: '10px 14px', background: '#f9fafb', borderRadius: 8, border: '1px solid #f0f0f4', alignItems: 'center' }}>
         {[
           { dot: '#10b981', label: 'Present'   },
-          { dot: '#f59e0b', label: 'Late'      },
+          { dot: '#7c5cf0', label: 'Late'      },
           { dot: '#ef4444', label: 'Absent'    },
           { dot: '#3b82f6', label: 'WFH'       },
           { dot: '#8b5cf6', label: 'Leave'     },
-          { dot: '#eab308', label: 'Holiday 🏖' },
+          { dot: '#8b5cf6', label: 'Holiday 🏖' },
         ].map(({ dot, label }) => (
           <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#374151' }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', background: dot }} />
@@ -556,7 +552,7 @@ export default function ShiftCalendar() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12, marginTop: 20 }}>
         {[
           { label: 'Present', value: kpiPresent, color: '#10b981', sub: 'days on time'        },
-          { label: 'Late',    value: kpiLate,    color: '#f59e0b', sub: 'days late in'        },
+          { label: 'Late',    value: kpiLate,    color: '#7c5cf0', sub: 'days late in'        },
           { label: 'Absent',  value: kpiAbsent,  color: '#ef4444', sub: 'working days missed' },
           { label: 'WFH',     value: kpiWFH,     color: '#3b82f6', sub: 'days remote'         },
           { label: 'Leave',   value: kpiLeave,   color: '#8b5cf6', sub: 'days on leave'       },
@@ -615,7 +611,7 @@ export default function ShiftCalendar() {
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
       `}</style>
-    </div>
+    </PageShell>
   );
 }
 
@@ -654,7 +650,7 @@ function DayDetailModal({ cell, myShift, onClose, onShiftChange }) {
           {isHoliday ? (
             <div style={{ textAlign: 'center', padding: '20px 0' }}>
               <div style={{ fontSize: 36, marginBottom: 10 }}>{'🏖'}</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#854d0e' }}>{holidayName}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#5b21b6' }}>{holidayName}</div>
               <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 4 }}>Public Holiday — office closed</div>
             </div>
 
@@ -715,7 +711,7 @@ function DayDetailModal({ cell, myShift, onClose, onShiftChange }) {
               )}
 
               {canRegularize && (
-                <div style={{ marginTop: 14, padding: '10px 12px', background: '#fef3c7', borderRadius: 8, fontSize: 12, color: '#92400e' }}>
+                <div style={{ marginTop: 14, padding: '10px 12px', background: '#ede9fe', borderRadius: 8, fontSize: 12, color: '#5b21b6' }}>
                   Missing {!att?.check_in ? 'clock-in' : 'clock-out'} record — submit a regularization request to correct this.
                 </div>
               )}

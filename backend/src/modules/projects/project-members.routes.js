@@ -2,8 +2,9 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
-import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { requirePermission, verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
 import { CLOSED_PROJECT_STATUSES } from './projectStatus.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -13,7 +14,12 @@ const MANAGER_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'project_mana
 router.use(verifyToken);
 
 /* GET /project-members?project_id=X | employee_id=Y */
-router.get('/', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied projects in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/', requirePermission('projects', 'view'), async (req, res) => {
   const { project_id, employee_id } = req.query;
   const cid = req.scope?.company_id ?? null;
   const params = [];
@@ -22,7 +28,7 @@ router.get('/', async (req, res) => {
     SELECT pm.*,
       TRIM(e.first_name || ' ' || COALESCE(e.last_name,'')) AS employee_name,
       e.designation, e.department, e.photo_url,
-      p.name AS project_name, p.status AS project_status
+      p.project_name AS project_name, p.status AS project_status
     FROM project_members pm
     JOIN employees e ON e.id = pm.employee_id
     JOIN projects p  ON p.id = pm.project_id
@@ -31,7 +37,7 @@ router.get('/', async (req, res) => {
   if (cid != null)        { params.push(cid);              q += ` AND pm.company_id = $${i++}`; }
   if (project_id)         { params.push(parseInt(project_id,10)); q += ` AND pm.project_id = $${i++}`; }
   if (employee_id)        { params.push(parseInt(employee_id,10)); q += ` AND pm.employee_id = $${i++}`; }
-  q += ` ORDER BY p.name, e.first_name`;
+  q += ` ORDER BY p.project_name, e.first_name`;
   try {
     const { rows } = await pool.query(q, params);
     res.json(rows);
@@ -77,7 +83,7 @@ router.post('/', allowRoles(...MANAGER_ROLES), async (req, res) => {
 });
 
 /* PUT /project-members/:id */
-router.put('/:id', allowRoles(...MANAGER_ROLES), async (req, res) => {
+router.put('/:id', allowRoles(...MANAGER_ROLES), captureBefore('project_members'), async (req, res) => {
   const { role_in_project, allocation_pct, billing_rate, start_date, end_date, is_billable, notes } = req.body;
   const cid = req.scope?.company_id ?? null;
   try {
@@ -101,7 +107,7 @@ router.put('/:id', allowRoles(...MANAGER_ROLES), async (req, res) => {
 });
 
 /* DELETE /project-members/:id — remove employee from project */
-router.delete('/:id', allowRoles(...MANAGER_ROLES), async (req, res) => {
+router.delete('/:id', allowRoles(...MANAGER_ROLES), captureBefore('project_members'), async (req, res) => {
   const cid = req.scope?.company_id ?? null;
   try {
     const { rows } = await pool.query(

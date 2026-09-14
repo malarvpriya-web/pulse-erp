@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ClipboardList, Bell, Zap, Settings, Users } from 'lucide-react';
+import { ClipboardList, Bell, Zap, Settings, Users, CheckSquare } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useRoleCatalog } from '@/config/roleCatalog';
 
 /* ─── constants ─────────────────────────────────────────────── */
 const MODULES = ['Leave','Expense','Purchase Order','Invoice','Recruitment','Travel'];
@@ -9,7 +11,13 @@ const EVENTS  = ['Created','Updated','Status Changed','Amount Exceeds'];
 const OPERATORS = ['equals','not equals','greater than','less than','contains','is empty','is not empty'];
 const LOGIC_OPS = ['AND','OR'];
 const ACTION_TYPES = ['Send Email','Send Notification','Update Field','Create Task','Escalate To'];
-const ROLES = ['Manager','HR Head','Finance Head','Department Head','Admin','CEO'];
+// Roles come from the registry (config/roleCatalog.js). This list used to hold
+// DISPLAY LABELS — 'HR Head', 'Finance Head', 'CEO' — and the <option>s carried
+// no value attribute, so those exact strings were persisted into
+// workflow_rules.approval_chain[].approver_role. No role code by those names
+// exists, so every chain built here escalated to a role nobody could hold.
+// Options now carry the real code; a rule saved under an old label shows an
+// empty picker, which is the truth about where it was routing.
 const REJECT_ACTIONS = ['stop','skip to next','notify manager'];
 const APPROVAL_TYPES = ['any one','all must approve'];
 
@@ -59,6 +67,7 @@ function ConditionRow({ cond, idx, onChange, onRemove }) {
 }
 
 function ActionRow({ action, idx, onChange, onRemove }) {
+  const ROLES = useRoleCatalog();
   const cfg = action.config || {};
   const set = (key, val) => onChange({ ...action, config: { ...cfg, [key]: val } });
   return (
@@ -81,7 +90,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
             <select value={cfg.to_role||''} onChange={e => set('to_role', e.target.value)}
               style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
               <option value=''>Select Role</option>
-              {ROLES.map(r => <option key={r}>{r}</option>)}
+              {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -103,7 +112,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
             <select value={cfg.to_role||''} onChange={e => set('to_role', e.target.value)}
               style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
               <option value=''>Select Role</option>
-              {ROLES.map(r => <option key={r}>{r}</option>)}
+              {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -134,7 +143,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
             <select value={cfg.assignee_role||''} onChange={e => set('assignee_role', e.target.value)}
               style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
               <option value=''>Select</option>
-              {ROLES.map(r => <option key={r}>{r}</option>)}
+              {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -156,7 +165,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
             <select value={cfg.role||''} onChange={e => set('role', e.target.value)}
               style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
               <option value=''>Select</option>
-              {ROLES.map(r => <option key={r}>{r}</option>)}
+              {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -171,6 +180,7 @@ function ActionRow({ action, idx, onChange, onRemove }) {
 }
 
 function ApprovalLevelRow({ level, idx, onChange, onRemove }) {
+  const ROLES = useRoleCatalog();
   return (
     <div style={{ display:'flex', gap:8, alignItems:'flex-start', padding:'10px 12px', background:'#f5f3ff', borderRadius:8, marginBottom:8 }}>
       <span style={{ width:22, height:22, minWidth:22, background:'#6B3FDB', color:'#fff', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, marginTop:2 }}>
@@ -182,7 +192,7 @@ function ApprovalLevelRow({ level, idx, onChange, onRemove }) {
           <select value={level.approver_role||''} onChange={e => onChange({ ...level, approver_role: e.target.value })}
             style={{ width:'100%', marginTop:3, padding:'5px 8px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, background:'#fff' }}>
             <option value=''>Select</option>
-            {ROLES.map(r => <option key={r}>{r}</option>)}
+            {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
           </select>
         </div>
         <div>
@@ -217,7 +227,7 @@ function WorkflowPreview({ wf }) {
 
   if (wf.conditions?.length) {
     const condText = wf.conditions.map((c,i) => `${i>0?c.logic+' ':''}${c.field} ${c.operator}${c.value?' '+c.value:''}`).join('\n');
-    nodes.push({ id:'conditions', label: `[Conditions]\n${condText}`, color:'#d97706', bg:'#fef3c7' });
+    nodes.push({ id:'conditions', label: `[Conditions]\n${condText}`, color:'#6d28d9', bg:'#ede9fe' });
   }
 
   wf.actions?.forEach((a, i) => {
@@ -441,7 +451,31 @@ export default function WorkflowBuilder({ setPage }) {
   const btnSecondary = { background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:8, padding:'9px 16px', cursor:'pointer', fontWeight:600, fontSize:14 };
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CheckSquare}
+        eyebrow="Administration"
+        title="Workflow Automation Builder"
+        subtitle="Visual no-code rule engine for automating business processes"
+        actions={<>
+          {setPage && view === 'list' && (
+            <button className="plh-cta plh-cta--ghost"  onClick={() => setPage('ApproverSetup')}>
+              Approver Setup →
+            </button>
+          )}
+          {view === 'list' && (
+            <button className="plh-cta plh-cta--ghost"  onClick={() => { setForm(EMPTY_FORM); setEditId(null); setView('create'); }}>
+              + New Workflow
+            </button>
+          )}
+          {view !== 'list' && (
+            <button className="plh-cta"  onClick={() => { setView('list'); setEditId(null); setForm(EMPTY_FORM); }}>
+              ← Back to List
+            </button>
+          )}
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDelete}
         title="Delete Workflow"
@@ -453,29 +487,6 @@ export default function WorkflowBuilder({ setPage }) {
       />
 
       {/* header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h2 style={{ margin:0, color:'#4c1d95', fontSize:22 }}>Workflow Automation Builder</h2>
-          <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Visual no-code rule engine for automating business processes</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {setPage && view === 'list' && (
-            <button style={btnSecondary} onClick={() => setPage('ApproverSetup')}>
-              Approver Setup →
-            </button>
-          )}
-          {view === 'list' && (
-            <button style={btnPrimary} onClick={() => { setForm(EMPTY_FORM); setEditId(null); setView('create'); }}>
-              + New Workflow
-            </button>
-          )}
-          {view !== 'list' && (
-            <button style={btnSecondary} onClick={() => { setView('list'); setEditId(null); setForm(EMPTY_FORM); }}>
-              ← Back to List
-            </button>
-          )}
-        </div>
-      </div>
 
       {/* flash msg */}
       {msg.text && (
@@ -497,7 +508,7 @@ export default function WorkflowBuilder({ setPage }) {
               <div style={{ fontSize:12, color:'#6b7280' }}>Defines WHEN automation fires — auto-approve short leaves, send reminders, escalate on delays. Each rule has its own conditions, action steps, and optional inline approval chain.</div>
             </div>
             <div style={{ flex:1, minWidth:200 }}>
-              <div style={{ fontSize:12, fontWeight:700, color:'#d97706', marginBottom:4 }}>Approver Setup (global fallback)</div>
+              <div style={{ fontSize:12, fontWeight:700, color:'#6d28d9', marginBottom:4 }}>Approver Setup (global fallback)</div>
               <div style={{ fontSize:12, color:'#6b7280' }}>Defines WHO approves each module (leave: manager → HR). Automation rules with no inline approval chain fall back to these levels — shown as <span style={{ background:'#ede9fe', color:'#6B3FDB', padding:'0 4px', borderRadius:4, fontSize:11, fontWeight:600 }}>via Approver Setup</span> above.</div>
             </div>
             <div style={{ flex:1, minWidth:200 }}>
@@ -567,7 +578,7 @@ export default function WorkflowBuilder({ setPage }) {
                       <button onClick={() => startEdit(wf)}
                         style={{ ...btnSecondary, padding:'6px 12px', fontSize:12 }}>Edit</button>
                       <button onClick={() => toggleActive(wf)}
-                        style={{ background: wf.is_active ? '#fef3c7' : '#d1fae5', color: wf.is_active ? '#d97706' : '#16a34a',
+                        style={{ background: wf.is_active ? '#ede9fe' : '#d1fae5', color: wf.is_active ? '#6d28d9' : '#16a34a',
                           border:'none', borderRadius:8, padding:'6px 12px', cursor:'pointer', fontWeight:600, fontSize:12 }}>
                         {wf.is_active ? 'Disable' : 'Enable'}
                       </button>
@@ -748,6 +759,6 @@ export default function WorkflowBuilder({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

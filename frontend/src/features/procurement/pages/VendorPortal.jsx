@@ -2,16 +2,17 @@ import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { Plus, X, Search, CheckCircle, Clock, AlertCircle, Building2, FileCheck, ChevronRight } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STAGES = ['Submitted','Pending SCM Review','Pending Quality Review','Pending Finance Review','Pending Management Review','Approved','Rejected'];
 
 const STAGE_COLORS = {
   'Submitted':                   { bg:'#eff6ff', color:'#1d4ed8' },
-  'Pending SCM Review':          { bg:'#fefce8', color:'#a16207' },
-  'Pending Quality Review':      { bg:'#fff7ed', color:'#c2410c' },
+  'Pending SCM Review':          { bg:'#f5f3ff', color:'#6d28d9' },
+  'Pending Quality Review':      { bg:'#fff7ed', color:'#5b21b6' },
   'Pending Finance Review':      { bg:'#f5f3ff', color:'#6B3FDB' },
   'Pending Management Review':   { bg:'#fdf2f8', color:'#9d174d' },
-  'Under Review':                { bg:'#fefce8', color:'#a16207' },
+  'Under Review':                { bg:'#f5f3ff', color:'#6d28d9' },
   'Approved':                    { bg:'#f0fdf4', color:'#15803d' },
   'Rejected':                    { bg:'#fef2f2', color:'#b91c1c' },
 };
@@ -102,29 +103,28 @@ export default function VendorPortal({ setPage }) {
   const labelStyle = { display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:5 };
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Vendor Registration Portal</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Manage vendor onboarding, approval workflow, and master creation</p>
-        </div>
-        <div style={{ display:'flex', gap:10 }}>
-          <button onClick={() => setPage?.('VendorScorecard')}
-            style={{ padding:'9px 16px', background:'#fff', color:'#6B3FDB', border:'1px solid #e9e4ff', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Building2}
+        eyebrow="Procurement"
+        title="Vendor Registration Portal"
+        subtitle="Manage vendor onboarding, approval workflow, and master creation"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('VendorScorecard')}>
             Scorecards
           </button>
-          <button onClick={() => setShowRegForm(true)}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+          <button className="plh-cta" onClick={() => setShowRegForm(true)}>
             <Plus size={15}/> Register Vendor
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       {/* Stats */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:20 }}>
         {[
           { label:'Total Registrations', value: counts.total, color:'#6366f1', icon: Building2 },
-          { label:'Pending Review', value: counts.pending, color:'#f59e0b', icon: Clock },
+          { label:'Pending Review', value: counts.pending, color:'#7c5cf0', icon: Clock },
           { label:'Approved', value: counts.approved, color:'#10b981', icon: CheckCircle },
           { label:'Rejected', value: counts.rejected, color:'#ef4444', icon: AlertCircle },
         ].map(k => (
@@ -229,10 +229,10 @@ export default function VendorPortal({ setPage }) {
                 return (
                   <div key={step.key} style={{ display:'flex', alignItems:'center', flex:1, minWidth:0 }}>
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flex:1 }}>
-                      <div style={{ width:28, height:28, borderRadius:'50%', background: done ? '#10b981' : active ? '#f59e0b' : '#e5e7eb', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:4 }}>
+                      <div style={{ width:28, height:28, borderRadius:'50%', background: done ? '#10b981' : active ? '#7c5cf0' : '#e5e7eb', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:4 }}>
                         {done ? <CheckCircle size={14} color="#fff"/> : <span style={{ fontSize:11, color: active ? '#fff' : '#9ca3af', fontWeight:600 }}>{i+1}</span>}
                       </div>
-                      <span style={{ fontSize:10, color: done ? '#10b981' : active ? '#f59e0b' : '#9ca3af', textAlign:'center', fontWeight: active ? 700 : 400 }}>{step.label}</span>
+                      <span style={{ fontSize:10, color: done ? '#10b981' : active ? '#7c5cf0' : '#9ca3af', textAlign:'center', fontWeight: active ? 700 : 400 }}>{step.label}</span>
                     </div>
                     {i < 3 && <ChevronRight size={14} color="#d1d5db" style={{ flexShrink:0 }}/>}
                   </div>
@@ -424,6 +424,6 @@ export default function VendorPortal({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

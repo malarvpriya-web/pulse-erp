@@ -1,16 +1,17 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
-  Plus, RefreshCw, X, ChevronLeft, ChevronRight,
-  Clock, User, AlertCircle
+  Plus, RefreshCw, X, ChevronLeft, ChevronRight, Clock, User,
+  AlertCircle, FolderKanban,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { getProjects, getTasks, createTask, updateTask } from '../services/projectsService';
 import './KanbanBoard.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DEFAULT_COLUMNS = [
   { key: 'todo',        title: 'To Do',       color: '#f3f4f6', text: '#374151' },
   { key: 'in_progress', title: 'In Progress',  color: '#ede9fe', text: '#4f46e5' },
-  { key: 'review',      title: 'In Review',    color: '#fef3c7', text: '#92400e' },
+  { key: 'review',      title: 'In Review',    color: '#ede9fe', text: '#5b21b6' },
   { key: 'done',        title: 'Done',         color: '#dcfce7', text: '#15803d' },
   { key: 'blocked',     title: 'Blocked',      color: '#fee2e2', text: '#dc2626' },
 ];
@@ -18,7 +19,7 @@ const DEFAULT_COLUMNS = [
 const STATUS_STYLE = {
   todo:        { color: '#f3f4f6', text: '#374151' },
   in_progress: { color: '#ede9fe', text: '#4f46e5' },
-  review:      { color: '#fef3c7', text: '#92400e' },
+  review:      { color: '#ede9fe', text: '#5b21b6' },
   done:        { color: '#dcfce7', text: '#15803d' },
   blocked:     { color: '#fee2e2', text: '#dc2626' },
 };
@@ -37,8 +38,8 @@ function buildColumns(csv) {
 
 const PRIORITY_META = {
   low:      { bg: '#f3f4f6', color: '#6b7280', label: 'Low'      },
-  medium:   { bg: '#fef3c7', color: '#92400e', label: 'Medium'   },
-  high:     { bg: '#fed7aa', color: '#c2410c', label: 'High'     },
+  medium:   { bg: '#ede9fe', color: '#5b21b6', label: 'Medium'   },
+  high:     { bg: '#ddd6fe', color: '#5b21b6', label: 'High'     },
   critical: { bg: '#fee2e2', color: '#dc2626', label: 'Critical' },
 };
 const pm = p => PRIORITY_META[(p || '').toLowerCase()] || PRIORITY_META.medium;
@@ -171,17 +172,24 @@ export default function KanbanBoard() {
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   return (
-    <div className="kb-root">
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Projects"
+        title="Task Board"
+        subtitle="Track every project task by status, from To Do through Done"
+      />
+    }>
       {toast && <div className={`kb-toast kb-toast-${toast.type}`}>{toast.msg}</div>}
 
       <div className="kb-header">
         <div>
-          <h2 className="kb-title">Task Board</h2>
+
           <p className="kb-sub">{tasks.length} task{tasks.length !== 1 ? 's' : ''}</p>
         </div>
         <div className="kb-header-r">
           {projectsError ? (
-            <span className="kb-error-inline">Could not load projects</span>
+            <span className="kb-error-state">Could not load projects — retry to filter by project.</span>
           ) : (
             <select className="kb-proj-sel" value={selectedProj} onChange={e => setSelectedProj(e.target.value)}>
               <option value="">All Projects</option>
@@ -342,6 +350,6 @@ export default function KanbanBoard() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Gavel, IndianRupee, CalendarClock, Trophy, FileCheck2, Plus, X, RefreshCw, Check,
+  Gavel, IndianRupee, CalendarClock, Trophy, FileCheck2, Plus, X,
+  RefreshCw, Check, Filter,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const CARD = { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 11, padding: 16 };
 const TH = { padding: '9px 12px', textAlign: 'left', fontWeight: 600, fontSize: 11, color: '#6b7280', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '.04em' };
@@ -14,7 +16,7 @@ const btnPri = { ...btn, background: '#6B3FDB', color: '#fff', border: 'none' };
 const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 const fmtINR = (n) => (n == null || n === '') ? '—' : `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
-const STAGE_COLOR = { bidding: '#6366f1', prospecting: '#6b7280', submitted: '#0891b2', negotiation: '#d97706', won: '#059669', lost: '#dc2626' };
+const STAGE_COLOR = { bidding: '#6366f1', prospecting: '#6b7280', submitted: '#0891b2', negotiation: '#6d28d9', won: '#059669', lost: '#dc2626' };
 const EMD_COLOR = { paid: '#0891b2', refunded: '#059669', forfeited: '#dc2626', returned: '#059669' };
 function Chip({ text, color }) {
   return <span style={{ background: `${color}1a`, color, padding: '2px 9px', borderRadius: 9, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', textTransform: 'capitalize' }}>{String(text || '—').replace(/_/g, ' ')}</span>;
@@ -158,22 +160,25 @@ export default function TenderWorkspace() {
   useEffect(() => { load(); }, [load]);
 
   return (
-    <div className="pulse-page">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <Gavel size={22} color="#6B3FDB" />
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>Tender Workspace</h1>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button onClick={load} style={btn}><RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh</button>
-          <button onClick={() => setCreating(true)} style={btnPri}><Plus size={14} /> New tender</button>
-        </div>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Filter}
+        eyebrow="Tenders"
+        title="Tender Workspace"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh</button>
+          <button className="plh-cta" onClick={() => setCreating(true)}><Plus size={14} /> New tender</button>
+        </>}
+      />
+    }>
+
       <p style={{ margin: '0 0 16px', color: '#6b7280', fontSize: 13 }}>
         Government &amp; institutional bids — deadlines, EMD tracking, document checklists, and LOA, over the opportunity pipeline.
       </p>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         <Kpi icon={Gavel} label="Active tenders" value={summary.active ?? 0} color="#6B3FDB" />
-        <Kpi icon={IndianRupee} label="EMD blocked" value={summary.emd_blocked != null ? fmtINR(summary.emd_blocked) : '—'} color="#d97706" />
+        <Kpi icon={IndianRupee} label="EMD blocked" value={summary.emd_blocked != null ? fmtINR(summary.emd_blocked) : '—'} color="#6d28d9" />
         <Kpi icon={CalendarClock} label="Due ≤14d" value={summary.due_soon ?? 0} color="#dc2626" />
         <Kpi icon={Trophy} label="Won" value={summary.won ?? 0} color="#059669" />
         <Kpi icon={FileCheck2} label="LOA received" value={summary.loa_received ?? 0} color="#0891b2" />
@@ -198,7 +203,7 @@ export default function TenderWorkspace() {
                     <div style={{ fontSize: 11, color: '#9ca3af' }}>{r.tender_number || r.opportunity_number}{r.company_name ? ` · ${r.company_name}` : ''}</div>
                   </td>
                   <td style={{ ...TD, color: '#6b7280' }}>{r.tender_source || '—'}</td>
-                  <td style={{ ...TD, color: r.is_overdue ? '#dc2626' : r.due_soon ? '#d97706' : '#6b7280', fontWeight: r.is_overdue || r.due_soon ? 700 : 400 }}>
+                  <td style={{ ...TD, color: r.is_overdue ? '#dc2626' : r.due_soon ? '#6d28d9' : '#6b7280', fontWeight: r.is_overdue || r.due_soon ? 700 : 400 }}>
                     {fmtDate(r.submission_deadline)}{r.is_overdue ? ' ⚠' : ''}
                   </td>
                   <td style={{ ...TD }}>{r.emd_amount != null ? <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>{fmtINR(r.emd_amount)} <Chip text={r.emd_status} color={EMD_COLOR[(r.emd_status || '').toLowerCase()] || '#6b7280'} /></span> : '—'}</td>
@@ -215,6 +220,6 @@ export default function TenderWorkspace() {
 
       {creating && <CreateDrawer onClose={() => setCreating(false)} onSaved={() => { setCreating(false); load(); }} />}
       {selected && <DetailDrawer id={selected} onClose={() => setSelected(null)} onChange={load} />}
-    </div>
+    </PageShell>
   );
 }

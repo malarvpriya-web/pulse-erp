@@ -1,7 +1,9 @@
 // frontend/src/features/production/pages/UploadBOM.jsx
 import { useState, useRef } from 'react';
+import { Factory } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TEMPLATE_HEADERS = 'finished_product,quantity,unit,component_name,component_qty,component_unit,unit_cost,wastage_pct';
 const TEMPLATE_EXAMPLE = `HVDC Converter Unit,1,Nos,Thyristor Module,4,Nos,25000,2
@@ -66,12 +68,14 @@ export default function UploadBOM() {
   };
 
   return (
-    <div style={{ padding: 24, maxWidth: 820 }}>
-      {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ margin: '0 0 4px', fontSize: 22, fontWeight: 800, color: '#4c1d95' }}>Upload BOM</h2>
-        <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>Import Bill of Materials from a CSV file. Each row defines one BOM component.</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="Upload BOM"
+        subtitle="Import Bill of Materials from a CSV file. Each row defines one BOM component."
+      />
+    }>
 
       {/* Template Download */}
       <div style={{ background: '#f5f3ff', border: '1px solid #e9e4ff', borderRadius: 12, padding: '16px 20px', marginBottom: 20 }}>
@@ -223,6 +227,6 @@ export default function UploadBOM() {
           </button>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

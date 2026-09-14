@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, Search, MapPin, Calendar, Users, CheckSquare, Clock, Eye } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  Plus, X, Search, MapPin, Calendar, Users, CheckSquare, Clock, Eye,
+  Contact,
+} from 'lucide-react';
 
 const VISIT_TYPES = ['Customer Visit','Site Visit','Service Visit','Commissioning Visit','Review Meeting','FAT Witness','Warranty Inspection'];
 
@@ -87,24 +91,24 @@ export default function CustomerVisits() {
   const labelStyle = { display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:5 };
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Customer Visits</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Track site visits, service visits, commissioning & review meetings</p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="Travel"
+        title="Customer Visits"
+        subtitle="Track site visits, service visits, commissioning & review meetings"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15}/> Log Visit
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* KPI Cards */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:20 }}>
         {[
           { label:'Total Visits', value: stats.total, icon: MapPin, color:'#6366f1' },
           { label:'This Month', value: stats.this_month, icon: Calendar, color:'#10b981' },
-          { label:'Open Action Items', value: stats.open_actions, icon: CheckSquare, color:'#f59e0b' },
+          { label:'Open Action Items', value: stats.open_actions, icon: CheckSquare, color:'#7c5cf0' },
           { label:'Follow-ups Due (7d)', value: stats.upcoming_followups, icon: Clock, color:'#ef4444' },
         ].map(k => (
           <div key={k.label} style={{ background:'#fff', borderRadius:12, padding:20, border:'1px solid #f0f0f4' }}>
@@ -174,7 +178,7 @@ export default function CustomerVisits() {
                   )}
                 </div>
                 {v.next_followup_date && (
-                  <div style={{ marginTop:8, padding:'6px 10px', background:'#fffbeb', borderRadius:6, fontSize:11, color:'#92400e' }}>
+                  <div style={{ marginTop:8, padding:'6px 10px', background:'#f5f3ff', borderRadius:6, fontSize:11, color:'#5b21b6' }}>
                     Follow-up: {fmtDate(v.next_followup_date)}
                   </div>
                 )}
@@ -350,6 +354,6 @@ export default function CustomerVisits() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

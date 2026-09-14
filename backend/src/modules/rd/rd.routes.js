@@ -14,6 +14,7 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { pickUpdatable } from '../../shared/safeUpdate.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const cid = (req) => req.scope?.company_id ?? null;
@@ -110,7 +111,7 @@ router.post('/artifacts', perm('add'), async (req, res) => {
   } finally { client.release(); }
 });
 
-router.put('/artifacts/:id', perm('edit'), async (req, res) => {
+router.put('/artifacts/:id', perm('edit'), captureBefore('rd_artifacts'), async (req, res) => {
   try {
     const companyId = cid(req);
     if (req.body.status && !ARTIFACT_STATUS.has(req.body.status)) return res.status(400).json({ error: `invalid status: ${req.body.status}` });
@@ -141,7 +142,7 @@ router.put('/artifacts/:id', perm('edit'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/artifacts/:id', perm('delete'), async (req, res) => {
+router.delete('/artifacts/:id', perm('delete'), captureBefore('rd_artifacts'), async (req, res) => {
   try {
     const companyId = cid(req);
     const vals = [req.params.id];
@@ -187,7 +188,7 @@ router.post('/patents', perm('add'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/patents/:id', perm('edit'), async (req, res) => {
+router.put('/patents/:id', perm('edit'), captureBefore('rd_patents'), async (req, res) => {
   try {
     const companyId = cid(req);
     if (req.body.status && !PATENT_STATUS.has(req.body.status)) return res.status(400).json({ error: `invalid status: ${req.body.status}` });
@@ -207,7 +208,7 @@ router.put('/patents/:id', perm('edit'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/patents/:id', perm('delete'), async (req, res) => {
+router.delete('/patents/:id', perm('delete'), captureBefore('rd_patents'), async (req, res) => {
   try {
     const companyId = cid(req);
     const vals = [req.params.id];

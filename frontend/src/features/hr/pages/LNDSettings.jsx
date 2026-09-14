@@ -1,7 +1,9 @@
 // frontend/src/features/hr/pages/LNDSettings.jsx
 import { useState, useEffect } from 'react';
+import { SlidersHorizontal } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const inputStyle = { width:'100%', boxSizing:'border-box', padding:'8px 10px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 };
 
@@ -87,11 +89,15 @@ export default function LNDSettings() {
   const set = (key, val) => setSettings(s => ({ ...s, [key]: val }));
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh', maxWidth:760 }}>
-      <div style={{ marginBottom:20 }}>
-        <h2 style={{ margin:0, color:'#4c1d95', fontSize:22 }}>⚙️ L&D Settings</h2>
-        <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Configure training categories, defaults, notifications and policy rules</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Human Resources"
+        title="⚙️ L&D Settings"
+        subtitle="Configure training categories, defaults, notifications and policy rules"
+      />
+    }>
+
 
       {/* Training Categories */}
       <Section title="Training Categories" icon="📁">
@@ -190,6 +196,6 @@ export default function LNDSettings() {
         </button>
         {saved && <span style={{ color:'#16a34a', fontWeight:600, fontSize:13 }}>✅ Saved successfully</span>}
       </div>
-    </div>
+    </PageShell>
   );
 }

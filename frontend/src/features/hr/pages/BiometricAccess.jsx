@@ -1,11 +1,13 @@
 // frontend/src/features/hr/pages/BiometricAccess.jsx
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { ShieldCheck } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_COLORS = { online:'#16a34a', offline:'#6b7280', error:'#dc2626' };
-const GATE_STATUS_COLORS = { active:'#16a34a', approved:'#2563eb', pending:'#d97706', expired:'#6b7280', cancelled:'#dc2626' };
+const GATE_STATUS_COLORS = { active:'#16a34a', approved:'#2563eb', pending:'#6d28d9', expired:'#6b7280', cancelled:'#dc2626' };
 
 function tabStyle(active) {
   return { padding: '8px 20px', border: 'none', cursor: 'pointer', borderRadius: '6px 6px 0 0', fontWeight: 600, fontSize: 14, background: active ? '#6B3FDB' : '#e9e4ff', color: active ? '#fff' : '#6B3FDB' };
@@ -135,19 +137,23 @@ export default function BiometricAccess() {
   ];
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>🔒 Biometric & Access Control</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Attendance import, gate passes, visitor management and device monitoring</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Human Resources"
+        title="🔒 Biometric & Access Control"
+        subtitle="Attendance import, gate passes, visitor management and device monitoring"
+      />
+    }>
+
 
       {/* today's stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10, marginBottom: 20 }}>
         {[
           { label:'Punched In',     value:dashStats?.punched_in_today ?? 0,  color:'#16a34a', icon:'✅' },
-          { label:'Not Punched',    value:dashStats?.not_yet_punched ?? 0,   color:'#d97706', icon:'⏳' },
+          { label:'Not Punched',    value:dashStats?.not_yet_punched ?? 0,   color:'#6d28d9', icon:'⏳' },
           { label:'Late Arrivals',  value:dashStats?.late_arrivals ?? 0,     color:'#dc2626', icon:'🕐' },
-          { label:'Early Exits',    value:dashStats?.early_departures ?? 0,  color:'#f97316', icon:'🏃' },
+          { label:'Early Exits',    value:dashStats?.early_departures ?? 0,  color:'#7c5cf0', icon:'🏃' },
           { label:'Visitors Inside',value:dashStats?.visitors_inside ?? 0,   color:'#6B3FDB', icon:'🪪' },
         ].map(s => (
           <div key={s.label} style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 10, padding: '12px 14px' }}>
@@ -269,7 +275,7 @@ export default function BiometricAccess() {
                       <td style={{ padding: '8px 12px', color: '#6b7280' }}>{p.department}</td>
                       <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>{new Date(p.punch_time).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })}</td>
                       <td style={{ padding: '8px 12px' }}>
-                        <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: p.punch_type === 'in' ? '#d1fae5' : '#fef3c7', color: p.punch_type === 'in' ? '#16a34a' : '#d97706' }}>
+                        <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: p.punch_type === 'in' ? '#d1fae5' : '#ede9fe', color: p.punch_type === 'in' ? '#16a34a' : '#6d28d9' }}>
                           {p.punch_type.toUpperCase()}
                         </span>
                       </td>
@@ -434,6 +440,6 @@ export default function BiometricAccess() {
         )}
 
       </div>
-    </div>
+    </PageShell>
   );
 }

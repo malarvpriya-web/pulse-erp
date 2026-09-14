@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft } from 'lucide-react';
+import { PageHero } from '@/components/pulse-ui';
 import api from '@/services/api/client';
 
 function buildDefaults(sections) {
@@ -190,55 +191,19 @@ export default function ModuleSettingsPanel({
         </div>
       )}
 
-      {/* Header */}
-      <div style={{
-        background: '#fff', borderBottom: '1px solid #f0f0f4',
-        padding: '16px 28px', display: 'flex', alignItems: 'center',
-        justifyContent: 'space-between', gap: 16, flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          {Icon && (
-            <div style={{
-              width: 40, height: 40, borderRadius: 10, background: '#f5f3ff',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            }}>
-              <Icon size={20} color="#7c3aed" />
-            </div>
-          )}
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-              <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#111827', lineHeight: 1.3 }}>
-                {moduleName} Settings
-              </h1>
-              {dirty && (
-                <span style={{ color: '#d97706', fontSize: 15 }} title="Unsaved changes">●</span>
-              )}
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
-              <button
-                onClick={goBack}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#7c3aed', fontSize: 12 }}
-              >
-                Settings
-              </button>
-              <span style={{ color: '#d1d5db', fontSize: 12 }}>/</span>
-              <span style={{ fontSize: 12, color: '#6b7280' }}>{moduleName}</span>
-            </div>
-          </div>
-        </div>
-
-        <button
-          onClick={goBack}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: 'none', border: '1px solid #e5e7eb', borderRadius: 7,
-            padding: '7px 14px', cursor: 'pointer', color: '#374151', fontSize: 13, fontWeight: 500,
-          }}
-        >
-          <ArrowLeft size={14} />
-          Back to Settings
-        </button>
-      </div>
+      {/* Header — the shared hero. Every module's Settings page renders
+          through this shell, so one hero here covers all of them. */}
+      <PageHero
+        icon={Icon}
+        eyebrow="Settings"
+        title={`${moduleName} Settings`}
+        subtitle={dirty ? 'Unsaved changes' : `Configuration for the ${moduleName} module`}
+        actions={
+          <button className="plh-cta plh-cta--ghost" onClick={goBack}>
+            <ArrowLeft size={14} /> Back to Settings
+          </button>
+        }
+      />
 
       {/* Sections */}
       <div style={{ flex: 1, padding: '24px 28px 120px', overflowY: 'auto' }}>
@@ -302,12 +267,12 @@ export default function ModuleSettingsPanel({
       {!loading && (
         <div style={{
           position: 'sticky', bottom: 0, background: '#fff',
-          borderTop: dirty ? '2px solid #fbbf24' : '1px solid #f0f0f4',
+          borderTop: dirty ? '2px solid #8b5cf6' : '1px solid #f0f0f4',
           padding: '13px 28px',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           boxShadow: '0 -2px 8px rgba(0,0,0,0.04)', zIndex: 10,
         }}>
-          <span style={{ fontSize: 13, color: dirty ? '#d97706' : '#9ca3af' }}>
+          <span style={{ fontSize: 13, color: dirty ? '#6d28d9' : '#9ca3af' }}>
             {dirty ? 'You have unsaved changes' : hasSaved ? '✓ All changes saved' : null}
           </span>
           <div style={{ display: 'flex', gap: 10 }}>

@@ -1,12 +1,15 @@
 // frontend/src/features/crm/pages/Customer360.jsx
 // Customer 360° Command Center — 17 sections, CEO traceability test
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { LayoutDashboard } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
   PieChart, Pie, Legend,
 } from 'recharts';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 // ── Action Button Component ────────────────────────────────────────────────────
 function ActionBtn({ icon, label, color = '#6B3FDB', onClick, disabled }) {
@@ -51,12 +54,20 @@ const fmtDays = n => {
   return `${n}d`;
 };
 
+// Unit prices need the exact figure — fmtINR's Cr/L/K abbreviation rounds
+// ₹1,250.50 to "₹1.3K" and would make two different prices look identical.
+const fmtRs = v => (v == null || v === '' || isNaN(parseFloat(v)))
+  ? '—' : `₹${parseFloat(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+// Quantities are counts, not money — fmtINR would stamp a rupee sign on them.
+const fmtQty = v => (v == null || v === '' || isNaN(parseFloat(v)))
+  ? '—' : parseFloat(v).toLocaleString('en-IN', { maximumFractionDigits: 3 });
+
 // ── Design tokens ──────────────────────────────────────────────────────────────
 const C = {
   primary:   '#6B3FDB',
   green:     '#16a34a',
   red:       '#dc2626',
-  amber:     '#d97706',
+  amber:     '#6d28d9',
   blue:      '#2563eb',
   light:     '#f5f3ff',
   border:    '#e9e4ff',
@@ -67,7 +78,7 @@ const C = {
 const STAGE_COLORS = {
   qualification: '#6b7280',
   proposal:      '#2563eb',
-  negotiation:   '#d97706',
+  negotiation:   '#6d28d9',
   won:           '#16a34a',
   lost:          '#dc2626',
 };
@@ -84,14 +95,14 @@ const STATUS_BADGE = {
   critical:   { bg: '#fee2e2', color: '#dc2626' },
   cancelled:  { bg: '#fee2e2', color: '#dc2626' },
   expired:    { bg: '#fee2e2', color: '#dc2626' },
-  pending:    { bg: '#fef9c3', color: '#854d0e' },
-  open:       { bg: '#fef9c3', color: '#854d0e' },
+  pending:    { bg: '#ede9fe', color: '#5b21b6' },
+  open:       { bg: '#ede9fe', color: '#5b21b6' },
   sent:       { bg: '#ede9fe', color: '#6B3FDB' },
   draft:      { bg: '#f3f4f6', color: '#374151' },
   planning:   { bg: '#dbeafe', color: '#2563eb' },
   processing: { bg: '#dbeafe', color: '#2563eb' },
   'in_progress': { bg: '#dbeafe', color: '#2563eb' },
-  'on_hold':  { bg: '#fef9c3', color: '#854d0e' },
+  'on_hold':  { bg: '#ede9fe', color: '#5b21b6' },
 };
 
 function Badge({ status }) {
@@ -130,14 +141,17 @@ function SectionHeader({ title, count, color = C.primary, extra }) {
 }
 
 function KpiCard({ label, value, sub, color = '#111827', bg = '#fff' }) {
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} sub={sub} color={color} bg={bg} />;
+}
+
+// A failed section must not render as an empty one — "no rows" and "the query
+// broke" are different claims (see project_reports_module_data_integrity_audit).
+function ErrorBox({ msg }) {
   return (
-    <div style={{
-      ...C.card, padding: '16px 20px', background: bg,
-      display: 'flex', flexDirection: 'column', gap: 4, minWidth: 130,
-    }}>
-      <span style={{ fontSize: 20, fontWeight: 800, color }}>{value}</span>
-      <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>{label}</span>
-      {sub && <span style={{ fontSize: 11, color: '#9ca3af' }}>{sub}</span>}
+    <div style={{ background: '#fee2e2', color: C.red, borderRadius: 8, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>
+      {msg}
     </div>
   );
 }
@@ -301,13 +315,13 @@ function SalesFunnel({ summary }) {
   const stages = [
     { label: 'Leads',        value: summary.lead_count,        color: '#6b7280' },
     { label: 'Opportunities',value: summary.opportunity_count, color: '#2563eb' },
-    { label: 'Quotations',   value: summary.quotation_count,   color: '#d97706' },
+    { label: 'Quotations',   value: summary.quotation_count,   color: '#6d28d9' },
     { label: 'POs Received', value: summary.po_count,          color: '#16a34a' },
   ];
   const max = Math.max(...stages.map(s => s.value), 1);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '16px 20px' }}>
-      {stages.map((s, i) => (
+      {stages.map((s) => (
         <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', width: 100, textAlign: 'right' }}>{s.label}</span>
           <div style={{
@@ -364,6 +378,7 @@ const TABS = [
   { id: 'pipeline',       label: 'Sales Pipeline',   icon: '📊' },
   { id: 'tenders',        label: 'Tenders',          icon: '📑' },
   { id: 'commercial',     label: 'Commercial',        icon: '📄' },
+  { id: 'products',       label: 'Products Bought',  icon: '📦' },
   { id: 'projects',       label: 'Projects',         icon: '🏗' },
   { id: 'engineering',    label: 'Engineering',      icon: '⚙' },
   { id: 'procurement',    label: 'Procurement & Mfg',icon: '🔧' },
@@ -408,7 +423,7 @@ const EVENT_COLOR = {
   invoice:        '#16a34a',
   ticket:         '#dc2626',
   order:          '#2563eb',
-  quotation:      '#d97706',
+  quotation:      '#6d28d9',
   project:        '#0891b2',
   commissioning:  '#059669',
   amc:            '#6366f1',
@@ -488,15 +503,15 @@ function DriveStructure({ folders, root }) {
           </div>
         ))}
       </div>
-      <div style={{ marginTop: 20, padding: 16, background: '#fffbeb', borderRadius: 10, border: '1px solid #fde68a' }}>
-        <div style={{ fontWeight: 700, fontSize: 13, color: '#92400e', marginBottom: 8 }}>Auto-Upload Rules</div>
+      <div style={{ marginTop: 20, padding: 16, background: '#f5f3ff', borderRadius: 10, border: '1px solid #ddd6fe' }}>
+        <div style={{ fontWeight: 700, fontSize: 13, color: '#5b21b6', marginBottom: 8 }}>Auto-Upload Rules</div>
         {[
           '📧 Every document emailed to customer → auto-uploaded to customer folder',
           '✍ Every signed document → stored in Google Drive',
           '🔬 FAT/SAT Reports → stored in respective customer subfolder',
           '📦 Dispatch proofs → stored in customer folder',
         ].map(rule => (
-          <div key={rule} style={{ fontSize: 12, color: '#78350f', padding: '3px 0' }}>{rule}</div>
+          <div key={rule} style={{ fontSize: 12, color: '#4c1d95', padding: '3px 0' }}>{rule}</div>
         ))}
       </div>
     </div>
@@ -686,7 +701,7 @@ function DocumentsTab({ partyId, driveFolders, driveFiles, legacyDrive, drivePro
                       {docCounts.last_uploaded && (
                         <span style={{ fontSize: 10, color: '#9ca3af' }}>Last: {fmtDate(docCounts.last_uploaded)}</span>
                       )}
-                      {!f.provisioned && <span style={{ fontSize: 10, color: '#d97706' }}>Not provisioned</span>}
+                      {!f.provisioned && <span style={{ fontSize: 10, color: '#6d28d9' }}>Not provisioned</span>}
                     </div>
                     {f.folder_url && (
                       <div style={{ fontSize: 10, color: C.primary, marginTop: 4, fontWeight: 600 }}>Open in Drive ↗</div>
@@ -699,8 +714,8 @@ function DocumentsTab({ partyId, driveFolders, driveFiles, legacyDrive, drivePro
         </div>
 
         {/* Auto-routing rules */}
-        <div style={{ marginTop: 20, padding: 16, background: '#fffbeb', borderRadius: 10, border: '1px solid #fde68a' }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: '#92400e', marginBottom: 8 }}>Auto-Document Routing</div>
+        <div style={{ marginTop: 20, padding: 16, background: '#f5f3ff', borderRadius: 10, border: '1px solid #ddd6fe' }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: '#5b21b6', marginBottom: 8 }}>Auto-Document Routing</div>
           {[
             ['📋 Quotation PDF', '→ 02 Quotations'],
             ['📦 Purchase Order', '→ 03 Purchase Orders'],
@@ -711,7 +726,7 @@ function DocumentsTab({ partyId, driveFolders, driveFiles, legacyDrive, drivePro
             ['🔄 AMC Contract',  '→ 11 AMC'],
             ['🧾 Invoice PDF',   '→ 12 Invoices'],
           ].map(([doc, folder]) => (
-            <div key={doc} style={{ display: 'flex', gap: 12, fontSize: 12, color: '#78350f', padding: '3px 0' }}>
+            <div key={doc} style={{ display: 'flex', gap: 12, fontSize: 12, color: '#4c1d95', padding: '3px 0' }}>
               <span style={{ width: 160 }}>{doc}</span>
               <span style={{ fontWeight: 600 }}>{folder}</span>
             </div>
@@ -830,8 +845,8 @@ function CEOTraceTest({ core, pipeline, projects, manufacturing, service, amc, f
     <div>
       <div style={{
         ...C.card, padding: '20px 24px', marginBottom: 20,
-        background: allPass ? '#f0fdf4' : pct >= 70 ? '#fffbeb' : '#fef2f2',
-        border: `1px solid ${allPass ? '#bbf7d0' : pct >= 70 ? '#fde68a' : '#fecaca'}`,
+        background: allPass ? '#f0fdf4' : pct >= 70 ? '#f5f3ff' : '#fef2f2',
+        border: `1px solid ${allPass ? '#bbf7d0' : pct >= 70 ? '#ddd6fe' : '#fecaca'}`,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
           <div>
@@ -880,6 +895,7 @@ function CEOTraceTest({ core, pipeline, projects, manufacturing, service, amc, f
 // ── Main Component ─────────────────────────────────────────────────────────────
 export default function Customer360() {
   const toast = useToast();
+  const [urlParams, setUrlParams]     = useSearchParams();
   const [partyId, setPartyId]         = useState('');
   const [selected, setSelected]       = useState(null);
   const [activeTab, setActiveTab]     = useState('overview');
@@ -899,6 +915,8 @@ export default function Customer360() {
 
   const [tenders, setTenders]         = useState(null);
   const [travel, setTravel]           = useState(null);
+  const [products, setProducts]       = useState(null);
+  const [productsErr, setProductsErr] = useState('');
   const [driveFolders, setDriveFolders] = useState(null);
   const [driveFiles, setDriveFiles]     = useState(null);
   const [driveProvisioning, setDriveProvisioning] = useState(false);
@@ -921,6 +939,7 @@ export default function Customer360() {
     setHealth(null); setTimeline(null); setDrive(null);
     setTenders(null); setTravel(null);
     setDriveFolders(null); setDriveFiles(null);
+    setProducts(null); setProductsErr('');
 
     // Wave 1: core data
     try {
@@ -963,6 +982,7 @@ export default function Customer360() {
     setSelected(p);
     setActiveTab('overview');
     loadAll(String(p.id));
+    setUrlParams({ party_id: String(p.id) }, { replace: true });
   }
 
   function handleClear() {
@@ -972,7 +992,40 @@ export default function Customer360() {
     setCore(null);
     setDriveFolders(null);
     setDriveFiles(null);
+    setUrlParams({}, { replace: true });
   }
+
+  // Deep link: /Customer360?party_id=<uuid>. Before this, the page always opened
+  // on the search box, so "click a customer, see their 360" was impossible —
+  // Accounts, Account Detail and every other list had nowhere to link to.
+  const urlPartyId = urlParams.get('party_id');
+  useEffect(() => {
+    if (!urlPartyId || urlPartyId === partyId) return;
+    setPartyId(urlPartyId);
+    setActiveTab('overview');
+    loadAll(urlPartyId);
+  }, [urlPartyId, partyId, loadAll]);
+
+  // The combobox shows `selected`; when we arrived by URL there was no pick to
+  // record, so adopt the party the API returned.
+  useEffect(() => {
+    if (core?.party && (!selected || String(selected.id) !== String(core.party.id))) {
+      setSelected(core.party);
+    }
+  }, [core, selected]);
+
+  // Line-level products bought. Loaded on tab open rather than in loadAll's
+  // wave 2 for two reasons: it is the one section that grows with order history,
+  // and wave 2's safeGet() swallows failures — here an empty table would be read
+  // as "this customer never bought anything", so the error has to be visible.
+  useEffect(() => {
+    if (activeTab !== 'products' || !partyId || products) return;
+    let cancelled = false;
+    api.get(`/crm/customer360/${partyId}/products`)
+      .then(r => { if (!cancelled) setProducts(r.data); })
+      .catch(e => { if (!cancelled) setProductsErr(e?.response?.data?.error || 'Could not load purchase history'); });
+    return () => { cancelled = true; };
+  }, [activeTab, partyId, products]);
 
   async function handleProvisionDrive() {
     if (!partyId) return;
@@ -1244,6 +1297,95 @@ export default function Customer360() {
           </Card>
         </div>
       );
+
+      // ── PRODUCTS BOUGHT ───────────────────────────────────────────────────────
+      // The Commercial tab above lists quotations and orders at header level —
+      // one row, one total. This is the line detail underneath: which product,
+      // on what date, at what unit price.
+      case 'products': {
+        if (productsErr) return <ErrorBox msg={productsErr} />;
+        if (!products)   return <EmptyState icon="⏳" msg="Loading purchase lines…" />;
+        const ps = products.summary || {};
+        return (
+          <div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12, marginBottom: 20 }}>
+              <KpiCard label="Distinct Products" value={String(ps.product_count || 0)} color={C.primary} />
+              <KpiCard label="Order/Invoice Lines" value={String(ps.line_count || 0)} />
+              <KpiCard label="Total Billed & Ordered" value={fmtINR(ps.total_value)} color={C.green} />
+              <KpiCard label="First Purchase" value={fmtDate(ps.first_purchase)} />
+              <KpiCard label="Latest Purchase" value={fmtDate(ps.last_purchase)} />
+              <KpiCard label="Quoted (not bought)" value={String(ps.quote_count || 0)} color={C.blue} />
+            </div>
+
+            <Card style={{ marginBottom: 20, padding: 0 }}>
+              <SectionHeader title="Products Bought" count={(products.products || []).length} />
+              <Table
+                headers={['Product', 'Code', 'Unit', 'Times', 'Total Qty', 'Last Price', 'Avg Realised', 'Lowest', 'Highest', 'Total Value', 'First', 'Latest']}
+                emptyMsg="No products invoiced or ordered yet"
+                rows={(products.products || []).map((p, i) => (
+                  <tr key={p.item_id ?? `${p.product_name}-${i}`}>
+                    <TD bold>{p.product_name}</TD>
+                    <TD primary>{p.item_code || '—'}</TD>
+                    <TD>{p.unit || '—'}</TD>
+                    <TD>{p.line_count}</TD>
+                    <TD>{fmtQty(p.total_qty)}</TD>
+                    <TD bold>{fmtRs(p.last_price)}</TD>
+                    <TD><span title="Total value divided by total quantity. It can differ from the unit prices beside it when a line amount carries a discount or was overridden.">{fmtRs(p.avg_price)}</span></TD>
+                    <TD>{fmtRs(p.min_price)}</TD>
+                    <TD>{fmtRs(p.max_price)}</TD>
+                    <TD bold>{fmtINR(p.total_value)}</TD>
+                    <TD>{fmtDate(p.first_purchased)}</TD>
+                    <TD>{fmtDate(p.last_purchased)}</TD>
+                  </tr>
+                ))}
+              />
+            </Card>
+
+            <Card style={{ marginBottom: 20, padding: 0 }}>
+              <SectionHeader title="Every Order & Invoice Line" count={(products.lines || []).length} />
+              <Table
+                headers={['Document', 'Type', 'Date', 'Product', 'Qty', 'Unit', 'Unit Price', 'Amount', 'Status']}
+                emptyMsg="No lines recorded"
+                rows={(products.lines || []).map((l, i) => (
+                  <tr key={`${l.doc_type}-${l.doc_id}-${i}`}>
+                    <TD primary>{l.doc_number || `#${l.doc_id}`}</TD>
+                    <TD>{l.doc_type}</TD>
+                    <TD>{fmtDate(l.doc_date)}</TD>
+                    <TD bold>{l.product_name}</TD>
+                    <TD>{fmtQty(l.quantity)}</TD>
+                    <TD>{l.unit || '—'}</TD>
+                    <TD bold>{fmtRs(l.unit_price)}</TD>
+                    <TD>{fmtRs(l.amount)}</TD>
+                    <td style={{ padding: '9px 14px', borderBottom: '1px solid #f8f8fc' }}><Badge status={l.status} /></td>
+                  </tr>
+                ))}
+              />
+            </Card>
+
+            {(products.quotes || []).length > 0 && (
+              <Card style={{ padding: 0 }}>
+                <SectionHeader title="Quoted — not bought" count={products.quotes.length} />
+                <Table
+                  headers={['Quotation', 'Date', 'Valid Till', 'Product', 'Qty', 'Unit Price', 'Amount', 'Status']}
+                  emptyMsg="Nothing quoted"
+                  rows={products.quotes.map((q, i) => (
+                    <tr key={`${q.doc_id}-${i}`}>
+                      <TD primary>{q.doc_number || `#${q.doc_id}`}</TD>
+                      <TD>{fmtDate(q.doc_date)}</TD>
+                      <TD>{fmtDate(q.validity_date)}</TD>
+                      <TD bold>{q.product_name}</TD>
+                      <TD>{fmtQty(q.quantity)}</TD>
+                      <TD bold>{fmtRs(q.unit_price)}</TD>
+                      <TD>{fmtRs(q.amount)}</TD>
+                      <td style={{ padding: '9px 14px', borderBottom: '1px solid #f8f8fc' }}><Badge status={q.status} /></td>
+                    </tr>
+                  ))}
+                />
+              </Card>
+            )}
+          </div>
+        );
+      }
 
       // ── PROJECTS ──────────────────────────────────────────────────────────────
       case 'projects': return projects ? (
@@ -1709,7 +1851,7 @@ export default function Customer360() {
                     <Tooltip formatter={v => [fmtINR(v), 'Outstanding']} />
                     <Bar dataKey="amount" radius={[6, 6, 0, 0]}>
                       {agingBuckets.map((_, i) => (
-                        <Cell key={i} fill={['#6B3FDB', '#a78bfa', '#fbbf24', '#f87171', '#dc2626'][i]} />
+                        <Cell key={i} fill={['#6B3FDB', '#a78bfa', '#8b5cf6', '#f87171', '#dc2626'][i]} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -1904,17 +2046,17 @@ export default function Customer360() {
   const hasData = !!core;
 
   return (
-    <div style={{ padding: 24, background: C.surface, minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="CRM"
+        title="Customer 360° Command Center"
+        subtitle="Complete customer intelligence — Lead creation to AMC renewal in one screen"
+      />
+    }>
 
       {/* Page header */}
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#111827' }}>
-          Customer 360° Command Center
-        </h1>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-          Complete customer intelligence — Lead creation to AMC renewal in one screen
-        </p>
-      </div>
+
 
       {/* Search bar */}
       <Card style={{ padding: '14px 20px', marginBottom: 20 }}>
@@ -2007,9 +2149,9 @@ export default function Customer360() {
                   {health && (
                     <div style={{
                       padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 700,
-                      background: health.score >= 90 ? '#dcfce7' : health.score >= 75 ? '#fef9c3' : '#fee2e2',
+                      background: health.score >= 90 ? '#dcfce7' : health.score >= 75 ? '#ede9fe' : '#fee2e2',
                       color: health.score >= 90 ? C.green : health.score >= 75 ? C.amber : C.red,
-                      border: `1px solid ${health.score >= 90 ? '#bbf7d0' : health.score >= 75 ? '#fde68a' : '#fecaca'}`,
+                      border: `1px solid ${health.score >= 90 ? '#bbf7d0' : health.score >= 75 ? '#ddd6fe' : '#fecaca'}`,
                     }}>
                       {health.label} · {health.score}/100
                     </div>
@@ -2024,7 +2166,7 @@ export default function Customer360() {
                   color="#2563eb"
                   onClick={() => window.dispatchEvent(new CustomEvent('pulse:navigate', { detail: { page: 'OpportunitiesKanban' } }))} />
                 <ActionBtn icon="📋" label="New Quotation"
-                  color="#d97706"
+                  color="#6d28d9"
                   onClick={() => window.dispatchEvent(new CustomEvent('pulse:navigate', { detail: { page: 'Quotations' } }))} />
                 <ActionBtn icon="🏗" label="New Project"
                   color="#0891b2"
@@ -2082,6 +2224,6 @@ export default function Customer360() {
           </>
         );
       })()}
-    </div>
+    </PageShell>
   );
 }

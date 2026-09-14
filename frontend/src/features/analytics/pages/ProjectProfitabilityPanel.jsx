@@ -6,6 +6,7 @@ import {
   PieChart, Pie, Legend,
 } from 'recharts';
 import { Briefcase, TrendingDown, AlertTriangle, CheckCircle, IndianRupee } from 'lucide-react';
+import { Stat } from '@/components/pulse-ui';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -19,28 +20,20 @@ const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
-  amber: '#d97706', blue: '#2563eb', border: '#e9e4ff', cyan: '#0891b2',
+  amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff', cyan: '#0891b2',
 };
 
 const HEALTH_CFG = {
   'On Track':     { bg: '#dcfce7', color: C.green,   border: '#86efac' },
-  'At Risk':      { bg: '#fef3c7', color: '#92400e', border: '#fcd34d' },
-  'Margin Watch': { bg: '#fef9c3', color: '#78350f', border: '#fde68a' },
+  'At Risk':      { bg: '#ede9fe', color: '#5b21b6', border: '#c4b5fd' },
+  'Margin Watch': { bg: '#ede9fe', color: '#4c1d95', border: '#ddd6fe' },
   'Critical':     { bg: '#fee2e2', color: C.red,     border: '#fca5a5' },
 };
 
 function KpiCard({ label, value, sub, color, icon: Icon, warn }) {
-  const ac = warn ? C.red : (color || C.primary);
-  return (
-    <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 18px', borderLeft: `4px solid ${ac}` }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-        {Icon && <div style={{ width: 30, height: 30, borderRadius: 8, background: `${ac}18`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={15} color={ac} /></div>}
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 800, color: ac, marginTop: 6 }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>{sub}</div>}
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} sub={sub} color={color} icon={Icon} warn={warn} />;
 }
 
 function ProjectTable({ projects, title, emptyMsg }) {
@@ -66,7 +59,8 @@ function ProjectTable({ projects, title, emptyMsg }) {
           </thead>
           <tbody>
             {projects.map((p, i) => {
-              const hCfg = HEALTH_CFG[p.health_label] || HEALTH_CFG['On Track'];
+              const hCfg = HEALTH_CFG[p.health_label]
+                || { bg: '#f3f4f6', color: '#6b7280' };   // 'Cost Not Tracked' and any future label
               return (
                 <tr key={p.id} style={{ borderBottom: '1px solid #f3f4f6', background: p.is_loss_making ? '#fff5f5' : i % 2 === 0 ? '#fff' : '#fafafa' }}>
                   <td style={{ padding: '8px 12px' }}>
@@ -75,10 +69,22 @@ function ProjectTable({ projects, title, emptyMsg }) {
                   </td>
                   <td style={{ padding: '8px 12px', color: '#374151', fontSize: 11 }}>{p.customer_name || '—'}</td>
                   <td style={{ padding: '8px 12px', fontWeight: 700, color: C.primary }}>{fmtL(p.contract_value)}</td>
-                  <td style={{ padding: '8px 12px', color: '#374151' }}>{fmtL(p.actual_cost)}</td>
-                  <td style={{ padding: '8px 12px', fontWeight: 700, color: p.profit >= 0 ? C.green : C.red }}>{fmtL(p.profit)}</td>
-                  <td style={{ padding: '8px 12px', fontWeight: 700, color: p.margin_pct >= 20 ? C.green : p.margin_pct >= 10 ? C.blue : p.margin_pct >= 0 ? C.amber : C.red }}>
-                    {fmtPct(p.margin_pct)}
+                  {/* A project with no row in project_cost_summary has UNKNOWN
+                      cost, not zero cost. Treating it as zero previously made
+                      every uncosted project render 100% margin and a green "On
+                      Track" badge. Profit and Margin were fixed then; this Cost
+                      cell was not, and kept printing a confident Rs 0 next to
+                      the two dashes — the one number on the row that still
+                      claimed a measurement nobody had taken. */}
+                  <td style={{ padding: '8px 12px', color: p.has_cost_data ? '#374151' : '#9ca3af' }}
+                      title={p.has_cost_data ? undefined : 'No cost booked against this project yet'}>
+                    {p.has_cost_data ? fmtL(p.actual_cost) : '—'}
+                  </td>
+                  <td style={{ padding: '8px 12px', fontWeight: 700, color: !p.has_cost_data ? '#9ca3af' : p.profit >= 0 ? C.green : C.red }}>
+                    {p.has_cost_data ? fmtL(p.profit) : '—'}
+                  </td>
+                  <td style={{ padding: '8px 12px', fontWeight: 700, color: !p.has_cost_data ? '#9ca3af' : p.margin_pct >= 20 ? C.green : p.margin_pct >= 10 ? C.blue : p.margin_pct >= 0 ? C.amber : C.red }}>
+                    {p.has_cost_data ? fmtPct(p.margin_pct) : '—'}
                   </td>
                   <td style={{ padding: '8px 12px' }}>
                     <span style={{ fontSize: 11, color: '#374151', textTransform: 'capitalize' }}>{p.status}</span>
@@ -129,6 +135,22 @@ export default function ProjectProfitabilityPanel({ data }) {
       {/* KPI Cards */}
       <div>
         <div style={{ fontSize: 18, fontWeight: 800, color: '#111827', marginBottom: 16 }}>Project Intelligence & Profitability Center</div>
+        {/* Says up front how much of the portfolio has cost booked, so a reader
+            cannot mistake "no cost recorded" for "no cost incurred". */}
+        {summary.uncosted_projects > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 10,
+            background: '#f5f3ff', border: '1px solid #ddd6fe', fontSize: 12, color: '#5b21b6',
+            marginBottom: 14,
+          }}>
+            <AlertTriangle size={14} />
+            <span>
+              {summary.uncosted_projects} of {summary.total_projects} project(s) have no cost booked in
+              project_cost_summary. Profit and margin are shown as "—" for those, and the portfolio
+              roll-ups below cover the {summary.costed_projects} costed project(s) only.
+            </span>
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
           <KpiCard label="Active Projects" value={summary.active_projects || 0} color={C.primary} icon={Briefcase} />
           <KpiCard label="Delayed Projects" value={summary.delayed_count || 0} color={C.red} icon={AlertTriangle} warn={summary.delayed_count > 0} />
@@ -136,10 +158,18 @@ export default function ProjectProfitabilityPanel({ data }) {
           <KpiCard label="Loss-Making" value={summary.loss_making_count || 0} color={C.red} icon={IndianRupee} warn={summary.loss_making_count > 0} />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          <KpiCard label="Total Contract Value" value={fmtL(summary.total_contract_value)} color={C.primary} />
-          <KpiCard label="Total Cost" value={fmtL(summary.total_actual_cost)} color={C.blue} />
-          <KpiCard label="Total Profit" value={fmtL(summary.total_profit)} color={summary.total_profit >= 0 ? C.green : C.red} warn={summary.total_profit < 0} />
-          <KpiCard label="Portfolio Margin" value={fmtPct(summary.portfolio_margin_pct)} color={summary.portfolio_margin_pct >= 15 ? C.green : summary.portfolio_margin_pct >= 5 ? C.amber : C.red} />
+          <KpiCard label="Total Contract Value" value={fmtL(summary.total_contract_value)} color={C.primary}
+                   sub={summary.total_projects ? `${summary.total_projects} project(s)` : undefined} />
+          {/* Cost is null, not zero, until something is booked — a card reading
+              "Total Cost Rs 0" above a table of uncosted projects claims a
+              measurement nobody took. */}
+          <KpiCard label="Total Cost"
+                   value={summary.total_actual_cost != null ? fmtL(summary.total_actual_cost) : '—'}
+                   color={summary.total_actual_cost != null ? C.blue : '#9ca3af'}
+                   sub={summary.total_actual_cost != null ? undefined : 'No cost booked yet'} />
+          {/* Roll-ups cover only projects with cost booked — see costed_projects. */}
+          <KpiCard label="Total Profit" value={summary.total_profit != null ? fmtL(summary.total_profit) : '—'} color={summary.total_profit >= 0 ? C.green : C.red} sub={summary.costed_projects > 0 ? `${summary.costed_projects} costed project(s)` : 'No cost booked yet'} warn={summary.costed_projects > 0 && summary.total_profit < 0} />
+          <KpiCard label="Portfolio Margin" value={summary.portfolio_margin_pct != null ? fmtPct(summary.portfolio_margin_pct) : '—'} color={summary.portfolio_margin_pct == null ? '#9ca3af' : summary.portfolio_margin_pct >= 15 ? C.green : summary.portfolio_margin_pct >= 5 ? C.amber : C.red} sub={summary.portfolio_margin_pct == null ? 'Awaiting cost data' : undefined} />
         </div>
       </div>
 
@@ -212,7 +242,7 @@ export default function ProjectProfitabilityPanel({ data }) {
             <div style={{ background: '#fff5f5', border: `1px solid #fca5a5`, borderRadius: 12, padding: '12px 16px', marginBottom: 14, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
               <AlertTriangle size={15} color={C.red} style={{ flexShrink: 0, marginTop: 1 }} />
               <div style={{ fontSize: 12, color: '#991b1b' }}>
-                <strong>{lossMaking.length} loss-making projects detected.</strong> Total loss: {fmtL(lossMaking.reduce((s, p) => s + p.profit, 0))}.
+                <strong>{lossMaking.length} loss-making projects detected.</strong> Total loss: {fmtL(lossMaking.reduce((s, p) => s + (p.profit || 0), 0))}.
                 Immediate project director review required for each. Consider change order or scope renegotiation.
               </div>
             </div>

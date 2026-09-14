@@ -30,7 +30,7 @@
 .sb-stat-label{display:block;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}
 .sb-stat-val{display:block;font-size:18px;font-weight:700;color:#111827;}
 .sb-stat-sub{font-size:11px;color:#9ca3af;}
-.sb-stat-amber{border-left:3px solid #f59e0b;}
+.sb-stat-amber{border-left:3px solid #7c5cf0;}
 .sb-stat-red{border-left:3px solid #ef4444;}
 .sb-stat-green{border-left:3px solid #10b981;}
 
@@ -67,7 +67,7 @@
 .sb-tr:last-child td{border-bottom:none;}
 .sb-tr-overdue td{background:#fff8f8;}
 .sb-tr-overdue:hover td{background:#fee2e2;}
-.sb-tr-due-soon td{background:#fffbeb;}
+.sb-tr-due-soon td{background:#f5f3ff;}
 .sb-link{background:none;border:none;color:#6B3FDB;font-weight:600;cursor:pointer;font-size:13px;font-family:monospace;}
 .sb-link:hover{text-decoration:underline;}
 .sb-supplier-cell{display:flex;align-items:center;gap:9px;}
@@ -76,16 +76,16 @@
 .sb-due-cell{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
 .sb-due-date{font-size:12px;}
 .sb-due-overdue{color:#dc2626;font-weight:600;}
-.sb-due-soon{color:#d97706;font-weight:500;}
+.sb-due-soon{color:#6d28d9;font-weight:500;}
 .sb-due-badge{font-size:10px;font-weight:600;padding:1px 6px;border-radius:20px;}
 .sb-due-badge.overdue{background:#fee2e2;color:#dc2626;}
-.sb-due-badge.soon{background:#fef3c7;color:#92400e;}
+.sb-due-badge.soon{background:#ede9fe;color:#5b21b6;}
 .sb-td-r{text-align:right;}
 .sb-td-sm{font-size:12px;color:#6b7280;}
 .sb-td-bold{font-weight:600;}
 .sb-td-nil{color:#d1d5db;font-size:12px;}
-.sb-tds-val{color:#d97706;font-weight:500;}
-.sb-bal-pending{color:#f59e0b;font-weight:600;}
+.sb-tds-val{color:#6d28d9;font-weight:500;}
+.sb-bal-pending{color:#7c5cf0;font-weight:600;}
 .sb-bal-clear{color:#10b981;font-weight:600;}
 .sb-status{font-size:11px;font-weight:500;padding:3px 9px;border-radius:20px;text-transform:capitalize;}
 .sb-row-actions{display:flex;gap:4px;}
@@ -94,7 +94,7 @@
 .sb-approve-btn:hover{color:#10b981;border-color:#10b981;}
 .sb-reject-btn:hover{color:#ef4444;border-color:#ef4444;}
 .sb-pay-btn:hover{color:#3b82f6;border-color:#3b82f6;}
-.sb-resubmit-btn:hover{color:#f59e0b;border-color:#f59e0b;}
+.sb-resubmit-btn:hover{color:#7c5cf0;border-color:#7c5cf0;}
 .sb-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:60px;color:#9ca3af;}
 
 /* overlay + drawers */
@@ -142,8 +142,8 @@
 .sb-reject-full-btn:hover{background:#fecaca;}
 .sb-pay-full-btn{display:flex;align-items:center;gap:7px;padding:10px 20px;background:#6B3FDB;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;}
 .sb-pay-full-btn:hover{background:#5B35D5;}
-.sb-resubmit-full-btn{display:flex;align-items:center;gap:7px;padding:10px 16px;background:#fef3c7;color:#92400e;border:1.5px solid #fde68a;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;}
-.sb-resubmit-full-btn:hover{background:#fde68a;}
+.sb-resubmit-full-btn{display:flex;align-items:center;gap:7px;padding:10px 16px;background:#ede9fe;color:#5b21b6;border:1.5px solid #ddd6fe;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;}
+.sb-resubmit-full-btn:hover{background:#ddd6fe;}
 .sb-paid-badge{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#10b981;padding:10px 16px;background:#f0fdf4;border-radius:8px;}
 
 /* ── Approval / Rejection confirmation modal */
@@ -182,7 +182,7 @@
 .sb-totals-box{width:300px;background:#f9fafb;border-radius:10px;padding:14px;}
 .sb-total-row{display:flex;justify-content:space-between;font-size:13px;color:#6b7280;padding:4px 0;}
 .sb-total-final{border-top:2px solid #e5e7eb;margin-top:6px;padding-top:8px;font-size:15px;font-weight:700;color:#111827;}
-.sb-tds-deduct{color:#d97706;font-weight:500;}
+.sb-tds-deduct{color:#6d28d9;font-weight:500;}
 .sb-total-net{border-top:2px solid #6B3FDB;margin-top:4px;padding-top:8px;font-size:14px;font-weight:700;color:#6B3FDB;}
 
 /* ── TDS section */
@@ -203,4 +203,4 @@
 .sb-form-footer{display:flex;justify-content:flex-end;gap:10px;padding-top:10px;border-top:1px solid #f0f0f4;}
 
 /* colours */
-.green{color:#10b981;}.amber{color:#f59e0b;}.red{color:#ef4444;}
+.green{color:#10b981;}.amber{color:#7c5cf0;}.red{color:#ef4444;}

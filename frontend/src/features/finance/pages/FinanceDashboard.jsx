@@ -7,8 +7,8 @@ import {
 import {
   TrendingUp, TrendingDown, IndianRupee, FileText, AlertTriangle,
   CheckCircle, Clock, RefreshCw, ArrowUpRight, ArrowDownRight,
-  CreditCard, Banknote, Receipt, Building2, ChevronRight,
-  Maximize2, X, Calendar, Filter
+  CreditCard, Banknote, Receipt, Building2, ChevronRight, Maximize2, X,
+  Calendar, Filter, LayoutDashboard,
 } from 'lucide-react';
 import {
   getFinanceDashboard, getInvoices,
@@ -18,8 +18,9 @@ import api from '@/services/api/client';
 import { useFY } from '@/context/FYContext';
 import FYSelector from '@/components/core/FYSelector';
 import './FinanceDashboard.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899'];
+const COLORS = ['#6366f1','#10b981','#7c5cf0','#ef4444','#3b82f6','#8b5cf6','#ec4899'];
 
 const TrendBadge = ({ value, suffix='%' }) => {
   const up = value >= 0;
@@ -78,7 +79,7 @@ const statusColor = (s) => {
   const m = s.toLowerCase();
   if (m.includes('paid')||m.includes('approved')) return '#10b981';
   if (m.includes('overdue')) return '#ef4444';
-  if (m.includes('pending')) return '#f59e0b';
+  if (m.includes('pending')) return '#7c5cf0';
   if (m.includes('draft')) return '#9ca3af';
   return '#6366f1';
 };
@@ -266,7 +267,24 @@ export default function FinanceDashboard({ setPage }) {
   );
 
   return (
-    <div className="fd-root">
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Finance"
+        title="Finance Dashboard"
+        actions={<>
+          {['month','quarter','year'].map(p=>(
+              <button key={p} className="plh-cta plh-cta--ghost"
+                onClick={()=>setPeriod(p)}>
+                {p.charAt(0).toUpperCase()+p.slice(1)}
+              </button>
+            ))}
+          <button className="plh-cta" onClick={load} disabled={loading}>
+            <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}}/> {loading ? 'Loading…' : 'Refresh'}
+          </button>
+        </>}
+      />
+    }>
 
       {expand && (
         <ExpandModal title={expand==='revexp'?'Revenue vs Expenses':expand==='cashflow'?'Cash Flow':'Chart'} onClose={()=>setExpand(null)}>
@@ -292,8 +310,8 @@ export default function FinanceDashboard({ setPage }) {
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           gap: 12, padding: '10px 16px', marginBottom: 12,
-          background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8,
-          fontSize: 13, color: '#92400e',
+          background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8,
+          fontSize: 13, color: '#5b21b6',
         }}>
           <span>
             <strong>⚠ No bank accounts configured</strong> — Cash Position and Payment Batches are unavailable until you add one.
@@ -309,27 +327,6 @@ export default function FinanceDashboard({ setPage }) {
         </div>
       )}
 
-      {/* Header */}
-      <div className="fd-header">
-        <div>
-          <h2 className="fd-title">Finance Dashboard</h2>
-          <p className="fd-sub">Last updated: {lastSync.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</p>
-        </div>
-        <div className="fd-header-r">
-          <FYSelector />
-          <div className="fd-period-tabs">
-            {['month','quarter','year'].map(p=>(
-              <button key={p} className={`fd-period-tab${period===p?' active':''}`}
-                onClick={()=>setPeriod(p)}>
-                {p.charAt(0).toUpperCase()+p.slice(1)}
-              </button>
-            ))}
-          </div>
-          <button className="fd-refresh-btn" onClick={load} disabled={loading}>
-            <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}}/> {loading ? 'Loading…' : 'Refresh'}
-          </button>
-        </div>
-      </div>
 
       {/* KPI Strip */}
       <div className="fd-kpis">
@@ -348,12 +345,12 @@ export default function FinanceDashboard({ setPage }) {
           sub={`${fmt(overdueAmt)} at risk`}
           onClick={()=>setActiveTab('receivables')}/>
         <KPI icon={Clock}        label="Due in 7 Days"    value={`${dueSoon} invoices`}
-          color="#f59e0b" sub="Requires follow-up"/>
+          color="#7c5cf0" sub="Requires follow-up"/>
         <KPI icon={Receipt}      label="GST Payable"      value={fmt(gstData.summary[2].amount)}
           color="#8b5cf6" sub={`Due: ${gstData.gstr3b.due}`}
           onClick={()=>setActiveTab('gst')}/>
         <KPI icon={CheckCircle}  label="Pending Approvals" value={pendingAppr||0}
-          color="#f59e0b" sub="Bills & expenses"
+          color="#7c5cf0" sub="Bills & expenses"
           onClick={()=>setPage&&setPage('ApprovalCenter')}/>
       </div>
 
@@ -634,7 +631,7 @@ export default function FinanceDashboard({ setPage }) {
               <div className="fd-aging-bars">
                 {agingAR.length > 0 ? agingAR.map((a,i)=>{
                   const pct = ar > 0 ? Math.round((a.amount/ar)*100) : 0;
-                  const color = i===0?'#10b981':i===1?'#f59e0b':i===2?'#ef4444':'#991b1b';
+                  const color = i===0?'#10b981':i===1?'#7c5cf0':i===2?'#ef4444':'#991b1b';
                   return (
                     <div key={i} className="fd-aging-row">
                       <span className="fd-aging-bucket">{a.bucket}</span>
@@ -714,7 +711,7 @@ export default function FinanceDashboard({ setPage }) {
               <div className="fd-aging-bars">
                 {agingAP.length > 0 ? agingAP.map((a,i)=>{
                   const pct = ap > 0 ? Math.round((a.amount/ap)*100) : 0;
-                  const color = i===0?'#10b981':i===1?'#f59e0b':i===2?'#ef4444':'#991b1b';
+                  const color = i===0?'#10b981':i===1?'#7c5cf0':i===2?'#ef4444':'#991b1b';
                   return (
                     <div key={i} className="fd-aging-row">
                       <span className="fd-aging-bucket">{a.bucket}</span>
@@ -869,8 +866,8 @@ export default function FinanceDashboard({ setPage }) {
                       <td>
                         <span className="fd-status-badge"
                           style={{
-                            background:s.type==='credit'?'#dcfce7':s.type==='payable'?'#fee2e2':'#fef3c7',
-                            color:s.type==='credit'?'#16a34a':s.type==='payable'?'#dc2626':'#92400e'
+                            background:s.type==='credit'?'#dcfce7':s.type==='payable'?'#fee2e2':'#ede9fe',
+                            color:s.type==='credit'?'#16a34a':s.type==='payable'?'#dc2626':'#5b21b6'
                           }}>
                           {s.type}
                         </span>
@@ -917,6 +914,6 @@ export default function FinanceDashboard({ setPage }) {
         </div>
       )}
 
-    </div>
+    </PageShell>
   );
 }

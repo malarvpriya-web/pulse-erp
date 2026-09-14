@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   FileText, Plus, Download, X, ChevronRight, Package,
   History, GitBranch, TrendingUp, TrendingDown, RefreshCw,
   CheckCircle, Clock, BarChart2, ShoppingCart, Send,
+  Search, SlidersHorizontal, RotateCcw,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './Quotations.css';
@@ -10,6 +11,7 @@ import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const STATUS_META = {
@@ -17,12 +19,60 @@ const STATUS_META = {
   sent:      { label: 'Sent',      bg: '#dbeafe', color: '#1d4ed8' },
   accepted:  { label: 'Accepted',  bg: '#dcfce7', color: '#15803d' },
   rejected:  { label: 'Rejected',  bg: '#fee2e2', color: '#b91c1c' },
-  expired:   { label: 'Expired',   bg: '#fef3c7', color: '#92400e' },
+  expired:   { label: 'Expired',   bg: '#ede9fe', color: '#5b21b6' },
   revised:   { label: 'Revised',   bg: '#e0f2fe', color: '#0369a1' },
   converted: { label: 'Converted', bg: '#ede9fe', color: '#5b21b6' },
 };
 
 const FILTER_TABS = ['all', 'draft', 'sent', 'accepted', 'rejected', 'expired', 'revised', 'converted'];
+
+// Live rows carry statuses this UI never writes (the seeder left one 'active').
+// They used to render as "Draft" and no chip could select them, so show the real
+// value and give the chip row an "Other" bucket — the counts then add up to All.
+const statusMeta = (status) =>
+  STATUS_META[status] || {
+    label: String(status || 'Unknown').replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    bg: '#f3f4f6', color: '#374151',
+  };
+const isKnownStatus = (status) => Object.prototype.hasOwnProperty.call(STATUS_META, status);
+
+// Client-side filter model. `/sales/quotations` returns the full unpaginated set,
+// so every dimension below narrows rows already in memory — the same convention
+// SalesOrders uses. Keeping them client-side is also what lets the chip counts,
+// the KPI strip and the table describe the same window instead of three.
+const DEFAULT_FILTERS = {
+  customer:  'all',   // customer_name — COALESCE(parties.name, quotations.customer_name)
+  from:      '',      // quotation_date >= from (YYYY-MM-DD, inclusive)
+  to:        '',      // quotation_date <= to   (YYYY-MM-DD, inclusive)
+  validity:  'all',   // all | valid | expiring | overdue
+  minAmount: '',      // total_amount >= minAmount
+  maxAmount: '',      // total_amount <= maxAmount
+  discount:  'all',   // all | pending | approved | rejected | none
+  revision:  'all',   // all | original | revised
+};
+
+const VALIDITY_OPTIONS = [
+  { value: 'all',      label: 'Any validity' },
+  { value: 'valid',    label: 'Still valid' },
+  { value: 'expiring', label: 'Expiring in 7 days' },
+  { value: 'overdue',  label: 'Past validity' },
+];
+
+// discount_approvals.status is pending | approved | rejected; a quotation that
+// never needed an approval has no row at all, which is its own bucket.
+const DISCOUNT_OPTIONS = [
+  { value: 'all',      label: 'Any discount status' },
+  { value: 'pending',  label: 'Approval pending' },
+  { value: 'approved', label: 'Approval granted' },
+  { value: 'rejected', label: 'Approval rejected' },
+  { value: 'none',     label: 'No approval requested' },
+];
+
+const REVISION_OPTIONS = [
+  { value: 'all',      label: 'All versions' },
+  { value: 'original', label: 'Original only (v1)' },
+  { value: 'revised',  label: 'Revised (v2+)' },
+];
 
 const fmt     = (n) => parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtL    = (n) => {
@@ -43,6 +93,71 @@ const fmtShort = (d) => {
   catch { return d || '—'; }
 };
 const isOverdue = (d) => d && new Date(String(d).slice(0, 10)) < new Date(new Date().toISOString().slice(0, 10));
+
+// ── Filter predicates ────────────────────────────────────────────────────────
+// DATE columns come back from pg as 'YYYY-MM-DD' strings, so the date bounds
+// compare lexicographically — no Date parsing, no timezone slide.
+const dayKey   = (d) => (d ? String(d).slice(0, 10) : '');
+const shiftKey = (key, days) => {
+  const d = new Date(`${key}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+const validUntilOf = (q) => q.validity_date || q.valid_until;
+// The same predicate the row's "Overdue" tag uses, so the filter and the tag
+// can never disagree about which rows are past their validity date.
+const isPastValidity = (q) =>
+  isOverdue(validUntilOf(q)) && !['accepted', 'converted', 'rejected'].includes(q.status);
+
+const matchesSearch = (q, term) => {
+  const t = (term || '').trim().toLowerCase();
+  if (!t) return true;
+  return [q.quotation_number, q.customer_name, q.notes]
+    .some(v => String(v ?? '').toLowerCase().includes(t));
+};
+
+const matchesStatus = (q, tab) => {
+  if (tab === 'all') return true;
+  const s = q.status || 'draft';
+  return tab === 'other' ? !isKnownStatus(s) : s === tab;
+};
+
+const matchesFilters = (q, f, today) => {
+  if (f.customer !== 'all' && (q.customer_name || '—') !== f.customer) return false;
+
+  const qDate = dayKey(q.quotation_date);
+  if (f.from && (!qDate || qDate < f.from)) return false;
+  if (f.to   && (!qDate || qDate > f.to))   return false;
+
+  if (f.validity !== 'all') {
+    const vu = dayKey(validUntilOf(q));
+    // No validity date means the question has no answer for this row — it
+    // belongs to "Any validity" only, never to one of the three buckets.
+    if (!vu) return false;
+    if (f.validity === 'overdue'  && !isPastValidity(q)) return false;
+    if (f.validity === 'valid'    && vu < today) return false;
+    if (f.validity === 'expiring' && (vu < today || vu > shiftKey(today, 7))) return false;
+  }
+
+  // A half-typed bound parses to NaN; every comparison against it is false, so
+  // the list stays put instead of emptying mid-keystroke.
+  const amount = parseFloat(q.total_amount) || 0;
+  if (f.minAmount !== '' && amount < parseFloat(f.minAmount)) return false;
+  if (f.maxAmount !== '' && amount > parseFloat(f.maxAmount)) return false;
+
+  if (f.discount !== 'all' && (q.discount_approval_status || 'none') !== f.discount) return false;
+
+  if (f.revision !== 'all') {
+    const ver = parseInt(q.version) || 1;
+    if (f.revision === 'original' && ver !== 1) return false;
+    if (f.revision === 'revised'  && ver <  2)  return false;
+  }
+
+  return true;
+};
+
+const activeFilterCount = (f) =>
+  Object.keys(DEFAULT_FILTERS).filter(k => f[k] !== DEFAULT_FILTERS[k]).length;
 
 // ── Revision History Drawer ──────────────────────────────────────────────────
 function RevisionDrawer({ open, onClose, quotationId, onRevise }) {
@@ -155,7 +270,7 @@ function RevisionDrawer({ open, onClose, quotationId, onRevise }) {
 
               <div className="sq-rev-timeline">
                 {revisions.map((r, i) => {
-                  const s = STATUS_META[r.status] || STATUS_META.draft;
+                  const s = statusMeta(r.status);
                   const isLatest = i === revisions.length - 1;
                   const ver = r.version || 1;
                   return (
@@ -210,10 +325,11 @@ const Quotations = ({ setPage, urlParams } = {}) => {
   const toast = useToast();
   const { readOnly } = usePageAccess();
   const [quotations, setQuotations]   = useState([]);
-  const [stats, setStats]             = useState({});
   const [loading, setLoading]         = useState(false);
   const [activeTab, setActiveTab]     = useState('all');
   const [search, setSearch]           = useState('');
+  const [filters, setFilters]         = useState(DEFAULT_FILTERS);
+  const [showFilters, setShowFilters] = useState(false);
   const [showForm, setShowForm]       = useState(false);
   const [customers, setCustomers]     = useState([]);
   const [products, setProducts]       = useState([]);
@@ -252,39 +368,29 @@ const Quotations = ({ setPage, urlParams } = {}) => {
   });
 
   // ── Data fetching ──
+  // One unfiltered request. `/sales/quotations` has no LIMIT and the "All" tab
+  // already pulled the whole set on mount, so filtering in memory costs nothing
+  // and removes the refetch-per-keystroke the server-side search used to cause.
+  // The former `/sales/quotations/stats` call is gone with it: it counted every
+  // revision row while this table shows one row per family, so the KPI strip was
+  // answering a different question than the table under it. The cards are now
+  // derived from the rows in view.
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const params = {};
-      if (activeTab !== 'all') params.status = activeTab;
-      if (search.trim()) params.search = search.trim();
-
-      const [qRes, sRes] = await Promise.allSettled([
-        api.get('/sales/quotations', { params }),
-        api.get('/sales/quotations/stats'),
-      ]);
-
+      const res = await api.get('/sales/quotations');
       if (!isMounted.current) return;
-
-      if (qRes.status === 'fulfilled') {
-        const data = qRes.value.data;
-        setQuotations(Array.isArray(data) ? data : []);
-      } else {
-        setQuotations([]);
-      }
-
-      if (sRes.status === 'fulfilled') {
-        setStats(sRes.value.data?.data ?? sRes.value.data ?? {});
-      }
+      setQuotations(Array.isArray(res.data) ? res.data : []);
     } catch {
       if (isMounted.current) setQuotations([]);
     } finally {
       if (isMounted.current) setLoading(false);
     }
-  }, [activeTab, search]);
+  }, []);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   useEffect(() => {
-    fetchData();
     const loadLookups = async () => {
       try {
         const [cRes, pRes] = await Promise.allSettled([
@@ -297,7 +403,7 @@ const Quotations = ({ setPage, urlParams } = {}) => {
       } catch { /* non-critical */ }
     };
     loadLookups();
-  }, [fetchData]);
+  }, []);
 
   const handleNewQuotation = async () => {
     try {
@@ -492,15 +598,77 @@ const Quotations = ({ setPage, urlParams } = {}) => {
 
   const totals = calculateTotals();
 
-  // ── KPI derivation (from stats endpoint — real DB data) ──
-  const kpiTotal       = parseInt(stats?.total ?? 0);
-  const kpiAccepted    = parseInt(stats?.accepted ?? 0);
-  const kpiSentPending = parseInt(stats?.sent_pending ?? 0);
-  const kpiValue       = parseFloat(stats?.total_value ?? 0);
-  const kpiRate        = parseFloat(stats?.acceptance_rate ?? 0);
+  // ── Filtering ──
+  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const setFilter = (key, value) => setFilters(f => ({ ...f, [key]: value }));
+  const resetFilters = () => { setFilters(DEFAULT_FILTERS); setSearch(''); setActiveTab('all'); };
+
+  // Options are derived from every loaded row, not from the filtered set, so
+  // picking a customer never collapses the list you picked it out of.
+  const customerOptions = useMemo(
+    () => [...new Set(quotations.map(q => q.customer_name || '—'))].sort((a, b) => a.localeCompare(b)),
+    [quotations]
+  );
+
+  // Everything except the status dimension, so the chip counts below are honest:
+  // a chip never advertises rows the search or another control already removed.
+  const preStatus = useMemo(
+    () => quotations.filter(q => matchesSearch(q, search) && matchesFilters(q, filters, today)),
+    [quotations, search, filters, today]
+  );
+
+  const statusCounts = useMemo(() => {
+    const counts = Object.fromEntries(FILTER_TABS.map(t => [t, 0]));
+    counts.all = preStatus.length;
+    counts.other = 0;
+    for (const q of preStatus) {
+      const s = q.status || 'draft';
+      if (isKnownStatus(s)) counts[s] += 1;
+      else counts.other += 1;
+    }
+    return counts;
+  }, [preStatus]);
+
+  const filtered = useMemo(() => preStatus.filter(q => matchesStatus(q, activeTab)), [preStatus, activeTab]);
+
+  // "Other" appears only when rows actually fall outside the known statuses, and
+  // stays while it is the active chip so the selection can be cleared.
+  const statusTabs = (statusCounts.other > 0 || activeTab === 'other')
+    ? [...FILTER_TABS, 'other']
+    : FILTER_TABS;
+
+  const advancedCount = activeFilterCount(filters);
+  const filterCount   = advancedCount + (search.trim() ? 1 : 0) + (activeTab !== 'all' ? 1 : 0);
+
+  // ── KPI derivation (from the rows currently in view) ──
+  const kpi = useMemo(() => {
+    const total       = filtered.length;
+    const accepted    = filtered.filter(q => q.status === 'accepted').length;
+    const sentPending = filtered.filter(q => q.status === 'sent' || q.status === 'draft').length;
+    const value       = filtered.reduce(
+      (sum, q) => (['rejected', 'expired'].includes(q.status) ? sum : sum + (parseFloat(q.total_amount) || 0)),
+      0
+    );
+    // No rows means no rate — 0.0% would read as "nothing was ever accepted".
+    return { total, accepted, sentPending, value, rate: total ? (accepted / total) * 100 : null };
+  }, [filtered]);
+
+  const rateTone = kpi.rate == null ? '' : kpi.rate >= 50 ? 'sq-sum-green' : kpi.rate >= 30 ? 'sq-sum-orange' : 'sq-sum-red';
 
   return (
-    <div className="sq-root">
+    <PageShell dock={
+      <PageHero
+        icon={FileText}
+        eyebrow="Sales"
+        title="Sales Quotations"
+        subtitle="Manage, revise, and track customer quotations"
+        actions={!readOnly && (
+          <button className="plh-cta" onClick={handleNewQuotation}>
+            <Plus size={14} /> New Quotation
+          </button>
+        )}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingSalesOrderNav}
         title={pendingSalesOrderNav?.title || 'Open Sales Orders?'}
@@ -520,82 +688,168 @@ const Quotations = ({ setPage, urlParams } = {}) => {
       {readOnly && <ReadOnlyBanner />}
 
       {/* ── Header ── */}
-      <div className="sq-header">
-        <div className="sq-header-l">
-          <div className="sq-header-icon"><FileText size={18} /></div>
-          <div>
-            <h1 className="sq-title">Sales Quotations</h1>
-            <p className="sq-sub">Manage, revise, and track customer quotations</p>
-          </div>
-        </div>
-        {!readOnly && (
-          <button className="sq-new-btn" onClick={handleNewQuotation}>
-            <Plus size={14} /> New Quotation
-          </button>
-        )}
-      </div>
 
-      {/* ── KPI cards (from stats endpoint) ── */}
+      {/* ── KPI cards (derived from the filtered rows in view) ── */}
       <div className="sq-summary sq-summary-5">
         <div className="sq-sum-card">
-          <span className="sq-sum-val">{kpiTotal}</span>
+          <span className="sq-sum-val">{kpi.total}</span>
           <span className="sq-sum-label">Total Quotations</span>
         </div>
         <div className="sq-sum-card">
-          <span className="sq-sum-val sq-sum-green">{kpiAccepted}</span>
+          <span className="sq-sum-val sq-sum-green">{kpi.accepted}</span>
           <span className="sq-sum-label">Accepted</span>
         </div>
         <div className="sq-sum-card">
-          <span className="sq-sum-val sq-sum-blue">{kpiSentPending}</span>
+          <span className="sq-sum-val sq-sum-blue">{kpi.sentPending}</span>
           <span className="sq-sum-label">Sent / Pending</span>
         </div>
         <div className="sq-sum-card">
-          <span className="sq-sum-val sq-sum-purple">{fmtL(kpiValue)}</span>
+          <span className="sq-sum-val sq-sum-purple">{fmtL(kpi.value)}</span>
           <span className="sq-sum-label">Total Value</span>
         </div>
         <div className="sq-sum-card sq-sum-card-rate">
           <div className="sq-rate-row">
-            <span className={`sq-sum-val ${kpiRate >= 50 ? 'sq-sum-green' : kpiRate >= 30 ? 'sq-sum-orange' : 'sq-sum-red'}`}>
-              {fmtPct(kpiRate)}
+            <span className={`sq-sum-val ${rateTone}`}>
+              {kpi.rate == null ? '—' : fmtPct(kpi.rate)}
             </span>
             <div className="sq-rate-bar-wrap">
-              <div className="sq-rate-bar" style={{ width: `${Math.min(kpiRate, 100)}%`, background: kpiRate >= 50 ? '#15803d' : kpiRate >= 30 ? '#d97706' : '#b91c1c' }} />
+              <div className="sq-rate-bar" style={{ width: `${Math.min(kpi.rate ?? 0, 100)}%`, background: kpi.rate == null ? '#e5e7eb' : kpi.rate >= 50 ? '#15803d' : kpi.rate >= 30 ? '#6d28d9' : '#b91c1c' }} />
             </div>
           </div>
           <span className="sq-sum-label">Acceptance Rate</span>
         </div>
       </div>
 
+      {/* The cards above move with the filters, so say so rather than letting a
+          narrowed total read as the company-wide one. */}
+      {filterCount > 0 && (
+        <div className="sq-filter-note">
+          <SlidersHorizontal size={12} />
+          <span>
+            Showing <strong>{filtered.length}</strong> of <strong>{quotations.length}</strong> quotations
+            {' — '}the cards above and the table below both reflect the active filters.
+          </span>
+          <button type="button" className="sq-filter-clear" onClick={resetFilters}>
+            <RotateCcw size={11} /> Clear all
+          </button>
+        </div>
+      )}
+
       {/* ── Status filter tabs ── */}
       <div className="sq-tabs">
-        {FILTER_TABS.map(tab => (
+        {statusTabs.map(tab => (
           <button
             key={tab}
             className={`sq-tab-btn${activeTab === tab ? ' sq-tab-active' : ''}`}
             onClick={() => setActiveTab(tab)}
+            title={tab === 'other' ? 'Quotations whose status is outside the standard set' : undefined}
           >
-            {tab === 'all' ? 'All' : STATUS_META[tab]?.label ?? tab}
+            {tab === 'all' ? 'All' : tab === 'other' ? 'Other' : STATUS_META[tab]?.label ?? tab}
+            <span className="sq-tab-count">{statusCounts[tab] ?? 0}</span>
           </button>
         ))}
         <div className="sq-tab-search">
+          <Search size={13} className="sq-search-icon" />
           <input
             type="text"
-            placeholder="Search quotation # or customer…"
+            aria-label="Search quotations"
+            placeholder="Search quotation #, customer or notes…"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && fetchData()}
           />
+          {search && (
+            <button type="button" className="sq-search-clear" onClick={() => setSearch('')} aria-label="Clear search">
+              <X size={11} />
+            </button>
+          )}
         </div>
+        <button
+          type="button"
+          className={`sq-filter-toggle${showFilters ? ' sq-filter-toggle-on' : ''}`}
+          onClick={() => setShowFilters(v => !v)}
+          aria-expanded={showFilters}
+        >
+          <SlidersHorizontal size={13} /> Filters
+          {advancedCount > 0 && <span className="sq-filter-badge">{advancedCount}</span>}
+        </button>
       </div>
+
+      {/* ── Advanced filters ── */}
+      {showFilters && (
+        <div className="sq-filters">
+          <div className="sq-filters-grid">
+            <div className="sq-field">
+              <label htmlFor="sq-f-customer">Customer</label>
+              <select id="sq-f-customer" value={filters.customer} onChange={e => setFilter('customer', e.target.value)}>
+                <option value="all">All customers</option>
+                {customerOptions.map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </div>
+            <div className="sq-field">
+              <label htmlFor="sq-f-from">Quoted from</label>
+              <input id="sq-f-from" type="date" value={filters.from} max={filters.to || undefined}
+                     onChange={e => setFilter('from', e.target.value)} />
+            </div>
+            <div className="sq-field">
+              <label htmlFor="sq-f-to">Quoted to</label>
+              <input id="sq-f-to" type="date" value={filters.to} min={filters.from || undefined}
+                     onChange={e => setFilter('to', e.target.value)} />
+            </div>
+            <div className="sq-field">
+              <label htmlFor="sq-f-validity">Validity</label>
+              <select id="sq-f-validity" value={filters.validity} onChange={e => setFilter('validity', e.target.value)}>
+                {VALIDITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div className="sq-field">
+              <label htmlFor="sq-f-min">Min amount (₹)</label>
+              <input id="sq-f-min" type="number" min="0" step="1000" placeholder="No minimum"
+                     value={filters.minAmount} onChange={e => setFilter('minAmount', e.target.value)} />
+            </div>
+            <div className="sq-field">
+              <label htmlFor="sq-f-max">Max amount (₹)</label>
+              <input id="sq-f-max" type="number" min="0" step="1000" placeholder="No maximum"
+                     value={filters.maxAmount} onChange={e => setFilter('maxAmount', e.target.value)} />
+            </div>
+            <div className="sq-field">
+              <label htmlFor="sq-f-discount">Discount approval</label>
+              <select id="sq-f-discount" value={filters.discount} onChange={e => setFilter('discount', e.target.value)}>
+                {DISCOUNT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div className="sq-field">
+              <label htmlFor="sq-f-revision">Version</label>
+              <select id="sq-f-revision" value={filters.revision} onChange={e => setFilter('revision', e.target.value)}>
+                {REVISION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="sq-filters-ft">
+            <span className="sq-filters-hint">
+              Dates read the quotation date; validity reads the valid-until date, matching the Overdue tag in the table.
+            </span>
+            <button type="button" className="sq-filter-clear" onClick={resetFilters} disabled={filterCount === 0}>
+              <RotateCcw size={11} /> Clear all
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Table ── */}
       <div className="sq-table-wrap">
         {loading ? (
           <div className="sq-empty"><RefreshCw size={28} className="sq-spin" color="#c4b5fd" /><p>Loading quotations…</p></div>
-        ) : quotations.length === 0 ? (
+        ) : filtered.length === 0 ? (
           <div className="sq-empty">
             <FileText size={36} color="#c4b5fd" />
-            <p>No quotations{activeTab !== 'all' ? ` with status "${STATUS_META[activeTab]?.label ?? activeTab}"` : ''} yet.</p>
+            {/* "nothing here" and "nothing matches" are different answers — a
+                shared message is how a working filter looks broken. */}
+            <p>{filterCount > 0 ? 'No quotations match your filters.' : 'No quotations yet.'}</p>
+            {filterCount > 0 && (
+              <button type="button" className="sq-filter-clear" onClick={resetFilters}>
+                <RotateCcw size={11} /> Clear all filters
+              </button>
+            )}
           </div>
         ) : (
           <table className="sq-table">
@@ -611,8 +865,8 @@ const Quotations = ({ setPage, urlParams } = {}) => {
               </tr>
             </thead>
             <tbody>
-              {quotations.map(q => {
-                const s        = STATUS_META[q.status] || STATUS_META.draft;
+              {filtered.map(q => {
+                const s        = statusMeta(q.status);
                 const ver      = parseInt(q.version) || 1;
                 const revCount = parseInt(q.total_revisions) || 1;
                 const validUntil = q.validity_date || q.valid_until;
@@ -641,7 +895,7 @@ const Quotations = ({ setPage, urlParams } = {}) => {
                       <span className="sq-badge" style={{ background: s.bg, color: s.color }}>{s.label}</span>
                       {q.discount_approval_status === 'pending' && (
                         <div style={{ marginTop: 4 }}>
-                          <span className="sq-badge" style={{ background: '#fef3c7', color: '#92400e', fontSize: 10 }} title="Discount exceeds the approval threshold; conversion is blocked until a sales manager decides">
+                          <span className="sq-badge" style={{ background: '#ede9fe', color: '#5b21b6', fontSize: 10 }} title="Discount exceeds the approval threshold; conversion is blocked until a sales manager decides">
                             Discount approval pending
                           </span>
                         </div>
@@ -865,7 +1119,7 @@ const Quotations = ({ setPage, urlParams } = {}) => {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 };
 

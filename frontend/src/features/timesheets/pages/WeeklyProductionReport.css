@@ -21,14 +21,14 @@
 .wpr-kpi-lbl  { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; margin-top: 2px; }
 
 /* Alert */
-.wpr-alert { background: #fffbeb; border: 1px solid #f59e0b; border-radius: 10px; padding: 14px 16px; margin-bottom: 20px; }
-.wpr-alert-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #92400e; margin-bottom: 10px; }
+.wpr-alert { background: #f5f3ff; border: 1px solid #7c5cf0; border-radius: 10px; padding: 14px 16px; margin-bottom: 20px; }
+.wpr-alert-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #5b21b6; margin-bottom: 10px; }
 .wpr-alert-list  { display: flex; flex-direction: column; gap: 8px; }
 .wpr-alert-row   { display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: #374151; flex-wrap: wrap; gap: 8px; }
 .wpr-alert-dept  { color: #6b7280; }
-.wpr-remind-btn  { padding: 5px 12px; background: #f59e0b; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.wpr-remind-btn  { padding: 5px 12px; background: #7c5cf0; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .wpr-remind-btn:disabled { opacity: .6; cursor: default; }
-.wpr-remind-btn:hover:not(:disabled) { background: #d97706; }
+.wpr-remind-btn:hover:not(:disabled) { background: #6d28d9; }
 
 /* Section */
 .wpr-section       { margin-bottom: 24px; }

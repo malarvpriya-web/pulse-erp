@@ -1,18 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
-import { Calendar, Clock, Video, Building2, Phone, User, Link2, FileText, CheckCircle, XCircle, RefreshCw, CalendarDays, BookOpen, Square, CheckSquare, X, Search, ChevronDown, ChevronUp, Plus } from 'lucide-react';
+import {
+  Calendar, Clock, Video, Building2, Phone, User, Link2, FileText,
+  CheckCircle, XCircle, RefreshCw, CalendarDays, BookOpen, Square,
+  CheckSquare, X, Search, ChevronDown, ChevronUp, Plus, UserPlus,
+} from 'lucide-react';
 import './InterviewScheduler.css';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate as fmtDateStr } from '@/utils/dateFormatter';
 import { CAT_STYLE, DIFF_STYLE } from '../shared/constants';
 import Drawer from '../shared/components/Drawer';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   scheduled:   { label: 'Scheduled',   bg: '#dbeafe', color: '#1d4ed8', icon: Clock },
   completed:   { label: 'Completed',   bg: '#dcfce7', color: '#15803d', icon: CheckCircle },
   cancelled:   { label: 'Cancelled',   bg: '#fee2e2', color: '#b91c1c', icon: XCircle },
-  rescheduled: { label: 'Rescheduled', bg: '#fef3c7', color: '#92400e', icon: RefreshCw },
+  rescheduled: { label: 'Rescheduled', bg: '#ede9fe', color: '#5b21b6', icon: RefreshCw },
 };
 
 const MODE_META = {
@@ -175,8 +180,8 @@ function SuggestedQuestionsPanel({ interview, onClose }) {
                     </div>
                     {isExp && q.expected_answer && (
                       <div style={{ padding: '0 12px 10px 38px', background: '#fff7ed' }}>
-                        <p style={{ fontSize: 11, fontWeight: 600, color: '#92400e', margin: '0 0 3px', textTransform: 'uppercase', letterSpacing: .3 }}>Hints</p>
-                        <p style={{ fontSize: 11, color: '#78350f', margin: 0, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{q.expected_answer}</p>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: '#5b21b6', margin: '0 0 3px', textTransform: 'uppercase', letterSpacing: .3 }}>Hints</p>
+                        <p style={{ fontSize: 11, color: '#4c1d95', margin: 0, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{q.expected_answer}</p>
                       </div>
                     )}
                   </div>
@@ -311,7 +316,14 @@ const InterviewScheduler = ({ setPage }) => {
   };
 
   return (
-    <div className="is-root">
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Interview Scheduler"
+        subtitle="All scheduled interviews by date"
+      />
+    }>
 
       {/* Schedule Drawer */}
       {scheduleOpen && (
@@ -403,8 +415,8 @@ const InterviewScheduler = ({ setPage }) => {
         <div className="is-header-l">
           <div className="is-header-icon"><CalendarDays size={18} /></div>
           <div>
-            <h1 className="is-title">Interview Scheduler</h1>
-            <p className="is-sub">All scheduled interviews by date</p>
+
+
           </div>
         </div>
         <div className="is-header-r">
@@ -563,7 +575,7 @@ const InterviewScheduler = ({ setPage }) => {
           onClose={() => setQuestionsFor(null)}
         />
       )}
-    </div>
+    </PageShell>
   );
 };
 

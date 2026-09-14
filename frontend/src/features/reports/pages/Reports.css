@@ -177,3 +177,64 @@
   padding: 60px 20px; color: #9ca3af; text-align: center;
 }
 .rp-empty p { margin: 0; font-size: 14px; color: #6b7280; }
+
+/* ── Result states ──────────────────────────────────────────────────────────
+   Four visually distinct states, because they mean four different things and
+   the page used to collapse three of them into one green tick reading "No
+   records found for the selected filters":
+     rp-state-error      the report failed — nothing is known about the data
+     rp-state-forbidden  the report exists but is not yours to read
+     rp-state-filter     the filters are invalid, so nothing ran
+     rp-state-notice     the report ran; there is something to tell you about it
+   "No matching records" is a successful run and uses .rp-prompt, not these. */
+.rp-root .rp-state {
+  display: flex; align-items: flex-start; gap: 11px;
+  padding: 14px 16px; border-radius: 10px; margin-bottom: 16px;
+  font-size: 13px; border: 1px solid transparent;
+}
+.rp-root .rp-state-icon { flex-shrink: 0; margin-top: 1px; }
+.rp-root .rp-state-title { font-weight: 600; }
+.rp-root .rp-state-detail { margin-top: 3px; opacity: .85; line-height: 1.5; }
+.rp-root .rp-state-error     { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+.rp-root .rp-state-filter    { background: #f5f3ff; border-color: #ddd6fe; color: #6d28d9; }
+.rp-root .rp-state-forbidden { background: #f5f3ff; border-color: #ddd6fe; color: #5b21b6; }
+.rp-root .rp-state-notice    { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+.rp-root .rp-state-retry {
+  margin-left: auto; flex-shrink: 0; align-self: center;
+  padding: 5px 12px; border-radius: 7px; cursor: pointer;
+  font-size: 12px; font-weight: 600;
+  background: #fff; border: 1px solid currentColor; color: inherit;
+}
+.rp-root .rp-state-retry:hover { background: rgba(255, 255, 255, .6); }
+
+/* Reports with no filters say so, rather than showing an inert control bar. */
+.rp-root .rp-filter-none {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: #6b7280; font-style: italic;
+}
+
+/* Numeric columns line up so totals can be compared down the column. */
+.rp-root .rp-th-measure,
+.rp-root .rp-td-measure {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Pagination */
+.rp-root .rp-pager { display: inline-flex; gap: 6px; align-items: center; }
+.rp-root .rp-pager button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 7px; cursor: pointer;
+  background: #fff; border: 1px solid #e2e8f0; color: #374151;
+}
+.rp-root .rp-pager button:hover:not(:disabled) { border-color: #6B3FDB; color: #6B3FDB; }
+.rp-root .rp-pager button:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Filter controls added with the server-driven catalog. */
+.rp-root .rp-filter-group select {
+  padding: 7px 10px; border: 1px solid #e2e8f0; border-radius: 8px;
+  font-size: 13px; background: #fff; color: #374151; outline: none;
+}
+.rp-root .rp-filter-group select:focus,
+.rp-root .rp-filter-group input:focus { border-color: #6B3FDB; }

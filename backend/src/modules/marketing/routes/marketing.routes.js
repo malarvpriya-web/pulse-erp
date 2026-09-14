@@ -1,15 +1,50 @@
 import express from 'express';
+import { sqlSalesOrderBooked, sqlEmployeeActive } from '../../../shared/statusSets.js';
 import pool from '../../shared/db.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
+import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
+import { requirePermission, allowRoles } from '../../../middlewares/auth.middleware.js';
+import { logAudit } from '../../../services/AuditService.js';
+import { validate as validateRules } from '../../../services/ValidationEngineService.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
-const cid = req => req.scope?.company_id ?? companyOf(req);
-const uid = req => req.user?.id ?? null;
+const cid = req => companyOf(req);
+
+// Every actor column in this module FKs employees, not users:
+//   marketing_tasks.created_by, marketing_tasks.assigned_to,
+//   marketing_timesheets.employee_id, marketing_deliverables.assigned_to,
+//   marketing_pursuit_list.assigned_to
+// The previous helper was `req.user?.id ?? null`, and the JWT carries `userId`,
+// never `id` — so it evaluated to null on EVERY request and every row this
+// module wrote had a NULL actor. (Confirmed live 2026-09-03: the only non-null
+// created_by values in marketing_tasks were the ones the seeder wrote.)
+// employeeOf() resolves the caller's employees.id, falling back to the
+// users.employee_id link for tokens minted before the claim existed.
+const actorEmployeeId = req => employeeOf(req, pool);
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const company_id = cid(req);
+    // Dashboard filter bar: ?period / ?from / ?to / ?type / ?status.
+    // The period applies to start_date — a campaign belongs to the window it ran
+    // in, which is also what the monthly-leads series is keyed on.
+    const range = resolveRange(req.query, { defaultPeriod: 'last12m' });
+    const type = dimension(req.query, 'type');
+    const status = dimension(req.query, 'status');
+    // $1 company, $2 from, $3 to, $4 type, $5 status — referenced by every query
+    // below via `scope`, so no parameter is left untyped.
+    const p = [company_id, range.from, range.to, type, status];
+    // company_id is NULL-tolerant here, matching the app-wide
+    // `($n::int IS NULL OR company_id = $n)` convention. The previous bare
+    // `company_id = $1` returned nothing at all for a global-scope super_admin.
+    const scope = `($1::int IS NULL OR company_id = $1)
+      AND ($2::date IS NULL OR start_date >= $2::date)
+      AND ($3::date IS NULL OR start_date <= $3::date)
+      AND ($4::text IS NULL OR type = $4)
+      AND ($5::text IS NULL OR status = $5)`;
+
     const [statsR, recentR, topR, monthlyR] = await Promise.all([
       pool.query(`
         SELECT
@@ -23,33 +58,34 @@ router.get('/dashboard', async (req, res) => {
                        / COALESCE(SUM(spent), 0) * 100, 2)
             ELSE 0 END                                 AS avg_roi
         FROM marketing_campaigns
-        WHERE company_id = $1`, [company_id]),
+        WHERE ${scope}`, p),
 
       pool.query(`
         SELECT id, name, type, status, actual_leads, target_leads, budget, spent, start_date, end_date
         FROM marketing_campaigns
-        WHERE company_id = $1
-        ORDER BY created_at DESC LIMIT 5`, [company_id]),
+        WHERE ${scope}
+        ORDER BY created_at DESC LIMIT 5`, p),
 
       pool.query(`
         SELECT id, name, type, status, actual_leads, budget, spent
         FROM marketing_campaigns
-        WHERE company_id = $1
-        ORDER BY actual_leads DESC LIMIT 5`, [company_id]),
+        WHERE ${scope}
+        ORDER BY actual_leads DESC LIMIT 5`, p),
 
       pool.query(`
         SELECT
           TO_CHAR(DATE_TRUNC('month', start_date), 'Mon YY') AS month,
           COALESCE(SUM(actual_leads), 0)                     AS leads
         FROM marketing_campaigns
-        WHERE company_id = $1
-          AND start_date >= NOW() - INTERVAL '12 months'
+        WHERE ${scope}
         GROUP BY DATE_TRUNC('month', start_date)
-        ORDER BY DATE_TRUNC('month', start_date)`, [company_id]),
+        ORDER BY DATE_TRUNC('month', start_date)`, p),
     ]);
 
     res.json({
-      stats:           statsR.rows[0],
+      period:           range.period,
+      period_label:     range.label,
+      stats:            statsR.rows[0],
       recent_campaigns: recentR.rows,
       top_performing:   topR.rows,
       monthly_leads:    monthlyR.rows,
@@ -57,8 +93,22 @@ router.get('/dashboard', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Dashboard filter options ──────────────────────────────────────────────────
+// Distinct values across ALL campaigns in scope, so selecting one doesn't
+// collapse the dropdown.
+router.get('/dashboard/filter-options', requirePermission('marketing', 'view'), async (req, res) => {
+  const distinct = (col) => pool
+    .query(`SELECT DISTINCT ${col} AS v FROM marketing_campaigns
+             WHERE ($1::int IS NULL OR company_id = $1)
+               AND ${col} IS NOT NULL AND TRIM(${col}) <> ''
+             ORDER BY v`, [cid(req)])
+    .catch(() => ({ rows: [] }));
+  const [types, statuses] = await Promise.all([distinct('type'), distinct('status')]);
+  res.json({ types: types.rows.map(r => r.v), statuses: statuses.rows.map(r => r.v) });
+});
+
 // ── Campaign Stats ────────────────────────────────────────────────────────────
-router.get('/campaigns/stats', async (req, res) => {
+router.get('/campaigns/stats', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -75,7 +125,7 @@ router.get('/campaigns/stats', async (req, res) => {
 });
 
 // ── Campaigns CRUD ────────────────────────────────────────────────────────────
-router.get('/campaigns', async (req, res) => {
+router.get('/campaigns', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { status, type, search } = req.query;
     const params = [cid(req)];
@@ -101,7 +151,7 @@ router.get('/campaigns', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/campaigns/:id/analytics', async (req, res) => {
+router.get('/campaigns/:id/analytics', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const id = req.params.id;
     const [taskR, delivR, campR] = await Promise.all([
@@ -129,7 +179,7 @@ router.get('/campaigns/:id/analytics', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/campaigns/:id', async (req, res) => {
+router.get('/campaigns/:id', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT * FROM marketing_campaigns WHERE id = $1 AND company_id = $2`,
@@ -139,22 +189,41 @@ router.get('/campaigns/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/campaigns', async (req, res) => {
+router.post('/campaigns', requirePermission('marketing', 'add'), async (req, res) => {
   try {
     const { name, type = 'email', status = 'draft', budget = 0, target_leads = 0,
             start_date, end_date, owner_id, description } = req.body;
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    if (start_date && end_date && new Date(end_date) < new Date(start_date)) {
+      return res.status(400).json({ error: 'end_date cannot be before start_date' });
+    }
+    if (Number(budget) < 0) return res.status(400).json({ error: 'budget cannot be negative' });
+    // Configurable rules (module 'marketing'), empty until migration 20260904000002.
+    const ruleCheck = await validateRules('marketing', req.body, { partial: false, companyId: cid(req) });
+    if (!ruleCheck.valid) {
+      return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors: ruleCheck.errors });
+    }
     const { rows } = await pool.query(`
       INSERT INTO marketing_campaigns
-        (company_id, name, type, status, budget, target_leads, start_date, end_date, owner_id, description)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [cid(req), name, type, status, budget, target_leads,
-       start_date || null, end_date || null, owner_id || null, description || null]);
+        (company_id, name, type, status, budget, target_leads, start_date, end_date, owner_id, description, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [cid(req), String(name).trim(), type, status, budget, target_leads,
+       start_date || null, end_date || null, owner_id || null, description || null,
+       await actorEmployeeId(req)]);
+    logAudit({ userId: req.user?.userId, module: 'marketing', recordId: rows[0].id,
+               recordType: 'campaign', action: 'create', newData: rows[0], req });
     res.status(201).json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/campaigns/:id', async (req, res) => {
+router.put('/campaigns/:id', requirePermission('marketing', 'edit'), async (req, res) => {
   try {
+    const partialCheck = await validateRules('marketing', req.body, { partial: true, companyId: cid(req) });
+    if (!partialCheck.valid) {
+      return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors: partialCheck.errors });
+    }
     const allowed = ['name','type','status','budget','spent','target_leads','actual_leads',
                      'start_date','end_date','owner_id','description'];
     const sets = []; const vals = [];
@@ -162,16 +231,21 @@ router.put('/campaigns/:id', async (req, res) => {
       if (req.body[f] !== undefined) { sets.push(`${f} = $${sets.length + 1}`); vals.push(req.body[f]); }
     });
     if (!sets.length) return res.json({});
+    const { rows: [before] } = await pool.query(
+      `SELECT * FROM marketing_campaigns WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
+    if (!before) return res.status(404).json({ error: 'Campaign not found' });
     sets.push(`updated_at = NOW()`);
     vals.push(req.params.id, cid(req));
     const { rows } = await pool.query(
       `UPDATE marketing_campaigns SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND company_id = $${vals.length} RETURNING *`,
       vals);
+    logAudit({ userId: req.user?.userId, module: 'marketing', recordId: req.params.id,
+               recordType: 'campaign', action: 'update', oldData: before, newData: rows[0], req });
     res.json(rows[0] || {});
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/campaigns/:id/status', async (req, res) => {
+router.patch('/campaigns/:id/status', requirePermission('marketing', 'edit'), captureBefore('marketing_campaigns'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE marketing_campaigns SET status = $1, updated_at = NOW() WHERE id = $2 AND company_id = $3 RETURNING *`,
@@ -180,15 +254,20 @@ router.patch('/campaigns/:id/status', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/campaigns/:id', async (req, res) => {
+router.delete('/campaigns/:id', requirePermission('marketing', 'delete'), async (req, res) => {
   try {
+    const { rows: [before] } = await pool.query(
+      `SELECT * FROM marketing_campaigns WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
+    if (!before) return res.status(404).json({ error: 'Campaign not found' });
     await pool.query(`DELETE FROM marketing_campaigns WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
+    logAudit({ userId: req.user?.userId, module: 'marketing', recordId: req.params.id,
+               recordType: 'campaign', action: 'delete', oldData: before, req });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Analytics Summary ─────────────────────────────────────────────────────────
-router.get('/analytics/summary', async (req, res) => {
+router.get('/analytics/summary', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -205,7 +284,7 @@ router.get('/analytics/summary', async (req, res) => {
 });
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
-router.get('/tasks', async (req, res) => {
+router.get('/tasks', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { campaign_id, assigned_to, status } = req.query;
     const params = [cid(req)]; let idx = 2;
@@ -225,7 +304,7 @@ router.get('/tasks', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/tasks', async (req, res) => {
+router.post('/tasks', requirePermission('marketing', 'add'), async (req, res) => {
   try {
     const { campaign_id, title, description, assigned_to, due_date, priority = 'medium' } = req.body;
     const { rows } = await pool.query(`
@@ -233,12 +312,12 @@ router.post('/tasks', async (req, res) => {
         (company_id, campaign_id, title, description, assigned_to, due_date, priority, created_by)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
       [cid(req), campaign_id || null, title, description || null,
-       assigned_to || null, due_date || null, priority, uid(req)]);
+       assigned_to || null, due_date || null, priority, await actorEmployeeId(req)]);
     res.status(201).json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/tasks/:id', async (req, res) => {
+router.patch('/tasks/:id', requirePermission('marketing', 'edit'), captureBefore('marketing_tasks'), async (req, res) => {
   try {
     const allowed = ['title','description','assigned_to','due_date','status','priority','campaign_id'];
     const sets = []; const vals = [];
@@ -254,7 +333,7 @@ router.patch('/tasks/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/tasks/:id/complete', async (req, res) => {
+router.patch('/tasks/:id/complete', requirePermission('marketing', 'edit'), captureBefore('marketing_tasks'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE marketing_tasks SET status = 'completed' WHERE id = $1 AND company_id = $2 RETURNING *`,
@@ -263,7 +342,7 @@ router.patch('/tasks/:id/complete', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/tasks/:id', async (req, res) => {
+router.delete('/tasks/:id', requirePermission('marketing', 'delete'), captureBefore('marketing_tasks'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM marketing_tasks WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
     res.json({ ok: true });
@@ -271,7 +350,7 @@ router.delete('/tasks/:id', async (req, res) => {
 });
 
 // ── Deliverables ──────────────────────────────────────────────────────────────
-router.get('/deliverables', async (req, res) => {
+router.get('/deliverables', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { campaign_id, status } = req.query;
     const params = [cid(req)]; let idx = 2;
@@ -290,7 +369,7 @@ router.get('/deliverables', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/deliverables', async (req, res) => {
+router.post('/deliverables', requirePermission('marketing', 'add'), async (req, res) => {
   try {
     const { campaign_id, name, type, due_date, assigned_to, notes } = req.body;
     const { rows } = await pool.query(`
@@ -301,7 +380,7 @@ router.post('/deliverables', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/deliverables/:id', async (req, res) => {
+router.patch('/deliverables/:id', requirePermission('marketing', 'edit'), captureBefore('marketing_deliverables'), async (req, res) => {
   try {
     const allowed = ['name','type','status','due_date','assigned_to','notes','campaign_id'];
     const sets = []; const vals = [];
@@ -317,7 +396,7 @@ router.patch('/deliverables/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/deliverables/:id/deliver', async (req, res) => {
+router.patch('/deliverables/:id/deliver', requirePermission('marketing', 'edit'), captureBefore('marketing_deliverables'), async (req, res) => {
   try {
     const { rows } = await pool.query(`
       UPDATE marketing_deliverables
@@ -329,23 +408,27 @@ router.patch('/deliverables/:id/deliver', async (req, res) => {
 });
 
 // ── Orders Won/Lost ───────────────────────────────────────────────────────────
-router.get('/orders-won-lost/stats', async (req, res) => {
+router.get('/orders-won-lost/stats', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(`
+      -- sales_orders has order_status, not status, and orders are never
+      -- 'won'/'lost' — that is opportunity vocabulary. For an order the win is
+      -- being booked; the loss is being cancelled or rejected. Status sets come
+      -- from shared/statusSets.js so this cannot drift again.
       SELECT
-        COUNT(*) FILTER (WHERE LOWER(status) = 'won')   AS won_count,
-        COALESCE(SUM(total_amount) FILTER (WHERE LOWER(status) = 'won'), 0) AS won_value,
-        COUNT(*) FILTER (WHERE LOWER(status) = 'lost')  AS lost_count,
+        COUNT(*) FILTER (WHERE ${sqlSalesOrderBooked('order_status')})   AS won_count,
+        COALESCE(SUM(total_amount) FILTER (WHERE ${sqlSalesOrderBooked('order_status')}), 0) AS won_value,
+        COUNT(*) FILTER (WHERE NOT (${sqlSalesOrderBooked('order_status')})) AS lost_count,
         CASE WHEN COUNT(*) > 0
-          THEN ROUND(COUNT(*) FILTER (WHERE LOWER(status) = 'won')::numeric / COUNT(*) * 100, 1)
+          THEN ROUND(COUNT(*) FILTER (WHERE ${sqlSalesOrderBooked('order_status')})::numeric / COUNT(*) * 100, 1)
           ELSE 0 END AS conversion_rate
       FROM sales_orders
-      WHERE company_id = $1 AND campaign_id IS NOT NULL`, [cid(req)]);
+      WHERE company_id = $1 AND campaign_id IS NOT NULL AND deleted_at IS NULL`, [cid(req)]);
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/orders-won-lost', async (req, res) => {
+router.get('/orders-won-lost', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { campaign_id, period } = req.query;
     const params = [cid(req)]; let idx = 2;
@@ -355,21 +438,21 @@ router.get('/orders-won-lost', async (req, res) => {
     if (period === 'quarter') where += ` AND so.created_at >= NOW() - INTERVAL '3 months'`;
 
     const { rows } = await pool.query(`
-      SELECT so.id, so.order_no,
-        COALESCE(so.customer_name, a.name) AS customer_name,
-        so.total_amount, so.status, so.created_at,
+      SELECT so.id, so.order_number AS order_no,
+        COALESCE(so.customer_name, p.name) AS customer_name,
+        so.total_amount, so.order_status AS status, so.created_at,
         mc.name AS campaign_name
       FROM sales_orders so
       LEFT JOIN marketing_campaigns mc ON mc.id = so.campaign_id
-      LEFT JOIN accounts a ON a.id = so.account_id
-      ${where}
+      LEFT JOIN parties p ON p.id = so.customer_id
+      ${where} AND so.deleted_at IS NULL
       ORDER BY so.created_at DESC`, params);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Pursuit List ──────────────────────────────────────────────────────────────
-router.get('/pursuit-list', async (req, res) => {
+router.get('/pursuit-list', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { status, campaign_id } = req.query;
     const params = [cid(req)]; let idx = 2;
@@ -392,7 +475,7 @@ router.get('/pursuit-list', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/pursuit-list', async (req, res) => {
+router.post('/pursuit-list', requirePermission('marketing', 'add'), async (req, res) => {
   try {
     const { account_id, account_name, campaign_id, priority = 'medium', assigned_to, notes } = req.body;
     const { rows } = await pool.query(`
@@ -405,7 +488,7 @@ router.post('/pursuit-list', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.patch('/pursuit-list/:id', async (req, res) => {
+router.patch('/pursuit-list/:id', requirePermission('marketing', 'edit'), captureBefore('marketing_pursuit_list'), async (req, res) => {
   try {
     const allowed = ['status','notes','priority','assigned_to','campaign_id','account_name'];
     const sets = []; const vals = [];
@@ -421,7 +504,7 @@ router.patch('/pursuit-list/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/pursuit-list/:id', async (req, res) => {
+router.delete('/pursuit-list/:id', requirePermission('marketing', 'delete'), captureBefore('marketing_pursuit_list'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM marketing_pursuit_list WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
     res.json({ ok: true });
@@ -429,7 +512,7 @@ router.delete('/pursuit-list/:id', async (req, res) => {
 });
 
 // ── Timesheets ────────────────────────────────────────────────────────────────
-router.get('/timesheets/summary', async (req, res) => {
+router.get('/timesheets/summary', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const month = parseInt(req.query.month) || new Date().getMonth() + 1;
     const year  = parseInt(req.query.year)  || new Date().getFullYear();
@@ -441,7 +524,7 @@ router.get('/timesheets/summary', async (req, res) => {
         ON mts.employee_id = e.id AND mts.company_id = $1
         AND EXTRACT(MONTH FROM mts.date) = $2
         AND EXTRACT(YEAR  FROM mts.date) = $3
-      WHERE e.company_id = $1 AND e.status IN ('active','probation')
+      WHERE e.company_id = $1 AND ${sqlEmployeeActive('e.status')}
       GROUP BY e.id, e.name
       HAVING COALESCE(SUM(mts.hours), 0) > 0
       ORDER BY total_hours DESC`, [cid(req), month, year]);
@@ -449,7 +532,7 @@ router.get('/timesheets/summary', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/timesheets', async (req, res) => {
+router.get('/timesheets', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { employee_id, month, year } = req.query;
     const params = [cid(req)]; let idx = 2;
@@ -470,48 +553,57 @@ router.get('/timesheets', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/timesheets', async (req, res) => {
+router.post('/timesheets', requirePermission('marketing', 'add'), async (req, res) => {
   try {
     const { campaign_id, task_id, date, hours, description } = req.body;
     const { rows } = await pool.query(`
       INSERT INTO marketing_timesheets
         (company_id, employee_id, campaign_id, task_id, date, hours, description)
       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [cid(req), uid(req), campaign_id || null, task_id || null, date, hours, description || null]);
+      [cid(req), await actorEmployeeId(req), campaign_id || null, task_id || null, date, hours, description || null]);
     res.status(201).json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── User Performance ──────────────────────────────────────────────────────────
-router.get('/user-performance', async (req, res) => {
+router.get('/user-performance', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const month = parseInt(req.query.month) || new Date().getMonth() + 1;
     const year  = parseInt(req.query.year)  || new Date().getFullYear();
     const { rows } = await pool.query(`
       SELECT e.id, e.name, e.designation,
-        COUNT(DISTINCT mt.id)                                    AS tasks_assigned,
-        COUNT(DISTINCT mt.id) FILTER (WHERE mt.status = 'completed') AS tasks_completed,
-        COALESCE(SUM(mts.hours), 0)                              AS hours_logged,
-        COUNT(DISTINCT mpl.id) FILTER (WHERE mpl.status = 'converted') AS pursuits_converted
+        COALESCE(t.tasks_assigned, 0)      AS tasks_assigned,
+        COALESCE(t.tasks_completed, 0)     AS tasks_completed,
+        COALESCE(h.hours_logged, 0)        AS hours_logged,
+        COALESCE(p.pursuits_converted, 0)  AS pursuits_converted
       FROM employees e
-      LEFT JOIN marketing_tasks mt
-        ON mt.assigned_to = e.id AND mt.company_id = $1
-      LEFT JOIN marketing_timesheets mts
-        ON mts.employee_id = e.id AND mts.company_id = $1
-        AND EXTRACT(MONTH FROM mts.date) = $2
-        AND EXTRACT(YEAR  FROM mts.date) = $3
-      LEFT JOIN marketing_pursuit_list mpl
-        ON mpl.assigned_to = e.id AND mpl.company_id = $1
-      WHERE e.company_id = $1 AND e.status IN ('active','probation')
-      GROUP BY e.id, e.name, e.designation
-      HAVING COUNT(DISTINCT mt.id) > 0 OR COALESCE(SUM(mts.hours), 0) > 0
+      LEFT JOIN (
+        SELECT assigned_to,
+               COUNT(*)                                        AS tasks_assigned,
+               COUNT(*) FILTER (WHERE status = 'completed')     AS tasks_completed
+          FROM marketing_tasks WHERE company_id = $1 GROUP BY assigned_to
+      ) t ON t.assigned_to = e.id
+      LEFT JOIN (
+        SELECT employee_id, SUM(hours) AS hours_logged
+          FROM marketing_timesheets
+         WHERE company_id = $1
+           AND EXTRACT(MONTH FROM date) = $2
+           AND EXTRACT(YEAR  FROM date) = $3
+         GROUP BY employee_id
+      ) h ON h.employee_id = e.id
+      LEFT JOIN (
+        SELECT assigned_to, COUNT(*) FILTER (WHERE status = 'converted') AS pursuits_converted
+          FROM marketing_pursuit_list WHERE company_id = $1 GROUP BY assigned_to
+      ) p ON p.assigned_to = e.id
+      WHERE e.company_id = $1 AND ${sqlEmployeeActive('e.status')}
+        AND (COALESCE(t.tasks_assigned, 0) > 0 OR COALESCE(h.hours_logged, 0) > 0)
       ORDER BY tasks_completed DESC, hours_logged DESC`, [cid(req), month, year]);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Analytics: Campaign ROI ───────────────────────────────────────────────────
-router.get('/analytics/campaign-roi', async (req, res) => {
+router.get('/analytics/campaign-roi', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { campaign_id } = req.query;
     const params = [cid(req)];
@@ -520,7 +612,7 @@ router.get('/analytics/campaign-roi', async (req, res) => {
     const { rows } = await pool.query(`
       SELECT mc.name AS campaign_name,
              COALESCE(mc.spent, 0) AS spend,
-             COALESCE(SUM(so.total_amount) FILTER (WHERE LOWER(so.status) = 'won'), 0) AS revenue
+             COALESCE(SUM(so.total_amount) FILTER (WHERE ${sqlSalesOrderBooked('so.order_status')}), 0) AS revenue
       FROM marketing_campaigns mc
       LEFT JOIN sales_orders so ON so.campaign_id = mc.id
       ${where}
@@ -531,7 +623,7 @@ router.get('/analytics/campaign-roi', async (req, res) => {
 });
 
 // ── Analytics: Leads by Campaign ──────────────────────────────────────────────
-router.get('/analytics/leads-by-campaign', async (req, res) => {
+router.get('/analytics/leads-by-campaign', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const { campaign_id } = req.query;
     const params = [cid(req)];
@@ -546,7 +638,7 @@ router.get('/analytics/leads-by-campaign', async (req, res) => {
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-router.get('/settings', async (req, res) => {
+router.get('/settings', requirePermission('marketing', 'view'), async (req, res) => {
   try {
     const company_id = cid(req);
     await pool.query(
@@ -557,7 +649,7 @@ router.get('/settings', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/settings', async (req, res) => {
+router.put('/settings', allowRoles('admin', 'super_admin'), async (req, res) => {
   try {
     const {
       default_campaign_type, fiscal_year_start, budget_alert_threshold,

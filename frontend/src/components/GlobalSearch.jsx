@@ -10,7 +10,7 @@ const SEARCHABLE_PAGES = [
   { page: 'AdminDashboard',      label: 'Team Ops',                   category: 'Dashboard' },
   { page: 'EmployeeDashboard',   label: 'My Dashboard',               category: 'Dashboard' },
   // Analytics & AI
-  { page: 'CeoDashboard',        label: 'CEO Dashboard',              category: 'Analytics' },
+  { page: 'CEOIntelligenceDashboard', label: 'CEO Intelligence',      category: 'Analytics' },
   { page: 'HRDashboard',          label: 'HR Analytics',               category: 'Analytics' },
   { page: 'SystemHealth',        label: 'System Health',              category: 'Admin' },
   { page: 'EngineeringDev',      label: 'Engineering Development',    category: 'Engineering' },
@@ -74,6 +74,7 @@ const SEARCHABLE_PAGES = [
   { page: 'SalesOrders',         label: 'Sales Orders',               category: 'Sales' },
   { page: 'SalesTargets',        label: 'Sales Targets',              category: 'Sales' },
   { page: 'SalesForecasts',      label: 'Sales Forecasts',            category: 'Sales' },
+  { page: 'ForecastCommit',      label: 'Forecast & Commit',          category: 'Sales' },
   { page: 'SalesCalendar',       label: 'Sales Calendar',             category: 'Sales' },
   { page: 'Competitors',         label: 'Competitors',                category: 'Sales' },
   // Inventory
@@ -105,13 +106,11 @@ const SEARCHABLE_PAGES = [
   { page: 'TeamPerformance',     label: 'Team Performance',           category: 'Performance' },
   // Recruitment
   { page: 'RecruitmentDashboard',label: 'Recruitment Dashboard',      category: 'Recruitment' },
-  { page: 'RecruiterDashboard',  label: 'Recruiter Dashboard',        category: 'Recruitment' },
+  { page: 'RecruiterDashboard',  label: 'My Workbench',               category: 'Recruitment' },
   { page: 'JobOpenings',         label: 'Job Openings',               category: 'Recruitment' },
   { page: 'Candidates',          label: 'Candidates',                 category: 'Recruitment' },
-  { page: 'InterviewScheduler',  label: 'Interview Scheduler',        category: 'Recruitment' },
-  { page: 'InterviewQuestionBank', label: 'Question Bank',            category: 'Recruitment' },
+  { page: 'InterviewScheduler',  label: 'Interviews',                 category: 'Recruitment' },
   { page: 'OfferManagement',     label: 'Offer Management',           category: 'Recruitment' },
-  { page: 'OnboardingChecklist', label: 'Onboarding Checklist',       category: 'Recruitment' },
   { page: 'TalentPools',         label: 'Talent Pools',               category: 'Recruitment' },
   { page: 'RecruitmentAgencies', label: 'Agencies',                   category: 'Recruitment' },
   // Travel
@@ -154,8 +153,8 @@ const SEARCHABLE_PAGES = [
 
 const CAT_COLORS = {
   Dashboard: '#6366f1', Analytics: '#8b5cf6', Finance: '#10b981',
-  HR: '#f59e0b', Employees: '#3b82f6', CRM: '#ef4444',
-  Sales: '#f97316', Projects: '#14b8a6', Inventory: '#84cc16',
+  HR: '#7c5cf0', Employees: '#3b82f6', CRM: '#ef4444',
+  Sales: '#7c5cf0', Projects: '#14b8a6', Inventory: '#84cc16',
   Admin: '#6b7280', Recruitment: '#ec4899', Travel: '#06b6d4',
 };
 

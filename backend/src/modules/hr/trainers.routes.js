@@ -1,6 +1,8 @@
 // backend/src/modules/hr/trainers.routes.js
 import express from 'express';
 import pool from '../../config/db.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid  = req => req.scope?.company_id ?? null;
@@ -8,7 +10,12 @@ const role = req => req.user?.role ?? '';
 const HR   = ['admin','super_admin','hr','hr_manager','lnd_admin','HR','Admin','SuperAdmin'];
 
 /* ── GET /trainers ─────────────────────────────────────────── */
-router.get('/', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied training in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND (t.company_id IS NULL OR t.company_id=${companyId})` : '';
   try {
@@ -26,7 +33,7 @@ router.get('/', async (req, res) => {
 });
 
 /* ── POST /trainers ────────────────────────────────────────── */
-router.post('/', async (req, res) => {
+router.post('/', requirePermission('training', 'add'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { name, trainer_type = 'internal', employee_id, email, phone, specialization } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -42,7 +49,7 @@ router.post('/', async (req, res) => {
 });
 
 /* ── PUT /trainers/:id ─────────────────────────────────────── */
-router.put('/:id', async (req, res) => {
+router.put('/:id', requirePermission('training', 'edit'), captureBefore('trainers'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { name, trainer_type, employee_id, email, phone, specialization, is_active } = req.body;
   try {
@@ -61,7 +68,7 @@ router.put('/:id', async (req, res) => {
 });
 
 /* ── DELETE /trainers/:id ──────────────────────────────────── */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('training', 'delete'), captureBefore('trainers'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     await pool.query(`UPDATE trainers SET is_active=false WHERE id=$1`, [req.params.id]);
@@ -70,7 +77,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 /* ── GET /trainers/:id/programs ────────────────────────────── */
-router.get('/:id/programs', async (req, res) => {
+router.get('/:id/programs', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND (tp.company_id IS NULL OR tp.company_id=${companyId})` : '';
   try {

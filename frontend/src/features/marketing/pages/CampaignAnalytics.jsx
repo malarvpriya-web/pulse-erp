@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { TrendingUp, Users, IndianRupee, Target, ChevronDown } from 'lucide-react';
+import { TrendingUp, Users, IndianRupee, Target, ChevronDown, BarChart3 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 const fmtL = (n) => {
   const v = parseFloat(n) || 0;
@@ -16,24 +17,12 @@ const DELIVERABLE_COLORS = {
   delivered:   '#10b981',
   overdue:     '#ef4444',
 };
-const PIE_COLORS = ['#10b981','#3b82f6','#f59e0b','#ef4444','#8b5cf6'];
+const PIE_COLORS = ['#10b981','#3b82f6','#7c5cf0','#ef4444','#8b5cf6'];
 
 function KpiCard({ icon: Icon, label, value, color, loading }) {
-  return (
-    <div style={{ background: 'var(--color-background-secondary)', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 10, padding: '16px 20px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-        <div style={{ background: color + '18', borderRadius: 8, padding: 8 }}>
-          <Icon size={16} style={{ color }} />
-        </div>
-        <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 500 }}>{label}</span>
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--color-text-primary)' }}>
-        {loading
-          ? <div style={{ height: 22, width: 80, background: 'var(--color-border-tertiary)', borderRadius: 4, animation: 'pulse 1.5s ease-in-out infinite' }} />
-          : value}
-      </div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat icon={Icon} label={label} value={value} color={color} loading={loading} />;
 }
 
 export default function CampaignAnalytics() {
@@ -84,13 +73,20 @@ export default function CampaignAnalytics() {
     : [];
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Marketing"
+        title="Campaign Analytics"
+        subtitle="Performance and ROI breakdown per campaign"
+      />
+    }>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Campaign Analytics</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Performance and ROI breakdown per campaign</p>
+
+
         </div>
         <div style={{ position: 'relative' }}>
           <select
@@ -114,7 +110,7 @@ export default function CampaignAnalytics() {
         <KpiCard icon={Target}     label="Total Campaigns"     color="#6B3FDB" loading={loadingCamps} value={summary.total_campaigns ?? '—'} />
         <KpiCard icon={Users}      label="Total Leads"         color="#2563eb" loading={loadingCamps} value={summary.total_leads ?? '—'} />
         <KpiCard icon={TrendingUp} label="Cost per Lead Rate"  color="#16a34a" loading={loadingCamps} value={summary.cost_per_lead_rate != null ? `${summary.cost_per_lead_rate}%` : '—'} />
-        <KpiCard icon={IndianRupee} label="Best Campaign"       color="#d97706" loading={loadingCamps} value={summary.best_campaign || '—'} />
+        <KpiCard icon={IndianRupee} label="Best Campaign"       color="#6d28d9" loading={loadingCamps} value={summary.best_campaign || '—'} />
       </div>
 
       {campaigns.length === 0 && !loadingCamps ? (
@@ -129,7 +125,7 @@ export default function CampaignAnalytics() {
             <KpiCard icon={IndianRupee} label="Spent"       color="#ef4444" loading={loadingData} value={fmtL(analytics?.spent)} />
             <KpiCard icon={Users}      label="Leads"       color="#16a34a" loading={loadingData} value={analytics?.actual_leads ?? '—'} />
             <KpiCard icon={TrendingUp} label="ROI %"       color="#6B3FDB" loading={loadingData} value={analytics?.roi != null ? `${analytics.roi}%` : '—'} />
-            <KpiCard icon={Target}     label="Cost / Lead" color="#d97706" loading={loadingData} value={parseFloat(analytics?.cost_per_lead) > 0 ? fmtL(analytics.cost_per_lead) : '—'} />
+            <KpiCard icon={Target}     label="Cost / Lead" color="#6d28d9" loading={loadingData} value={parseFloat(analytics?.cost_per_lead) > 0 ? fmtL(analytics.cost_per_lead) : '—'} />
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
@@ -193,6 +189,6 @@ export default function CampaignAnalytics() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

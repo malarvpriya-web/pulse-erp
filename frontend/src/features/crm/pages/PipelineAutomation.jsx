@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Filter } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function EmptyState({ icon: Icon, title, sub, action }) {
   return (
@@ -977,13 +979,15 @@ export default function PipelineAutomation() {
   const [activeTab, setActiveTab] = useState('stages');
 
   return (
-    <div style={{ padding: '24px 28px', background: '#f8f8fc', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#111' }}>Pipeline Automation</h1>
-        <p style={{ margin: '6px 0 0', fontSize: 14, color: '#6b7280' }}>
-          Configure pipeline stages, lead scoring, assignment rules, email sequences and win/loss reasons.
-        </p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Filter}
+        eyebrow="CRM"
+        title="Pipeline Automation"
+        subtitle="Configure pipeline stages, lead scoring, assignment rules, email sequences and win/loss reasons."
+      />
+    }>
+
 
       <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #f0f0f4', marginBottom: 24 }}>
         {TABS.map(tab => (
@@ -1000,6 +1004,6 @@ export default function PipelineAutomation() {
         {activeTab === 'sequences'  && <EmailSequencesTab />}
         {activeTab === 'winloss'    && <WinLossTab />}
       </div>
-    </div>
+    </PageShell>
   );
 }

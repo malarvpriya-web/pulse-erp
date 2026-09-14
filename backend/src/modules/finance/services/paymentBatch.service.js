@@ -4,6 +4,7 @@ import { paymentRepository } from '../repositories/payment.repository.js';
 import billRepo from '../repositories/bill.repository.js';
 import bankAccountRepo from '../repositories/bankAccount.repository.js';
 import journalRepo from '../repositories/journal.repository.js';
+import { vendorPartyId } from '../../procurement/services/vendorIdentity.service.js';
 
 class PaymentBatchService {
   async createBatch(data, userId) {
@@ -11,13 +12,13 @@ class PaymentBatchService {
     try {
       await client.query('BEGIN');
 
-      const batchNumber = await paymentBatchRepo.getNextBatchNumber();
+      const batchNumber = await paymentBatchRepo.getNextBatchNumber(client);
       const batch = await paymentBatchRepo.create({
         ...data,
         batch_number: batchNumber,
         created_by: userId,
         status: data.status || 'draft',
-      });
+      }, client);
 
       const items = data.items || [];
       for (const item of items) {
@@ -127,19 +128,21 @@ class PaymentBatchService {
       for (const item of items) {
         const paymentNumber = await paymentRepository.getNextNumber();
         // payment_batch_items.supplier_id is a vendors.id integer; payments.party_id
-        // is a parties.id uuid — same unbridged-masters gap the 3-way-match approval
-        // route already resolves (procurement.routes.js), same fallback here: prefer
-        // the real vendors.party_id bridge, else a best-effort case-insensitive name
-        // match, so this payment is still linkable even when neither resolves.
+        // is a parties.id uuid. The bridge is vendors.party_id — the deterministic
+        // key, resolved and bound by procurement's vendorIdentity service.
+        //
+        // The fallback this replaced was
+        //   (SELECT id FROM parties WHERE LOWER(name) = LOWER(v.vendor_name) LIMIT 1)
+        // with NO company predicate, on the path that MOVES MONEY. A name that
+        // matched a party in another tenant would have paid that tenant's
+        // counterparty; a name that matched nothing left party_id NULL, so the
+        // payment could not be tied to a supplier at all. resolveVendorParty()
+        // binds the vendor on first use, so a supplier that predates the identity
+        // service acquires a real party here rather than silently resolving to
+        // the wrong one or to none.
         let resolvedPartyId = null;
         if (item.supplier_id) {
-          const { rows: vRows } = await client.query(
-            `SELECT v.party_id,
-                    (SELECT id FROM parties WHERE LOWER(name) = LOWER(v.vendor_name) AND deleted_at IS NULL LIMIT 1) AS matched_id
-             FROM vendors v WHERE v.id = $1`,
-            [item.supplier_id]
-          );
-          resolvedPartyId = vRows[0]?.party_id ?? vRows[0]?.matched_id ?? null;
+          resolvedPartyId = await vendorPartyId(client, item.supplier_id);
         }
         const payment = await paymentRepository.create(client, {
           payment_number: paymentNumber,

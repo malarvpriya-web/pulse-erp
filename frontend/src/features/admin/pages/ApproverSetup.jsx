@@ -1,16 +1,25 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { UserCheck, Plus, Edit2, Trash2, X, Check, RefreshCw } from 'lucide-react';
+import {
+  UserCheck, Plus, Edit2, Trash2, X, Check, RefreshCw,
+  SlidersHorizontal,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useRoleCatalog } from '@/config/roleCatalog';
 
 const MODULES = [
   'leave', 'project_creation', 'expense', 'purchase_order',
   'travel', 'recruitment', 'asset', 'payroll', 'general',
 ];
-const ROLES = ['manager', 'hr', 'finance', 'admin', 'super_admin', 'ceo', 'cfo'];
+// Approver roles come from the registry (config/roleCatalog.js). The list
+// hardcoded here previously offered 'ceo' and 'cfo' — codes no migration ever
+// seeds and no allowRoles() accepts, so a chain routed to one of them would
+// sit unapproved forever with nobody able to act on it.
 const EMPTY   = { module: '', approver_role: '', approver_email: '', sequence: 1 };
 
 export default function ApproverSetup({ setPage }) {
+  const ROLES = useRoleCatalog();
   const [rows,          setRows]          = useState([]);
   const [loading,       setLoading]       = useState(false);
   const [saving,        setSaving]        = useState(false);
@@ -94,7 +103,27 @@ export default function ApproverSetup({ setPage }) {
   );
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title="Approver Setup"
+        subtitle="Configure approval chains per module and sequence."
+        actions={<>
+          {setPage && (
+            <button className="plh-cta plh-cta--ghost" onClick={() => setPage('WorkflowConfiguration')}>
+              Workflow Rules →
+            </button>
+          )}
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button className="plh-cta" onClick={() => { setShowCreate(true); setForm(EMPTY); }}>
+            <Plus size={14} /> Add Approver
+          </button>
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingRemove}
         title="Remove Approver"
@@ -105,31 +134,6 @@ export default function ApproverSetup({ setPage }) {
         onCancel={() => setPendingRemove(null)}
       />
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 10, background: '#ede9fe', color: '#6B3FDB', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <UserCheck size={20} />
-          </div>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: '#111827' }}>Approver Setup</h1>
-            <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>Configure approval chains per module and sequence.</p>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {setPage && (
-            <button onClick={() => setPage('WorkflowConfiguration')} style={{ padding: '8px 14px', background: '#f5f3ff', color: '#6B3FDB', border: '1px solid #ddd6fe', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
-              Workflow Rules →
-            </button>
-          )}
-          <button onClick={load} style={{ padding: '8px 14px', background: '#ede9fe', color: '#6B3FDB', border: '1px solid #ddd6fe', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-            <RefreshCw size={14} /> Refresh
-          </button>
-          <button onClick={() => { setShowCreate(true); setForm(EMPTY); }} style={{ padding: '8px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
-            <Plus size={14} /> Add Approver
-          </button>
-        </div>
-      </div>
 
       {/* Toast */}
       {msg && (
@@ -157,7 +161,7 @@ export default function ApproverSetup({ setPage }) {
               <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Approver Role *</span>
               <select value={form.approver_role} onChange={e => setForm(f => ({ ...f, approver_role: e.target.value }))} style={sel}>
                 <option value="">— select —</option>
-                {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
               </select>
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -227,7 +231,7 @@ export default function ApproverSetup({ setPage }) {
                       <td style={{ padding: '10px 14px', fontWeight: 600, color: '#111827' }}>
                         {isEditing ? (
                           <select value={editRow.approver_role} onChange={e => setEditRow(r => ({ ...r, approver_role: e.target.value }))} style={{ ...editInp, cursor: 'pointer' }}>
-                            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                            {ROLES.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
                           </select>
                         ) : (row?.approver_role ?? 'manager')}
                       </td>
@@ -265,6 +269,6 @@ export default function ApproverSetup({ setPage }) {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

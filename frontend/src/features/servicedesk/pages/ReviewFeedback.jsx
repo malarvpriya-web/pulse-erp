@@ -2,9 +2,13 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
-import { Search, Star, MessageSquare, Package, Wrench, Clock, CheckCircle, ChevronUp, ChevronDown, Plus, X } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  Search, Star, MessageSquare, Package, Wrench, Clock, CheckCircle,
+  ChevronUp, ChevronDown, Plus, X, Target,
+} from 'lucide-react';
 
-const STAR_COLOR = { 5: '#22c55e', 4: '#84cc16', 3: '#f59e0b', 2: '#f97316', 1: '#ef4444' };
+const STAR_COLOR = { 5: '#22c55e', 4: '#84cc16', 3: '#7c5cf0', 2: '#7c5cf0', 1: '#ef4444' };
 
 function StarRating({ rating }) {
   const r = Number(rating ?? 0);
@@ -28,8 +32,8 @@ function StarPicker({ value, onChange }) {
       {[1, 2, 3, 4, 5].map(n => (
         <Star key={n} size={26} style={{ cursor: 'pointer' }}
           onMouseEnter={() => setHover(n)} onClick={() => onChange(n === value ? null : n)}
-          fill={n <= active ? (STAR_COLOR[active] || '#f59e0b') : 'none'}
-          color={n <= active ? (STAR_COLOR[active] || '#f59e0b') : '#d1d5db'}/>
+          fill={n <= active ? (STAR_COLOR[active] || '#7c5cf0') : 'none'}
+          color={n <= active ? (STAR_COLOR[active] || '#7c5cf0') : '#d1d5db'}/>
       ))}
     </div>
   );
@@ -209,23 +213,23 @@ export default function ReviewFeedback({ setPage }) {
   const td = { padding: '10px 16px', borderBottom: '1px solid #f9fafb' };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Customer Feedback</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>Product & engineer ratings captured after service closure — IPCS → IPS → Feedback</p>
-        </div>
-        <button onClick={openForm}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Service Desk"
+        title="Customer Feedback"
+        subtitle="Product & engineer ratings captured after service closure — IPCS → IPS → Feedback"
+        actions={<button className="plh-cta" onClick={openForm}>
           <Plus size={15}/> Log Feedback
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* KPI cards — computed live server-side, filter-aware */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 20 }}>
         <Kpi icon={Package} label="Avg Product Rating" value={kpis?.avg_product_rating ?? null} suffix=" / 5" tint={{ bg: '#ede9fe', fg: '#6B3FDB' }}/>
         <Kpi icon={Wrench} label="Avg Engineer Rating" value={kpis?.avg_engineer_rating ?? null} suffix=" / 5" tint={{ bg: '#dbeafe', fg: '#2563eb' }}/>
-        <Kpi icon={Clock} label="On-Time Visits" value={kpis?.on_time_pct ?? null} suffix="%" tint={{ bg: '#fef3c7', fg: '#d97706' }}/>
+        <Kpi icon={Clock} label="On-Time Visits" value={kpis?.on_time_pct ?? null} suffix="%" tint={{ bg: '#ede9fe', fg: '#6d28d9' }}/>
         <Kpi icon={CheckCircle} label="Resolved Satisfaction" value={kpis?.resolved_pct ?? null} suffix="%" tint={{ bg: '#d1fae5', fg: '#059669' }}/>
       </div>
 
@@ -383,6 +387,6 @@ export default function ReviewFeedback({ setPage }) {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

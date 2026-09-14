@@ -24,6 +24,40 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
 
 
 --
+-- Name: accounts_reject_hierarchy_cycle(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.accounts_reject_hierarchy_cycle() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE
+      cursor_id INTEGER := NEW.parent_account_id;
+      hops      INTEGER := 0;
+    BEGIN
+      IF NEW.parent_account_id IS NULL THEN
+        RETURN NEW;
+      END IF;
+      IF NEW.parent_account_id = NEW.id THEN
+        RAISE EXCEPTION 'An account cannot be its own parent (account %)', NEW.id;
+      END IF;
+
+      WHILE cursor_id IS NOT NULL LOOP
+        hops := hops + 1;
+        IF cursor_id = NEW.id THEN
+          RAISE EXCEPTION 'Account hierarchy cycle: % would become its own ancestor', NEW.id;
+        END IF;
+        IF hops > 50 THEN
+          RAISE EXCEPTION 'Account hierarchy deeper than 50 levels; refusing to add another';
+        END IF;
+        SELECT parent_account_id INTO cursor_id FROM accounts WHERE id = cursor_id;
+      END LOOP;
+
+      RETURN NEW;
+    END;
+    $$;
+
+
+--
 -- Name: calculate_available_stock(integer, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -45,6 +79,203 @@ CREATE FUNCTION public.calculate_available_stock(p_item_id integer, p_warehouse_
       WHERE  item_id = p_item_id AND warehouse_id = p_warehouse_id AND status = 'active';
 
       RETURN GREATEST(0, v_total_stock - v_reserved);
+    END;
+    $$;
+
+
+--
+-- Name: crm_norm_name(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.crm_norm_name(txt text) RETURNS text
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
+    AS $$
+      SELECT regexp_replace(
+               regexp_replace(
+                 lower(coalesce(txt, '')),
+                 '\m(private|pvt|limited|ltd|llp|inc|incorporated|corporation|corp|company|co)\M',
+                 '', 'g'),
+               '[^a-z0-9]', '', 'g')
+    $$;
+
+
+--
+-- Name: crm_quotation_party_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.crm_quotation_party_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE
+      opp_party  uuid;
+      party_name text;
+    BEGIN
+      IF NEW.opportunity_id IS NOT NULL THEN
+        SELECT a.party_id INTO opp_party
+          FROM opportunities o
+          JOIN accounts a ON a.id = o.account_id AND a.deleted_at IS NULL
+         WHERE o.id = NEW.opportunity_id;
+
+        -- Inherit BEFORE comparing: an omitted customer is the opportunity
+        -- handing its own down, not a disagreement with it.
+        IF opp_party IS NOT NULL AND NEW.customer_id IS NULL THEN
+          NEW.customer_id := opp_party;
+        END IF;
+
+        IF opp_party IS NOT NULL AND NEW.customer_id <> opp_party THEN
+          RAISE EXCEPTION
+            'quotation customer (%) does not match the canonical party of opportunity % (%)',
+            NEW.customer_id, NEW.opportunity_id, opp_party
+            USING ERRCODE = 'check_violation';
+        END IF;
+      END IF;
+
+      IF NEW.customer_id IS NOT NULL THEN
+        SELECT name INTO party_name FROM parties WHERE id = NEW.customer_id;
+        IF party_name IS NOT NULL THEN NEW.customer_name := party_name; END IF;
+      END IF;
+
+      RETURN NEW;
+    END;
+    $$;
+
+
+--
+-- Name: dashboard_widget_company_matches(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.dashboard_widget_company_matches() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF NEW.company_id IS DISTINCT FROM
+         (SELECT company_id FROM dashboards WHERE id = NEW.dashboard_id) THEN
+        RAISE EXCEPTION 'widget company_id % does not match its dashboard', NEW.company_id;
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+
+
+--
+-- Name: invoices_canonical_state_case(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.invoices_canonical_state_case() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+      BEGIN
+      NEW.status := LOWER(TRIM(NEW.status));
+        RETURN NEW;
+      END;
+      $$;
+
+
+--
+-- Name: marketing_campaigns_sync_names(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.marketing_campaigns_sync_names() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      -- Whichever side the writer used wins; the other mirrors it. COALESCE
+      -- order matters: on an UPDATE that changes name, NEW.campaign_name
+      -- still holds the OLD value, so the primary column must be preferred.
+      -- (No backticks in this comment: it lives inside a JS template
+      --  literal and one would end the string.)
+      NEW.campaign_name := COALESCE(NEW.name, NEW.campaign_name);
+      NEW.campaign_type := COALESCE(NEW.type, NEW.campaign_type);
+      NEW.name          := COALESCE(NEW.name, NEW.campaign_name);
+      NEW.type          := COALESCE(NEW.type, NEW.campaign_type);
+      RETURN NEW;
+    END;
+    $$;
+
+
+--
+-- Name: opportunities_canonical_state_case(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.opportunities_canonical_state_case() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+      BEGIN
+      NEW.stage := LOWER(TRIM(NEW.stage));
+        RETURN NEW;
+      END;
+      $$;
+
+
+--
+-- Name: opportunity_stage_history_canonical_state_case(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.opportunity_stage_history_canonical_state_case() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+      BEGIN
+      NEW.from_stage := LOWER(TRIM(NEW.from_stage));
+      NEW.to_stage := LOWER(TRIM(NEW.to_stage));
+        RETURN NEW;
+      END;
+      $$;
+
+
+--
+-- Name: savings_event_company_matches(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.savings_event_company_matches() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF NEW.company_id IS DISTINCT FROM
+         (SELECT company_id FROM savings_initiatives WHERE id = NEW.initiative_id) THEN
+        RAISE EXCEPTION 'savings event company_id % does not match its initiative', NEW.company_id;
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+
+
+--
+-- Name: skb_sync_published(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.skb_sync_published() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF NEW.status = 'published' THEN
+        NEW.is_published := true;
+        NEW.published_at := COALESCE(NEW.published_at, NOW());
+      ELSE
+        NEW.is_published := false;
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+
+
+--
+-- Name: vendors_party_company_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.vendors_party_company_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE p_company INTEGER;
+    BEGIN
+      IF NEW.party_id IS NULL THEN RETURN NEW; END IF;
+      IF TG_OP = 'UPDATE' AND OLD.party_id IS NOT DISTINCT FROM NEW.party_id THEN RETURN NEW; END IF;
+      SELECT company_id INTO p_company FROM parties WHERE id = NEW.party_id;
+      IF p_company IS NOT NULL AND NEW.company_id IS NOT NULL AND p_company <> NEW.company_id THEN
+        RAISE EXCEPTION 'vendor % (company %) cannot be bound to finance party % which belongs to company %',
+          NEW.id, NEW.company_id, NEW.party_id, p_company
+          USING ERRCODE = 'check_violation';
+      END IF;
+      RETURN NEW;
     END;
     $$;
 
@@ -168,7 +399,6 @@ ALTER SEQUENCE public.accounting_periods_id_seq OWNED BY public.accounting_perio
 
 CREATE TABLE public.accounts (
     id integer NOT NULL,
-    account_name character varying(255) NOT NULL,
     industry character varying(100),
     website character varying(255),
     phone character varying(50),
@@ -182,10 +412,12 @@ CREATE TABLE public.accounts (
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     deleted_at timestamp without time zone,
-    name character varying(300),
+    name character varying(300) NOT NULL,
     company_id integer,
     logo_url character varying(500),
-    party_id uuid
+    party_id uuid NOT NULL,
+    account_name text GENERATED ALWAYS AS (name) STORED,
+    parent_account_id integer
 );
 
 
@@ -280,6 +512,8 @@ CREATE TABLE public.amc_contracts (
     scope_of_work text,
     exclusions text,
     commissioning_workflow_id integer,
+    drive_file_id text,
+    drive_link text,
     CONSTRAINT chk_amc_contracts_status CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'active'::character varying, 'expired'::character varying, 'cancelled'::character varying])::text[])))
 );
 
@@ -559,7 +793,9 @@ CREATE TABLE public.approvals (
     decision_date timestamp without time zone,
     created_at timestamp without time zone DEFAULT now(),
     company_id integer,
-    branch_id integer
+    branch_id integer,
+    request_title text,
+    request_type character varying(60)
 );
 
 
@@ -602,6 +838,8 @@ CREATE TABLE public.approved_vendor_list (
     notes text,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
+    source_rfq_id integer,
+    is_preferred boolean DEFAULT false NOT NULL,
     CONSTRAINT approved_vendor_list_status_check CHECK (((status)::text = ANY ((ARRAY['approved'::character varying, 'blocked'::character varying, 'expired'::character varying, 'pending'::character varying])::text[])))
 );
 
@@ -1489,7 +1727,7 @@ CREATE TABLE public.audit_logs (
     user_id integer,
     module_name character varying(100) CONSTRAINT audit_logs_module_name_not_null1 NOT NULL,
     action_type character varying(50),
-    reference_id integer,
+    reference_id text,
     reference_type character varying(100),
     old_data_json jsonb,
     new_data_json jsonb,
@@ -1704,7 +1942,10 @@ CREATE TABLE public.bank_accounts (
     swift_code character varying(20),
     micr_code character varying(20),
     account_number_last4 character varying(4),
-    current_balance numeric(14,2) DEFAULT 0
+    current_balance numeric(14,2) DEFAULT 0,
+    branch text,
+    opening_balance numeric(18,2) DEFAULT 0,
+    chart_account_id integer
 );
 
 
@@ -1820,7 +2061,8 @@ CREATE TABLE public.bill_items (
     unit_price numeric(15,2) NOT NULL,
     tax_rate numeric(5,2) DEFAULT 0,
     amount numeric(15,2) NOT NULL,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT bill_items_tax_rate_pct_chk CHECK (((tax_rate IS NULL) OR ((tax_rate >= (0)::numeric) AND (tax_rate <= (100)::numeric))))
 );
 
 
@@ -1886,7 +2128,10 @@ CREATE TABLE public.bills (
     tds_amount numeric(15,2) DEFAULT 0,
     net_payable numeric(15,2),
     currency character varying(3) DEFAULT 'INR'::character varying NOT NULL,
-    exchange_rate numeric(15,6) DEFAULT 1 NOT NULL
+    exchange_rate numeric(15,6) DEFAULT 1 NOT NULL,
+    po_id integer,
+    CONSTRAINT bills_exchange_rate_pos_chk CHECK (((exchange_rate IS NULL) OR (exchange_rate > (0)::numeric))),
+    CONSTRAINT bills_tds_rate_pct_chk CHECK (((tds_rate IS NULL) OR ((tds_rate >= (0)::numeric) AND (tds_rate <= (100)::numeric))))
 );
 
 
@@ -2087,7 +2332,10 @@ CREATE TABLE public.bom_headers (
     product_id integer,
     status character varying(20) DEFAULT 'draft'::character varying,
     notes text,
-    is_phantom boolean DEFAULT false
+    is_phantom boolean DEFAULT false,
+    project_id integer,
+    sales_order_id integer,
+    created_by integer
 );
 
 
@@ -2249,7 +2497,9 @@ CREATE TABLE public.budget_actuals (
     month integer,
     year integer,
     created_at timestamp with time zone DEFAULT now(),
-    company_id integer
+    company_id integer,
+    source character varying(60),
+    recorded_date date DEFAULT CURRENT_DATE
 );
 
 
@@ -2713,7 +2963,8 @@ CREATE TABLE public.capa_actions (
     verified_at timestamp with time zone,
     verified_by_name character varying(150),
     company_id integer,
-    recurrence_count integer DEFAULT 0
+    recurrence_count integer DEFAULT 0,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -2852,7 +3103,8 @@ CREATE TABLE public.commercial_proposal_items (
     tax_pct numeric(5,2) DEFAULT 18,
     amount numeric(15,2) DEFAULT 0,
     hsn_code character varying(20),
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT commercial_proposal_items_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric)))
 );
 
 
@@ -2962,7 +3214,8 @@ CREATE TABLE public.commission_entries (
     paid_date date,
     clawback_reason text,
     created_at timestamp with time zone DEFAULT now(),
-    company_id integer DEFAULT 0 NOT NULL
+    company_id integer DEFAULT 0 NOT NULL,
+    CONSTRAINT commission_entries_commission_rate_pct_chk CHECK (((commission_rate IS NULL) OR ((commission_rate >= (0)::numeric) AND (commission_rate <= (100)::numeric))))
 );
 
 
@@ -3046,7 +3299,8 @@ CREATE TABLE public.commission_plans (
     clawback_period_days integer DEFAULT 30,
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    company_id integer DEFAULT 0 NOT NULL
+    company_id integer DEFAULT 0 NOT NULL,
+    CONSTRAINT commission_plans_base_rate_pct_pct_chk CHECK (((base_rate_pct IS NULL) OR ((base_rate_pct >= (0)::numeric) AND (base_rate_pct <= (100)::numeric))))
 );
 
 
@@ -3403,7 +3657,8 @@ CREATE TABLE public.company_documents (
     icon character varying(40),
     is_active boolean DEFAULT true NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    visible_roles text[]
 );
 
 
@@ -3634,7 +3889,8 @@ CREATE TABLE public.competitors (
     win_rate numeric(5,2),
     notes text,
     is_active boolean DEFAULT true,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT competitors_win_rate_pct CHECK (((win_rate IS NULL) OR ((win_rate >= (0)::numeric) AND (win_rate <= (100)::numeric))))
 );
 
 
@@ -4006,7 +4262,9 @@ CREATE TABLE public.cost_centers (
     parent_id integer,
     is_active boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    department text,
+    department_id integer
 );
 
 
@@ -4085,7 +4343,8 @@ CREATE TABLE public.credit_note_items (
     cgst_amount numeric(15,2) DEFAULT 0,
     sgst_amount numeric(15,2) DEFAULT 0,
     igst_amount numeric(15,2) DEFAULT 0,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT credit_note_items_gst_rate_pct_chk CHECK (((gst_rate IS NULL) OR ((gst_rate >= (0)::numeric) AND (gst_rate <= (100)::numeric))))
 );
 
 
@@ -4207,6 +4466,57 @@ ALTER SEQUENCE public.critical_roles_id_seq OWNED BY public.critical_roles.id;
 
 
 --
+-- Name: crm_activities; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.crm_activities (
+    id integer NOT NULL,
+    company_id integer,
+    activity_type character varying(40) NOT NULL,
+    subject character varying(255),
+    description text,
+    activity_date timestamp with time zone DEFAULT now() NOT NULL,
+    duration_mins integer,
+    lead_id integer,
+    opportunity_id integer,
+    account_id integer,
+    contact_id integer,
+    performed_by integer,
+    status character varying(30) DEFAULT 'completed'::character varying NOT NULL,
+    next_followup_date date,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    quotation_id integer,
+    sales_order_id integer,
+    ticket_id integer,
+    project_id integer,
+    campaign_id integer
+);
+
+
+--
+-- Name: crm_activities_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.crm_activities_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: crm_activities_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.crm_activities_id_seq OWNED BY public.crm_activities.id;
+
+
+--
 -- Name: crm_assignment_rules; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4221,43 +4531,6 @@ CREATE TABLE public.crm_assignment_rules (
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now()
 );
-
-
---
--- Name: crm_deals; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.crm_deals (
-    id integer NOT NULL,
-    lead_name character varying(200),
-    stage character varying(100),
-    deal_value numeric(14,2),
-    outcome character varying(20),
-    loss_reason text,
-    closed_at timestamp with time zone,
-    cycle_days integer,
-    created_at timestamp with time zone DEFAULT now()
-);
-
-
---
--- Name: crm_deals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.crm_deals_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: crm_deals_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.crm_deals_id_seq OWNED BY public.crm_deals.id;
 
 
 --
@@ -4287,6 +4560,7 @@ CREATE TABLE public.crm_email_accounts (
     sync_status character varying(30) DEFAULT 'pending'::character varying,
     sync_error text,
     last_sync_at timestamp with time zone,
+    smtp_secure boolean DEFAULT true NOT NULL,
     CONSTRAINT crm_email_accounts_provider_check CHECK (((provider)::text = ANY ((ARRAY['gmail'::character varying, 'outlook'::character varying, 'smtp'::character varying])::text[])))
 );
 
@@ -4322,7 +4596,12 @@ CREATE TABLE public.crm_email_sequence_steps (
     delay_days integer DEFAULT 1,
     subject character varying(500),
     body_html text,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    send_condition jsonb,
+    exit_condition jsonb,
+    delay_hours integer DEFAULT 0 NOT NULL,
+    channel character varying(20) DEFAULT 'email'::character varying NOT NULL,
+    is_active boolean DEFAULT true NOT NULL
 );
 
 
@@ -4351,6 +4630,7 @@ CREATE TABLE public.crm_emails (
     is_read boolean DEFAULT false,
     is_draft boolean DEFAULT false,
     received_at timestamp with time zone,
+    opportunity_id integer,
     CONSTRAINT crm_emails_direction_check CHECK (((direction)::text = ANY ((ARRAY['inbound'::character varying, 'outbound'::character varying])::text[])))
 );
 
@@ -4449,6 +4729,46 @@ CREATE TABLE public.crm_settings (
     default_report_period character varying(20) DEFAULT 'this_month'::character varying,
     include_lost_in_pipeline boolean DEFAULT false
 );
+
+
+--
+-- Name: crm_team_members; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.crm_team_members (
+    id integer NOT NULL,
+    company_id integer NOT NULL,
+    account_id integer,
+    opportunity_id integer,
+    employee_id integer NOT NULL,
+    team_role character varying(40) DEFAULT 'contributor'::character varying NOT NULL,
+    access_level character varying(20) DEFAULT 'read'::character varying NOT NULL,
+    added_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT crm_team_members_access_check CHECK (((access_level)::text = ANY ((ARRAY['read'::character varying, 'edit'::character varying])::text[]))),
+    CONSTRAINT crm_team_members_one_parent CHECK ((((account_id IS NOT NULL) AND (opportunity_id IS NULL)) OR ((account_id IS NULL) AND (opportunity_id IS NOT NULL)))),
+    CONSTRAINT crm_team_members_role_check CHECK (((team_role)::text = ANY ((ARRAY['owner'::character varying, 'sales_lead'::character varying, 'technical'::character varying, 'commercial'::character varying, 'executive_sponsor'::character varying, 'support'::character varying, 'contributor'::character varying])::text[])))
+);
+
+
+--
+-- Name: crm_team_members_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.crm_team_members_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: crm_team_members_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.crm_team_members_id_seq OWNED BY public.crm_team_members.id;
 
 
 --
@@ -4612,12 +4932,13 @@ ALTER SEQUENCE public.csat_responses_id_seq OWNED BY public.csat_responses.id;
 CREATE TABLE public.customer_credit_settings (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     company_id integer NOT NULL,
-    account_id integer NOT NULL,
+    account_id integer,
     credit_limit numeric(14,2) DEFAULT 0,
     credit_terms_days integer DEFAULT 30,
     is_blocked boolean DEFAULT false,
     block_reason text,
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    party_id uuid
 );
 
 
@@ -4628,7 +4949,6 @@ CREATE TABLE public.customer_credit_settings (
 CREATE TABLE public.customer_drive_files (
     id integer NOT NULL,
     company_id integer,
-    customer_id integer,
     customer_name text NOT NULL,
     doc_type text NOT NULL,
     drive_file_id text NOT NULL,
@@ -4640,7 +4960,8 @@ CREATE TABLE public.customer_drive_files (
     entity_type text,
     entity_id text,
     uploaded_by integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    customer_id uuid
 );
 
 
@@ -4671,13 +4992,13 @@ ALTER SEQUENCE public.customer_drive_files_id_seq OWNED BY public.customer_drive
 CREATE TABLE public.customer_drive_folders (
     id integer NOT NULL,
     company_id integer,
-    customer_id integer,
     customer_name text NOT NULL,
     doc_type text NOT NULL,
     drive_folder_id text NOT NULL,
     drive_folder_url text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    customer_id uuid
 );
 
 
@@ -4766,7 +5087,7 @@ ALTER SEQUENCE public.customer_equipment_id_seq OWNED BY public.customer_equipme
 CREATE TABLE public.customer_health_alerts (
     id integer NOT NULL,
     company_id integer,
-    customer_id integer NOT NULL,
+    customer_id uuid NOT NULL,
     customer_name text,
     alert_type text NOT NULL,
     alert_severity text DEFAULT 'warning'::text NOT NULL,
@@ -4810,7 +5131,7 @@ ALTER SEQUENCE public.customer_health_alerts_id_seq OWNED BY public.customer_hea
 CREATE TABLE public.customer_health_history (
     id integer NOT NULL,
     company_id integer,
-    customer_id integer NOT NULL,
+    customer_id uuid NOT NULL,
     snapshot_month date NOT NULL,
     health_score integer DEFAULT 0 NOT NULL,
     health_status text DEFAULT 'Critical'::text NOT NULL,
@@ -4856,7 +5177,7 @@ ALTER SEQUENCE public.customer_health_history_id_seq OWNED BY public.customer_he
 CREATE TABLE public.customer_health_scores (
     id integer NOT NULL,
     company_id integer,
-    customer_id integer NOT NULL,
+    customer_id uuid NOT NULL,
     customer_name text,
     health_score integer DEFAULT 0 NOT NULL,
     health_status text DEFAULT 'Critical'::text NOT NULL,
@@ -5271,6 +5592,91 @@ ALTER SEQUENCE public.cycle_count_lines_id_seq OWNED BY public.cycle_count_lines
 
 
 --
+-- Name: dashboard_widgets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dashboard_widgets (
+    id integer NOT NULL,
+    dashboard_id integer NOT NULL,
+    company_id integer NOT NULL,
+    title character varying(200) NOT NULL,
+    chart_type character varying(30) DEFAULT 'bar'::character varying NOT NULL,
+    query_config jsonb NOT NULL,
+    position_x integer DEFAULT 0 NOT NULL,
+    position_y integer DEFAULT 0 NOT NULL,
+    width integer DEFAULT 4 NOT NULL,
+    height integer DEFAULT 3 NOT NULL,
+    is_visible boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT dashboard_widgets_chart_type_check CHECK (((chart_type)::text = ANY ((ARRAY['bar'::character varying, 'column'::character varying, 'line'::character varying, 'area'::character varying, 'pie'::character varying, 'donut'::character varying, 'treemap'::character varying, 'waterfall'::character varying, 'scatter'::character varying, 'funnel'::character varying, 'kpi'::character varying, 'table'::character varying])::text[]))),
+    CONSTRAINT dashboard_widgets_height_check CHECK (((height >= 1) AND (height <= 24))),
+    CONSTRAINT dashboard_widgets_query_config_is_object CHECK ((jsonb_typeof(query_config) = 'object'::text)),
+    CONSTRAINT dashboard_widgets_query_config_names_metric CHECK ((query_config ? 'metric'::text)),
+    CONSTRAINT dashboard_widgets_width_check CHECK (((width >= 1) AND (width <= 12)))
+);
+
+
+--
+-- Name: dashboard_widgets_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.dashboard_widgets_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: dashboard_widgets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.dashboard_widgets_id_seq OWNED BY public.dashboard_widgets.id;
+
+
+--
+-- Name: dashboards; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dashboards (
+    id integer NOT NULL,
+    company_id integer NOT NULL,
+    owner_user_id integer,
+    name character varying(200) NOT NULL,
+    description text,
+    visibility character varying(20) DEFAULT 'private'::character varying NOT NULL,
+    is_default boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT dashboards_visibility_check CHECK (((visibility)::text = ANY ((ARRAY['private'::character varying, 'company'::character varying])::text[])))
+);
+
+
+--
+-- Name: dashboards_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.dashboards_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: dashboards_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.dashboards_id_seq OWNED BY public.dashboards.id;
+
+
+--
 -- Name: debit_note_items; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5287,7 +5693,8 @@ CREATE TABLE public.debit_note_items (
     cgst_amount numeric(15,2) DEFAULT 0,
     sgst_amount numeric(15,2) DEFAULT 0,
     igst_amount numeric(15,2) DEFAULT 0,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT debit_note_items_gst_rate_pct_chk CHECK (((gst_rate IS NULL) OR ((gst_rate >= (0)::numeric) AND (gst_rate <= (100)::numeric))))
 );
 
 
@@ -5776,7 +6183,8 @@ CREATE TABLE public.discount_approvals (
     approved_at timestamp with time zone,
     order_value numeric(15,2) DEFAULT 0,
     company_id integer,
-    quotation_id integer
+    quotation_id integer,
+    requested_by_employee_id integer
 );
 
 
@@ -5956,7 +6364,8 @@ CREATE TABLE public.document_master (
     company_id integer,
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    expiry_date date
 );
 
 
@@ -6183,7 +6592,12 @@ CREATE TABLE public.email_sequences (
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
     company_id integer,
-    trigger character varying(100)
+    trigger character varying(100),
+    description text,
+    goal_event character varying(60),
+    exit_on_reply boolean DEFAULT true NOT NULL,
+    exit_on_goal boolean DEFAULT true NOT NULL,
+    last_run_at timestamp with time zone
 );
 
 
@@ -6225,7 +6639,9 @@ CREATE TABLE public.email_templates (
     template_name text,
     template_type character varying(100),
     variables_json jsonb,
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    company_id integer,
+    module character varying(50)
 );
 
 
@@ -7281,7 +7697,8 @@ CREATE TABLE public.eway_bills (
     goods_description text,
     taxable_value numeric(14,2),
     status character varying(20) DEFAULT 'active'::character varying,
-    company_id integer
+    company_id integer,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -7513,7 +7930,9 @@ CREATE TABLE public.expense_claim_items (
     description text NOT NULL,
     amount numeric(15,2) NOT NULL,
     receipt_path character varying(500),
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    bill_status character varying(30) DEFAULT 'pending'::character varying NOT NULL,
+    category_id integer
 );
 
 
@@ -7863,7 +8282,10 @@ CREATE TABLE public.field_visits (
     travel_km numeric DEFAULT 0,
     cost numeric DEFAULT 0,
     customer_signature text,
-    report_url text
+    report_url text,
+    customer_rating numeric(2,1),
+    customer_feedback text,
+    CONSTRAINT field_visits_customer_rating_check CHECK (((customer_rating IS NULL) OR ((customer_rating >= (1)::numeric) AND (customer_rating <= (5)::numeric))))
 );
 
 
@@ -7974,7 +8396,8 @@ CREATE TABLE public.fixed_assets (
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     company_id integer,
-    cost_center_id integer
+    cost_center_id integer,
+    CONSTRAINT fixed_assets_wdv_rate_pct_chk CHECK (((wdv_rate IS NULL) OR ((wdv_rate >= (0)::numeric) AND (wdv_rate <= (100)::numeric))))
 );
 
 
@@ -8009,7 +8432,8 @@ CREATE TABLE public.forex_rate_history (
     rate_vs_inr numeric(15,6) NOT NULL,
     rate_date date NOT NULL,
     source character varying(20) DEFAULT 'api'::character varying NOT NULL,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT forex_rate_history_rate_vs_inr_pos_chk CHECK (((rate_vs_inr IS NULL) OR (rate_vs_inr > (0)::numeric)))
 );
 
 
@@ -8048,7 +8472,8 @@ CREATE TABLE public.forex_rates (
     source character varying(20) DEFAULT 'manual'::character varying NOT NULL,
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT forex_rates_rate_vs_inr_pos_chk CHECK (((rate_vs_inr IS NULL) OR (rate_vs_inr > (0)::numeric)))
 );
 
 
@@ -8243,7 +8668,11 @@ CREATE TABLE public.generated_documents (
     generated_by integer,
     file_url text,
     deleted_at timestamp without time zone,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    reference_id integer,
+    reference_type character varying(60),
+    company_id integer,
+    category character varying(60)
 );
 
 
@@ -8312,13 +8741,18 @@ CREATE TABLE public.goods_receipt_notes (
     received_by integer,
     received_date date DEFAULT CURRENT_DATE,
     warehouse_id integer,
-    status character varying(20) DEFAULT 'draft'::character varying,
+    status character varying(20) DEFAULT 'pending'::character varying,
     notes text,
     deleted_at timestamp without time zone,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     company_id integer,
-    quality_status character varying(20) DEFAULT 'not_required'::character varying
+    quality_status character varying(20) DEFAULT 'not_required'::character varying,
+    idempotency_key character varying(120),
+    vendor_dc_number character varying(80),
+    vendor_dc_date date,
+    CONSTRAINT goods_receipt_notes_quality_status_check CHECK (((quality_status IS NULL) OR ((quality_status)::text = ANY ((ARRAY['not_required'::character varying, 'pending'::character varying, 'in_progress'::character varying, 'passed'::character varying, 'failed'::character varying])::text[])))),
+    CONSTRAINT goods_receipt_notes_status_check CHECK (((status IS NULL) OR ((status)::text = ANY ((ARRAY['pending'::character varying, 'partial'::character varying, 'received'::character varying, 'rejected'::character varying, 'cancelled'::character varying])::text[]))))
 );
 
 
@@ -8355,7 +8789,8 @@ CREATE TABLE public.grn_items (
     quantity_rejected numeric(12,2) DEFAULT 0,
     rate numeric(12,2) DEFAULT 0,
     remarks text,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT grn_items_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric)))
 );
 
 
@@ -9092,6 +9527,54 @@ ALTER SEQUENCE public.hr_shifts_id_seq OWNED BY public.hr_shifts.id;
 
 
 --
+-- Name: inbound_emails; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.inbound_emails (
+    id integer NOT NULL,
+    company_id integer,
+    mailbox_id integer,
+    message_id character varying(998),
+    in_reply_to character varying(998),
+    references_hdr text,
+    from_email character varying(320),
+    from_name character varying(255),
+    to_email character varying(320),
+    subject text,
+    body_text text,
+    body_html text,
+    received_at timestamp with time zone DEFAULT now() NOT NULL,
+    status character varying(20) DEFAULT 'received'::character varying NOT NULL,
+    ticket_id integer,
+    threaded_by character varying(20),
+    reject_reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT inbound_email_status_check CHECK (((status)::text = ANY ((ARRAY['received'::character varying, 'created_ticket'::character varying, 'appended'::character varying, 'rejected'::character varying, 'duplicate'::character varying, 'ignored'::character varying])::text[]))),
+    CONSTRAINT inbound_email_threaded_by_check CHECK (((threaded_by IS NULL) OR ((threaded_by)::text = ANY ((ARRAY['subject_token'::character varying, 'in_reply_to'::character varying, 'heuristic'::character varying])::text[]))))
+);
+
+
+--
+-- Name: inbound_emails_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.inbound_emails_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: inbound_emails_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.inbound_emails_id_seq OWNED BY public.inbound_emails.id;
+
+
+--
 -- Name: increment_bands; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -9360,6 +9843,45 @@ ALTER SEQUENCE public.installation_requests_id_seq OWNED BY public.installation_
 
 
 --
+-- Name: interview_notes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interview_notes (
+    id integer NOT NULL,
+    candidate_id integer NOT NULL,
+    interviewer_id integer,
+    interview_round character varying(100),
+    rating numeric(2,1),
+    comments text,
+    recommendation character varying(20),
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT interview_notes_rating_check CHECK (((rating IS NULL) OR ((rating >= (1)::numeric) AND (rating <= (5)::numeric)))),
+    CONSTRAINT interview_notes_recommendation_check CHECK (((recommendation IS NULL) OR ((recommendation)::text = ANY ((ARRAY['strong_hire'::character varying, 'hire'::character varying, 'hold'::character varying, 'reject'::character varying])::text[]))))
+);
+
+
+--
+-- Name: interview_notes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.interview_notes_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: interview_notes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.interview_notes_id_seq OWNED BY public.interview_notes.id;
+
+
+--
 -- Name: interview_questions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -9420,57 +9942,6 @@ CREATE TABLE public.interview_schedules (
 
 
 --
--- Name: interviews; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.interviews (
-    id integer NOT NULL,
-    company_id integer NOT NULL,
-    candidate_id integer NOT NULL,
-    job_opening_id integer,
-    interview_level integer NOT NULL,
-    interview_type character varying(50) DEFAULT 'in_person'::character varying,
-    interviewer_id integer NOT NULL,
-    assigned_by integer,
-    scheduled_date date,
-    scheduled_time time without time zone,
-    duration_minutes integer DEFAULT 60,
-    meeting_link character varying(500),
-    location character varying(255),
-    status character varying(30) DEFAULT 'scheduled'::character varying,
-    outcome character varying(30),
-    rating integer,
-    feedback text,
-    rejection_reason text,
-    strengths text,
-    areas_of_improvement text,
-    completed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now(),
-    CONSTRAINT interviews_rating_check CHECK (((rating >= 1) AND (rating <= 5)))
-);
-
-
---
--- Name: interviews_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.interviews_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: interviews_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.interviews_id_seq OWNED BY public.interviews.id;
-
-
---
 -- Name: inventory_allocations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -9488,7 +9959,8 @@ CREATE TABLE public.inventory_allocations (
     allocated_by integer,
     purpose text,
     created_at timestamp with time zone DEFAULT now(),
-    project_id integer
+    project_id integer,
+    CONSTRAINT inventory_allocations_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric)))
 );
 
 
@@ -9534,6 +10006,9 @@ CREATE TABLE public.inventory_batches (
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
+    production_order_id integer,
+    company_id integer,
+    CONSTRAINT inventory_batches_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric))),
     CONSTRAINT inventory_batches_status_check CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'depleted'::character varying, 'expired'::character varying])::text[])))
 );
 
@@ -9599,7 +10074,9 @@ CREATE TABLE public.inventory_items (
     lot_sizing_rule character varying(20) DEFAULT 'lot_for_lot'::character varying,
     make_or_buy character varying(10) DEFAULT 'buy'::character varying,
     product_model character varying(120),
-    CONSTRAINT inventory_items_abc_class_chk CHECK ((abc_class = ANY (ARRAY['A'::bpchar, 'B'::bpchar, 'C'::bpchar])))
+    CONSTRAINT inventory_items_abc_class_chk CHECK ((abc_class = ANY (ARRAY['A'::bpchar, 'B'::bpchar, 'C'::bpchar]))),
+    CONSTRAINT inventory_items_default_gst_rate_pct_chk CHECK (((default_gst_rate IS NULL) OR ((default_gst_rate >= (0)::numeric) AND (default_gst_rate <= (100)::numeric)))),
+    CONSTRAINT inventory_items_gst_rate_pct_chk CHECK (((gst_rate IS NULL) OR ((gst_rate >= (0)::numeric) AND (gst_rate <= (100)::numeric))))
 );
 
 
@@ -9692,7 +10169,12 @@ CREATE TABLE public.invoice_items (
     cgst_amount numeric(15,2) DEFAULT 0,
     sgst_amount numeric(15,2) DEFAULT 0,
     igst_amount numeric(15,2) DEFAULT 0,
-    taxable_value numeric(15,2)
+    taxable_value numeric(15,2),
+    CONSTRAINT invoice_items_cgst_rate_pct_chk CHECK (((cgst_rate IS NULL) OR ((cgst_rate >= (0)::numeric) AND (cgst_rate <= (100)::numeric)))),
+    CONSTRAINT invoice_items_gst_rate_pct_chk CHECK (((gst_rate IS NULL) OR ((gst_rate >= (0)::numeric) AND (gst_rate <= (100)::numeric)))),
+    CONSTRAINT invoice_items_igst_rate_pct_chk CHECK (((igst_rate IS NULL) OR ((igst_rate >= (0)::numeric) AND (igst_rate <= (100)::numeric)))),
+    CONSTRAINT invoice_items_sgst_rate_pct_chk CHECK (((sgst_rate IS NULL) OR ((sgst_rate >= (0)::numeric) AND (sgst_rate <= (100)::numeric)))),
+    CONSTRAINT invoice_items_tax_rate_pct_chk CHECK (((tax_rate IS NULL) OR ((tax_rate >= (0)::numeric) AND (tax_rate <= (100)::numeric))))
 );
 
 
@@ -9752,7 +10234,12 @@ CREATE TABLE public.invoices (
     attachment_url text,
     tally_synced boolean DEFAULT false,
     currency character varying(3) DEFAULT 'INR'::character varying NOT NULL,
-    exchange_rate numeric(15,6) DEFAULT 1 NOT NULL
+    exchange_rate numeric(15,6) DEFAULT 1 NOT NULL,
+    hsn_sac character varying(20),
+    gst_rate numeric(5,2),
+    reverse_charge boolean DEFAULT false NOT NULL,
+    CONSTRAINT invoices_exchange_rate_pos_chk CHECK (((exchange_rate IS NULL) OR (exchange_rate > (0)::numeric))),
+    CONSTRAINT invoices_gst_rate_pct_chk CHECK (((gst_rate IS NULL) OR ((gst_rate >= (0)::numeric) AND (gst_rate <= (100)::numeric))))
 );
 
 
@@ -9913,7 +10400,14 @@ CREATE TABLE public.item_vendor_prices (
     created_by integer,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
-    deleted_at timestamp with time zone
+    deleted_at timestamp with time zone,
+    freight_per_unit numeric(14,4),
+    packaging_per_unit numeric(14,4),
+    duty_pct numeric(6,3),
+    tooling_cost numeric(14,2),
+    scrap_rate_pct numeric(6,3),
+    warranty_months integer,
+    CONSTRAINT item_vendor_prices_scrap_rate_pct_pct_chk CHECK (((scrap_rate_pct IS NULL) OR ((scrap_rate_pct >= (0)::numeric) AND (scrap_rate_pct <= (100)::numeric))))
 );
 
 
@@ -10161,6 +10655,120 @@ ALTER SEQUENCE public.journal_lines_id_seq OWNED BY public.journal_lines.id;
 
 
 --
+-- Name: knowledge_article_cases; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.knowledge_article_cases (
+    id integer NOT NULL,
+    article_id integer NOT NULL,
+    ticket_id integer NOT NULL,
+    company_id integer NOT NULL,
+    linked_by integer,
+    resolved_it boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: knowledge_article_cases_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.knowledge_article_cases_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: knowledge_article_cases_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.knowledge_article_cases_id_seq OWNED BY public.knowledge_article_cases.id;
+
+
+--
+-- Name: knowledge_article_feedback; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.knowledge_article_feedback (
+    id integer NOT NULL,
+    article_id integer NOT NULL,
+    company_id integer NOT NULL,
+    event character varying(20) NOT NULL,
+    reason text,
+    employee_id integer,
+    ticket_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT knowledge_feedback_event_check CHECK (((event)::text = ANY ((ARRAY['view'::character varying, 'helpful'::character varying, 'not_helpful'::character varying])::text[])))
+);
+
+
+--
+-- Name: knowledge_article_feedback_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.knowledge_article_feedback_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: knowledge_article_feedback_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.knowledge_article_feedback_id_seq OWNED BY public.knowledge_article_feedback.id;
+
+
+--
+-- Name: knowledge_article_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.knowledge_article_versions (
+    id integer NOT NULL,
+    article_id integer NOT NULL,
+    company_id integer NOT NULL,
+    version integer NOT NULL,
+    title character varying(255) NOT NULL,
+    summary text,
+    content text,
+    category character varying(120),
+    tags text,
+    visibility character varying(20),
+    status character varying(20),
+    changed_by integer,
+    change_note text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: knowledge_article_versions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.knowledge_article_versions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: knowledge_article_versions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.knowledge_article_versions_id_seq OWNED BY public.knowledge_article_versions.id;
+
+
+--
 -- Name: knowledge_documents; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -10182,7 +10790,16 @@ CREATE TABLE public.knowledge_documents (
     company_id integer,
     created_by integer,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    description text,
+    content text,
+    file_url text,
+    applicable_departments text[],
+    applicable_roles text[],
+    review_due_date date,
+    created_by_employee_id integer,
+    updated_by_employee_id integer,
+    view_count integer DEFAULT 0 NOT NULL
 );
 
 
@@ -10433,6 +11050,7 @@ CREATE TABLE public.leads (
     partner_id integer,
     probability integer,
     iem_no character varying(32),
+    territory_id integer,
     CONSTRAINT leads_probability_range CHECK (((probability IS NULL) OR ((probability >= 0) AND (probability <= 100))))
 );
 
@@ -10732,6 +11350,7 @@ CREATE TABLE public.leave_encashments (
     company_id integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT leave_encashments_rate_per_day_nonneg_chk CHECK (((rate_per_day IS NULL) OR (rate_per_day >= (0)::numeric))),
     CONSTRAINT leave_encashments_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'paid'::character varying, 'cancelled'::character varying])::text[])))
 );
 
@@ -11053,7 +11672,17 @@ CREATE TABLE public.lnd_settings (
     training_categories text[] DEFAULT ARRAY['Technical'::text, 'Soft Skills'::text, 'Compliance'::text, 'Safety'::text, 'Leadership'::text, 'Quality'::text, 'Product'::text, 'Mandatory'::text],
     skill_categories text[] DEFAULT ARRAY['Technical'::text, 'Soft Skills'::text, 'Management'::text, 'Domain'::text, 'Tool'::text],
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    default_pass_score integer DEFAULT 70,
+    reminder_days_before integer DEFAULT 3,
+    cert_expiry_reminder_days integer DEFAULT 30,
+    enable_email_notifications boolean DEFAULT true NOT NULL,
+    enable_manager_notifications boolean DEFAULT true NOT NULL,
+    mandatory_training_freq_days integer DEFAULT 365,
+    feedback_required boolean DEFAULT false NOT NULL,
+    min_feedback_chars integer DEFAULT 0,
+    allow_self_enrollment boolean DEFAULT true NOT NULL,
+    max_concurrent_enrollments integer DEFAULT 5
 );
 
 
@@ -11132,7 +11761,8 @@ CREATE TABLE public.local_purchase_requests (
     notes text,
     deleted_at timestamp without time zone,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    company_id integer
 );
 
 
@@ -11182,7 +11812,8 @@ CREATE TABLE public.maintenance_logs (
     resolution_notes text,
     corrective_action text,
     preventive_action text,
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    notes text
 );
 
 
@@ -11536,6 +12167,7 @@ CREATE TABLE public.master_hsn_sac (
     type character varying(3) DEFAULT 'HSN'::character varying NOT NULL,
     is_active boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT master_hsn_sac_gst_rate_pct_chk CHECK (((gst_rate IS NULL) OR ((gst_rate >= (0)::numeric) AND (gst_rate <= (100)::numeric)))),
     CONSTRAINT master_hsn_sac_type_check CHECK (((type)::text = ANY ((ARRAY['HSN'::character varying, 'SAC'::character varying])::text[])))
 );
 
@@ -11833,6 +12465,80 @@ ALTER SEQUENCE public.material_reservations_id_seq OWNED BY public.material_rese
 
 
 --
+-- Name: meeting_attendees; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.meeting_attendees (
+    id integer NOT NULL,
+    meeting_id integer NOT NULL,
+    employee_id integer NOT NULL,
+    response character varying(20) DEFAULT 'invited'::character varying NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: meeting_attendees_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.meeting_attendees_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: meeting_attendees_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.meeting_attendees_id_seq OWNED BY public.meeting_attendees.id;
+
+
+--
+-- Name: meetings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.meetings (
+    id integer NOT NULL,
+    title character varying(200) NOT NULL,
+    meeting_date date NOT NULL,
+    meeting_time time without time zone,
+    notes text,
+    organiser_employee_id integer,
+    status character varying(20) DEFAULT 'scheduled'::character varying NOT NULL,
+    company_id integer,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT meetings_status_check CHECK (((status)::text = ANY ((ARRAY['scheduled'::character varying, 'cancelled'::character varying, 'completed'::character varying])::text[])))
+);
+
+
+--
+-- Name: meetings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.meetings_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: meetings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.meetings_id_seq OWNED BY public.meetings.id;
+
+
+--
 -- Name: mentoring_assignments; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -11987,6 +12693,40 @@ CREATE SEQUENCE public.module_production_requests_id_seq
 --
 
 ALTER SEQUENCE public.module_production_requests_id_seq OWNED BY public.module_production_requests.id;
+
+
+--
+-- Name: module_settings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.module_settings (
+    id integer NOT NULL,
+    module_name character varying(60) NOT NULL,
+    settings_data jsonb DEFAULT '{}'::jsonb NOT NULL,
+    company_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: module_settings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.module_settings_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: module_settings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.module_settings_id_seq OWNED BY public.module_settings.id;
 
 
 --
@@ -12207,7 +12947,9 @@ CREATE TABLE public.ncr_reports (
     approved_at timestamp with time zone,
     approved_by_name character varying(150),
     company_id integer,
-    type character varying(50) DEFAULT 'general'::character varying
+    type character varying(50) DEFAULT 'general'::character varying,
+    resolution text,
+    resolved_at timestamp with time zone
 );
 
 
@@ -12310,7 +13052,8 @@ CREATE TABLE public.notifications (
     is_read boolean DEFAULT false,
     read_at timestamp without time zone,
     deleted_at timestamp without time zone,
-    created_at timestamp without time zone DEFAULT now()
+    created_at timestamp without time zone DEFAULT now(),
+    link text
 );
 
 
@@ -12340,11 +13083,12 @@ ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
 
 CREATE TABLE public.nps_responses (
     id integer NOT NULL,
-    customer_id integer,
     score integer,
     comment text,
     survey_date date DEFAULT CURRENT_DATE,
     category character varying(20),
+    customer_id uuid,
+    CONSTRAINT nps_responses_category_check CHECK (((category)::text = ANY ((ARRAY['detractor'::character varying, 'passive'::character varying, 'promoter'::character varying])::text[]))),
     CONSTRAINT nps_responses_score_check CHECK (((score >= 0) AND (score <= 10)))
 );
 
@@ -12386,7 +13130,9 @@ CREATE TABLE public.offer_letters (
     company_id integer,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    deleted_at timestamp without time zone
+    deleted_at timestamp without time zone,
+    offer_expiry_date date,
+    created_by integer
 );
 
 
@@ -12616,7 +13362,12 @@ CREATE TABLE public.opportunities (
     order_won_date date,
     emd_mode character varying(20),
     emd_expiry_date date,
-    emd_refund_date date
+    emd_refund_date date,
+    close_reason text,
+    forecast_category character varying(20),
+    territory_id integer,
+    deal_registration_id integer,
+    CONSTRAINT opportunities_forecast_category_check CHECK (((forecast_category IS NULL) OR ((forecast_category)::text = ANY ((ARRAY['commit'::character varying, 'best_case'::character varying, 'pipeline'::character varying, 'omitted'::character varying, 'closed'::character varying])::text[]))))
 );
 
 
@@ -12757,6 +13508,99 @@ CREATE TABLE public.parties (
     account_type character varying(20) DEFAULT 'current'::character varying,
     CONSTRAINT chk_parties_gstin_format CHECK (((gstin IS NULL) OR ((gstin)::text ~ '^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$'::text)))
 );
+
+
+--
+-- Name: partner_deal_registration_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.partner_deal_registration_events (
+    id integer NOT NULL,
+    registration_id integer NOT NULL,
+    company_id integer,
+    event character varying(30) NOT NULL,
+    detail text,
+    actor_employee integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: partner_deal_registration_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.partner_deal_registration_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: partner_deal_registration_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.partner_deal_registration_events_id_seq OWNED BY public.partner_deal_registration_events.id;
+
+
+--
+-- Name: partner_deal_registrations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.partner_deal_registrations (
+    id integer NOT NULL,
+    company_id integer NOT NULL,
+    registration_number character varying(40),
+    partner_id integer NOT NULL,
+    customer_name character varying(255) NOT NULL,
+    customer_id integer,
+    contact_name character varying(160),
+    contact_email character varying(255),
+    contact_phone character varying(40),
+    region character varying(80),
+    deal_description text,
+    estimated_value numeric(14,2),
+    expected_close_date date,
+    status character varying(20) DEFAULT 'submitted'::character varying NOT NULL,
+    protection_days integer DEFAULT 90 NOT NULL,
+    approved_at timestamp with time zone,
+    approved_by integer,
+    expires_at timestamp with time zone,
+    rejected_reason text,
+    lead_id integer,
+    opportunity_id integer,
+    converted_at timestamp with time zone,
+    outcome character varying(20),
+    submitted_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT pdr_outcome_check CHECK (((outcome IS NULL) OR ((outcome)::text = ANY ((ARRAY['won'::character varying, 'lost'::character varying, 'expired'::character varying])::text[])))),
+    CONSTRAINT pdr_protection_check CHECK (((protection_days > 0) AND (protection_days <= 365))),
+    CONSTRAINT pdr_status_check CHECK (((status)::text = ANY ((ARRAY['submitted'::character varying, 'approved'::character varying, 'rejected'::character varying, 'expired'::character varying, 'converted'::character varying, 'lost'::character varying, 'withdrawn'::character varying])::text[]))),
+    CONSTRAINT pdr_value_check CHECK (((estimated_value IS NULL) OR (estimated_value >= (0)::numeric)))
+);
+
+
+--
+-- Name: partner_deal_registrations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.partner_deal_registrations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: partner_deal_registrations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.partner_deal_registrations_id_seq OWNED BY public.partner_deal_registrations.id;
 
 
 --
@@ -12926,7 +13770,7 @@ ALTER SEQUENCE public.payment_batches_id_seq OWNED BY public.payment_batches.id;
 
 CREATE TABLE public.payment_gateway_orders (
     id integer NOT NULL,
-    invoice_id uuid,
+    invoice_id integer,
     company_id integer,
     razorpay_order_id character varying(100),
     razorpay_payment_id character varying(100),
@@ -12972,7 +13816,7 @@ ALTER SEQUENCE public.payment_gateway_orders_id_seq OWNED BY public.payment_gate
 
 CREATE TABLE public.payment_transactions (
     id integer NOT NULL,
-    invoice_id uuid,
+    invoice_id integer,
     company_id integer,
     pgo_id integer,
     amount numeric(15,2),
@@ -13161,7 +14005,8 @@ CREATE TABLE public.payroll_loans (
     reason text,
     status character varying(20) DEFAULT 'active'::character varying,
     emi_schedule jsonb DEFAULT '[]'::jsonb,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -13238,7 +14083,8 @@ CREATE TABLE public.payroll_runs (
     lwf_employer numeric(12,2) DEFAULT 0,
     lop_amount numeric(12,2) DEFAULT 0,
     approved_by integer,
-    approved_at timestamp with time zone
+    approved_at timestamp with time zone,
+    night_shift_days integer DEFAULT 0 NOT NULL
 );
 
 
@@ -13817,7 +14663,8 @@ CREATE TABLE public.pick_lists (
     status character varying(20) DEFAULT 'pending'::character varying,
     notes text,
     created_at timestamp with time zone DEFAULT now(),
-    completed_at timestamp with time zone
+    completed_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -13977,7 +14824,8 @@ CREATE TABLE public.price_history (
     price_date date DEFAULT CURRENT_DATE NOT NULL,
     notes text,
     created_by integer,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    company_id integer
 );
 
 
@@ -14119,6 +14967,56 @@ ALTER SEQUENCE public.probation_notifications_id_seq OWNED BY public.probation_n
 
 
 --
+-- Name: procurement_award_decisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.procurement_award_decisions (
+    id integer NOT NULL,
+    rfq_id integer NOT NULL,
+    quote_id integer,
+    awarded_vendor_id integer NOT NULL,
+    po_id integer,
+    quantity numeric(16,3),
+    awarded_unit_price numeric(16,4),
+    awarded_tco_total numeric(18,2),
+    awarded_tco_per_unit numeric(16,4),
+    awarded_confidence integer,
+    lowest_tco_vendor_id integer,
+    lowest_tco_total numeric(18,2),
+    lowest_price_vendor_id integer,
+    lowest_price_total numeric(18,2),
+    tco_saving_forgone numeric(18,2),
+    followed_recommendation boolean,
+    tco_breakdown jsonb,
+    tco_basis jsonb,
+    tco_enabled boolean DEFAULT true NOT NULL,
+    decided_by_user_id integer,
+    company_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: procurement_award_decisions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.procurement_award_decisions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: procurement_award_decisions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.procurement_award_decisions_id_seq OWNED BY public.procurement_award_decisions.id;
+
+
+--
 -- Name: procurement_settings; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -14148,7 +15046,27 @@ CREATE TABLE public.procurement_settings (
     enforce_avl boolean DEFAULT false,
     auto_ncr_on_rejection boolean DEFAULT false,
     default_currency character varying(3) DEFAULT 'INR'::character varying,
-    vendor_categories text DEFAULT '["Raw Materials","Electronic Components (Active)","Electronic Components (Passive)","IGBT/Power Modules","PCB Manufacturers","Magnetics","Contract Manufacturers","IT","Services","Logistics"]'::text
+    vendor_categories text DEFAULT '["Raw Materials","Electronic Components (Active)","Electronic Components (Passive)","IGBT/Power Modules","PCB Manufacturers","Magnetics","Contract Manufacturers","IT","Services","Logistics"]'::text,
+    tco_enabled boolean DEFAULT true NOT NULL,
+    cost_of_capital_pct numeric(6,3) DEFAULT 12 NOT NULL,
+    inventory_carrying_pct numeric(6,3) DEFAULT 18 NOT NULL,
+    ordering_cost_per_po numeric(14,2) DEFAULT 750 NOT NULL,
+    inspection_cost_per_receipt numeric(14,2) DEFAULT 500 NOT NULL,
+    expedite_cost_per_late_order numeric(14,2) DEFAULT 2500 NOT NULL,
+    rework_cost_pct numeric(6,3) DEFAULT 25 NOT NULL,
+    default_freight_pct numeric(6,3) DEFAULT 2 NOT NULL,
+    gst_input_credit_pct numeric(6,3) DEFAULT 100 NOT NULL,
+    single_source_risk_pct numeric(6,3) DEFAULT 2 NOT NULL,
+    service_level_z numeric(6,3) DEFAULT 1.65 NOT NULL,
+    tco_horizon_months integer DEFAULT 12 NOT NULL,
+    rtv_prefix character varying(10) DEFAULT 'RTV'::character varying,
+    CONSTRAINT procurement_settings_cost_of_capital_pct_range CHECK (((cost_of_capital_pct >= (0)::numeric) AND (cost_of_capital_pct <= (100)::numeric))),
+    CONSTRAINT procurement_settings_default_freight_pct_range CHECK (((default_freight_pct >= (0)::numeric) AND (default_freight_pct <= (100)::numeric))),
+    CONSTRAINT procurement_settings_gst_input_credit_pct_range CHECK (((gst_input_credit_pct >= (0)::numeric) AND (gst_input_credit_pct <= (100)::numeric))),
+    CONSTRAINT procurement_settings_inventory_carrying_pct_range CHECK (((inventory_carrying_pct >= (0)::numeric) AND (inventory_carrying_pct <= (100)::numeric))),
+    CONSTRAINT procurement_settings_rework_cost_pct_range CHECK (((rework_cost_pct >= (0)::numeric) AND (rework_cost_pct <= (100)::numeric))),
+    CONSTRAINT procurement_settings_single_source_risk_pct_range CHECK (((single_source_risk_pct >= (0)::numeric) AND (single_source_risk_pct <= (100)::numeric))),
+    CONSTRAINT procurement_settings_tco_horizon_range CHECK (((tco_horizon_months >= 1) AND (tco_horizon_months <= 120)))
 );
 
 
@@ -14611,7 +15529,25 @@ CREATE TABLE public.products (
     description text DEFAULT ''::text,
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    product_family text,
+    model_sku text,
+    rating text,
+    voltage_class text,
+    phase text,
+    frequency text,
+    topology text,
+    cooling text,
+    ip_rating text,
+    bom_template text,
+    routing_template text,
+    test_plan_template text,
+    warranty_months integer DEFAULT 12,
+    hsn_sac text,
+    gst_rate numeric(5,2) DEFAULT 18,
+    company_id integer,
+    deleted_at timestamp with time zone,
+    CONSTRAINT products_gst_rate_pct_chk CHECK (((gst_rate IS NULL) OR ((gst_rate >= (0)::numeric) AND (gst_rate <= (100)::numeric))))
 );
 
 
@@ -14770,7 +15706,8 @@ CREATE TABLE public.project_cost_summary (
     net_margin_pct numeric(8,2) DEFAULT 0,
     cost_variance numeric(15,2) DEFAULT 0,
     budget_variance numeric(15,2) DEFAULT 0,
-    collection_pct numeric(8,2) DEFAULT 0
+    collection_pct numeric(8,2) DEFAULT 0,
+    actual_profit numeric(18,2)
 );
 
 
@@ -14964,7 +15901,9 @@ CREATE TABLE public.project_members (
     hours_allocated numeric(8,2) DEFAULT 0,
     hours_consumed numeric(8,2) DEFAULT 0,
     skill_level character varying(30),
-    CONSTRAINT project_members_allocation_pct_check CHECK (((allocation_pct > (0)::numeric) AND (allocation_pct <= (100)::numeric)))
+    CONSTRAINT project_members_allocation_pct_check CHECK (((allocation_pct > (0)::numeric) AND (allocation_pct <= (100)::numeric))),
+    CONSTRAINT project_members_billing_rate_nonneg_chk CHECK (((billing_rate IS NULL) OR (billing_rate >= (0)::numeric))),
+    CONSTRAINT project_members_cost_rate_nonneg_chk CHECK (((cost_rate IS NULL) OR (cost_rate >= (0)::numeric)))
 );
 
 
@@ -15298,6 +16237,9 @@ CREATE TABLE public.projects (
     actual_delivery_date date,
     product_line_id integer,
     site_state character varying(80),
+    customer_rating integer,
+    customer_feedback text,
+    CONSTRAINT projects_customer_rating_check CHECK (((customer_rating IS NULL) OR ((customer_rating >= 1) AND (customer_rating <= 5)))),
     CONSTRAINT projects_status_check CHECK (((status)::text = ANY ((ARRAY['planning'::character varying, 'active'::character varying, 'on_hold'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[])))
 );
 
@@ -15475,7 +16417,9 @@ CREATE TABLE public.purchase_order_items (
     total_amount numeric(14,2) DEFAULT 0,
     received_qty numeric(12,2) DEFAULT 0,
     created_at timestamp with time zone DEFAULT now(),
-    received_quantity numeric(12,2) DEFAULT 0
+    received_quantity numeric(12,2) DEFAULT 0,
+    CONSTRAINT purchase_order_items_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric))),
+    CONSTRAINT purchase_order_items_tax_rate_pct_chk CHECK (((tax_rate IS NULL) OR ((tax_rate >= (0)::numeric) AND (tax_rate <= (100)::numeric))))
 );
 
 
@@ -15529,7 +16473,11 @@ CREATE TABLE public.purchase_orders (
     freight_amount numeric(15,2) DEFAULT 0,
     customs_duty numeric(15,2) DEFAULT 0,
     project_id integer,
-    sales_order_id integer
+    sales_order_id integer,
+    cost_center_id integer,
+    sourcing_strategy_id integer,
+    followed_sourcing_strategy boolean,
+    CONSTRAINT purchase_orders_exchange_rate_pos_chk CHECK (((exchange_rate IS NULL) OR (exchange_rate > (0)::numeric)))
 );
 
 
@@ -15601,7 +16549,7 @@ CREATE TABLE public.purchase_requests (
     item_name character varying(200),
     quantity numeric(10,3),
     unit character varying(20),
-    status character varying(50) DEFAULT 'pending'::character varying,
+    status character varying(50) DEFAULT 'pending_approval'::character varying,
     created_at timestamp with time zone DEFAULT now(),
     company_id integer,
     branch_id integer,
@@ -15617,7 +16565,10 @@ CREATE TABLE public.purchase_requests (
     approved_at timestamp with time zone,
     department character varying(100),
     total_amount numeric(14,2) DEFAULT 0,
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    item_id integer,
+    estimated_cost numeric(18,2),
+    rejection_reason text
 );
 
 
@@ -15903,6 +16854,8 @@ CREATE TABLE public.quality_inspections (
     status character varying(20) DEFAULT 'completed'::character varying,
     notes text,
     created_at timestamp with time zone DEFAULT now(),
+    inspection_cost numeric(18,2),
+    production_order_id integer,
     CONSTRAINT quality_inspections_overall_result_check CHECK (((overall_result)::text = ANY ((ARRAY['pass'::character varying, 'fail'::character varying, 'conditional'::character varying])::text[])))
 );
 
@@ -16054,7 +17007,9 @@ CREATE TABLE public.quotation_items (
     item_description character varying(500),
     rate numeric(12,2) DEFAULT 0,
     tax_percentage numeric(5,2) DEFAULT 18,
-    total numeric(12,2) DEFAULT 0
+    total numeric(12,2) DEFAULT 0,
+    CONSTRAINT quotation_items_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric))),
+    CONSTRAINT quotation_items_tax_rate_pct_chk CHECK (((tax_rate IS NULL) OR ((tax_rate >= (0)::numeric) AND (tax_rate <= (100)::numeric))))
 );
 
 
@@ -16076,6 +17031,18 @@ CREATE SEQUENCE public.quotation_items_id_seq
 --
 
 ALTER SEQUENCE public.quotation_items_id_seq OWNED BY public.quotation_items.id;
+
+
+--
+-- Name: quotation_number_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.quotation_number_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -16156,6 +17123,7 @@ CREATE TABLE public.rcm_self_invoices (
     notes text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     created_by integer,
+    CONSTRAINT rcm_self_invoices_gst_rate_pct_chk CHECK (((gst_rate IS NULL) OR ((gst_rate >= (0)::numeric) AND (gst_rate <= (100)::numeric)))),
     CONSTRAINT rcm_self_invoices_supply_type_check CHECK (((supply_type)::text = ANY ((ARRAY['intrastate'::character varying, 'interstate'::character varying])::text[])))
 );
 
@@ -16577,6 +17545,8 @@ CREATE TABLE public.review_cycles (
     hr_review_enabled boolean DEFAULT true NOT NULL,
     financial_year text,
     description text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    review_period text,
     CONSTRAINT review_cycles_cycle_type_check CHECK ((cycle_type = ANY (ARRAY['annual'::text, 'half_yearly'::text, 'quarterly'::text, 'project'::text, 'probation'::text])))
 );
 
@@ -16685,7 +17655,18 @@ CREATE TABLE public.rfq_quotes (
     payment_terms character varying(100),
     notes text,
     is_winner boolean DEFAULT false,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    freight_amount numeric(14,2),
+    insurance_amount numeric(14,2),
+    duty_amount numeric(14,2),
+    packaging_amount numeric(14,2),
+    other_charges numeric(14,2),
+    tooling_cost numeric(14,2),
+    tax_pct numeric(6,3),
+    warranty_months integer,
+    moq numeric(14,3),
+    currency character varying(3),
+    valid_until date
 );
 
 
@@ -16724,7 +17705,13 @@ CREATE TABLE public.rfqs (
     vendor_ids jsonb DEFAULT '[]'::jsonb,
     status character varying(20) DEFAULT 'draft'::character varying,
     created_at timestamp with time zone DEFAULT now(),
-    company_id integer
+    company_id integer,
+    rfx_type character varying(8) DEFAULT 'RFQ'::character varying NOT NULL,
+    category_id integer,
+    objective text,
+    scoring_model jsonb,
+    evaluated_at timestamp with time zone,
+    CONSTRAINT rfqs_rfx_type_check CHECK (((rfx_type)::text = ANY ((ARRAY['RFI'::character varying, 'RFP'::character varying, 'RFQ'::character varying])::text[])))
 );
 
 
@@ -16746,6 +17733,168 @@ CREATE SEQUENCE public.rfqs_id_seq
 --
 
 ALTER SEQUENCE public.rfqs_id_seq OWNED BY public.rfqs.id;
+
+
+--
+-- Name: rfx_criteria_scores; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rfx_criteria_scores (
+    id integer NOT NULL,
+    rfq_id integer NOT NULL,
+    vendor_id integer NOT NULL,
+    criterion_key character varying(48) NOT NULL,
+    score numeric(6,2) NOT NULL,
+    basis character varying(16) DEFAULT 'assessed'::character varying NOT NULL,
+    note text,
+    scored_by_user_id integer,
+    company_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT rfx_criteria_scores_score_check CHECK (((score >= (0)::numeric) AND (score <= (100)::numeric)))
+);
+
+
+--
+-- Name: rfx_criteria_scores_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.rfx_criteria_scores_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: rfx_criteria_scores_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.rfx_criteria_scores_id_seq OWNED BY public.rfx_criteria_scores.id;
+
+
+--
+-- Name: rfx_vendor_selections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rfx_vendor_selections (
+    id integer NOT NULL,
+    rfq_id integer NOT NULL,
+    vendor_id integer NOT NULL,
+    company_id integer,
+    engine_recommendation character varying(24),
+    followed_recommendation boolean,
+    total_score numeric(6,2),
+    coverage_pct numeric(6,2),
+    rank integer,
+    runner_up_vendor_id integer,
+    score_gap numeric(6,2),
+    scorecard_snapshot jsonb,
+    model_snapshot jsonb,
+    applied_to jsonb,
+    rationale text,
+    selected_by_user_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: rfx_vendor_selections_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.rfx_vendor_selections_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: rfx_vendor_selections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.rfx_vendor_selections_id_seq OWNED BY public.rfx_vendor_selections.id;
+
+
+--
+-- Name: rm_issue_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rm_issue_items (
+    id integer NOT NULL,
+    issue_id integer NOT NULL,
+    item_id integer,
+    quantity numeric(18,4) DEFAULT 0 NOT NULL,
+    rate numeric(18,4) DEFAULT 0 NOT NULL,
+    remarks text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT rm_issue_items_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric)))
+);
+
+
+--
+-- Name: rm_issue_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.rm_issue_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: rm_issue_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.rm_issue_items_id_seq OWNED BY public.rm_issue_items.id;
+
+
+--
+-- Name: rm_issues; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rm_issues (
+    id integer NOT NULL,
+    issue_number character varying(50),
+    department_id integer,
+    issued_by integer,
+    issue_date date DEFAULT CURRENT_DATE NOT NULL,
+    warehouse_id integer,
+    purpose text,
+    notes text,
+    company_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    project_id integer
+);
+
+
+--
+-- Name: rm_issues_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.rm_issues_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: rm_issues_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.rm_issues_id_seq OWNED BY public.rm_issues.id;
 
 
 --
@@ -16912,7 +18061,8 @@ CREATE TABLE public.rtv_items (
     quantity_returned numeric(10,2) NOT NULL,
     rate numeric(15,2) DEFAULT 0,
     remarks text,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT rtv_items_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric)))
 );
 
 
@@ -17075,7 +18225,8 @@ CREATE TABLE public.sales_commission_rules (
     applies_to character varying(50) DEFAULT 'all'::character varying,
     created_by integer,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT sales_commission_rules_rate_pct_pct_chk CHECK (((rate_pct IS NULL) OR ((rate_pct >= (0)::numeric) AND (rate_pct <= (100)::numeric))))
 );
 
 
@@ -17147,12 +18298,107 @@ CREATE TABLE public.sales_events (
     start_at timestamp with time zone NOT NULL,
     end_at timestamp with time zone,
     all_day boolean DEFAULT false,
-    owner_id uuid,
-    account_id uuid,
-    opportunity_id uuid,
+    owner_id integer,
+    account_id integer,
+    opportunity_id integer,
     notes text,
     created_at timestamp with time zone DEFAULT now()
 );
+
+
+--
+-- Name: sales_forecast_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_forecast_snapshots (
+    id integer NOT NULL,
+    company_id integer NOT NULL,
+    owner_employee_id integer,
+    period_type character varying(20) NOT NULL,
+    period_year integer NOT NULL,
+    period_value integer,
+    forecast_category character varying(20) NOT NULL,
+    amount numeric(16,2) DEFAULT 0 NOT NULL,
+    opportunity_count integer DEFAULT 0 NOT NULL,
+    captured_at timestamp with time zone DEFAULT now() NOT NULL,
+    captured_by integer,
+    source character varying(20) DEFAULT 'manual'::character varying NOT NULL
+);
+
+
+--
+-- Name: sales_forecast_snapshots_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_forecast_snapshots_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sales_forecast_snapshots_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sales_forecast_snapshots_id_seq OWNED BY public.sales_forecast_snapshots.id;
+
+
+--
+-- Name: sales_forecast_submissions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_forecast_submissions (
+    id integer NOT NULL,
+    company_id integer NOT NULL,
+    owner_employee_id integer,
+    scope character varying(20) DEFAULT 'rep'::character varying NOT NULL,
+    period_type character varying(20) NOT NULL,
+    period_year integer NOT NULL,
+    period_value integer,
+    currency character varying(3) DEFAULT 'INR'::character varying NOT NULL,
+    commit_amount numeric(16,2) DEFAULT 0 NOT NULL,
+    best_case_amount numeric(16,2) DEFAULT 0 NOT NULL,
+    pipeline_amount numeric(16,2) DEFAULT 0 NOT NULL,
+    closed_amount numeric(16,2) DEFAULT 0 NOT NULL,
+    quota_amount numeric(16,2) DEFAULT 0 NOT NULL,
+    status character varying(20) DEFAULT 'draft'::character varying NOT NULL,
+    notes text,
+    submitted_by integer,
+    submitted_at timestamp with time zone,
+    override_commit_amount numeric(16,2),
+    override_reason text,
+    override_by integer,
+    override_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sales_forecast_submissions_amounts_check CHECK (((commit_amount >= (0)::numeric) AND (best_case_amount >= (0)::numeric) AND (pipeline_amount >= (0)::numeric) AND (closed_amount >= (0)::numeric) AND (quota_amount >= (0)::numeric) AND ((override_commit_amount IS NULL) OR (override_commit_amount >= (0)::numeric)))),
+    CONSTRAINT sales_forecast_submissions_period_type_check CHECK (((period_type)::text = ANY ((ARRAY['monthly'::character varying, 'quarterly'::character varying, 'annual'::character varying])::text[]))),
+    CONSTRAINT sales_forecast_submissions_scope_check CHECK (((scope)::text = ANY ((ARRAY['rep'::character varying, 'team'::character varying, 'company'::character varying])::text[]))),
+    CONSTRAINT sales_forecast_submissions_status_check CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'submitted'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[])))
+);
+
+
+--
+-- Name: sales_forecast_submissions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_forecast_submissions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sales_forecast_submissions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sales_forecast_submissions_id_seq OWNED BY public.sales_forecast_submissions.id;
 
 
 --
@@ -17211,7 +18457,8 @@ CREATE TABLE public.sales_order_items (
     tax_amount numeric(15,2) DEFAULT 0,
     total_amount numeric(15,2) DEFAULT 0,
     fulfilled_qty numeric(12,3) DEFAULT 0,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT sales_order_items_tax_rate_pct_chk CHECK (((tax_rate IS NULL) OR ((tax_rate >= (0)::numeric) AND (tax_rate <= (100)::numeric))))
 );
 
 
@@ -17263,6 +18510,10 @@ CREATE TABLE public.sales_orders (
     production_completed_at timestamp with time zone,
     dispatched_at timestamp with time zone,
     delivered_at timestamp with time zone,
+    invoiced_at timestamp with time zone,
+    invoice_id integer,
+    cancel_reason text,
+    campaign_id integer,
     CONSTRAINT sales_orders_supply_type_check CHECK (((supply_type)::text = ANY ((ARRAY['intra'::character varying, 'inter'::character varying])::text[])))
 );
 
@@ -17392,7 +18643,8 @@ CREATE TABLE public.sales_settings (
     auto_invoice_on_delivery boolean DEFAULT false,
     fiscal_year_start integer DEFAULT 4,
     require_approval_above numeric(15,2),
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT sales_settings_default_tax_rate_pct_chk CHECK (((default_tax_rate IS NULL) OR ((default_tax_rate >= (0)::numeric) AND (default_tax_rate <= (100)::numeric))))
 );
 
 
@@ -17447,7 +18699,8 @@ CREATE TABLE public.sales_targets (
     achieved_orders integer DEFAULT 0,
     achieved_margin numeric(15,2) DEFAULT 0,
     department_id integer,
-    business_unit character varying(255)
+    business_unit character varying(255),
+    CONSTRAINT sales_targets_commission_rate_pct_chk CHECK (((commission_rate IS NULL) OR ((commission_rate >= (0)::numeric) AND (commission_rate <= (100)::numeric))))
 );
 
 
@@ -17484,7 +18737,11 @@ CREATE TABLE public.sales_territories (
     target_revenue numeric(15,2) DEFAULT 0,
     status text DEFAULT 'active'::text,
     created_at timestamp with time zone DEFAULT now(),
-    states jsonb DEFAULT '[]'::jsonb
+    states jsonb DEFAULT '[]'::jsonb,
+    zones jsonb DEFAULT '[]'::jsonb NOT NULL,
+    cities jsonb DEFAULT '[]'::jsonb NOT NULL,
+    industries jsonb DEFAULT '[]'::jsonb NOT NULL,
+    priority integer DEFAULT 100 NOT NULL
 );
 
 
@@ -17605,6 +18862,113 @@ ALTER SEQUENCE public.saved_reports_id_seq OWNED BY public.saved_reports.id;
 
 
 --
+-- Name: savings_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.savings_events (
+    id integer NOT NULL,
+    initiative_id integer NOT NULL,
+    company_id integer NOT NULL,
+    event_type character varying(20) NOT NULL,
+    from_stage character varying(20),
+    to_stage character varying(20),
+    amount numeric(18,2),
+    period_start date,
+    period_end date,
+    evidence_type character varying(20),
+    evidence_ref character varying(100),
+    note text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT savings_event_period_ordered CHECK (((period_end IS NULL) OR (period_start IS NULL) OR (period_end >= period_start))),
+    CONSTRAINT savings_event_realisation_has_period CHECK ((((event_type)::text <> 'realisation'::text) OR ((period_start IS NOT NULL) AND (period_end IS NOT NULL) AND (amount IS NOT NULL)))),
+    CONSTRAINT savings_events_event_type_check CHECK (((event_type)::text = ANY ((ARRAY['stage_change'::character varying, 'realisation'::character varying, 'adjustment'::character varying])::text[]))),
+    CONSTRAINT savings_events_evidence_type_check CHECK (((evidence_type)::text = ANY ((ARRAY['po'::character varying, 'invoice'::character varying, 'contract'::character varying, 'manual'::character varying])::text[])))
+);
+
+
+--
+-- Name: savings_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.savings_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: savings_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.savings_events_id_seq OWNED BY public.savings_events.id;
+
+
+--
+-- Name: savings_initiatives; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.savings_initiatives (
+    id integer NOT NULL,
+    company_id integer NOT NULL,
+    initiative_number character varying(30) NOT NULL,
+    title character varying(300) NOT NULL,
+    description text,
+    lever character varying(40) DEFAULT 'negotiated_price'::character varying NOT NULL,
+    stage character varying(20) DEFAULT 'identified'::character varying NOT NULL,
+    category_id integer,
+    vendor_id integer,
+    item_id integer,
+    baseline_unit_price numeric(18,4),
+    target_unit_price numeric(18,4),
+    baseline_annual_qty numeric(18,4),
+    baseline_basis character varying(20) DEFAULT 'estimated'::character varying NOT NULL,
+    baseline_note text,
+    estimated_annual_saving numeric(18,2) DEFAULT 0 NOT NULL,
+    currency character varying(3) DEFAULT 'INR'::character varying NOT NULL,
+    effective_from date,
+    effective_to date,
+    owner_user_id integer,
+    finance_approved_by integer,
+    finance_approved_at timestamp with time zone,
+    source_type character varying(30) DEFAULT 'manual'::character varying NOT NULL,
+    source_ref_id integer,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT savings_effective_window_ordered CHECK (((effective_to IS NULL) OR (effective_from IS NULL) OR (effective_to >= effective_from))),
+    CONSTRAINT savings_initiatives_baseline_basis_check CHECK (((baseline_basis)::text = ANY ((ARRAY['quoted'::character varying, 'observed'::character varying, 'estimated'::character varying, 'assumed'::character varying])::text[]))),
+    CONSTRAINT savings_initiatives_lever_check CHECK (((lever)::text = ANY ((ARRAY['negotiated_price'::character varying, 'volume_consolidation'::character varying, 'spec_change'::character varying, 'payment_terms'::character varying, 'tco_award'::character varying, 'demand_reduction'::character varying, 'vendor_switch'::character varying, 'contract_renegotiation'::character varying, 'other'::character varying])::text[]))),
+    CONSTRAINT savings_initiatives_source_type_check CHECK (((source_type)::text = ANY ((ARRAY['manual'::character varying, 'tco_award'::character varying, 'price_variance'::character varying, 'catalog_gap'::character varying, 'contract_renewal'::character varying])::text[]))),
+    CONSTRAINT savings_initiatives_stage_check CHECK (((stage)::text = ANY ((ARRAY['identified'::character varying, 'negotiated'::character varying, 'contracted'::character varying, 'realised'::character varying, 'rejected'::character varying, 'lapsed'::character varying])::text[])))
+);
+
+
+--
+-- Name: savings_initiatives_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.savings_initiatives_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: savings_initiatives_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.savings_initiatives_id_seq OWNED BY public.savings_initiatives.id;
+
+
+--
 -- Name: scoring_rules; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -17649,7 +19013,8 @@ CREATE TABLE public.security_events (
     ip_address character varying(50),
     path character varying(500),
     details jsonb DEFAULT '{}'::jsonb,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    user_agent text
 );
 
 
@@ -17926,6 +19291,18 @@ CREATE SEQUENCE public.seq_lc
 
 
 --
+-- Name: seq_lpr; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.seq_lpr
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
 -- Name: seq_ofr; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -18130,6 +19507,30 @@ CREATE SEQUENCE public.seq_rmi
 
 
 --
+-- Name: seq_rtv; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.seq_rtv
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: seq_savings; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.seq_savings
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
 -- Name: seq_so; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -18166,6 +19567,44 @@ CREATE SEQUENCE public.seq_tr
 
 
 --
+-- Name: sequence_enrollment_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sequence_enrollment_events (
+    id integer NOT NULL,
+    enrollment_id integer NOT NULL,
+    sequence_id integer NOT NULL,
+    company_id integer,
+    step_order integer,
+    event character varying(30) NOT NULL,
+    detail text,
+    email_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT sequence_event_check CHECK (((event)::text = ANY ((ARRAY['enrolled'::character varying, 'sent'::character varying, 'skipped'::character varying, 'condition_failed'::character varying, 'paused'::character varying, 'resumed'::character varying, 'completed'::character varying, 'stopped'::character varying, 'failed'::character varying, 'exited_replied'::character varying, 'exited_goal'::character varying])::text[])))
+);
+
+
+--
+-- Name: sequence_enrollment_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sequence_enrollment_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sequence_enrollment_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sequence_enrollment_events_id_seq OWNED BY public.sequence_enrollment_events.id;
+
+
+--
 -- Name: sequence_enrollments; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -18176,7 +19615,19 @@ CREATE TABLE public.sequence_enrollments (
     enrolled_at timestamp with time zone DEFAULT now(),
     current_step integer DEFAULT 0,
     status character varying(20) DEFAULT 'active'::character varying,
-    next_send_at timestamp with time zone
+    next_send_at timestamp with time zone,
+    company_id integer,
+    contact_id integer,
+    email character varying(255),
+    last_sent_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    stopped_at timestamp with time zone,
+    stopped_reason text,
+    attempts integer DEFAULT 0 NOT NULL,
+    last_error text,
+    enrolled_by integer,
+    CONSTRAINT sequence_enrollments_status_check CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'paused'::character varying, 'completed'::character varying, 'stopped'::character varying, 'failed'::character varying])::text[]))),
+    CONSTRAINT sequence_enrollments_subject_check CHECK (((lead_id IS NOT NULL) OR (contact_id IS NOT NULL)))
 );
 
 
@@ -18466,7 +19917,23 @@ CREATE TABLE public.service_knowledge_base (
     helpful_no integer DEFAULT 0,
     is_published boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    status character varying(20) DEFAULT 'draft'::character varying NOT NULL,
+    visibility character varying(20) DEFAULT 'internal'::character varying NOT NULL,
+    version integer DEFAULT 1 NOT NULL,
+    summary text,
+    submitted_by integer,
+    submitted_at timestamp with time zone,
+    approved_by integer,
+    approved_at timestamp with time zone,
+    rejected_reason text,
+    published_at timestamp with time zone,
+    archived_at timestamp with time zone,
+    review_due_date date,
+    product_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    not_helpful_reasons jsonb DEFAULT '[]'::jsonb NOT NULL,
+    CONSTRAINT skb_status_check CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'in_review'::character varying, 'approved'::character varying, 'published'::character varying, 'rejected'::character varying, 'archived'::character varying])::text[]))),
+    CONSTRAINT skb_visibility_check CHECK (((visibility)::text = ANY ((ARRAY['internal'::character varying, 'public'::character varying])::text[])))
 );
 
 
@@ -18976,7 +20443,11 @@ CREATE TABLE public.sla_policies (
     resolution_time_hours integer DEFAULT 24,
     is_active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    company_id integer
+    company_id integer,
+    first_response_hours numeric DEFAULT 4 NOT NULL,
+    resolution_hours numeric DEFAULT 24 NOT NULL,
+    escalation_hours numeric DEFAULT 8,
+    business_hours_only boolean DEFAULT true
 );
 
 
@@ -18998,6 +20469,52 @@ CREATE SEQUENCE public.sla_policies_id_seq
 --
 
 ALTER SEQUENCE public.sla_policies_id_seq OWNED BY public.sla_policies.id;
+
+
+--
+-- Name: sourcing_category_strategies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sourcing_category_strategies (
+    id integer NOT NULL,
+    company_id integer,
+    category_id integer,
+    quadrant_key character varying(48) NOT NULL,
+    lever_key character varying(64) NOT NULL,
+    method_key character varying(64) NOT NULL,
+    method_label character varying(160),
+    supplier_segment character varying(64),
+    rationale text,
+    target_saving_pct numeric(6,2),
+    review_date date,
+    status character varying(24) DEFAULT 'draft'::character varying NOT NULL,
+    facts_snapshot jsonb,
+    position_snapshot jsonb,
+    forces_snapshot jsonb,
+    decided_by_user_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: sourcing_category_strategies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sourcing_category_strategies_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sourcing_category_strategies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sourcing_category_strategies_id_seq OWNED BY public.sourcing_category_strategies.id;
 
 
 --
@@ -19024,7 +20541,8 @@ CREATE TABLE public.spare_parts (
     lead_time_days integer DEFAULT 7,
     min_level numeric DEFAULT 0,
     max_level numeric DEFAULT 0,
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    category text
 );
 
 
@@ -19231,7 +20749,8 @@ CREATE TABLE public.stock_ledger (
     remarks text,
     created_by integer,
     created_at timestamp with time zone DEFAULT now(),
-    company_id integer
+    company_id integer,
+    CONSTRAINT stock_ledger_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric)))
 );
 
 
@@ -19472,7 +20991,8 @@ CREATE TABLE public.subcontract_transactions (
     created_by integer,
     created_by_name character varying(150),
     created_at timestamp with time zone DEFAULT now(),
-    CONSTRAINT chk_sc_txn_type CHECK (((txn_type)::text = ANY ((ARRAY['material_issue'::character varying, 'finished_receipt'::character varying, 'material_return'::character varying])::text[])))
+    CONSTRAINT chk_sc_txn_type CHECK (((txn_type)::text = ANY ((ARRAY['material_issue'::character varying, 'finished_receipt'::character varying, 'material_return'::character varying])::text[]))),
+    CONSTRAINT subcontract_transactions_rate_nonneg_chk CHECK (((rate IS NULL) OR (rate >= (0)::numeric)))
 );
 
 
@@ -19714,6 +21234,46 @@ ALTER SEQUENCE public.supplier_quality_snapshots_id_seq OWNED BY public.supplier
 
 
 --
+-- Name: support_mailboxes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.support_mailboxes (
+    id integer NOT NULL,
+    company_id integer NOT NULL,
+    email_address character varying(255) NOT NULL,
+    display_name character varying(160),
+    ingest_secret character varying(120),
+    default_team character varying(80),
+    default_priority character varying(20) DEFAULT 'Medium'::character varying NOT NULL,
+    default_category character varying(80),
+    auto_reply boolean DEFAULT false NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: support_mailboxes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.support_mailboxes_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: support_mailboxes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.support_mailboxes_id_seq OWNED BY public.support_mailboxes.id;
+
+
+--
 -- Name: support_tickets; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -19757,6 +21317,10 @@ CREATE TABLE public.support_tickets (
     service_type character varying(60),
     issue_category_id integer,
     contact_id integer,
+    category_id integer,
+    sla_policy_id integer,
+    channel character varying(20) DEFAULT 'web'::character varying NOT NULL,
+    requester_name_raw character varying(255),
     CONSTRAINT chk_support_tickets_kind CHECK (((ticket_kind)::text = ANY ((ARRAY['helpdesk'::character varying, 'service'::character varying])::text[])))
 );
 
@@ -20092,6 +21656,7 @@ CREATE TABLE public.tasks (
     wbs_level integer DEFAULT 1,
     wbs_number character varying(30),
     billable_hours numeric(8,2) DEFAULT 0,
+    schedule_status character varying(20) DEFAULT 'on_track'::character varying,
     CONSTRAINT tasks_assignment_type_check CHECK (((assignment_type)::text = ANY ((ARRAY['all_employees'::character varying, 'managers'::character varying, 'individual'::character varying])::text[]))),
     CONSTRAINT tasks_priority_check CHECK (((priority)::text = ANY ((ARRAY['low'::character varying, 'medium'::character varying, 'high'::character varying, 'critical'::character varying])::text[]))),
     CONSTRAINT tasks_status_check CHECK (((status)::text = ANY ((ARRAY['todo'::character varying, 'in_progress'::character varying, 'review'::character varying, 'done'::character varying, 'blocked'::character varying])::text[])))
@@ -20134,7 +21699,9 @@ CREATE TABLE public.tcs_collectees (
     rate_with_pan numeric(5,2) DEFAULT 0.1,
     rate_without_pan numeric(5,2) DEFAULT 1,
     is_active boolean DEFAULT true,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT tcs_collectees_rate_with_pan_pct_chk CHECK (((rate_with_pan IS NULL) OR ((rate_with_pan >= (0)::numeric) AND (rate_with_pan <= (100)::numeric)))),
+    CONSTRAINT tcs_collectees_rate_without_pan_pct_chk CHECK (((rate_without_pan IS NULL) OR ((rate_without_pan >= (0)::numeric) AND (rate_without_pan <= (100)::numeric))))
 );
 
 
@@ -20182,7 +21749,8 @@ CREATE TABLE public.tcs_transactions (
     deposited boolean DEFAULT false,
     quarter character varying(5),
     financial_year character varying(12),
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT tcs_transactions_tcs_rate_pct_chk CHECK (((tcs_rate IS NULL) OR ((tcs_rate >= (0)::numeric) AND (tcs_rate <= (100)::numeric))))
 );
 
 
@@ -20229,7 +21797,10 @@ CREATE TABLE public.tds_deductees (
     employee_id integer,
     deleted_at timestamp with time zone,
     company_id integer,
-    CONSTRAINT tds_deductees_deductee_type_check CHECK (((deductee_type)::text = ANY ((ARRAY['individual'::character varying, 'company'::character varying, 'huf'::character varying, 'firm'::character varying])::text[])))
+    CONSTRAINT tds_deductees_deductee_type_check CHECK (((deductee_type)::text = ANY ((ARRAY['individual'::character varying, 'company'::character varying, 'huf'::character varying, 'firm'::character varying])::text[]))),
+    CONSTRAINT tds_deductees_lower_deduction_rate_pct_chk CHECK (((lower_deduction_rate IS NULL) OR ((lower_deduction_rate >= (0)::numeric) AND (lower_deduction_rate <= (100)::numeric)))),
+    CONSTRAINT tds_deductees_rate_with_pan_pct_chk CHECK (((rate_with_pan IS NULL) OR ((rate_with_pan >= (0)::numeric) AND (rate_with_pan <= (100)::numeric)))),
+    CONSTRAINT tds_deductees_rate_without_pan_pct_chk CHECK (((rate_without_pan IS NULL) OR ((rate_without_pan >= (0)::numeric) AND (rate_without_pan <= (100)::numeric))))
 );
 
 
@@ -20274,7 +21845,8 @@ CREATE TABLE public.tds_entries (
     deposited boolean DEFAULT false,
     quarter character varying(5),
     financial_year character varying(10),
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT tds_entries_tds_rate_pct_chk CHECK (((tds_rate IS NULL) OR ((tds_rate >= (0)::numeric) AND (tds_rate <= (100)::numeric))))
 );
 
 
@@ -20325,7 +21897,8 @@ CREATE TABLE public.tds_transactions (
     employee_id integer,
     payroll_month integer,
     payroll_year integer,
-    company_id integer NOT NULL
+    company_id integer NOT NULL,
+    CONSTRAINT tds_transactions_tds_rate_pct_chk CHECK (((tds_rate IS NULL) OR ((tds_rate >= (0)::numeric) AND (tds_rate <= (100)::numeric))))
 );
 
 
@@ -20523,12 +22096,24 @@ ALTER SEQUENCE public.test_run_measurements_id_seq OWNED BY public.test_run_meas
 
 
 --
+-- Name: test_run_number_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.test_run_number_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
 -- Name: test_runs; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.test_runs (
     id integer NOT NULL,
-    run_number character varying(60) NOT NULL,
+    run_number character varying(60) DEFAULT ('TR-'::text || lpad((nextval('public.test_run_number_seq'::regclass))::text, 5, '0'::text)) NOT NULL,
     production_order_id integer,
     product_id integer,
     product_name character varying(250),
@@ -20562,6 +22147,12 @@ CREATE TABLE public.test_runs (
     dispatch_blocked boolean DEFAULT false,
     template_id integer,
     ncr_id integer,
+    company_id integer,
+    title text,
+    status character varying(30) DEFAULT 'planned'::character varying NOT NULL,
+    notes text,
+    created_by integer,
+    deleted_at timestamp with time zone,
     CONSTRAINT chk_test_runs_result CHECK (((overall_result)::text = ANY ((ARRAY['in_progress'::character varying, 'pass'::character varying, 'fail'::character varying, 'hold'::character varying])::text[]))),
     CONSTRAINT chk_test_runs_stage CHECK (((test_stage)::text = ANY ((ARRAY['IQC'::character varying, 'FAT'::character varying, 'SAT'::character varying, 'RMA'::character varying, 'prototype'::character varying])::text[])))
 );
@@ -20588,11 +22179,11 @@ ALTER SEQUENCE public.test_runs_id_seq OWNED BY public.test_runs.id;
 
 
 --
--- Name: three_way_match; Type: TABLE; Schema: public; Owner: -
+-- Name: three_way_match_archive; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.three_way_match (
-    id integer NOT NULL,
+CREATE TABLE public.three_way_match_archive (
+    id integer,
     po_number character varying(50),
     invoice_number character varying(50),
     grn_number character varying(50),
@@ -20600,30 +22191,11 @@ CREATE TABLE public.three_way_match (
     po_amount numeric(14,2),
     invoice_amount numeric(14,2),
     grn_value numeric(14,2),
-    status character varying(20) DEFAULT 'pending'::character varying,
+    status character varying(20),
     resolved_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone,
+    archived_at timestamp with time zone
 );
-
-
---
--- Name: three_way_match_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.three_way_match_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: three_way_match_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.three_way_match_id_seq OWNED BY public.three_way_match.id;
 
 
 --
@@ -20783,7 +22355,13 @@ CREATE TABLE public.ticket_conversations (
     message text NOT NULL,
     is_internal boolean DEFAULT false,
     created_by integer,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    created_by_name text,
+    attachments jsonb,
+    message_id character varying(998),
+    in_reply_to character varying(998),
+    channel character varying(20) DEFAULT 'web'::character varying NOT NULL,
+    inbound_email_id integer
 );
 
 
@@ -21069,6 +22647,7 @@ CREATE TABLE public.training_enrollments (
     feedback_rating integer,
     created_at timestamp with time zone DEFAULT now(),
     company_id integer,
+    feedback_comments text,
     CONSTRAINT training_enrollments_feedback_rating_check CHECK (((feedback_rating >= 1) AND (feedback_rating <= 5)))
 );
 
@@ -21118,7 +22697,8 @@ CREATE TABLE public.training_programs (
     venue character varying(300),
     attachment_url text,
     trainer_id integer,
-    deleted_at timestamp with time zone
+    deleted_at timestamp with time zone,
+    budget numeric(18,2)
 );
 
 
@@ -21691,6 +23271,158 @@ ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
 
 
 --
+-- Name: v_activity_timeline; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_activity_timeline AS
+ SELECT 'crm_activity'::text AS source,
+    (a.id)::text AS source_id,
+    a.company_id,
+    lower((COALESCE(a.activity_type, 'note'::character varying))::text) AS activity_type,
+    a.subject,
+    a.description AS body,
+    COALESCE(a.activity_date, a.created_at) AS occurred_at,
+    a.performed_by AS actor_employee_id,
+    a.status,
+    a.lead_id,
+    a.opportunity_id,
+    a.account_id,
+    a.contact_id,
+    a.project_id,
+    a.campaign_id,
+    a.ticket_id,
+    a.quotation_id,
+    a.sales_order_id
+   FROM public.crm_activities a
+  WHERE (a.deleted_at IS NULL)
+UNION ALL
+ SELECT 'lead_activity'::text AS source,
+    (la.id)::text AS source_id,
+    la.company_id,
+    lower((COALESCE(la.activity_type, 'note'::character varying))::text) AS activity_type,
+    NULL::character varying AS subject,
+    la.notes AS body,
+    COALESCE(la.activity_date, la.created_at) AS occurred_at,
+    la.created_by AS actor_employee_id,
+    NULL::character varying AS status,
+    la.lead_id,
+    NULL::integer AS opportunity_id,
+    NULL::integer AS account_id,
+    NULL::integer AS contact_id,
+    NULL::integer AS project_id,
+    NULL::integer AS campaign_id,
+    NULL::integer AS ticket_id,
+    NULL::integer AS quotation_id,
+    NULL::integer AS sales_order_id
+   FROM public.lead_activities la
+  WHERE (la.deleted_at IS NULL)
+UNION ALL
+ SELECT 'project_task'::text AS source,
+    (t.id)::text AS source_id,
+    p.company_id,
+    'task'::text AS activity_type,
+    t.task_title AS subject,
+    t.task_description AS body,
+    COALESCE((t.due_date)::timestamp with time zone, (t.created_at)::timestamp with time zone) AS occurred_at,
+    t.assigned_to AS actor_employee_id,
+    t.status,
+    NULL::integer AS lead_id,
+    NULL::integer AS opportunity_id,
+    NULL::integer AS account_id,
+    NULL::integer AS contact_id,
+    t.project_id,
+    NULL::integer AS campaign_id,
+    NULL::integer AS ticket_id,
+    NULL::integer AS quotation_id,
+    NULL::integer AS sales_order_id
+   FROM (public.tasks t
+     LEFT JOIN public.projects p ON ((p.id = t.project_id)))
+  WHERE (t.deleted_at IS NULL)
+UNION ALL
+ SELECT 'meeting'::text AS source,
+    (m.id)::text AS source_id,
+    m.company_id,
+    'meeting'::text AS activity_type,
+    m.title AS subject,
+    m.notes AS body,
+    COALESCE((m.meeting_date)::timestamp with time zone, m.created_at) AS occurred_at,
+    m.organiser_employee_id AS actor_employee_id,
+    m.status,
+    NULL::integer AS lead_id,
+    NULL::integer AS opportunity_id,
+    NULL::integer AS account_id,
+    NULL::integer AS contact_id,
+    NULL::integer AS project_id,
+    NULL::integer AS campaign_id,
+    NULL::integer AS ticket_id,
+    NULL::integer AS quotation_id,
+    NULL::integer AS sales_order_id
+   FROM public.meetings m
+  WHERE (m.deleted_at IS NULL)
+UNION ALL
+ SELECT 'sales_event'::text AS source,
+    (se.id)::text AS source_id,
+    se.company_id,
+    lower((COALESCE(se.type, 'event'::character varying))::text) AS activity_type,
+    se.title AS subject,
+    se.notes AS body,
+    COALESCE(se.start_at, se.created_at) AS occurred_at,
+    u.employee_id AS actor_employee_id,
+    NULL::character varying AS status,
+    NULL::integer AS lead_id,
+    se.opportunity_id,
+    se.account_id,
+    NULL::integer AS contact_id,
+    NULL::integer AS project_id,
+    NULL::integer AS campaign_id,
+    NULL::integer AS ticket_id,
+    NULL::integer AS quotation_id,
+    NULL::integer AS sales_order_id
+   FROM (public.sales_events se
+     LEFT JOIN public.users u ON ((u.id = se.owner_id)))
+UNION ALL
+ SELECT 'customer_visit'::text AS source,
+    (cv.id)::text AS source_id,
+    cv.company_id,
+    lower((COALESCE(cv.visit_type, 'visit'::character varying))::text) AS activity_type,
+    cv.purpose AS subject,
+    COALESCE(cv.discussion_notes, cv.visit_report) AS body,
+    COALESCE((cv.visit_date)::timestamp with time zone, cv.created_at) AS occurred_at,
+    cv.visited_by AS actor_employee_id,
+    cv.status,
+    NULL::integer AS lead_id,
+    cv.opportunity_id,
+    cv.customer_id AS account_id,
+    NULL::integer AS contact_id,
+    cv.project_id,
+    NULL::integer AS campaign_id,
+    NULL::integer AS ticket_id,
+    NULL::integer AS quotation_id,
+    NULL::integer AS sales_order_id
+   FROM public.customer_visits cv
+UNION ALL
+ SELECT 'marketing_task'::text AS source,
+    (mt.id)::text AS source_id,
+    mt.company_id,
+    'task'::text AS activity_type,
+    mt.title AS subject,
+    mt.description AS body,
+    COALESCE((mt.due_date)::timestamp with time zone, mt.created_at) AS occurred_at,
+    mt.assigned_to AS actor_employee_id,
+    mt.status,
+    NULL::integer AS lead_id,
+    NULL::integer AS opportunity_id,
+    NULL::integer AS account_id,
+    NULL::integer AS contact_id,
+    NULL::integer AS project_id,
+    mt.campaign_id,
+    NULL::integer AS ticket_id,
+    NULL::integer AS quotation_id,
+    NULL::integer AS sales_order_id
+   FROM public.marketing_tasks mt;
+
+
+--
 -- Name: warehouses; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -21749,6 +23481,28 @@ CREATE VIEW public.v_batch_stock AS
      JOIN public.inventory_items ii ON ((ib.item_id = ii.id)))
      JOIN public.warehouses w ON ((ib.warehouse_id = w.id)))
   WHERE (ib.deleted_at IS NULL);
+
+
+--
+-- Name: v_material_consumption_by_project; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_material_consumption_by_project AS
+ SELECT ri.project_id,
+    p.project_name,
+    ii.id AS item_id,
+    ii.item_code,
+    ii.item_name,
+    sum(rii.quantity) AS total_qty,
+    sum((rii.quantity * rii.rate)) AS total_value,
+    count(DISTINCT ri.id) AS issue_count,
+    max(ri.issue_date) AS last_issue_date
+   FROM (((public.rm_issue_items rii
+     JOIN public.rm_issues ri ON (((rii.issue_id = ri.id) AND (ri.deleted_at IS NULL))))
+     JOIN public.inventory_items ii ON ((rii.item_id = ii.id)))
+     LEFT JOIN public.projects p ON (((p.id = ri.project_id) AND (p.deleted_at IS NULL))))
+  WHERE (ri.project_id IS NOT NULL)
+  GROUP BY ri.project_id, p.project_name, ii.id, ii.item_code, ii.item_name;
 
 
 --
@@ -22100,7 +23854,10 @@ CREATE TABLE public.vendor_health_scores (
     capa_closure_pct numeric(5,2) DEFAULT 0,
     calculated_at timestamp with time zone DEFAULT now(),
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    coverage_pct numeric(5,1),
+    CONSTRAINT vendor_health_scores_coverage_range CHECK (((coverage_pct IS NULL) OR ((coverage_pct >= (0)::numeric) AND (coverage_pct <= (100)::numeric)))),
+    CONSTRAINT vendor_health_scores_pass_rate_pct_pct_chk CHECK (((pass_rate_pct IS NULL) OR ((pass_rate_pct >= (0)::numeric) AND (pass_rate_pct <= (100)::numeric))))
 );
 
 
@@ -22140,7 +23897,8 @@ CREATE TABLE public.vendor_health_timeline (
     cost_score numeric(5,2) DEFAULT 0,
     compliance_score numeric(5,2) DEFAULT 0,
     notes text,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    coverage_pct numeric(5,1)
 );
 
 
@@ -22323,7 +24081,11 @@ CREATE TABLE public.vendor_registrations (
     scm_quality_score numeric(5,2) DEFAULT 0,
     finance_score numeric(5,2) DEFAULT 0,
     risk_score numeric(5,2) DEFAULT 0,
-    rejection_reason text
+    rejection_reason text,
+    email_otp_attempts integer DEFAULT 0 NOT NULL,
+    mobile_otp_attempts integer DEFAULT 0 NOT NULL,
+    otp_locked_until timestamp with time zone,
+    access_token character varying(64)
 );
 
 
@@ -22414,7 +24176,16 @@ CREATE TABLE public.vendor_scorecards (
     evaluated_by integer,
     company_id integer,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT vendor_scorecards_compliance_score_range CHECK (((compliance_score IS NULL) OR ((compliance_score >= (0)::numeric) AND (compliance_score <= (100)::numeric)))),
+    CONSTRAINT vendor_scorecards_cost_score_range CHECK (((cost_score IS NULL) OR ((cost_score >= (0)::numeric) AND (cost_score <= (100)::numeric)))),
+    CONSTRAINT vendor_scorecards_delivery_score_range CHECK (((delivery_score IS NULL) OR ((delivery_score >= (0)::numeric) AND (delivery_score <= (100)::numeric)))),
+    CONSTRAINT vendor_scorecards_documentation_score_range CHECK (((documentation_score IS NULL) OR ((documentation_score >= (0)::numeric) AND (documentation_score <= (100)::numeric)))),
+    CONSTRAINT vendor_scorecards_overall_score_range CHECK (((overall_score IS NULL) OR ((overall_score >= (0)::numeric) AND (overall_score <= (100)::numeric)))),
+    CONSTRAINT vendor_scorecards_quality_score_range CHECK (((quality_score IS NULL) OR ((quality_score >= (0)::numeric) AND (quality_score <= (100)::numeric)))),
+    CONSTRAINT vendor_scorecards_quarter_range CHECK (((period_quarter >= 1) AND (period_quarter <= 4))),
+    CONSTRAINT vendor_scorecards_risk_rating_values CHECK (((risk_rating IS NULL) OR ((risk_rating)::text = ANY ((ARRAY['Low'::character varying, 'Medium'::character varying, 'High'::character varying])::text[])))),
+    CONSTRAINT vendor_scorecards_support_score_range CHECK (((support_score IS NULL) OR ((support_score >= (0)::numeric) AND (support_score <= (100)::numeric))))
 );
 
 
@@ -22543,7 +24314,8 @@ CREATE TABLE public.vendors (
     registration_id integer,
     deleted_at timestamp with time zone,
     name text GENERATED ALWAYS AS (vendor_name) STORED,
-    party_id uuid
+    party_id uuid,
+    CONSTRAINT vendors_defect_rate_pct_chk CHECK (((defect_rate IS NULL) OR ((defect_rate >= (0)::numeric) AND (defect_rate <= (100)::numeric))))
 );
 
 
@@ -22996,6 +24768,88 @@ ALTER SEQUENCE public.warranty_registrations_id_seq OWNED BY public.warranty_reg
 
 
 --
+-- Name: web_lead_forms; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.web_lead_forms (
+    id integer NOT NULL,
+    company_id integer NOT NULL,
+    name character varying(120) NOT NULL,
+    form_key character varying(64) NOT NULL,
+    lead_source character varying(60) DEFAULT 'Website'::character varying NOT NULL,
+    default_zone character varying(40),
+    default_industry character varying(80),
+    allowed_origins jsonb DEFAULT '[]'::jsonb NOT NULL,
+    max_per_hour integer DEFAULT 60 NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    submission_count integer DEFAULT 0 NOT NULL,
+    last_submission_at timestamp with time zone,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: web_lead_forms_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.web_lead_forms_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: web_lead_forms_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.web_lead_forms_id_seq OWNED BY public.web_lead_forms.id;
+
+
+--
+-- Name: web_lead_submissions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.web_lead_submissions (
+    id integer NOT NULL,
+    form_id integer NOT NULL,
+    company_id integer NOT NULL,
+    lead_id integer,
+    status character varying(20) DEFAULT 'accepted'::character varying NOT NULL,
+    reason text,
+    payload jsonb,
+    ip_address character varying(64),
+    user_agent text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT web_lead_submissions_status_check CHECK (((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying, 'rejected'::character varying, 'rate_limited'::character varying, 'spam'::character varying])::text[])))
+);
+
+
+--
+-- Name: web_lead_submissions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.web_lead_submissions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: web_lead_submissions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.web_lead_submissions_id_seq OWNED BY public.web_lead_submissions.id;
+
+
+--
 -- Name: whatsapp_log; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -23140,7 +24994,9 @@ CREATE TABLE public.work_centres (
     created_at timestamp with time zone DEFAULT now(),
     efficiency_pct numeric(6,2) DEFAULT 100,
     working_days_per_week integer DEFAULT 5,
-    num_machines integer DEFAULT 1
+    num_machines integer DEFAULT 1,
+    labour_rate_per_hour numeric(10,2) DEFAULT 0,
+    CONSTRAINT work_centres_labour_rate_per_hour_nonneg_chk CHECK (((labour_rate_per_hour IS NULL) OR (labour_rate_per_hour >= (0)::numeric)))
 );
 
 
@@ -23293,7 +25149,9 @@ CREATE TABLE public.workflow_rules (
     trigger_count integer DEFAULT 0,
     created_by character varying(150),
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    company_id integer,
+    priority integer DEFAULT 100 NOT NULL
 );
 
 
@@ -23331,7 +25189,12 @@ CREATE TABLE public.workflow_run_logs (
     duration_ms integer,
     trigger_data jsonb DEFAULT '{}'::jsonb,
     error_message text,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    company_id integer,
+    actions_result jsonb,
+    attempt integer DEFAULT 1 NOT NULL,
+    matched boolean,
+    triggered_by integer
 );
 
 
@@ -24178,10 +26041,10 @@ ALTER TABLE ONLY public.critical_roles ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
--- Name: crm_deals id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: crm_activities id; Type: DEFAULT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.crm_deals ALTER COLUMN id SET DEFAULT nextval('public.crm_deals_id_seq'::regclass);
+ALTER TABLE ONLY public.crm_activities ALTER COLUMN id SET DEFAULT nextval('public.crm_activities_id_seq'::regclass);
 
 
 --
@@ -24196,6 +26059,13 @@ ALTER TABLE ONLY public.crm_email_accounts ALTER COLUMN id SET DEFAULT nextval('
 --
 
 ALTER TABLE ONLY public.crm_emails ALTER COLUMN id SET DEFAULT nextval('public.crm_emails_id_seq'::regclass);
+
+
+--
+-- Name: crm_team_members id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_team_members ALTER COLUMN id SET DEFAULT nextval('public.crm_team_members_id_seq'::regclass);
 
 
 --
@@ -24322,6 +26192,20 @@ ALTER TABLE ONLY public.cycle_count_headers ALTER COLUMN id SET DEFAULT nextval(
 --
 
 ALTER TABLE ONLY public.cycle_count_lines ALTER COLUMN id SET DEFAULT nextval('public.cycle_count_lines_id_seq'::regclass);
+
+
+--
+-- Name: dashboard_widgets id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dashboard_widgets ALTER COLUMN id SET DEFAULT nextval('public.dashboard_widgets_id_seq'::regclass);
+
+
+--
+-- Name: dashboards id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dashboards ALTER COLUMN id SET DEFAULT nextval('public.dashboards_id_seq'::regclass);
 
 
 --
@@ -24934,6 +26818,13 @@ ALTER TABLE ONLY public.hr_shifts ALTER COLUMN id SET DEFAULT nextval('public.hr
 
 
 --
+-- Name: inbound_emails id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inbound_emails ALTER COLUMN id SET DEFAULT nextval('public.inbound_emails_id_seq'::regclass);
+
+
+--
 -- Name: increment_bands id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -24976,17 +26867,17 @@ ALTER TABLE ONLY public.installation_requests ALTER COLUMN id SET DEFAULT nextva
 
 
 --
+-- Name: interview_notes id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interview_notes ALTER COLUMN id SET DEFAULT nextval('public.interview_notes_id_seq'::regclass);
+
+
+--
 -- Name: interview_questions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.interview_questions ALTER COLUMN id SET DEFAULT nextval('public.interview_questions_id_seq'::regclass);
-
-
---
--- Name: interviews id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.interviews ALTER COLUMN id SET DEFAULT nextval('public.interviews_id_seq'::regclass);
 
 
 --
@@ -25085,6 +26976,27 @@ ALTER TABLE ONLY public.job_requisitions ALTER COLUMN id SET DEFAULT nextval('pu
 --
 
 ALTER TABLE ONLY public.journal_lines ALTER COLUMN id SET DEFAULT nextval('public.journal_lines_id_seq'::regclass);
+
+
+--
+-- Name: knowledge_article_cases id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_cases ALTER COLUMN id SET DEFAULT nextval('public.knowledge_article_cases_id_seq'::regclass);
+
+
+--
+-- Name: knowledge_article_feedback id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_feedback ALTER COLUMN id SET DEFAULT nextval('public.knowledge_article_feedback_id_seq'::regclass);
+
+
+--
+-- Name: knowledge_article_versions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_versions ALTER COLUMN id SET DEFAULT nextval('public.knowledge_article_versions_id_seq'::regclass);
 
 
 --
@@ -25354,6 +27266,20 @@ ALTER TABLE ONLY public.material_reservations ALTER COLUMN id SET DEFAULT nextva
 
 
 --
+-- Name: meeting_attendees id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.meeting_attendees ALTER COLUMN id SET DEFAULT nextval('public.meeting_attendees_id_seq'::regclass);
+
+
+--
+-- Name: meetings id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.meetings ALTER COLUMN id SET DEFAULT nextval('public.meetings_id_seq'::regclass);
+
+
+--
 -- Name: mentoring_assignments id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -25379,6 +27305,13 @@ ALTER TABLE ONLY public.module_production_request_lines ALTER COLUMN id SET DEFA
 --
 
 ALTER TABLE ONLY public.module_production_requests ALTER COLUMN id SET DEFAULT nextval('public.module_production_requests_id_seq'::regclass);
+
+
+--
+-- Name: module_settings id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_settings ALTER COLUMN id SET DEFAULT nextval('public.module_settings_id_seq'::regclass);
 
 
 --
@@ -25484,6 +27417,20 @@ ALTER TABLE ONLY public.opportunity_stage_history ALTER COLUMN id SET DEFAULT ne
 --
 
 ALTER TABLE ONLY public.org_relationships ALTER COLUMN id SET DEFAULT nextval('public.org_relationships_id_seq'::regclass);
+
+
+--
+-- Name: partner_deal_registration_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registration_events ALTER COLUMN id SET DEFAULT nextval('public.partner_deal_registration_events_id_seq'::regclass);
+
+
+--
+-- Name: partner_deal_registrations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registrations ALTER COLUMN id SET DEFAULT nextval('public.partner_deal_registrations_id_seq'::regclass);
 
 
 --
@@ -25701,6 +27648,13 @@ ALTER TABLE ONLY public.price_lists ALTER COLUMN id SET DEFAULT nextval('public.
 --
 
 ALTER TABLE ONLY public.probation_notifications ALTER COLUMN id SET DEFAULT nextval('public.probation_notifications_id_seq'::regclass);
+
+
+--
+-- Name: procurement_award_decisions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions ALTER COLUMN id SET DEFAULT nextval('public.procurement_award_decisions_id_seq'::regclass);
 
 
 --
@@ -26117,6 +28071,34 @@ ALTER TABLE ONLY public.rfqs ALTER COLUMN id SET DEFAULT nextval('public.rfqs_id
 
 
 --
+-- Name: rfx_criteria_scores id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_criteria_scores ALTER COLUMN id SET DEFAULT nextval('public.rfx_criteria_scores_id_seq'::regclass);
+
+
+--
+-- Name: rfx_vendor_selections id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_vendor_selections ALTER COLUMN id SET DEFAULT nextval('public.rfx_vendor_selections_id_seq'::regclass);
+
+
+--
+-- Name: rm_issue_items id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issue_items ALTER COLUMN id SET DEFAULT nextval('public.rm_issue_items_id_seq'::regclass);
+
+
+--
+-- Name: rm_issues id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issues ALTER COLUMN id SET DEFAULT nextval('public.rm_issues_id_seq'::regclass);
+
+
+--
 -- Name: role_competencies id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -26184,6 +28166,20 @@ ALTER TABLE ONLY public.sales_commission_rules ALTER COLUMN id SET DEFAULT nextv
 --
 
 ALTER TABLE ONLY public.sales_documents ALTER COLUMN id SET DEFAULT nextval('public.sales_documents_id_seq'::regclass);
+
+
+--
+-- Name: sales_forecast_snapshots id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_snapshots ALTER COLUMN id SET DEFAULT nextval('public.sales_forecast_snapshots_id_seq'::regclass);
+
+
+--
+-- Name: sales_forecast_submissions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_submissions ALTER COLUMN id SET DEFAULT nextval('public.sales_forecast_submissions_id_seq'::regclass);
 
 
 --
@@ -26257,6 +28253,20 @@ ALTER TABLE ONLY public.saved_reports ALTER COLUMN id SET DEFAULT nextval('publi
 
 
 --
+-- Name: savings_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_events ALTER COLUMN id SET DEFAULT nextval('public.savings_events_id_seq'::regclass);
+
+
+--
+-- Name: savings_initiatives id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives ALTER COLUMN id SET DEFAULT nextval('public.savings_initiatives_id_seq'::regclass);
+
+
+--
 -- Name: scoring_rules id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -26268,6 +28278,13 @@ ALTER TABLE ONLY public.scoring_rules ALTER COLUMN id SET DEFAULT nextval('publi
 --
 
 ALTER TABLE ONLY public.security_events ALTER COLUMN id SET DEFAULT nextval('public.security_events_id_seq'::regclass);
+
+
+--
+-- Name: sequence_enrollment_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_enrollment_events ALTER COLUMN id SET DEFAULT nextval('public.sequence_enrollment_events_id_seq'::regclass);
 
 
 --
@@ -26411,6 +28428,13 @@ ALTER TABLE ONLY public.sla_policies ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
+-- Name: sourcing_category_strategies id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sourcing_category_strategies ALTER COLUMN id SET DEFAULT nextval('public.sourcing_category_strategies_id_seq'::regclass);
+
+
+--
 -- Name: spare_parts id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -26527,6 +28551,13 @@ ALTER TABLE ONLY public.succession_settings ALTER COLUMN id SET DEFAULT nextval(
 --
 
 ALTER TABLE ONLY public.supplier_quality_snapshots ALTER COLUMN id SET DEFAULT nextval('public.supplier_quality_snapshots_id_seq'::regclass);
+
+
+--
+-- Name: support_mailboxes id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.support_mailboxes ALTER COLUMN id SET DEFAULT nextval('public.support_mailboxes_id_seq'::regclass);
 
 
 --
@@ -26653,13 +28684,6 @@ ALTER TABLE ONLY public.test_run_measurements ALTER COLUMN id SET DEFAULT nextva
 --
 
 ALTER TABLE ONLY public.test_runs ALTER COLUMN id SET DEFAULT nextval('public.test_runs_id_seq'::regclass);
-
-
---
--- Name: three_way_match id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.three_way_match ALTER COLUMN id SET DEFAULT nextval('public.three_way_match_id_seq'::regclass);
 
 
 --
@@ -27017,6 +29041,20 @@ ALTER TABLE ONLY public.warranty_claims ALTER COLUMN id SET DEFAULT nextval('pub
 --
 
 ALTER TABLE ONLY public.warranty_registrations ALTER COLUMN id SET DEFAULT nextval('public.warranty_registrations_id_seq'::regclass);
+
+
+--
+-- Name: web_lead_forms id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_forms ALTER COLUMN id SET DEFAULT nextval('public.web_lead_forms_id_seq'::regclass);
+
+
+--
+-- Name: web_lead_submissions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_submissions ALTER COLUMN id SET DEFAULT nextval('public.web_lead_submissions_id_seq'::regclass);
 
 
 --
@@ -27560,11 +29598,11 @@ ALTER TABLE ONLY public.bill_items
 
 
 --
--- Name: bills bills_bill_number_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: bills bills_company_bill_number_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.bills
-    ADD CONSTRAINT bills_bill_number_key UNIQUE (bill_number);
+    ADD CONSTRAINT bills_company_bill_number_key UNIQUE (company_id, bill_number);
 
 
 --
@@ -28096,19 +30134,19 @@ ALTER TABLE ONLY public.critical_roles
 
 
 --
+-- Name: crm_activities crm_activities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_activities
+    ADD CONSTRAINT crm_activities_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: crm_assignment_rules crm_assignment_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.crm_assignment_rules
     ADD CONSTRAINT crm_assignment_rules_pkey PRIMARY KEY (id);
-
-
---
--- Name: crm_deals crm_deals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.crm_deals
-    ADD CONSTRAINT crm_deals_pkey PRIMARY KEY (id);
 
 
 --
@@ -28173,6 +30211,14 @@ ALTER TABLE ONLY public.crm_settings
 
 ALTER TABLE ONLY public.crm_settings
     ADD CONSTRAINT crm_settings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: crm_team_members crm_team_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_team_members
+    ADD CONSTRAINT crm_team_members_pkey PRIMARY KEY (id);
 
 
 --
@@ -28397,6 +30443,22 @@ ALTER TABLE ONLY public.cycle_count_headers
 
 ALTER TABLE ONLY public.cycle_count_lines
     ADD CONSTRAINT cycle_count_lines_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dashboard_widgets dashboard_widgets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dashboard_widgets
+    ADD CONSTRAINT dashboard_widgets_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dashboards dashboards_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dashboards
+    ADD CONSTRAINT dashboards_pkey PRIMARY KEY (id);
 
 
 --
@@ -29384,6 +31446,14 @@ ALTER TABLE ONLY public.hr_shifts
 
 
 --
+-- Name: inbound_emails inbound_emails_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inbound_emails
+    ADD CONSTRAINT inbound_emails_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: increment_bands increment_bands_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -29440,6 +31510,14 @@ ALTER TABLE ONLY public.installation_requests
 
 
 --
+-- Name: interview_notes interview_notes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interview_notes
+    ADD CONSTRAINT interview_notes_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: interview_questions interview_questions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -29453,14 +31531,6 @@ ALTER TABLE ONLY public.interview_questions
 
 ALTER TABLE ONLY public.interview_schedules
     ADD CONSTRAINT interview_schedules_pkey PRIMARY KEY (id);
-
-
---
--- Name: interviews interviews_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.interviews
-    ADD CONSTRAINT interviews_pkey PRIMARY KEY (id);
 
 
 --
@@ -29629,6 +31699,30 @@ ALTER TABLE ONLY public.journal_entry_lines
 
 ALTER TABLE ONLY public.journal_lines
     ADD CONSTRAINT journal_lines_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: knowledge_article_cases knowledge_article_cases_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_cases
+    ADD CONSTRAINT knowledge_article_cases_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: knowledge_article_feedback knowledge_article_feedback_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_feedback
+    ADD CONSTRAINT knowledge_article_feedback_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: knowledge_article_versions knowledge_article_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_versions
+    ADD CONSTRAINT knowledge_article_versions_pkey PRIMARY KEY (id);
 
 
 --
@@ -30104,6 +32198,22 @@ ALTER TABLE ONLY public.material_reservations
 
 
 --
+-- Name: meeting_attendees meeting_attendees_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.meeting_attendees
+    ADD CONSTRAINT meeting_attendees_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: meetings meetings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.meetings
+    ADD CONSTRAINT meetings_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: mentoring_assignments mentoring_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -30149,6 +32259,14 @@ ALTER TABLE ONLY public.module_production_requests
 
 ALTER TABLE ONLY public.module_production_requests
     ADD CONSTRAINT module_production_requests_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: module_settings module_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_settings
+    ADD CONSTRAINT module_settings_pkey PRIMARY KEY (id);
 
 
 --
@@ -30333,6 +32451,22 @@ ALTER TABLE ONLY public.parties
 
 ALTER TABLE ONLY public.parties
     ADD CONSTRAINT parties_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: partner_deal_registration_events partner_deal_registration_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registration_events
+    ADD CONSTRAINT partner_deal_registration_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: partner_deal_registrations partner_deal_registrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registrations
+    ADD CONSTRAINT partner_deal_registrations_pkey PRIMARY KEY (id);
 
 
 --
@@ -30653,6 +32787,14 @@ ALTER TABLE ONLY public.price_lists
 
 ALTER TABLE ONLY public.probation_notifications
     ADD CONSTRAINT probation_notifications_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: procurement_award_decisions procurement_award_decisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions
+    ADD CONSTRAINT procurement_award_decisions_pkey PRIMARY KEY (id);
 
 
 --
@@ -31280,6 +33422,38 @@ ALTER TABLE ONLY public.rfqs
 
 
 --
+-- Name: rfx_criteria_scores rfx_criteria_scores_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_criteria_scores
+    ADD CONSTRAINT rfx_criteria_scores_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: rfx_vendor_selections rfx_vendor_selections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_vendor_selections
+    ADD CONSTRAINT rfx_vendor_selections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: rm_issue_items rm_issue_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issue_items
+    ADD CONSTRAINT rm_issue_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: rm_issues rm_issues_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issues
+    ADD CONSTRAINT rm_issues_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: role_competencies role_competencies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -31400,6 +33574,22 @@ ALTER TABLE ONLY public.sales_events
 
 
 --
+-- Name: sales_forecast_snapshots sales_forecast_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_snapshots
+    ADD CONSTRAINT sales_forecast_snapshots_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_forecast_submissions sales_forecast_submissions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_submissions
+    ADD CONSTRAINT sales_forecast_submissions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: sales_funnel_snapshots sales_funnel_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -31504,6 +33694,30 @@ ALTER TABLE ONLY public.saved_reports
 
 
 --
+-- Name: savings_events savings_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_events
+    ADD CONSTRAINT savings_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: savings_initiatives savings_initiative_number_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiative_number_unique UNIQUE (initiative_number);
+
+
+--
+-- Name: savings_initiatives savings_initiatives_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiatives_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: scoring_rules scoring_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -31517,6 +33731,14 @@ ALTER TABLE ONLY public.scoring_rules
 
 ALTER TABLE ONLY public.security_events
     ADD CONSTRAINT security_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sequence_enrollment_events sequence_enrollment_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_enrollment_events
+    ADD CONSTRAINT sequence_enrollment_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -31701,6 +33923,14 @@ ALTER TABLE ONLY public.skill_matrix
 
 ALTER TABLE ONLY public.sla_policies
     ADD CONSTRAINT sla_policies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sourcing_category_strategies sourcing_category_strategies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sourcing_category_strategies
+    ADD CONSTRAINT sourcing_category_strategies_pkey PRIMARY KEY (id);
 
 
 --
@@ -31901,6 +34131,14 @@ ALTER TABLE ONLY public.supplier_quality_snapshots
 
 ALTER TABLE ONLY public.supplier_quality_snapshots
     ADD CONSTRAINT supplier_quality_snapshots_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: support_mailboxes support_mailboxes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.support_mailboxes
+    ADD CONSTRAINT support_mailboxes_pkey PRIMARY KEY (id);
 
 
 --
@@ -32112,14 +34350,6 @@ ALTER TABLE ONLY public.test_runs
 
 
 --
--- Name: three_way_match three_way_match_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.three_way_match
-    ADD CONSTRAINT three_way_match_pkey PRIMARY KEY (id);
-
-
---
 -- Name: three_way_matches three_way_matches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -32320,11 +34550,35 @@ ALTER TABLE ONLY public.travel_requests
 
 
 --
+-- Name: knowledge_article_cases uq_knowledge_article_case; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_cases
+    ADD CONSTRAINT uq_knowledge_article_case UNIQUE (article_id, ticket_id);
+
+
+--
+-- Name: knowledge_article_versions uq_knowledge_article_version; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_versions
+    ADD CONSTRAINT uq_knowledge_article_version UNIQUE (article_id, version);
+
+
+--
 -- Name: skill_matrix uq_skill_matrix_emp_skill; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.skill_matrix
     ADD CONSTRAINT uq_skill_matrix_emp_skill UNIQUE (employee_id, skill_name);
+
+
+--
+-- Name: support_mailboxes uq_support_mailbox; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.support_mailboxes
+    ADD CONSTRAINT uq_support_mailbox UNIQUE (company_id, email_address);
 
 
 --
@@ -32712,6 +34966,30 @@ ALTER TABLE ONLY public.warranty_registrations
 
 
 --
+-- Name: web_lead_forms web_lead_forms_form_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_forms
+    ADD CONSTRAINT web_lead_forms_form_key_key UNIQUE (form_key);
+
+
+--
+-- Name: web_lead_forms web_lead_forms_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_forms
+    ADD CONSTRAINT web_lead_forms_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: web_lead_submissions web_lead_submissions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_submissions
+    ADD CONSTRAINT web_lead_submissions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: whatsapp_log whatsapp_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -32832,10 +35110,59 @@ ALTER TABLE ONLY public.workflows
 
 
 --
+-- Name: accounts_company_email_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX accounts_company_email_unique ON public.accounts USING btree (company_id, lower((email)::text)) WHERE ((deleted_at IS NULL) AND (email IS NOT NULL) AND ((email)::text <> ''::text));
+
+
+--
+-- Name: accounts_company_normname_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX accounts_company_normname_unique ON public.accounts USING btree (company_id, public.crm_norm_name((name)::text)) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: accounts_party_id_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX accounts_party_id_unique ON public.accounts USING btree (party_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: candidates_company_email_uniq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX candidates_company_email_uniq ON public.candidates USING btree (company_id, lower(TRIM(BOTH FROM email))) WHERE ((deleted_at IS NULL) AND (email IS NOT NULL) AND (TRIM(BOTH FROM email) <> ''::text));
+
+
+--
 -- Name: contacts_company_email_unique; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX contacts_company_email_unique ON public.contacts USING btree (company_id, email) WHERE ((email IS NOT NULL) AND ((email)::text <> ''::text));
+
+
+--
+-- Name: contacts_company_mobile_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX contacts_company_mobile_unique ON public.contacts USING btree (company_id, regexp_replace((COALESCE(mobile, ''::character varying))::text, '[^0-9]'::text, ''::text, 'g'::text)) WHERE ((deleted_at IS NULL) AND (mobile IS NOT NULL) AND (regexp_replace((COALESCE(mobile, ''::character varying))::text, '[^0-9]'::text, ''::text, 'g'::text) <> ''::text));
+
+
+--
+-- Name: customer_credit_settings_company_party_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX customer_credit_settings_company_party_key ON public.customer_credit_settings USING btree (company_id, party_id) WHERE (party_id IS NOT NULL);
+
+
+--
+-- Name: customer_drive_folders_customer_doctype_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX customer_drive_folders_customer_doctype_unique ON public.customer_drive_folders USING btree (customer_id, doc_type);
 
 
 --
@@ -32906,6 +35233,20 @@ CREATE INDEX device_telemetry_default_company_id_idx ON public.device_telemetry_
 --
 
 CREATE INDEX device_telemetry_default_equipment_id_metric_ts_idx ON public.device_telemetry_default USING btree (equipment_id, metric, ts DESC);
+
+
+--
+-- Name: employees_source_candidate_uniq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX employees_source_candidate_uniq ON public.employees USING btree (source_candidate_id) WHERE (source_candidate_id IS NOT NULL);
+
+
+--
+-- Name: goods_receipt_notes_idempotency_key_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX goods_receipt_notes_idempotency_key_uq ON public.goods_receipt_notes USING btree (company_id, idempotency_key) WHERE ((idempotency_key IS NOT NULL) AND (deleted_at IS NULL));
 
 
 --
@@ -32993,10 +35334,24 @@ CREATE UNIQUE INDEX idx_accounting_periods_company_period ON public.accounting_p
 
 
 --
+-- Name: idx_accounts_assigned_to; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_accounts_assigned_to ON public.accounts USING btree (assigned_to);
+
+
+--
 -- Name: idx_accounts_company; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_accounts_company ON public.accounts USING btree (company_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_accounts_parent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_accounts_parent ON public.accounts USING btree (parent_account_id) WHERE (parent_account_id IS NOT NULL);
 
 
 --
@@ -33294,6 +35649,13 @@ CREATE INDEX idx_audit_logs_module_backup ON public.audit_logs_backup USING btre
 
 
 --
+-- Name: idx_audit_logs_module_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_logs_module_created ON public.audit_logs USING btree (module_name, created_at DESC);
+
+
+--
 -- Name: idx_audit_logs_user; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -33347,6 +35709,27 @@ CREATE INDEX idx_auth_audit_user ON public.auth_audit_log USING btree (user_id, 
 --
 
 CREATE INDEX idx_avl_item ON public.approved_vendor_list USING btree (item_id, company_id);
+
+
+--
+-- Name: idx_award_decisions_overridden; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_award_decisions_overridden ON public.procurement_award_decisions USING btree (company_id, created_at DESC) WHERE (followed_recommendation = false);
+
+
+--
+-- Name: idx_award_decisions_rfq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_award_decisions_rfq ON public.procurement_award_decisions USING btree (rfq_id, created_at DESC);
+
+
+--
+-- Name: idx_award_decisions_vendor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_award_decisions_vendor ON public.procurement_award_decisions USING btree (awarded_vendor_id);
 
 
 --
@@ -33434,10 +35817,24 @@ CREATE INDEX idx_bills_party_id ON public.bills USING btree (party_id);
 
 
 --
+-- Name: idx_bills_po_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_bills_po_id ON public.bills USING btree (po_id) WHERE (po_id IS NOT NULL);
+
+
+--
 -- Name: idx_bills_tds_section; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_bills_tds_section ON public.bills USING btree (tds_section, company_id) WHERE ((tds_section IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_bin_locations_code_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_bin_locations_code_unique ON public.bin_locations USING btree (zone_id, upper((bin_code)::text));
 
 
 --
@@ -33494,6 +35891,13 @@ CREATE INDEX idx_bom_headers_company ON public.bom_headers USING btree (company_
 --
 
 CREATE INDEX idx_bom_headers_ecn ON public.bom_headers USING btree (ecn_id);
+
+
+--
+-- Name: idx_bom_headers_project; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_bom_headers_project ON public.bom_headers USING btree (project_id) WHERE (project_id IS NOT NULL);
 
 
 --
@@ -33665,17 +36069,17 @@ CREATE INDEX idx_ccs_company_account ON public.customer_credit_settings USING bt
 
 
 --
+-- Name: idx_ccs_party; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ccs_party ON public.customer_credit_settings USING btree (party_id);
+
+
+--
 -- Name: idx_cdf_company_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_cdf_company_id ON public.customer_drive_folders USING btree (company_id);
-
-
---
--- Name: idx_cdf_customer_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_cdf_customer_id ON public.customer_drive_folders USING btree (customer_id);
 
 
 --
@@ -33697,13 +36101,6 @@ CREATE INDEX idx_cdf_lookup ON public.customer_drive_folders USING btree (compan
 --
 
 CREATE INDEX idx_cdfiles_company ON public.customer_drive_files USING btree (company_id);
-
-
---
--- Name: idx_cdfiles_customer; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_cdfiles_customer ON public.customer_drive_files USING btree (customer_id);
 
 
 --
@@ -34281,6 +36678,83 @@ CREATE INDEX idx_critical_roles_company ON public.critical_roles USING btree (co
 
 
 --
+-- Name: idx_crm_activities_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_account ON public.crm_activities USING btree (account_id, activity_date DESC) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_crm_activities_campaign_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_campaign_id ON public.crm_activities USING btree (campaign_id) WHERE (campaign_id IS NOT NULL);
+
+
+--
+-- Name: idx_crm_activities_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_company ON public.crm_activities USING btree (company_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_crm_activities_followup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_followup ON public.crm_activities USING btree (next_followup_date) WHERE ((next_followup_date IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_crm_activities_lead; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_lead ON public.crm_activities USING btree (lead_id, activity_date DESC) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_crm_activities_opp; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_opp ON public.crm_activities USING btree (opportunity_id, activity_date DESC) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_crm_activities_project_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_project_id ON public.crm_activities USING btree (project_id) WHERE (project_id IS NOT NULL);
+
+
+--
+-- Name: idx_crm_activities_quotation_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_quotation_id ON public.crm_activities USING btree (quotation_id) WHERE (quotation_id IS NOT NULL);
+
+
+--
+-- Name: idx_crm_activities_sales_order_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_sales_order_id ON public.crm_activities USING btree (sales_order_id) WHERE (sales_order_id IS NOT NULL);
+
+
+--
+-- Name: idx_crm_activities_ticket_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_ticket_id ON public.crm_activities USING btree (ticket_id) WHERE (ticket_id IS NOT NULL);
+
+
+--
+-- Name: idx_crm_activities_timeline; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_activities_timeline ON public.crm_activities USING btree (company_id, activity_date DESC) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: idx_crm_email_accounts_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -34309,10 +36783,31 @@ CREATE INDEX idx_crm_emails_company ON public.crm_emails USING btree (company_id
 
 
 --
--- Name: idx_crm_leads_status; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_crm_emails_opportunity; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_crm_leads_status ON public.leads USING btree (status);
+CREATE INDEX idx_crm_emails_opportunity ON public.crm_emails USING btree (opportunity_id) WHERE (opportunity_id IS NOT NULL);
+
+
+--
+-- Name: idx_crm_team_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_team_account ON public.crm_team_members USING btree (account_id) WHERE (account_id IS NOT NULL);
+
+
+--
+-- Name: idx_crm_team_employee; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_team_employee ON public.crm_team_members USING btree (company_id, employee_id);
+
+
+--
+-- Name: idx_crm_team_opportunity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_team_opportunity ON public.crm_team_members USING btree (opportunity_id) WHERE (opportunity_id IS NOT NULL);
 
 
 --
@@ -34341,6 +36836,13 @@ CREATE INDEX idx_crp_runs_company ON public.crp_runs USING btree (company_id, cr
 --
 
 CREATE INDEX idx_csat_responses_complaint ON public.csat_responses USING btree (complaint_id);
+
+
+--
+-- Name: idx_customer_drive_files_customer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_customer_drive_files_customer ON public.customer_drive_files USING btree (customer_id);
 
 
 --
@@ -34407,10 +36909,45 @@ CREATE INDEX idx_da_plan ON public.development_actions USING btree (plan_id, act
 
 
 --
+-- Name: idx_dashboards_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dashboards_company ON public.dashboards USING btree (company_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_dashboards_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dashboards_owner ON public.dashboards USING btree (owner_user_id) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: idx_ddl_doc_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ddl_doc_id ON public.document_download_log USING btree (document_id);
+
+
+--
+-- Name: idx_deal_registration_events; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_deal_registration_events ON public.partner_deal_registration_events USING btree (registration_id, created_at DESC);
+
+
+--
+-- Name: idx_deal_registration_expiry; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_deal_registration_expiry ON public.partner_deal_registrations USING btree (status, expires_at) WHERE ((status)::text = 'approved'::text);
+
+
+--
+-- Name: idx_deal_registration_partner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_deal_registration_partner ON public.partner_deal_registrations USING btree (company_id, partner_id, status);
 
 
 --
@@ -35170,6 +37707,13 @@ CREATE INDEX idx_form27d_collectee ON public.form27d_records USING btree (collec
 
 
 --
+-- Name: idx_generated_documents_reference; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_generated_documents_reference ON public.generated_documents USING btree (reference_type, reference_id) WHERE (reference_id IS NOT NULL);
+
+
+--
 -- Name: idx_geo_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -35310,6 +37854,20 @@ CREATE INDEX idx_imr_status ON public.module_production_requests USING btree (st
 
 
 --
+-- Name: idx_inbound_emails_thread; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inbound_emails_thread ON public.inbound_emails USING btree (company_id, from_email, received_at DESC);
+
+
+--
+-- Name: idx_inbound_emails_ticket; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inbound_emails_ticket ON public.inbound_emails USING btree (ticket_id);
+
+
+--
 -- Name: idx_increment_bands_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -35373,20 +37931,6 @@ CREATE INDEX idx_installation_requests_status ON public.installation_requests US
 
 
 --
--- Name: idx_interviews_candidate; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_interviews_candidate ON public.interviews USING btree (candidate_id);
-
-
---
--- Name: idx_interviews_company; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_interviews_company ON public.interviews USING btree (company_id, status);
-
-
---
 -- Name: idx_inv_alloc_project; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -35405,6 +37949,20 @@ CREATE INDEX idx_inv_batches_item_wh ON public.inventory_batches USING btree (it
 --
 
 CREATE INDEX idx_inv_items_preferred_vendor ON public.inventory_items USING btree (preferred_vendor_id) WHERE (preferred_vendor_id IS NOT NULL);
+
+
+--
+-- Name: idx_inventory_batches_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inventory_batches_company ON public.inventory_batches USING btree (company_id);
+
+
+--
+-- Name: idx_inventory_batches_grn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inventory_batches_grn ON public.inventory_batches USING btree (grn_id) WHERE (grn_id IS NOT NULL);
 
 
 --
@@ -35454,6 +38012,13 @@ CREATE INDEX idx_invoices_company_status ON public.invoices USING btree (company
 --
 
 CREATE INDEX idx_invoices_company_status_due ON public.invoices USING btree (company_id, status, due_date) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_invoices_customer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoices_customer ON public.invoices USING btree (customer_id) WHERE (deleted_at IS NULL);
 
 
 --
@@ -35625,6 +38190,27 @@ CREATE INDEX idx_kd_title ON public.knowledge_documents USING gin (to_tsvector('
 
 
 --
+-- Name: idx_knowledge_cases_ticket; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_knowledge_cases_ticket ON public.knowledge_article_cases USING btree (ticket_id);
+
+
+--
+-- Name: idx_knowledge_feedback_article; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_knowledge_feedback_article ON public.knowledge_article_feedback USING btree (article_id, event, created_at DESC);
+
+
+--
+-- Name: idx_knowledge_versions_article; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_knowledge_versions_article ON public.knowledge_article_versions USING btree (article_id, version DESC);
+
+
+--
 -- Name: idx_kra_definitions_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -35636,6 +38222,20 @@ CREATE INDEX idx_kra_definitions_company ON public.kra_definitions USING btree (
 --
 
 CREATE INDEX idx_la_delegate ON public.leave_applications USING btree (delegate_approver_id) WHERE (delegate_approver_id IS NOT NULL);
+
+
+--
+-- Name: idx_lah_application; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_lah_application ON public.leave_approval_history USING btree (leave_application_id);
+
+
+--
+-- Name: idx_lah_approver; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_lah_approver ON public.leave_approval_history USING btree (approver_id);
 
 
 --
@@ -35664,6 +38264,13 @@ CREATE INDEX idx_lead_activities_followup ON public.lead_activities USING btree 
 --
 
 CREATE INDEX idx_lead_activities_lead ON public.lead_activities USING btree (lead_id, activity_date DESC) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_leads_assigned_to; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_leads_assigned_to ON public.leads USING btree (assigned_to);
 
 
 --
@@ -35702,10 +38309,10 @@ CREATE INDEX idx_leads_partner_id ON public.leads USING btree (partner_id) WHERE
 
 
 --
--- Name: idx_leads_status; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_leads_territory; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_leads_status ON public.leads USING btree (status) WHERE (deleted_at IS NULL);
+CREATE INDEX idx_leads_territory ON public.leads USING btree (territory_id);
 
 
 --
@@ -35877,6 +38484,13 @@ CREATE UNIQUE INDEX idx_lpl_order_company ON public.leadership_pipeline_levels U
 
 
 --
+-- Name: idx_lpr_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_lpr_company ON public.local_purchase_requests USING btree (company_id);
+
+
+--
 -- Name: idx_ma_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -36021,6 +38635,27 @@ CREATE INDEX idx_mat_res_item ON public.material_reservations USING btree (item_
 --
 
 CREATE INDEX idx_mat_res_order ON public.material_reservations USING btree (production_order_id);
+
+
+--
+-- Name: idx_meeting_attendees_employee; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_meeting_attendees_employee ON public.meeting_attendees USING btree (employee_id);
+
+
+--
+-- Name: idx_meetings_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_meetings_date ON public.meetings USING btree (meeting_date) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_meetings_organiser; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_meetings_organiser ON public.meetings USING btree (organiser_employee_id) WHERE (deleted_at IS NULL);
 
 
 --
@@ -36297,6 +38932,13 @@ CREATE INDEX idx_opportunities_account ON public.opportunities USING btree (acco
 
 
 --
+-- Name: idx_opportunities_assigned_to; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_opportunities_assigned_to ON public.opportunities USING btree (assigned_to);
+
+
+--
 -- Name: idx_opportunities_branch; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -36318,17 +38960,17 @@ CREATE INDEX idx_opportunities_company_followup ON public.opportunities USING bt
 
 
 --
--- Name: idx_opportunities_company_stage; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_opportunities_company_stage ON public.opportunities USING btree (company_id, stage);
-
-
---
 -- Name: idx_opportunities_company_stage_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_opportunities_company_stage_created ON public.opportunities USING btree (company_id, stage, created_at DESC) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_opportunities_forecast_category; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_opportunities_forecast_category ON public.opportunities USING btree (company_id, forecast_category) WHERE (deleted_at IS NULL);
 
 
 --
@@ -36343,6 +38985,13 @@ CREATE INDEX idx_opportunities_held_by ON public.opportunities USING btree (held
 --
 
 CREATE INDEX idx_opportunities_tender ON public.opportunities USING btree (submission_deadline) WHERE (tender_number IS NOT NULL);
+
+
+--
+-- Name: idx_opportunities_territory; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_opportunities_territory ON public.opportunities USING btree (territory_id);
 
 
 --
@@ -36458,6 +39107,20 @@ CREATE INDEX idx_payment_batches_status ON public.payment_batches USING btree (s
 
 
 --
+-- Name: idx_payment_gateway_orders_invoice_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_payment_gateway_orders_invoice_id ON public.payment_gateway_orders USING btree (invoice_id);
+
+
+--
+-- Name: idx_payment_transactions_invoice_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_payment_transactions_invoice_id ON public.payment_transactions USING btree (invoice_id);
+
+
+--
 -- Name: idx_payments_company_date; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -36476,6 +39139,20 @@ CREATE INDEX idx_payroll_arrears_company ON public.payroll_arrears USING btree (
 --
 
 CREATE INDEX idx_payroll_arrears_employee ON public.payroll_arrears USING btree (employee_id);
+
+
+--
+-- Name: idx_payroll_runs_employee; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_payroll_runs_employee ON public.payroll_runs USING btree (employee_id);
+
+
+--
+-- Name: idx_payroll_runs_period; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_payroll_runs_period ON public.payroll_runs USING btree (year, month);
 
 
 --
@@ -36724,6 +39401,20 @@ CREATE INDEX idx_po_company_project ON public.purchase_orders USING btree (compa
 
 
 --
+-- Name: idx_po_cost_center; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_po_cost_center ON public.purchase_orders USING btree (cost_center_id);
+
+
+--
+-- Name: idx_po_order_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_po_order_date ON public.purchase_orders USING btree (order_date DESC);
+
+
+--
 -- Name: idx_po_project_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -36735,6 +39426,20 @@ CREATE INDEX idx_po_project_id ON public.purchase_orders USING btree (project_id
 --
 
 CREATE INDEX idx_po_sales_order_id ON public.purchase_orders USING btree (sales_order_id);
+
+
+--
+-- Name: idx_po_sourcing_strategy; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_po_sourcing_strategy ON public.purchase_orders USING btree (sourcing_strategy_id);
+
+
+--
+-- Name: idx_po_supplier; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_po_supplier ON public.purchase_orders USING btree (supplier_id);
 
 
 --
@@ -36784,6 +39489,20 @@ CREATE INDEX idx_pri_pr_id ON public.purchase_request_items USING btree (pr_id);
 --
 
 CREATE INDEX idx_price_change_log_company ON public.price_change_log USING btree (company_id);
+
+
+--
+-- Name: idx_price_history_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_price_history_company ON public.price_history USING btree (company_id);
+
+
+--
+-- Name: idx_price_history_company_item; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_price_history_company_item ON public.price_history USING btree (company_id, item_id);
 
 
 --
@@ -36910,6 +39629,13 @@ CREATE INDEX idx_production_orders_serial ON public.production_orders USING btre
 --
 
 CREATE INDEX idx_production_orders_status ON public.production_orders USING btree (status);
+
+
+--
+-- Name: idx_products_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_products_company ON public.products USING btree (company_id) WHERE (deleted_at IS NULL);
 
 
 --
@@ -37151,6 +39877,13 @@ CREATE INDEX idx_purchase_requests_company ON public.purchase_requests USING btr
 
 
 --
+-- Name: idx_purchase_requests_item; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_purchase_requests_item ON public.purchase_requests USING btree (item_id) WHERE (item_id IS NOT NULL);
+
+
+--
 -- Name: idx_qi_grn; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -37326,6 +40059,69 @@ CREATE INDEX idx_rfq_quotes_vendor ON public.rfq_quotes USING btree (vendor_id);
 
 
 --
+-- Name: idx_rfqs_category; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rfqs_category ON public.rfqs USING btree (category_id) WHERE (category_id IS NOT NULL);
+
+
+--
+-- Name: idx_rfqs_rfx_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rfqs_rfx_type ON public.rfqs USING btree (rfx_type);
+
+
+--
+-- Name: idx_rfx_selection_rfq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rfx_selection_rfq ON public.rfx_vendor_selections USING btree (rfq_id);
+
+
+--
+-- Name: idx_rfx_selection_vendor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rfx_selection_vendor ON public.rfx_vendor_selections USING btree (vendor_id);
+
+
+--
+-- Name: idx_rm_issue_items_issue; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rm_issue_items_issue ON public.rm_issue_items USING btree (issue_id);
+
+
+--
+-- Name: idx_rm_issue_items_item; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rm_issue_items_item ON public.rm_issue_items USING btree (item_id);
+
+
+--
+-- Name: idx_rm_issues_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rm_issues_date ON public.rm_issues USING btree (issue_date) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_rm_issues_department; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rm_issues_department ON public.rm_issues USING btree (department_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_rm_issues_project; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rm_issues_project ON public.rm_issues USING btree (project_id) WHERE (project_id IS NOT NULL);
+
+
+--
 -- Name: idx_role_perms_module; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -37403,6 +40199,62 @@ CREATE INDEX idx_sales_alerts_company ON public.sales_alerts USING btree (compan
 
 
 --
+-- Name: idx_sales_events_account_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_events_account_id ON public.sales_events USING btree (account_id);
+
+
+--
+-- Name: idx_sales_events_company_start; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_events_company_start ON public.sales_events USING btree (company_id, start_at);
+
+
+--
+-- Name: idx_sales_events_opportunity_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_events_opportunity_id ON public.sales_events USING btree (opportunity_id);
+
+
+--
+-- Name: idx_sales_events_owner_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_events_owner_id ON public.sales_events USING btree (owner_id);
+
+
+--
+-- Name: idx_sales_forecast_snapshots_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_forecast_snapshots_lookup ON public.sales_forecast_snapshots USING btree (company_id, period_year, period_type, period_value, captured_at DESC);
+
+
+--
+-- Name: idx_sales_forecast_submissions_period; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_forecast_submissions_period ON public.sales_forecast_submissions USING btree (company_id, period_year, period_type, period_value);
+
+
+--
+-- Name: idx_sales_orders_campaign; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_orders_campaign ON public.sales_orders USING btree (campaign_id) WHERE (campaign_id IS NOT NULL);
+
+
+--
+-- Name: idx_sales_orders_invoice; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_orders_invoice ON public.sales_orders USING btree (invoice_id) WHERE (invoice_id IS NOT NULL);
+
+
+--
 -- Name: idx_sales_orders_supply_type; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -37466,6 +40318,13 @@ CREATE INDEX idx_sales_targets_company ON public.sales_targets USING btree (comp
 
 
 --
+-- Name: idx_sales_territories_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_territories_active ON public.sales_territories USING btree (company_id, priority) WHERE (status = 'active'::text);
+
+
+--
 -- Name: idx_sat_project; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -37477,6 +40336,76 @@ CREATE INDEX idx_sat_project ON public.sat_trackers USING btree (project_id);
 --
 
 CREATE INDEX idx_sat_trackers_status ON public.sat_trackers USING btree (status);
+
+
+--
+-- Name: idx_saved_reports_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_saved_reports_company ON public.saved_reports USING btree (company_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_saved_reports_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_saved_reports_owner ON public.saved_reports USING btree (created_by) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_savings_category; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_savings_category ON public.savings_initiatives USING btree (category_id);
+
+
+--
+-- Name: idx_savings_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_savings_company ON public.savings_initiatives USING btree (company_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_savings_events_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_savings_events_company ON public.savings_events USING btree (company_id, event_type);
+
+
+--
+-- Name: idx_savings_events_initiative; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_savings_events_initiative ON public.savings_events USING btree (initiative_id, created_at);
+
+
+--
+-- Name: idx_savings_realisation_period_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_savings_realisation_period_unique ON public.savings_events USING btree (initiative_id, period_start, period_end) WHERE ((event_type)::text = 'realisation'::text);
+
+
+--
+-- Name: idx_savings_source_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_savings_source_unique ON public.savings_initiatives USING btree (company_id, source_type, source_ref_id) WHERE ((source_ref_id IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_savings_stage; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_savings_stage ON public.savings_initiatives USING btree (company_id, stage) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_savings_vendor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_savings_vendor ON public.savings_initiatives USING btree (vendor_id);
 
 
 --
@@ -37526,6 +40455,27 @@ CREATE INDEX idx_scrap_company ON public.production_scrap USING btree (company_i
 --
 
 CREATE INDEX idx_scrap_order ON public.production_scrap USING btree (production_order_id);
+
+
+--
+-- Name: idx_security_events_type_time; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_security_events_type_time ON public.security_events USING btree (event_type, created_at DESC);
+
+
+--
+-- Name: idx_sequence_enrollments_due; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sequence_enrollments_due ON public.sequence_enrollments USING btree (status, next_send_at) WHERE ((status)::text = 'active'::text);
+
+
+--
+-- Name: idx_sequence_events_enrollment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sequence_events_enrollment ON public.sequence_enrollment_events USING btree (enrollment_id, created_at DESC);
 
 
 --
@@ -37662,6 +40612,13 @@ CREATE INDEX idx_sig_templates_company ON public.signature_templates USING btree
 
 
 --
+-- Name: idx_skb_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_skb_status ON public.service_knowledge_base USING btree (company_id, status, visibility);
+
+
+--
 -- Name: idx_sm_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -37687,6 +40644,20 @@ CREATE INDEX idx_so_customer ON public.sales_orders USING btree (customer_id);
 --
 
 CREATE INDEX idx_so_status ON public.sales_orders USING btree (order_status);
+
+
+--
+-- Name: idx_sourcing_strategy_review; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sourcing_strategy_review ON public.sourcing_category_strategies USING btree (review_date) WHERE (review_date IS NOT NULL);
+
+
+--
+-- Name: idx_sourcing_strategy_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sourcing_strategy_status ON public.sourcing_category_strategies USING btree (company_id, status);
 
 
 --
@@ -37743,6 +40714,20 @@ CREATE INDEX idx_stmt_lines_unreconciled ON public.bank_statement_lines USING bt
 --
 
 CREATE INDEX idx_stock_ledger_company_item ON public.stock_ledger USING btree (company_id, item_id, warehouse_id);
+
+
+--
+-- Name: idx_stock_ledger_item; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_stock_ledger_item ON public.stock_ledger USING btree (item_id);
+
+
+--
+-- Name: idx_stock_ledger_txn_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_stock_ledger_txn_date ON public.stock_ledger USING btree (transaction_date DESC);
 
 
 --
@@ -38047,6 +41032,13 @@ CREATE INDEX idx_test_run_measurements_run ON public.test_run_measurements USING
 
 
 --
+-- Name: idx_test_runs_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_test_runs_company ON public.test_runs USING btree (company_id) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: idx_test_runs_order; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -38086,6 +41078,20 @@ CREATE INDEX idx_ticket_attach_ticket ON public.ticket_attachments USING btree (
 --
 
 CREATE INDEX idx_ticket_comments_ticket ON public.ticket_comments USING btree (ticket_id);
+
+
+--
+-- Name: idx_ticket_conversations_message_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ticket_conversations_message_id ON public.ticket_conversations USING btree (message_id) WHERE (message_id IS NOT NULL);
+
+
+--
+-- Name: idx_ticket_conversations_ticket; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ticket_conversations_ticket ON public.ticket_conversations USING btree (ticket_id, created_at);
 
 
 --
@@ -38768,6 +41774,13 @@ CREATE INDEX idx_warehouse_bins_company ON public.warehouse_bins USING btree (co
 
 
 --
+-- Name: idx_warehouse_zones_name_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_warehouse_zones_name_unique ON public.warehouse_zones USING btree (warehouse_id, lower((name)::text));
+
+
+--
 -- Name: idx_warranty_claims_status; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -38852,6 +41865,20 @@ CREATE INDEX idx_wca_wc ON public.work_centre_attendance USING btree (work_centr
 
 
 --
+-- Name: idx_web_lead_forms_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_web_lead_forms_company ON public.web_lead_forms USING btree (company_id) WHERE is_active;
+
+
+--
+-- Name: idx_web_lead_submissions_form; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_web_lead_submissions_form ON public.web_lead_submissions USING btree (form_id, created_at DESC);
+
+
+--
 -- Name: idx_wf_inst_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -38929,6 +41956,20 @@ CREATE INDEX idx_wf_trans_wf ON public.workflow_transitions USING btree (workflo
 
 
 --
+-- Name: idx_widgets_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_widgets_company ON public.dashboard_widgets USING btree (company_id);
+
+
+--
+-- Name: idx_widgets_dashboard; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_widgets_dashboard ON public.dashboard_widgets USING btree (dashboard_id);
+
+
+--
 -- Name: idx_wip_company; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -38961,6 +42002,20 @@ CREATE INDEX idx_work_centres_company ON public.work_centres USING btree (compan
 --
 
 CREATE INDEX idx_work_centres_status ON public.work_centres USING btree (status);
+
+
+--
+-- Name: idx_workflow_rules_dispatch; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_workflow_rules_dispatch ON public.workflow_rules USING btree (company_id, trigger_module, trigger_event, priority) WHERE (is_active = true);
+
+
+--
+-- Name: idx_workflow_run_logs_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_workflow_run_logs_company ON public.workflow_run_logs USING btree (company_id, triggered_at DESC);
 
 
 --
@@ -39006,6 +42061,13 @@ CREATE INDEX idx_wrl_workflow_id ON public.workflow_run_logs USING btree (workfl
 
 
 --
+-- Name: interview_notes_candidate_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interview_notes_candidate_idx ON public.interview_notes USING btree (candidate_id, created_at DESC);
+
+
+--
 -- Name: leads_company_email_unique; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -39034,10 +42096,45 @@ CREATE UNIQUE INDEX leave_types_global_name_uidx ON public.leave_types USING btr
 
 
 --
+-- Name: meeting_attendees_meeting_employee_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX meeting_attendees_meeting_employee_unique ON public.meeting_attendees USING btree (meeting_id, employee_id);
+
+
+--
+-- Name: module_settings_module_company_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX module_settings_module_company_unique ON public.module_settings USING btree (module_name, company_id) NULLS NOT DISTINCT;
+
+
+--
+-- Name: offer_letters_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX offer_letters_expiry_idx ON public.offer_letters USING btree (offer_expiry_date) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: org_relationships_employee_id_uidx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX org_relationships_employee_id_uidx ON public.org_relationships USING btree (employee_id);
+
+
+--
+-- Name: products_company_family_model_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX products_company_family_model_unique ON public.products USING btree (company_id, lower(product_family), lower(model_sku)) WHERE ((deleted_at IS NULL) AND (product_family IS NOT NULL) AND (model_sku IS NOT NULL) AND (model_sku <> ''::text));
+
+
+--
+-- Name: rm_issues_number_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX rm_issues_number_unique ON public.rm_issues USING btree (company_id, issue_number) WHERE ((issue_number IS NOT NULL) AND (deleted_at IS NULL));
 
 
 --
@@ -39062,6 +42159,13 @@ CREATE INDEX tally_sync_log_company_idx ON public.tally_sync_log USING btree (co
 
 
 --
+-- Name: three_way_matches_invoice_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX three_way_matches_invoice_uq ON public.three_way_matches USING btree (company_id, po_id, lower(TRIM(BOTH FROM vendor_invoice_no))) WHERE ((vendor_invoice_no IS NOT NULL) AND (TRIM(BOTH FROM vendor_invoice_no) <> ''::text));
+
+
+--
 -- Name: uq_celebration_wishes_emoji_once; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -39076,6 +42180,13 @@ CREATE UNIQUE INDEX uq_compliance_standard_code ON public.compliance_standards U
 
 
 --
+-- Name: uq_crm_team_member; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_crm_team_member ON public.crm_team_members USING btree (COALESCE(account_id, '-1'::integer), COALESCE(opportunity_id, '-1'::integer), employee_id);
+
+
+--
 -- Name: uq_customer_equipment_device_uid; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -39083,10 +42194,31 @@ CREATE UNIQUE INDEX uq_customer_equipment_device_uid ON public.customer_equipmen
 
 
 --
+-- Name: uq_deal_registration_live_customer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_deal_registration_live_customer ON public.partner_deal_registrations USING btree (company_id, lower(TRIM(BOTH FROM customer_name))) WHERE ((status)::text = 'approved'::text);
+
+
+--
 -- Name: uq_device_alerts_open; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_device_alerts_open ON public.device_alerts USING btree (equipment_id, rule_id) WHERE ((state)::text <> 'resolved'::text);
+
+
+--
+-- Name: uq_enrollment_active_lead; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_enrollment_active_lead ON public.sequence_enrollments USING btree (sequence_id, lead_id) WHERE (((status)::text = 'active'::text) AND (lead_id IS NOT NULL));
+
+
+--
+-- Name: uq_inbound_email_message_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_inbound_email_message_id ON public.inbound_emails USING btree (company_id, message_id) WHERE (message_id IS NOT NULL);
 
 
 --
@@ -39139,6 +42271,20 @@ CREATE UNIQUE INDEX uq_rd_artifact_version ON public.rd_artifacts USING btree (c
 
 
 --
+-- Name: uq_rfx_score_event_vendor_criterion; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_rfx_score_event_vendor_criterion ON public.rfx_criteria_scores USING btree (rfq_id, vendor_id, criterion_key);
+
+
+--
+-- Name: uq_sales_forecast_submission; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sales_forecast_submission ON public.sales_forecast_submissions USING btree (company_id, COALESCE(owner_employee_id, '-1'::integer), scope, period_type, period_year, COALESCE(period_value, '-1'::integer));
+
+
+--
 -- Name: uq_sales_partners_converted_lead; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -39167,6 +42313,13 @@ CREATE UNIQUE INDEX uq_sales_targets_v2 ON public.sales_targets USING btree (com
 
 
 --
+-- Name: uq_sourcing_strategy_company_category; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sourcing_strategy_company_category ON public.sourcing_category_strategies USING btree (COALESCE(company_id, '-1'::integer), COALESCE(category_id, '-1'::integer));
+
+
+--
 -- Name: uq_tds_deductees_employee; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -39192,6 +42345,20 @@ CREATE UNIQUE INDEX user_roles_one_primary_uidx ON public.user_roles USING btree
 --
 
 CREATE UNIQUE INDEX ux_portal_users_email_company ON public.customer_portal_users USING btree (email, company_id);
+
+
+--
+-- Name: vendor_registrations_access_token_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vendor_registrations_access_token_uq ON public.vendor_registrations USING btree (access_token) WHERE (access_token IS NOT NULL);
+
+
+--
+-- Name: vendors_party_id_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vendors_party_id_unique ON public.vendors USING btree (party_id) WHERE ((party_id IS NOT NULL) AND (deleted_at IS NULL));
 
 
 --
@@ -39279,11 +42446,97 @@ ALTER INDEX public.device_telemetry_pkey ATTACH PARTITION public.device_telemetr
 
 
 --
+-- Name: accounts trg_accounts_hierarchy_cycle; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_accounts_hierarchy_cycle BEFORE INSERT OR UPDATE OF parent_account_id ON public.accounts FOR EACH ROW EXECUTE FUNCTION public.accounts_reject_hierarchy_cycle();
+
+
+--
+-- Name: invoices trg_invoices_canonical_state_case; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_invoices_canonical_state_case BEFORE INSERT OR UPDATE ON public.invoices FOR EACH ROW EXECUTE FUNCTION public.invoices_canonical_state_case();
+
+
+--
+-- Name: marketing_campaigns trg_marketing_campaigns_sync_names; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_marketing_campaigns_sync_names BEFORE INSERT OR UPDATE ON public.marketing_campaigns FOR EACH ROW EXECUTE FUNCTION public.marketing_campaigns_sync_names();
+
+
+--
+-- Name: opportunities trg_opportunities_canonical_state_case; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_opportunities_canonical_state_case BEFORE INSERT OR UPDATE ON public.opportunities FOR EACH ROW EXECUTE FUNCTION public.opportunities_canonical_state_case();
+
+
+--
+-- Name: opportunity_stage_history trg_opportunity_stage_history_canonical_state_case; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_opportunity_stage_history_canonical_state_case BEFORE INSERT OR UPDATE ON public.opportunity_stage_history FOR EACH ROW EXECUTE FUNCTION public.opportunity_stage_history_canonical_state_case();
+
+
+--
+-- Name: quotations trg_quotation_party_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_quotation_party_guard BEFORE INSERT OR UPDATE OF customer_id, customer_name, opportunity_id ON public.quotations FOR EACH ROW EXECUTE FUNCTION public.crm_quotation_party_guard();
+
+
+--
+-- Name: savings_events trg_savings_event_company; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_savings_event_company BEFORE INSERT OR UPDATE ON public.savings_events FOR EACH ROW EXECUTE FUNCTION public.savings_event_company_matches();
+
+
+--
+-- Name: service_knowledge_base trg_skb_sync_published; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_skb_sync_published BEFORE INSERT OR UPDATE ON public.service_knowledge_base FOR EACH ROW EXECUTE FUNCTION public.skb_sync_published();
+
+
+--
+-- Name: dashboard_widgets trg_widget_company_matches; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_widget_company_matches BEFORE INSERT OR UPDATE ON public.dashboard_widgets FOR EACH ROW EXECUTE FUNCTION public.dashboard_widget_company_matches();
+
+
+--
+-- Name: vendors vendors_party_company_ck; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER vendors_party_company_ck BEFORE INSERT OR UPDATE OF party_id, company_id ON public.vendors FOR EACH ROW EXECUTE FUNCTION public.vendors_party_company_guard();
+
+
+--
 -- Name: accounting_periods accounting_periods_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.accounting_periods
     ADD CONSTRAINT accounting_periods_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: accounts accounts_assigned_to_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts
+    ADD CONSTRAINT accounts_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: accounts accounts_parent_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts
+    ADD CONSTRAINT accounts_parent_account_id_fkey FOREIGN KEY (parent_account_id) REFERENCES public.accounts(id) ON DELETE SET NULL;
 
 
 --
@@ -39380,6 +42633,14 @@ ALTER TABLE ONLY public.approved_vendor_list
 
 ALTER TABLE ONLY public.approved_vendor_list
     ADD CONSTRAINT approved_vendor_list_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.inventory_items(id);
+
+
+--
+-- Name: approved_vendor_list approved_vendor_list_source_rfq_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.approved_vendor_list
+    ADD CONSTRAINT approved_vendor_list_source_rfq_id_fkey FOREIGN KEY (source_rfq_id) REFERENCES public.rfqs(id) ON DELETE SET NULL;
 
 
 --
@@ -39575,6 +42836,14 @@ ALTER TABLE ONLY public.bills
 
 
 --
+-- Name: bills bills_po_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bills
+    ADD CONSTRAINT bills_po_id_fkey FOREIGN KEY (po_id) REFERENCES public.purchase_orders(id) ON DELETE SET NULL;
+
+
+--
 -- Name: bills bills_rcm_self_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -39652,6 +42921,22 @@ ALTER TABLE ONLY public.bom_headers
 
 ALTER TABLE ONLY public.bom_headers
     ADD CONSTRAINT bom_headers_ecn_id_fkey FOREIGN KEY (ecn_id) REFERENCES public.engineering_changes(id) ON DELETE SET NULL;
+
+
+--
+-- Name: bom_headers bom_headers_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bom_headers
+    ADD CONSTRAINT bom_headers_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id) ON DELETE SET NULL;
+
+
+--
+-- Name: bom_headers bom_headers_sales_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bom_headers
+    ADD CONSTRAINT bom_headers_sales_order_id_fkey FOREIGN KEY (sales_order_id) REFERENCES public.sales_orders(id) ON DELETE SET NULL;
 
 
 --
@@ -39868,6 +43153,14 @@ ALTER TABLE ONLY public.candidate_stage_history
 
 ALTER TABLE ONLY public.candidate_stage_history
     ADD CONSTRAINT candidate_stage_history_moved_by_fkey FOREIGN KEY (moved_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: candidates candidates_applied_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidates
+    ADD CONSTRAINT candidates_applied_job_id_fkey FOREIGN KEY (applied_job_id) REFERENCES public.job_openings(id) ON DELETE SET NULL;
 
 
 --
@@ -40215,6 +43508,54 @@ ALTER TABLE ONLY public.credit_notes
 
 
 --
+-- Name: crm_activities crm_activities_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_activities
+    ADD CONSTRAINT crm_activities_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: crm_activities crm_activities_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_activities
+    ADD CONSTRAINT crm_activities_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
+-- Name: crm_activities crm_activities_contact_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_activities
+    ADD CONSTRAINT crm_activities_contact_id_fkey FOREIGN KEY (contact_id) REFERENCES public.contacts(id) ON DELETE SET NULL;
+
+
+--
+-- Name: crm_activities crm_activities_lead_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_activities
+    ADD CONSTRAINT crm_activities_lead_id_fkey FOREIGN KEY (lead_id) REFERENCES public.leads(id) ON DELETE CASCADE;
+
+
+--
+-- Name: crm_activities crm_activities_opportunity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_activities
+    ADD CONSTRAINT crm_activities_opportunity_id_fkey FOREIGN KEY (opportunity_id) REFERENCES public.opportunities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: crm_activities crm_activities_performed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_activities
+    ADD CONSTRAINT crm_activities_performed_by_fkey FOREIGN KEY (performed_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
 -- Name: crm_email_accounts crm_email_accounts_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -40255,6 +43596,54 @@ ALTER TABLE ONLY public.crm_emails
 
 
 --
+-- Name: crm_emails crm_emails_opportunity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_emails
+    ADD CONSTRAINT crm_emails_opportunity_id_fkey FOREIGN KEY (opportunity_id) REFERENCES public.opportunities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: crm_team_members crm_team_members_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_team_members
+    ADD CONSTRAINT crm_team_members_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: crm_team_members crm_team_members_added_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_team_members
+    ADD CONSTRAINT crm_team_members_added_by_fkey FOREIGN KEY (added_by) REFERENCES public.employees(id);
+
+
+--
+-- Name: crm_team_members crm_team_members_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_team_members
+    ADD CONSTRAINT crm_team_members_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: crm_team_members crm_team_members_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_team_members
+    ADD CONSTRAINT crm_team_members_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES public.employees(id) ON DELETE CASCADE;
+
+
+--
+-- Name: crm_team_members crm_team_members_opportunity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_team_members
+    ADD CONSTRAINT crm_team_members_opportunity_id_fkey FOREIGN KEY (opportunity_id) REFERENCES public.opportunities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: crp_load crp_load_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -40263,11 +43652,27 @@ ALTER TABLE ONLY public.crp_load
 
 
 --
+-- Name: customer_credit_settings customer_credit_settings_party_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_credit_settings
+    ADD CONSTRAINT customer_credit_settings_party_id_fkey FOREIGN KEY (party_id) REFERENCES public.parties(id) ON DELETE CASCADE;
+
+
+--
 -- Name: customer_drive_files customer_drive_files_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.customer_drive_files
     ADD CONSTRAINT customer_drive_files_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: customer_drive_files customer_drive_files_customer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_drive_files
+    ADD CONSTRAINT customer_drive_files_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.parties(id) ON DELETE CASCADE;
 
 
 --
@@ -40284,6 +43689,14 @@ ALTER TABLE ONLY public.customer_drive_files
 
 ALTER TABLE ONLY public.customer_drive_folders
     ADD CONSTRAINT customer_drive_folders_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: customer_drive_folders customer_drive_folders_customer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_drive_folders
+    ADD CONSTRAINT customer_drive_folders_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.parties(id) ON DELETE CASCADE;
 
 
 --
@@ -40407,6 +43820,38 @@ ALTER TABLE ONLY public.cycle_count_lines
 
 
 --
+-- Name: dashboard_widgets dashboard_widgets_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dashboard_widgets
+    ADD CONSTRAINT dashboard_widgets_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: dashboard_widgets dashboard_widgets_dashboard_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dashboard_widgets
+    ADD CONSTRAINT dashboard_widgets_dashboard_id_fkey FOREIGN KEY (dashboard_id) REFERENCES public.dashboards(id) ON DELETE CASCADE;
+
+
+--
+-- Name: dashboards dashboards_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dashboards
+    ADD CONSTRAINT dashboards_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: dashboards dashboards_owner_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dashboards
+    ADD CONSTRAINT dashboards_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: debit_note_items debit_note_items_debit_note_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -40492,6 +43937,14 @@ ALTER TABLE ONLY public.discount_approvals
 
 ALTER TABLE ONLY public.discount_approvals
     ADD CONSTRAINT discount_approvals_quotation_id_fkey FOREIGN KEY (quotation_id) REFERENCES public.quotations(id);
+
+
+--
+-- Name: discount_approvals discount_approvals_requested_by_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.discount_approvals
+    ADD CONSTRAINT discount_approvals_requested_by_employee_id_fkey FOREIGN KEY (requested_by_employee_id) REFERENCES public.employees(id) ON DELETE SET NULL;
 
 
 --
@@ -41127,6 +44580,14 @@ ALTER TABLE ONLY public.form27d_records
 
 
 --
+-- Name: generated_documents generated_documents_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.generated_documents
+    ADD CONSTRAINT generated_documents_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
 -- Name: generated_documents generated_documents_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -41367,6 +44828,22 @@ ALTER TABLE ONLY public.hr_shift_rotations
 
 
 --
+-- Name: inbound_emails inbound_emails_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inbound_emails
+    ADD CONSTRAINT inbound_emails_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: inbound_emails inbound_emails_mailbox_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inbound_emails
+    ADD CONSTRAINT inbound_emails_mailbox_id_fkey FOREIGN KEY (mailbox_id) REFERENCES public.support_mailboxes(id);
+
+
+--
 -- Name: increment_bands increment_bands_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -41503,6 +44980,22 @@ ALTER TABLE ONLY public.installation_requests
 
 
 --
+-- Name: interview_notes interview_notes_candidate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interview_notes
+    ADD CONSTRAINT interview_notes_candidate_id_fkey FOREIGN KEY (candidate_id) REFERENCES public.candidates(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interview_notes interview_notes_interviewer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interview_notes
+    ADD CONSTRAINT interview_notes_interviewer_id_fkey FOREIGN KEY (interviewer_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
 -- Name: interview_questions interview_questions_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -41511,27 +45004,27 @@ ALTER TABLE ONLY public.interview_questions
 
 
 --
--- Name: interviews interviews_assigned_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interview_schedules interview_schedules_candidate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.interviews
-    ADD CONSTRAINT interviews_assigned_by_fkey FOREIGN KEY (assigned_by) REFERENCES public.employees(id) ON DELETE SET NULL;
-
-
---
--- Name: interviews interviews_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.interviews
-    ADD CONSTRAINT interviews_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.interview_schedules
+    ADD CONSTRAINT interview_schedules_candidate_id_fkey FOREIGN KEY (candidate_id) REFERENCES public.candidates(id) ON DELETE CASCADE;
 
 
 --
--- Name: interviews interviews_interviewer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interview_schedules interview_schedules_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.interviews
-    ADD CONSTRAINT interviews_interviewer_id_fkey FOREIGN KEY (interviewer_id) REFERENCES public.employees(id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.interview_schedules
+    ADD CONSTRAINT interview_schedules_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interview_schedules interview_schedules_interviewer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interview_schedules
+    ADD CONSTRAINT interview_schedules_interviewer_id_fkey FOREIGN KEY (interviewer_id) REFERENCES public.employees(id) ON DELETE SET NULL;
 
 
 --
@@ -41564,6 +45057,22 @@ ALTER TABLE ONLY public.inventory_allocations
 
 ALTER TABLE ONLY public.inventory_allocations
     ADD CONSTRAINT inventory_allocations_warehouse_id_fkey FOREIGN KEY (warehouse_id) REFERENCES public.warehouses(id) ON DELETE CASCADE;
+
+
+--
+-- Name: inventory_batches inventory_batches_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_batches
+    ADD CONSTRAINT inventory_batches_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
+-- Name: inventory_batches inventory_batches_grn_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_batches
+    ADD CONSTRAINT inventory_batches_grn_id_fkey FOREIGN KEY (grn_id) REFERENCES public.goods_receipt_notes(id) ON DELETE RESTRICT;
 
 
 --
@@ -41799,6 +45308,94 @@ ALTER TABLE ONLY public.journal_lines
 
 
 --
+-- Name: knowledge_article_cases knowledge_article_cases_article_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_cases
+    ADD CONSTRAINT knowledge_article_cases_article_id_fkey FOREIGN KEY (article_id) REFERENCES public.service_knowledge_base(id) ON DELETE CASCADE;
+
+
+--
+-- Name: knowledge_article_cases knowledge_article_cases_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_cases
+    ADD CONSTRAINT knowledge_article_cases_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: knowledge_article_cases knowledge_article_cases_linked_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_cases
+    ADD CONSTRAINT knowledge_article_cases_linked_by_fkey FOREIGN KEY (linked_by) REFERENCES public.employees(id);
+
+
+--
+-- Name: knowledge_article_feedback knowledge_article_feedback_article_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_feedback
+    ADD CONSTRAINT knowledge_article_feedback_article_id_fkey FOREIGN KEY (article_id) REFERENCES public.service_knowledge_base(id) ON DELETE CASCADE;
+
+
+--
+-- Name: knowledge_article_feedback knowledge_article_feedback_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_feedback
+    ADD CONSTRAINT knowledge_article_feedback_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: knowledge_article_feedback knowledge_article_feedback_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_feedback
+    ADD CONSTRAINT knowledge_article_feedback_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES public.employees(id);
+
+
+--
+-- Name: knowledge_article_versions knowledge_article_versions_article_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_versions
+    ADD CONSTRAINT knowledge_article_versions_article_id_fkey FOREIGN KEY (article_id) REFERENCES public.service_knowledge_base(id) ON DELETE CASCADE;
+
+
+--
+-- Name: knowledge_article_versions knowledge_article_versions_changed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_versions
+    ADD CONSTRAINT knowledge_article_versions_changed_by_fkey FOREIGN KEY (changed_by) REFERENCES public.employees(id);
+
+
+--
+-- Name: knowledge_article_versions knowledge_article_versions_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_article_versions
+    ADD CONSTRAINT knowledge_article_versions_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: knowledge_documents knowledge_documents_created_by_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_documents
+    ADD CONSTRAINT knowledge_documents_created_by_employee_id_fkey FOREIGN KEY (created_by_employee_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: knowledge_documents knowledge_documents_updated_by_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_documents
+    ADD CONSTRAINT knowledge_documents_updated_by_employee_id_fkey FOREIGN KEY (updated_by_employee_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
 -- Name: kra_definitions kra_definitions_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -41847,6 +45444,14 @@ ALTER TABLE ONLY public.leadership_pipeline_entries
 
 
 --
+-- Name: leads leads_assigned_to_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leads
+    ADD CONSTRAINT leads_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
 -- Name: leads leads_branch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -41876,6 +45481,14 @@ ALTER TABLE ONLY public.leads
 
 ALTER TABLE ONLY public.leads
     ADD CONSTRAINT leads_partner_id_fkey FOREIGN KEY (partner_id) REFERENCES public.sales_partners(id) ON DELETE SET NULL;
+
+
+--
+-- Name: leads leads_territory_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leads
+    ADD CONSTRAINT leads_territory_id_fkey FOREIGN KEY (territory_id) REFERENCES public.sales_territories(id) ON DELETE SET NULL;
 
 
 --
@@ -42151,6 +45764,14 @@ ALTER TABLE ONLY public.loan_advances
 
 
 --
+-- Name: local_purchase_requests local_purchase_requests_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.local_purchase_requests
+    ADD CONSTRAINT local_purchase_requests_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
 -- Name: local_purchase_requests local_purchase_requests_requested_by_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -42415,6 +46036,38 @@ ALTER TABLE ONLY public.material_reservations
 
 
 --
+-- Name: meeting_attendees meeting_attendees_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.meeting_attendees
+    ADD CONSTRAINT meeting_attendees_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES public.employees(id);
+
+
+--
+-- Name: meeting_attendees meeting_attendees_meeting_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.meeting_attendees
+    ADD CONSTRAINT meeting_attendees_meeting_id_fkey FOREIGN KEY (meeting_id) REFERENCES public.meetings(id) ON DELETE CASCADE;
+
+
+--
+-- Name: meetings meetings_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.meetings
+    ADD CONSTRAINT meetings_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: meetings meetings_organiser_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.meetings
+    ADD CONSTRAINT meetings_organiser_employee_id_fkey FOREIGN KEY (organiser_employee_id) REFERENCES public.employees(id);
+
+
+--
 -- Name: mentoring_assignments mentoring_assignments_development_plan_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -42452,6 +46105,14 @@ ALTER TABLE ONLY public.module_production_requests
 
 ALTER TABLE ONLY public.module_production_requests
     ADD CONSTRAINT module_production_requests_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id) ON DELETE SET NULL;
+
+
+--
+-- Name: module_settings module_settings_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_settings
+    ADD CONSTRAINT module_settings_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
 
 
 --
@@ -42540,6 +46201,46 @@ ALTER TABLE ONLY public.non_conformance_reports
 
 ALTER TABLE ONLY public.notification_rules
     ADD CONSTRAINT notification_rules_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: nps_responses nps_responses_customer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nps_responses
+    ADD CONSTRAINT nps_responses_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.parties(id) ON DELETE SET NULL;
+
+
+--
+-- Name: offer_letters offer_letters_candidate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.offer_letters
+    ADD CONSTRAINT offer_letters_candidate_id_fkey FOREIGN KEY (candidate_id) REFERENCES public.candidates(id) ON DELETE CASCADE;
+
+
+--
+-- Name: offer_letters offer_letters_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.offer_letters
+    ADD CONSTRAINT offer_letters_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: offer_letters offer_letters_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.offer_letters
+    ADD CONSTRAINT offer_letters_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: offer_letters offer_letters_job_opening_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.offer_letters
+    ADD CONSTRAINT offer_letters_job_opening_id_fkey FOREIGN KEY (job_opening_id) REFERENCES public.job_openings(id) ON DELETE SET NULL;
 
 
 --
@@ -42663,6 +46364,14 @@ ALTER TABLE ONLY public.opportunities
 
 
 --
+-- Name: opportunities opportunities_assigned_to_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.opportunities
+    ADD CONSTRAINT opportunities_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
 -- Name: opportunities opportunities_branch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -42695,6 +46404,14 @@ ALTER TABLE ONLY public.opportunities
 
 
 --
+-- Name: opportunities opportunities_territory_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.opportunities
+    ADD CONSTRAINT opportunities_territory_id_fkey FOREIGN KEY (territory_id) REFERENCES public.sales_territories(id) ON DELETE SET NULL;
+
+
+--
 -- Name: opportunity_stage_history opportunity_stage_history_opportunity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -42716,6 +46433,54 @@ ALTER TABLE ONLY public.org_relationships
 
 ALTER TABLE ONLY public.org_relationships
     ADD CONSTRAINT org_relationships_manager_id_fkey FOREIGN KEY (manager_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: partner_deal_registration_events partner_deal_registration_events_actor_employee_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registration_events
+    ADD CONSTRAINT partner_deal_registration_events_actor_employee_fkey FOREIGN KEY (actor_employee) REFERENCES public.employees(id);
+
+
+--
+-- Name: partner_deal_registration_events partner_deal_registration_events_registration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registration_events
+    ADD CONSTRAINT partner_deal_registration_events_registration_id_fkey FOREIGN KEY (registration_id) REFERENCES public.partner_deal_registrations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: partner_deal_registrations partner_deal_registrations_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registrations
+    ADD CONSTRAINT partner_deal_registrations_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.employees(id);
+
+
+--
+-- Name: partner_deal_registrations partner_deal_registrations_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registrations
+    ADD CONSTRAINT partner_deal_registrations_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: partner_deal_registrations partner_deal_registrations_partner_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registrations
+    ADD CONSTRAINT partner_deal_registrations_partner_id_fkey FOREIGN KEY (partner_id) REFERENCES public.sales_partners(id);
+
+
+--
+-- Name: partner_deal_registrations partner_deal_registrations_submitted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_deal_registrations
+    ADD CONSTRAINT partner_deal_registrations_submitted_by_fkey FOREIGN KEY (submitted_by) REFERENCES public.employees(id);
 
 
 --
@@ -42812,6 +46577,22 @@ ALTER TABLE ONLY public.payment_batches
 
 ALTER TABLE ONLY public.payment_batches
     ADD CONSTRAINT payment_batches_rejected_by_fkey FOREIGN KEY (rejected_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: payment_gateway_orders payment_gateway_orders_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.payment_gateway_orders
+    ADD CONSTRAINT payment_gateway_orders_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id) ON DELETE SET NULL;
+
+
+--
+-- Name: payment_transactions payment_transactions_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.payment_transactions
+    ADD CONSTRAINT payment_transactions_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id) ON DELETE SET NULL;
 
 
 --
@@ -43175,6 +46956,14 @@ ALTER TABLE ONLY public.price_change_log
 
 
 --
+-- Name: price_history price_history_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.price_history
+    ADD CONSTRAINT price_history_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
 -- Name: price_history price_history_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -43220,6 +47009,62 @@ ALTER TABLE ONLY public.price_lists
 
 ALTER TABLE ONLY public.probation_notifications
     ADD CONSTRAINT probation_notifications_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES public.employees(id);
+
+
+--
+-- Name: procurement_award_decisions procurement_award_decisions_awarded_vendor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions
+    ADD CONSTRAINT procurement_award_decisions_awarded_vendor_id_fkey FOREIGN KEY (awarded_vendor_id) REFERENCES public.vendors(id);
+
+
+--
+-- Name: procurement_award_decisions procurement_award_decisions_decided_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions
+    ADD CONSTRAINT procurement_award_decisions_decided_by_user_id_fkey FOREIGN KEY (decided_by_user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: procurement_award_decisions procurement_award_decisions_lowest_price_vendor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions
+    ADD CONSTRAINT procurement_award_decisions_lowest_price_vendor_id_fkey FOREIGN KEY (lowest_price_vendor_id) REFERENCES public.vendors(id);
+
+
+--
+-- Name: procurement_award_decisions procurement_award_decisions_lowest_tco_vendor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions
+    ADD CONSTRAINT procurement_award_decisions_lowest_tco_vendor_id_fkey FOREIGN KEY (lowest_tco_vendor_id) REFERENCES public.vendors(id);
+
+
+--
+-- Name: procurement_award_decisions procurement_award_decisions_po_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions
+    ADD CONSTRAINT procurement_award_decisions_po_id_fkey FOREIGN KEY (po_id) REFERENCES public.purchase_orders(id) ON DELETE SET NULL;
+
+
+--
+-- Name: procurement_award_decisions procurement_award_decisions_quote_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions
+    ADD CONSTRAINT procurement_award_decisions_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES public.rfq_quotes(id) ON DELETE SET NULL;
+
+
+--
+-- Name: procurement_award_decisions procurement_award_decisions_rfq_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.procurement_award_decisions
+    ADD CONSTRAINT procurement_award_decisions_rfq_id_fkey FOREIGN KEY (rfq_id) REFERENCES public.rfqs(id) ON DELETE CASCADE;
 
 
 --
@@ -43340,6 +47185,14 @@ ALTER TABLE ONLY public.production_scrap
 
 ALTER TABLE ONLY public.production_scrap
     ADD CONSTRAINT production_scrap_production_order_id_fkey FOREIGN KEY (production_order_id) REFERENCES public.production_orders(id) ON DELETE CASCADE;
+
+
+--
+-- Name: products products_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.products
+    ADD CONSTRAINT products_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
 
 
 --
@@ -43743,6 +47596,14 @@ ALTER TABLE ONLY public.purchase_orders
 
 
 --
+-- Name: purchase_orders purchase_orders_cost_center_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_orders
+    ADD CONSTRAINT purchase_orders_cost_center_id_fkey FOREIGN KEY (cost_center_id) REFERENCES public.cost_centers(id) ON DELETE SET NULL;
+
+
+--
 -- Name: purchase_orders purchase_orders_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -43756,6 +47617,14 @@ ALTER TABLE ONLY public.purchase_orders
 
 ALTER TABLE ONLY public.purchase_orders
     ADD CONSTRAINT purchase_orders_pr_id_fkey FOREIGN KEY (pr_id) REFERENCES public.purchase_requests(id) ON DELETE SET NULL;
+
+
+--
+-- Name: purchase_orders purchase_orders_sourcing_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_orders
+    ADD CONSTRAINT purchase_orders_sourcing_strategy_id_fkey FOREIGN KEY (sourcing_strategy_id) REFERENCES public.sourcing_category_strategies(id) ON DELETE SET NULL;
 
 
 --
@@ -43788,6 +47657,14 @@ ALTER TABLE ONLY public.purchase_requests
 
 ALTER TABLE ONLY public.purchase_requests
     ADD CONSTRAINT purchase_requests_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
+-- Name: purchase_requests purchase_requests_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_requests
+    ADD CONSTRAINT purchase_requests_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.inventory_items(id) ON DELETE SET NULL;
 
 
 --
@@ -44071,6 +47948,102 @@ ALTER TABLE ONLY public.rfq_quotes
 
 
 --
+-- Name: rfqs rfqs_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfqs
+    ADD CONSTRAINT rfqs_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.item_categories(id) ON DELETE SET NULL;
+
+
+--
+-- Name: rfx_criteria_scores rfx_criteria_scores_rfq_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_criteria_scores
+    ADD CONSTRAINT rfx_criteria_scores_rfq_id_fkey FOREIGN KEY (rfq_id) REFERENCES public.rfqs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rfx_criteria_scores rfx_criteria_scores_vendor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_criteria_scores
+    ADD CONSTRAINT rfx_criteria_scores_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES public.vendors(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rfx_vendor_selections rfx_vendor_selections_rfq_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_vendor_selections
+    ADD CONSTRAINT rfx_vendor_selections_rfq_id_fkey FOREIGN KEY (rfq_id) REFERENCES public.rfqs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rfx_vendor_selections rfx_vendor_selections_runner_up_vendor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_vendor_selections
+    ADD CONSTRAINT rfx_vendor_selections_runner_up_vendor_id_fkey FOREIGN KEY (runner_up_vendor_id) REFERENCES public.vendors(id);
+
+
+--
+-- Name: rfx_vendor_selections rfx_vendor_selections_vendor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rfx_vendor_selections
+    ADD CONSTRAINT rfx_vendor_selections_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES public.vendors(id);
+
+
+--
+-- Name: rm_issue_items rm_issue_items_issue_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issue_items
+    ADD CONSTRAINT rm_issue_items_issue_id_fkey FOREIGN KEY (issue_id) REFERENCES public.rm_issues(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rm_issue_items rm_issue_items_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issue_items
+    ADD CONSTRAINT rm_issue_items_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.inventory_items(id) ON DELETE SET NULL;
+
+
+--
+-- Name: rm_issues rm_issues_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issues
+    ADD CONSTRAINT rm_issues_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
+-- Name: rm_issues rm_issues_issued_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issues
+    ADD CONSTRAINT rm_issues_issued_by_fkey FOREIGN KEY (issued_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: rm_issues rm_issues_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issues
+    ADD CONSTRAINT rm_issues_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id) ON DELETE SET NULL;
+
+
+--
+-- Name: rm_issues rm_issues_warehouse_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rm_issues
+    ADD CONSTRAINT rm_issues_warehouse_id_fkey FOREIGN KEY (warehouse_id) REFERENCES public.warehouses(id) ON DELETE SET NULL;
+
+
+--
 -- Name: role_competencies role_competencies_competency_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -44151,11 +48124,99 @@ ALTER TABLE ONLY public.rules_master
 
 
 --
+-- Name: sales_events sales_events_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_events
+    ADD CONSTRAINT sales_events_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE SET NULL;
+
+
+--
+-- Name: sales_events sales_events_opportunity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_events
+    ADD CONSTRAINT sales_events_opportunity_id_fkey FOREIGN KEY (opportunity_id) REFERENCES public.opportunities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: sales_events sales_events_owner_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_events
+    ADD CONSTRAINT sales_events_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: sales_forecast_snapshots sales_forecast_snapshots_captured_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_snapshots
+    ADD CONSTRAINT sales_forecast_snapshots_captured_by_fkey FOREIGN KEY (captured_by) REFERENCES public.employees(id);
+
+
+--
+-- Name: sales_forecast_snapshots sales_forecast_snapshots_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_snapshots
+    ADD CONSTRAINT sales_forecast_snapshots_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: sales_forecast_snapshots sales_forecast_snapshots_owner_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_snapshots
+    ADD CONSTRAINT sales_forecast_snapshots_owner_employee_id_fkey FOREIGN KEY (owner_employee_id) REFERENCES public.employees(id);
+
+
+--
+-- Name: sales_forecast_submissions sales_forecast_submissions_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_submissions
+    ADD CONSTRAINT sales_forecast_submissions_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: sales_forecast_submissions sales_forecast_submissions_override_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_submissions
+    ADD CONSTRAINT sales_forecast_submissions_override_by_fkey FOREIGN KEY (override_by) REFERENCES public.employees(id);
+
+
+--
+-- Name: sales_forecast_submissions sales_forecast_submissions_owner_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_submissions
+    ADD CONSTRAINT sales_forecast_submissions_owner_employee_id_fkey FOREIGN KEY (owner_employee_id) REFERENCES public.employees(id);
+
+
+--
+-- Name: sales_forecast_submissions sales_forecast_submissions_submitted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_forecast_submissions
+    ADD CONSTRAINT sales_forecast_submissions_submitted_by_fkey FOREIGN KEY (submitted_by) REFERENCES public.employees(id);
+
+
+--
 -- Name: sales_order_items sales_order_items_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sales_order_items
     ADD CONSTRAINT sales_order_items_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.sales_orders(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sales_orders sales_orders_campaign_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_orders
+    ADD CONSTRAINT sales_orders_campaign_id_fkey FOREIGN KEY (campaign_id) REFERENCES public.marketing_campaigns(id) ON DELETE SET NULL;
 
 
 --
@@ -44279,11 +48340,107 @@ ALTER TABLE ONLY public.sat_trackers
 
 
 --
--- Name: saved_reports saved_reports_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: saved_reports saved_reports_created_by_users_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.saved_reports
-    ADD CONSTRAINT saved_reports_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.employees(id) ON DELETE SET NULL;
+    ADD CONSTRAINT saved_reports_created_by_users_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: savings_events savings_events_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_events
+    ADD CONSTRAINT savings_events_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: savings_events savings_events_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_events
+    ADD CONSTRAINT savings_events_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: savings_events savings_events_initiative_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_events
+    ADD CONSTRAINT savings_events_initiative_id_fkey FOREIGN KEY (initiative_id) REFERENCES public.savings_initiatives(id) ON DELETE CASCADE;
+
+
+--
+-- Name: savings_initiatives savings_initiatives_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiatives_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.item_categories(id) ON DELETE SET NULL;
+
+
+--
+-- Name: savings_initiatives savings_initiatives_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiatives_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: savings_initiatives savings_initiatives_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiatives_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: savings_initiatives savings_initiatives_finance_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiatives_finance_approved_by_fkey FOREIGN KEY (finance_approved_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: savings_initiatives savings_initiatives_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiatives_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.inventory_items(id) ON DELETE SET NULL;
+
+
+--
+-- Name: savings_initiatives savings_initiatives_owner_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiatives_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: savings_initiatives savings_initiatives_vendor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.savings_initiatives
+    ADD CONSTRAINT savings_initiatives_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES public.vendors(id) ON DELETE SET NULL;
+
+
+--
+-- Name: sequence_enrollment_events sequence_enrollment_events_enrollment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_enrollment_events
+    ADD CONSTRAINT sequence_enrollment_events_enrollment_id_fkey FOREIGN KEY (enrollment_id) REFERENCES public.sequence_enrollments(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sequence_enrollments sequence_enrollments_sequence_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_enrollments
+    ADD CONSTRAINT sequence_enrollments_sequence_id_fkey FOREIGN KEY (sequence_id) REFERENCES public.email_sequences(id) ON DELETE CASCADE;
 
 
 --
@@ -44380,6 +48537,14 @@ ALTER TABLE ONLY public.signature_fields
 
 ALTER TABLE ONLY public.signature_signers
     ADD CONSTRAINT signature_signers_signing_id_fkey FOREIGN KEY (signing_id) REFERENCES public.document_signings(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sourcing_category_strategies sourcing_category_strategies_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sourcing_category_strategies
+    ADD CONSTRAINT sourcing_category_strategies_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.item_categories(id) ON DELETE CASCADE;
 
 
 --
@@ -44548,6 +48713,14 @@ ALTER TABLE ONLY public.supplier_quality_snapshots
 
 ALTER TABLE ONLY public.supplier_quality_snapshots
     ADD CONSTRAINT supplier_quality_snapshots_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES public.vendors(id) ON DELETE CASCADE;
+
+
+--
+-- Name: support_mailboxes support_mailboxes_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.support_mailboxes
+    ADD CONSTRAINT support_mailboxes_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
 
 
 --
@@ -44743,6 +48916,14 @@ ALTER TABLE ONLY public.test_run_measurements
 
 
 --
+-- Name: test_runs test_runs_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.test_runs
+    ADD CONSTRAINT test_runs_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
+
+
+--
 -- Name: test_runs test_runs_ncr_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -44811,7 +48992,7 @@ ALTER TABLE ONLY public.ticket_conversations
 --
 
 ALTER TABLE ONLY public.ticket_conversations
-    ADD CONSTRAINT ticket_conversations_ticket_id_fkey FOREIGN KEY (ticket_id) REFERENCES public.tickets(id) ON DELETE CASCADE;
+    ADD CONSTRAINT ticket_conversations_ticket_id_fkey FOREIGN KEY (ticket_id) REFERENCES public.support_tickets(id) ON DELETE CASCADE;
 
 
 --
@@ -45223,6 +49404,46 @@ ALTER TABLE ONLY public.warranty_registrations
 
 
 --
+-- Name: web_lead_forms web_lead_forms_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_forms
+    ADD CONSTRAINT web_lead_forms_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: web_lead_forms web_lead_forms_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_forms
+    ADD CONSTRAINT web_lead_forms_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.employees(id);
+
+
+--
+-- Name: web_lead_submissions web_lead_submissions_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_submissions
+    ADD CONSTRAINT web_lead_submissions_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: web_lead_submissions web_lead_submissions_form_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_submissions
+    ADD CONSTRAINT web_lead_submissions_form_id_fkey FOREIGN KEY (form_id) REFERENCES public.web_lead_forms(id) ON DELETE CASCADE;
+
+
+--
+-- Name: web_lead_submissions web_lead_submissions_lead_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.web_lead_submissions
+    ADD CONSTRAINT web_lead_submissions_lead_id_fkey FOREIGN KEY (lead_id) REFERENCES public.leads(id) ON DELETE SET NULL;
+
+
+--
 -- Name: wip_transactions wip_transactions_operation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -45324,6 +49545,14 @@ ALTER TABLE ONLY public.workflow_instances
 
 ALTER TABLE ONLY public.workflow_instances
     ADD CONSTRAINT workflow_instances_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id);
+
+
+--
+-- Name: workflow_rules workflow_rules_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_rules
+    ADD CONSTRAINT workflow_rules_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
 
 
 --

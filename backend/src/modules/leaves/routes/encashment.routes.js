@@ -2,19 +2,55 @@ import express from 'express';
 import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { hasRole } from '../../../middlewares/auth.middleware.js';
+import { employeeOf } from '../../../shared/scope.js';
 
 const router = express.Router();
 
 // ── GET /leave-encashment — list encashment records ───────────────────────────
+/**
+ * Leave encashment claims.
+ *
+ * This is compensation: an amount of money paid to a named person. `employee`
+ * holds `leaves`.`view` by design — people need to see their own claim — so the
+ * permission gate does not scope it, and a live probe on 2026-09-04 returned
+ * five different people's claims to a plain employee.
+ *
+ * Scoped rather than gated, for the same reason /leaves/allocations was: closing
+ * it would take away access to the caller's own claim. HR and administrators see
+ * everyone, a manager sees their reports, everyone else sees themselves.
+ */
 router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const companyId = req.scope?.company_id ?? null;
     const { status, year } = req.query;
 
+    const isAdmin   = hasRole(req, 'super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'finance_manager');
+    const isManager = hasRole(req, 'manager', 'department_head');
+    const me        = await employeeOf(req, pool);
+    const requested = req.query.employee_id ? Number(req.query.employee_id) : null;
+
     const params = [companyId];
     let filters = '';
     if (status) { filters += ` AND le.status = $${params.length + 1}`; params.push(status); }
     if (year)   { filters += ` AND le.year   = $${params.length + 1}`; params.push(Number(year)); }
+
+    // Resolved server-side. A caller who may not see others cannot widen their
+    // own scope by naming someone else in the query string.
+    if (isAdmin) {
+      if (Number.isInteger(requested)) {
+        filters += ` AND le.employee_id = $${params.length + 1}`; params.push(requested);
+      }
+    } else if (isManager) {
+      if (me == null) return res.json([]);
+      filters += ` AND (le.employee_id = $${params.length + 1} OR e.reporting_manager_id = $${params.length + 1})`;
+      params.push(me);
+    } else {
+      // No employee record means no claim of one's own to show. Returning
+      // everything would be the fail-open this endpoint just had.
+      if (me == null) return res.json([]);
+      filters += ` AND le.employee_id = $${params.length + 1}`; params.push(me);
+    }
 
     const { rows } = await pool.query(`
       SELECT le.*,

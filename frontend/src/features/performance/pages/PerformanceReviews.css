@@ -377,7 +377,7 @@
 /* Stars */
 .prf-stars { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
 .prf-star { cursor: pointer; color: #d1d5db; transition: color 0.1s; }
-.prf-star-filled { color: #f59e0b; }
+.prf-star-filled { color: #7c5cf0; }
 .prf-star-ro { cursor: default; }
 .prf-star-label { font-size: 13px; color: #374151; margin-left: 8px; }
 

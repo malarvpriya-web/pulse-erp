@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { fmtL } from '@/utils/format';
-import { Plus, X, Search, Wrench, Pencil, Trash2, ToggleLeft, ToggleRight } from 'lucide-react';
+import {
+  Plus, X, Search, Wrench, Pencil, Trash2, ToggleLeft, ToggleRight,
+  LifeBuoy,
+} from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PRESET_CATEGORIES = ['Installation', 'Maintenance', 'Repair', 'Inspection', 'Calibration', 'Consulting', 'Other'];
 const EMPTY = { name: '', category: 'Maintenance', description: '', price: '', is_active: true };
@@ -114,7 +118,16 @@ export default function ServiceMaster() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="Service Master"
+        actions={<button className="plh-cta" onClick={openAdd}>
+          <Plus size={15}/> Add Service
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!confirmTarget}
         title="Deactivate Service"
@@ -132,16 +145,6 @@ export default function ServiceMaster() {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Service Master</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>{filtered.length} services configured</p>
-        </div>
-        <button onClick={openAdd}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          <Plus size={15}/> Add Service
-        </button>
-      </div>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
@@ -256,6 +259,6 @@ export default function ServiceMaster() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

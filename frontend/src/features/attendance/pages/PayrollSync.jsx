@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  IndianRupee, Lock, Unlock, RefreshCw, Check, AlertTriangle,
-  Download, Clock, Users, Zap, AlertCircle, ChevronDown, UserPlus,
+  IndianRupee, Lock, Unlock, RefreshCw, Check, AlertTriangle, Download,
+  Clock, Users, Zap, AlertCircle, ChevronDown, UserPlus, Wallet,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -112,7 +113,7 @@ export default function PayrollSync({ setPage } = {}) {
   if (!HR_ROLES.has(role)) {
     return (
       <div style={{ padding: 48, textAlign: 'center' }}>
-        <AlertCircle size={40} color="#f59e0b" style={{ marginBottom: 16 }} />
+        <AlertCircle size={40} color="#7c5cf0" style={{ marginBottom: 16 }} />
         <div style={{ fontSize: 18, fontWeight: 700, color: '#111827', marginBottom: 8 }}>Access Restricted</div>
         <div style={{ fontSize: 14, color: '#6b7280' }}>
           Payroll sync is available to HR Admin and Admin roles only.
@@ -122,23 +123,18 @@ export default function PayrollSync({ setPage } = {}) {
   }
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Payroll Sync</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Freeze and sync monthly attendance to payroll — immutable once frozen</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          {isFrozen && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, padding: '6px 12px', fontSize: 13, color: '#15803d', fontWeight: 600 }}>
-              <Lock size={13} /> Frozen
-            </div>
-          )}
-          <button onClick={exportCSV} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 10, border: '1px solid #e9e4ff', background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Wallet}
+        eyebrow="Attendance"
+        title="Payroll Sync"
+        subtitle="Freeze and sync monthly attendance to payroll — immutable once frozen"
+        actions={<button className="plh-cta" onClick={exportCSV}>
             <Download size={14} /> Export CSV
-          </button>
-        </div>
-      </div>
+          </button>}
+      />
+    }>
+
 
       {msg && (
         <div style={{ background: msgType === 'success' ? '#f0fdf4' : '#fef2f2', border: `1px solid ${msgType === 'success' ? '#86efac' : '#fca5a5'}`, borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: msgType === 'success' ? '#15803d' : '#dc2626', fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
@@ -179,7 +175,7 @@ export default function PayrollSync({ setPage } = {}) {
         {[
           { label: 'Total Employees', value: records.length,          color: P,         icon: Users },
           { label: 'Synced',          value: syncedCount,             color: '#10b981', icon: Check },
-          { label: 'Pending Sync',    value: pendingCount,            color: '#f59e0b', icon: Clock },
+          { label: 'Pending Sync',    value: pendingCount,            color: '#7c5cf0', icon: Clock },
           { label: 'Mid-Month Joiners', value: midMonthCount,         color: '#0369a1', icon: UserPlus },
           { label: 'Total OT Hours',  value: `${totalOT.toFixed(0)}h`, color: '#6B3FDB', icon: Zap },
         ].map(k => (
@@ -197,11 +193,11 @@ export default function PayrollSync({ setPage } = {}) {
 
       {/* Freeze / frozen status banners */}
       {!isFrozen && pendingCount > 0 && (
-        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: '14px 16px', marginBottom: 20, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-          <AlertCircle size={16} color="#d97706" style={{ flexShrink: 0, marginTop: 1 }} />
+        <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 10, padding: '14px 16px', marginBottom: 20, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          <AlertCircle size={16} color="#6d28d9" style={{ flexShrink: 0, marginTop: 1 }} />
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#92400e' }}>Ready to Freeze Attendance</div>
-            <div style={{ fontSize: 12, color: '#92400e', marginTop: 3 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#5b21b6' }}>Ready to Freeze Attendance</div>
+            <div style={{ fontSize: 12, color: '#5b21b6', marginTop: 3 }}>
               Once frozen, attendance records become <strong>immutable</strong>. Only a Super Admin can unfreeze.
               Payroll calculations will use frozen data only. Please verify all records before proceeding.
             </div>
@@ -296,7 +292,7 @@ export default function PayrollSync({ setPage } = {}) {
                   <td style={{ padding: '10px 12px', color: '#6b7280' }}>{r.department}</td>
                   <td style={{ padding: '10px 12px', color: '#10b981', fontWeight: 500 }}>{r.present_days}</td>
                   <td style={{ padding: '10px 12px', color: r.absent_days > 0 ? '#ef4444' : '#9ca3af', fontWeight: r.absent_days > 0 ? 600 : 400 }}>{r.absent_days}</td>
-                  <td style={{ padding: '10px 12px', color: r.late_days > 0 ? '#f59e0b' : '#9ca3af' }}>{r.late_days}</td>
+                  <td style={{ padding: '10px 12px', color: r.late_days > 0 ? '#7c5cf0' : '#9ca3af' }}>{r.late_days}</td>
                   <td style={{ padding: '10px 12px' }}>
                     {r.is_mid_month_joiner ? (
                       <span title={`Prorated from joining date (full month: ${r.working_days} days)`}>
@@ -314,7 +310,7 @@ export default function PayrollSync({ setPage } = {}) {
                   <td style={{ padding: '10px 12px' }}>
                     {r.payroll_synced
                       ? <span style={{ background: '#f0fdf4', color: '#15803d', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 3 }}><Lock size={9} />Frozen</span>
-                      : <span style={{ background: '#fffbeb', color: '#d97706', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>Pending</span>
+                      : <span style={{ background: '#f5f3ff', color: '#6d28d9', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>Pending</span>
                     }
                   </td>
                 </tr>
@@ -381,6 +377,6 @@ export default function PayrollSync({ setPage } = {}) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

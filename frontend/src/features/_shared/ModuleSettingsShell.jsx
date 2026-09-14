@@ -1,5 +1,6 @@
 import React from 'react';
 import { ToggleLeft, ToggleRight, ChevronRight, Check } from 'lucide-react';
+import { PageHero } from '@/components/pulse-ui';
 
 export function Toggle({ checked, onChange, color = '#7c3aed' }) {
   return (
@@ -76,16 +77,9 @@ export const selectStyle = { ...INPUT };
 export default function ModuleSettingsShell({ title, subtitle, icon: TitleIcon, color = '#7c3aed', sections, activeSection, onSectionChange, children }) {
   return (
     <div style={{ minHeight: '100vh', background: '#f8f9fb', fontFamily: 'Inter, system-ui, sans-serif' }}>
-      <div style={{ background: '#fff', borderBottom: '1px solid #f0f0f4', padding: '20px 32px', display: 'flex', alignItems: 'center', gap: 14 }}>
-        {TitleIcon && (
-          <div style={{ width: 42, height: 42, borderRadius: 10, background: `${color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            <TitleIcon size={20} color={color} />
-          </div>
-        )}
-        <div>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>{title}</h1>
-          {subtitle && <p style={{ margin: 0, fontSize: 13, color: '#6b7280', marginTop: 2 }}>{subtitle}</p>}
-        </div>
+      {/* Shared hero — every page rendering through this shell inherits it. */}
+      <div style={{ padding: '12px 20px 0' }}>
+        <PageHero icon={TitleIcon} eyebrow="Settings" title={title} subtitle={subtitle} />
       </div>
 
       <div style={{ display: 'flex', minHeight: 'calc(100vh - 82px)' }}>

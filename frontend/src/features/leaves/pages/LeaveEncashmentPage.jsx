@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Plus, CheckCircle, XCircle, RefreshCw, IndianRupee, Info } from 'lucide-react';
+import { Plus, CheckCircle, XCircle, RefreshCw, IndianRupee, Info, Landmark } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt    = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 const cur    = v => v != null ? `₹${Number(v).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—';
@@ -10,7 +11,7 @@ const YEAR   = new Date().getFullYear();
 const YEARS  = [YEAR-2,YEAR-1,YEAR];
 
 const STATUS_COLOR = {
-  pending:  { bg:'#fef3c7', color:'#92400e' },
+  pending:  { bg:'#ede9fe', color:'#5b21b6' },
   approved: { bg:'#d1fae5', color:'#065f46' },
   paid:     { bg:'#dbeafe', color:'#1e40af' },
   cancelled:{ bg:'#fee2e2', color:'#991b1b' },
@@ -83,7 +84,7 @@ function CreateModal({ employees, leaveTypes, year, onSave, onClose }) {
         <div style={{ marginBottom:14 }}>
           <label style={{ fontSize:12,fontWeight:600,color:'#374151',display:'block',marginBottom:4 }}>Leave Type *</label>
           {form.employee_id && eligible.length === 0 ? (
-            <div style={{ padding:'10px 14px',background:'#fef9c3',borderRadius:7,fontSize:12,color:'#713f12' }}>
+            <div style={{ padding:'10px 14px',background:'#ede9fe',borderRadius:7,fontSize:12,color:'#4c1d95' }}>
               No encashable leave balance available for this employee in {form.year}.
             </div>
           ) : (
@@ -192,27 +193,28 @@ export default function LeaveEncashmentPage() {
   }, { days:0, gross:0, tds:0, net:0 });
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Landmark}
+        eyebrow="Leave"
+        title="Leave Encashment"
+        subtitle="Process leave encashment for employees — includes TDS calculation"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={13}/> Refresh
+          </button>
+          <button className="plh-cta" onClick={() => setShowModal(true)}>
+            <Plus size={14}/> New Encashment
+          </button>
+        </>}
+      />
+    }>
       {showModal && (
         <CreateModal employees={employees} leaveTypes={leaveTypes} year={fYear}
           onSave={createEncashment} onClose={() => setShowModal(false)} />
       )}
 
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:24, flexWrap:'wrap', gap:12 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Leave Encashment</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Process leave encashment for employees — includes TDS calculation</p>
-        </div>
-        <div style={{ display:'flex', gap:10 }}>
-          <button onClick={load} style={{ display:'flex',alignItems:'center',gap:5,padding:'8px 14px',border:'1px solid #e5e7eb',borderRadius:8,background:'#fff',fontSize:13,cursor:'pointer' }}>
-            <RefreshCw size={13}/> Refresh
-          </button>
-          <button onClick={() => setShowModal(true)}
-            style={{ display:'flex',alignItems:'center',gap:6,padding:'8px 18px',background:'#10b981',color:'#fff',border:'none',borderRadius:8,fontWeight:600,fontSize:13,cursor:'pointer' }}>
-            <Plus size={14}/> New Encashment
-          </button>
-        </div>
-      </div>
+
 
       {/* Summary cards */}
       {records.length > 0 && (
@@ -307,6 +309,6 @@ export default function LeaveEncashmentPage() {
           </table>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, Search, Wrench } from 'lucide-react';
+import { Plus, X, Search, Wrench, LifeBuoy } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY = { name:'', email:'', phone:'', skills:'', zone:'', status:'Active', employee_id:'' };
 
@@ -59,17 +60,16 @@ export default function ServiceEngineers() {
   ) ?? [];
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Service Engineers</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>{engineers?.length ?? 0} engineers</p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="Service Engineers"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15}/> Add Engineer
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       <div style={{ position: 'relative', marginBottom: 16, maxWidth: 320 }}>
         <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af' }}/>
@@ -163,6 +163,6 @@ export default function ServiceEngineers() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

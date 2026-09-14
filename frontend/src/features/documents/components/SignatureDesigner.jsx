@@ -24,7 +24,7 @@ const FIELD_TYPES = [
   { k: 'checkbox',  l: 'Checkbox',  w: 0.03, h: 0.02 },
 ];
 
-const SIGNER_COLORS = ['#7c3aed', '#0891b2', '#ea580c', '#16a34a', '#db2777', '#ca8a04'];
+const SIGNER_COLORS = ['#7c3aed', '#0891b2', '#6d28d9', '#16a34a', '#db2777', '#7c5cf0'];
 
 export default function SignatureDesigner({ signing, onClose, onSent, notify }) {
   const [fileData, setFileData] = useState(null);

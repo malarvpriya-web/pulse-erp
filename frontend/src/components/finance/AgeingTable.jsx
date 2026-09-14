@@ -4,8 +4,8 @@ import { Download, Send } from 'lucide-react';
 
 const BUCKETS = [
   { key: 'current',  label: 'Current',   color: '#16a34a', bg: '#dcfce7' },
-  { key: 'b1_30',    label: '1–30 Days', color: '#a16207', bg: '#fef9c3' },
-  { key: 'b31_60',   label: '31–60 Days',color: '#c2410c', bg: '#fed7aa' },
+  { key: 'b1_30',    label: '1–30 Days', color: '#6d28d9', bg: '#ede9fe' },
+  { key: 'b31_60',   label: '31–60 Days',color: '#5b21b6', bg: '#ddd6fe' },
   { key: 'b61_90',   label: '61–90 Days',color: '#dc2626', bg: '#fecaca' },
   { key: 'b90plus',  label: '90+ Days',  color: '#7c3aed', bg: '#ede9fe' },
 ];
@@ -23,7 +23,7 @@ function KPICard({ label, value, color, bg }) {
 
 function rowBg(row) {
   if (Number(row.b90plus ?? 0) > 0) return '#fff5f5';
-  if (Number(row.b61_90 ?? 0) > 0) return '#fffbeb';
+  if (Number(row.b61_90 ?? 0) > 0) return '#f5f3ff';
   return '#fff';
 }
 

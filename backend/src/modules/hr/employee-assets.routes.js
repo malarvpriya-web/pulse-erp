@@ -2,7 +2,8 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
-import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { requirePermission, verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -12,7 +13,12 @@ const HR_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'HR', '
 router.use(verifyToken);
 
 /* ─── GET /employee-assets?employee_id=X ────────────────────── */
-router.get('/', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied assets in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/', requirePermission('assets', 'view'), async (req, res) => {
   const { employee_id, status, company_id: qCid } = req.query;
   const cid = req.scope?.company_id ?? qCid ?? null;
   try {
@@ -37,7 +43,7 @@ router.get('/', async (req, res) => {
 });
 
 /* ─── GET /employee-assets/:id ──────────────────────────────── */
-router.get('/:id', async (req, res) => {
+router.get('/:id', requirePermission('assets', 'view'), async (req, res) => {
   const cid = req.scope?.company_id ?? null;
   try {
     const { rows } = await pool.query(
@@ -107,7 +113,7 @@ router.put('/:id', allowRoles(...HR_ROLES), async (req, res) => {
 });
 
 /* ─── PATCH /employee-assets/:id/return ────────────────────── */
-router.patch('/:id/return', allowRoles(...HR_ROLES), async (req, res) => {
+router.patch('/:id/return', allowRoles(...HR_ROLES), captureBefore('employee_asset_allocations'), async (req, res) => {
   const { return_date, condition_out, notes } = req.body;
   const returnedTo = req.user?.employee_id ?? null;
   try {

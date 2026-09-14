@@ -7,6 +7,7 @@ import {
 import './SalesOrders.css';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmtAmt   = n => `₹${Number(n||0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtL     = n => {
@@ -22,7 +23,7 @@ const fmtDate  = d => {
 const STATUS_COLOR = {
   draft:      { bg: '#f3f4f6', color: '#374151' },
   confirmed:  { bg: '#dbeafe', color: '#1e40af' },
-  pending:    { bg: '#fef3c7', color: '#92400e' },
+  pending:    { bg: '#ede9fe', color: '#5b21b6' },
   dispatched: { bg: '#ede9fe', color: '#5b21b6' },
   delivered:  { bg: '#d1fae5', color: '#065f46' },
   invoiced:   { bg: '#ccfbf1', color: '#0f766e' },
@@ -142,7 +143,7 @@ function DetailDrawer({ order, items, invoice, loading, onClose, onAction, actio
                           <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>₹{Number(it.rate||0).toLocaleString('en-IN')}</td>
                           <td style={{ padding: '8px 10px', color: '#6b7280' }}>{it.tax_percentage}%</td>
                           <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>₹{sub.toLocaleString('en-IN')}</td>
-                          <td style={{ padding: '8px 10px', color: '#d97706', whiteSpace: 'nowrap' }}>₹{Number(it.tax_amount||0).toLocaleString('en-IN')}</td>
+                          <td style={{ padding: '8px 10px', color: '#6d28d9', whiteSpace: 'nowrap' }}>₹{Number(it.tax_amount||0).toLocaleString('en-IN')}</td>
                           <td style={{ padding: '8px 10px', fontWeight: 700, color: '#111827', whiteSpace: 'nowrap' }}>₹{Number(it.total||0).toLocaleString('en-IN')}</td>
                         </tr>
                       );
@@ -358,7 +359,7 @@ function CustomerSummaryTab({ summary, loading }) {
                     : <span style={{ color: '#d1d5db' }}>—</span>}
                 </td>
                 <td className="so-amount">{fmtL(c.total_value)}</td>
-                <td style={{ color: '#d97706', fontSize: 12 }}>{fmtL(c.total_gst)}</td>
+                <td style={{ color: '#6d28d9', fontSize: 12 }}>{fmtL(c.total_gst)}</td>
                 <td style={{ color: '#6b7280', fontSize: 12 }}>{fmtDate(c.last_order_date)}</td>
               </tr>
             ))}
@@ -559,31 +560,27 @@ export default function SalesOrders() {
   const bs = stats.by_status || {};
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Sales Orders"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
+          {!readOnly && (
+            <button className="plh-cta" onClick={openNew}>
+              <Plus size={15} /> New Order
+            </button>
+          )}
+        </>}
+      />
+    }>
       {readOnly && <ReadOnlyBanner />}
       {/* Toast */}
       {toast && (
         <div className={`so-toast so-toast-${toast.type}`}>{toast.msg}</div>
       )}
 
-      {/* Page header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Sales Orders</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            {stats.total} orders &middot; {fmtL(stats.total_value)}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="so-icon-btn" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
-          {!readOnly && (
-            <button onClick={openNew}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-              <Plus size={15} /> New Order
-            </button>
-          )}
-        </div>
-      </div>
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e7eb', paddingBottom: 0 }}>
@@ -825,6 +822,6 @@ export default function SalesOrders() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

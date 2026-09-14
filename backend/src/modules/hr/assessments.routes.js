@@ -1,6 +1,7 @@
 // backend/src/modules/hr/assessments.routes.js
 import express from 'express';
 import pool from '../../config/db.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid  = req => req.scope?.company_id ?? null;
@@ -48,7 +49,7 @@ router.post('/', async (req, res) => {
 });
 
 /* ── PUT /assessments/:id ──────────────────────────────────── */
-router.put('/:id', async (req, res) => {
+router.put('/:id', captureBefore('assessments'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { title, description, pass_score, max_attempts, time_limit_mins, is_active } = req.body;
   try {
@@ -66,7 +67,7 @@ router.put('/:id', async (req, res) => {
 });
 
 /* ── DELETE /assessments/:id ───────────────────────────────── */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', captureBefore('assessments'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     await pool.query(`UPDATE assessments SET is_active=false WHERE id=$1`, [req.params.id]);
@@ -89,6 +90,18 @@ router.get('/:id/questions', async (req, res) => {
 router.put('/:id/questions', async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { questions = [] } = req.body;
+
+  // A full-replacement child collection: every question is deleted and the body
+  // re-inserted. captureBefore() reads the ASSESSMENT row, which does not change
+  // here — the answers do. Snapshot the questions themselves, or an edit that
+  // silently rewrites a correct_answer leaves nothing to compare against.
+  try {
+    const { rows: prior } = await pool.query(
+      `SELECT * FROM assessment_questions WHERE assessment_id=$1 ORDER BY sequence_order`,
+      [req.params.id]);
+    req._auditBefore = { assessment_id: req.params.id, questions: prior };
+  } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

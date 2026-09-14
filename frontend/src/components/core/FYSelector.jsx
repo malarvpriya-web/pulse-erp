@@ -49,7 +49,7 @@ export default function FYSelector({ showProgress = false, compact = false }) {
         {fyLabel}
         {!isCurrentFY && (
           <span style={{
-            fontSize: 10, background: '#fef3c7', color: '#d97706',
+            fontSize: 10, background: '#ede9fe', color: '#6d28d9',
             padding: '1px 5px', borderRadius: 8, fontWeight: 600,
           }}>
             Past
@@ -67,7 +67,7 @@ export default function FYSelector({ showProgress = false, compact = false }) {
         const elapsedDays = Math.round((today - start) / 86400000);
         const daysLeft    = totalDays - elapsedDays;
         const monthsLeft  = Math.ceil(daysLeft / 30.44);
-        const barColor    = fyProgress < 50 ? '#10b981' : fyProgress < 80 ? '#f59e0b' : '#ef4444';
+        const barColor    = fyProgress < 50 ? '#10b981' : fyProgress < 80 ? '#7c5cf0' : '#ef4444';
         const fmt = (d) => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
         const tooltip = `${elapsedDays} of ${totalDays} days elapsed (${fmt(start)} – ${fmt(today)})`;
         return (

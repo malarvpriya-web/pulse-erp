@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Camera, X, ShieldCheck, RefreshCw, AlertTriangle, CheckCircle, UserPlus } from 'lucide-react';
 import api from '@/services/api/client';
-import { getPosition, capturePhoto, isNative } from '@/mobile/native';
+import { capturePhoto, isNative } from '@/mobile/native';
 
 /**
  * FaceClockModal — browser face-recognition for attendance.
@@ -42,18 +42,10 @@ function loadFaceApi() {
   return faceapiPromise;
 }
 
-// Resolve the device GPS position as a "lat,lng" string, or null when
-// unavailable/denied. Routes through the native bridge — native GPS + OS
-// permission inside the Capacitor app, browser Geolocation on web. The server
-// decides whether location is mandatory.
-export async function getLocationString(timeoutMs = 8000) {
-  try {
-    const { latitude, longitude } = await getPosition({ highAccuracy: true, timeout: timeoutMs });
-    return `${latitude.toFixed(6)},${longitude.toFixed(6)}`;
-  } catch {
-    return null;
-  }
-}
+// getLocationString moved to ./geo so the camera clock-in and the plain
+// clock-out path can use it without importing a modal. Re-exported here for
+// the callers (and the test) that still reach for it through this module.
+export { getLocationString } from './geo';
 
 // Load a data URL into a decoded <img> so face-api can run on a still frame.
 function loadImage(dataUrl) {
@@ -270,7 +262,7 @@ export default function FaceClockModal({ employeeId, action = 'in', onVerified, 
 
   const scoreReady = stillMode ? true : liveScore >= MIN_SCORE;
   const canAct     = stillMode ? true : (scoreReady && live);
-  const ringColor  = phase === 'success' ? '#16a34a' : canAct ? '#16a34a' : scoreReady ? '#3b82f6' : liveScore > 0.3 ? '#f59e0b' : '#9ca3af';
+  const ringColor  = phase === 'success' ? '#16a34a' : canAct ? '#16a34a' : scoreReady ? '#3b82f6' : liveScore > 0.3 ? '#7c5cf0' : '#9ca3af';
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,0.72)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>

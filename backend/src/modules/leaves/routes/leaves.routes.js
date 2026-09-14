@@ -6,6 +6,8 @@ import { validate } from '../../../services/ValidationEngineService.js';
 import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../../shared/managerApprovalAuthz.js';
+import { hasRole } from '../../../middlewares/auth.middleware.js';
+import { employeeOf } from '../../../shared/scope.js';
 
 const router = express.Router();
 
@@ -194,7 +196,11 @@ async function notifyProjectMilestoneConflict(application, poolRef) {
         p.project_manager_id,
         pm.title              AS milestone_title,
         pm.due_date           AS milestone_due_date
-      FROM project_resources pr
+      -- project_resources is a phantom twin that was never created in this
+      -- schema; the real project-team table is project_members (same
+      -- project_id / employee_id / end_date shape). This query silently threw,
+      -- so a leave application never warned the PM about a milestone clash.
+      FROM project_members pr
       JOIN projects p          ON p.id = pr.project_id
       JOIN project_milestones pm ON pm.project_id = p.id
       WHERE pr.employee_id = $1
@@ -668,10 +674,52 @@ router.post('/bulk-allocate', requireLeaveAdmin, requirePermission('leaves', 'ad
 });
 
 // All allocations — admin view
+/**
+ * Leave balances.
+ *
+ * `leaves`.`view` is granted to `employee` on purpose — people need to see their
+ * own balance — so the permission gate alone does not scope this. It did not
+ * scope itself either: a live probe on 2026-09-04 with a plain `employee` token
+ * returned **292 rows across 34 employees**, i.e. every colleague's leave
+ * entitlement, usage and remaining days.
+ *
+ * The sibling `/applications` gets this right by narrowing on the caller's own
+ * employee id; this endpoint over the same population did not. That is the
+ * detail-vs-list split again: two endpoints over one dataset are two separate
+ * redaction decisions, and only one of them had been made.
+ *
+ * HR and administrators see everyone. A manager sees their own reports. Everyone
+ * else sees themselves. An `employee_id` in the query string is honoured only
+ * for callers allowed to look at other people.
+ */
 router.get('/allocations', requirePermission('leaves', 'view'), async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
   const companyId = req.scope?.company_id ?? null;
   try {
+    const isAdmin   = hasRole(req, ...LEAVE_ADMIN_ROLES);
+    const isManager = hasRole(req, 'manager', 'department_head', 'hr_manager');
+    const me        = await employeeOf(req, pool);
+
+    // Resolved server-side. A caller who may not see others cannot widen their
+    // own scope by passing someone else's id.
+    const requested = req.query.employee_id ? Number(req.query.employee_id) : null;
+    let scopeEmployeeId = null;   // null = no per-employee restriction
+    let scopeManagerId  = null;
+
+    if (isAdmin) {
+      scopeEmployeeId = Number.isInteger(requested) ? requested : null;
+    } else if (isManager) {
+      scopeManagerId = me;
+      if (Number.isInteger(requested)) scopeEmployeeId = requested;   // still bounded by the manager filter below
+    } else {
+      if (me == null) {
+        // No employee record means no balance to show. Returning everything
+        // would be the fail-open this endpoint just had.
+        return res.json([]);
+      }
+      scopeEmployeeId = me;
+    }
+
     const { rows } = await pool.query(`
       SELECT lb.id, lb.employee_id, lb.leave_type_id, lb.year,
              lb.allocated_days,
@@ -701,8 +749,10 @@ router.get('/allocations', requirePermission('leaves', 'view'), async (req, res)
       JOIN   leave_types lt ON lb.leave_type_id = lt.id
       WHERE  lb.year = $1
         AND ($2::integer IS NULL OR e.company_id = $2)
+        AND ($3::integer IS NULL OR lb.employee_id = $3)
+        AND ($4::integer IS NULL OR e.reporting_manager_id = $4)
       ORDER  BY employee_name, lt.leave_name
-    `, [year, companyId]);
+    `, [year, companyId, scopeEmployeeId, scopeManagerId]);
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1196,7 +1246,14 @@ router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
 // Legacy alias — routes through the same full validation as POST /apply
 router.post('/', requirePermission('leaves', 'add'), handleApplyLeave);
 
-router.get('/my', requirePermission('leaves', 'view'), async (req, res) => {
+// No requirePermission gate: hard-scoped to the caller's own employee_id below,
+// so it can never return another employee's data — same self-service shape as
+// attendance's GET /employee/:id (no permission gate either). Requiring the
+// full 'leaves' module grant here would block finance/finance_manager/
+// accounts_exec from ever seeing their own leave history, defeating their
+// deliberate self-service carve-out (see FINANCE_SELF_SERVICE_PAGES in
+// menuCatalog.js) even though the frontend already lets them reach this page.
+router.get('/my', async (req, res) => {
   try {
     const employeeId = req.user?.employee_id;
     res.json(await leavesRepository.findApplications({ ...req.query, employee_id: employeeId, company_id: req.scope?.company_id ?? null }));
@@ -1346,10 +1403,40 @@ router.post('/delegate/:id', requirePermission('leaves', 'approve'), async (req,
 });
 
 // ── GET /accrual-history — per-employee monthly accrual log ──────────────────
+/**
+ * Monthly leave accrual history.
+ *
+ * `leaves`.`view` is held by `employee` by design, so the permission gate does
+ * not scope this one. A live probe on 2026-09-04 with a plain employee token
+ * returned 34 rows covering 34 DIFFERENT PEOPLE — every colleague's accrual,
+ * usage and remaining entitlement, with their name and department attached.
+ *
+ * Same shape as /allocations, fixed the same way: HR and administrators see
+ * everyone, a manager sees their reports, everyone else sees themselves. The
+ * caller's identity is resolved server-side and an employee_id in the query is
+ * honoured only for callers already allowed to look at other people.
+ */
 router.get('/accrual-history', requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const companyId = req.scope?.company_id ?? null;
     const year = Number(req.query.year) || new Date().getFullYear();
+
+    const isAdmin   = hasRole(req, ...LEAVE_ADMIN_ROLES);
+    const isManager = hasRole(req, 'manager', 'department_head', 'hr_manager');
+    const me        = await employeeOf(req, pool);
+    const requested = req.query.employee_id ? Number(req.query.employee_id) : null;
+
+    let scopeEmployeeId = null;
+    let scopeManagerId  = null;
+    if (isAdmin) {
+      scopeEmployeeId = Number.isInteger(requested) ? requested : null;
+    } else if (isManager) {
+      scopeManagerId = me;
+      if (Number.isInteger(requested)) scopeEmployeeId = requested;
+    } else {
+      if (me == null) return res.json([]);
+      scopeEmployeeId = me;
+    }
     const { rows } = await pool.query(`
       SELECT
         lb.employee_id,
@@ -1372,8 +1459,10 @@ router.get('/accrual-history', requirePermission('leaves', 'view'), async (req, 
         AND ($2::integer IS NULL OR e.company_id = $2)
         AND lt.accrual_type = 'monthly'
         AND e.status IS DISTINCT FROM 'Left'
+        AND ($3::integer IS NULL OR lb.employee_id = $3)
+        AND ($4::integer IS NULL OR e.reporting_manager_id = $4)
       ORDER BY e.department, employee_name, lt.leave_name
-    `, [year, companyId]);
+    `, [year, companyId, scopeEmployeeId, scopeManagerId]);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });

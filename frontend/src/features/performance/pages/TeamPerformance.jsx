@@ -3,13 +3,14 @@ import api from '@/services/api/client';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { Users, Star, TrendingUp, Target, Award, CheckCircle, Clock, AlertTriangle, ChevronUp, ChevronDown } from 'lucide-react';
 import './TeamPerformance.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const ratingColor = r => r >= 4 ? '#10b981' : r >= 3 ? '#6366f1' : r >= 2 ? '#f59e0b' : '#ef4444';
+const ratingColor = r => r >= 4 ? '#10b981' : r >= 3 ? '#6366f1' : r >= 2 ? '#7c5cf0' : '#ef4444';
 
 const REVIEW_STATUS = {
   completed:             { label: 'Completed',       bg: '#dcfce7', color: '#15803d' },
   self_submitted:        { label: 'Self Submitted',  bg: '#dbeafe', color: '#1d4ed8' },
-  pending_manager_review:{ label: 'Awaiting Mgr',   bg: '#fef3c7', color: '#d97706' },
+  pending_manager_review:{ label: 'Awaiting Mgr',   bg: '#ede9fe', color: '#6d28d9' },
   self_review_pending:   { label: 'Not Started',     bg: '#f3f4f6', color: '#6b7280' },
   in_progress:           { label: 'In Progress',     bg: '#ede9fe', color: '#6d28d9' },
 };
@@ -24,8 +25,8 @@ function Stars({ val }) {
     <span className="tp-stars">
       {[1,2,3,4,5].map(i => (
         <Star key={i} size={11}
-          color={i <= Math.round(val||0) ? '#f59e0b' : '#e5e7eb'}
-          fill={i <= Math.round(val||0) ? '#f59e0b' : 'none'} />
+          color={i <= Math.round(val||0) ? '#7c5cf0' : '#e5e7eb'}
+          fill={i <= Math.round(val||0) ? '#7c5cf0' : 'none'} />
       ))}
       <span className="tp-rating-num">{val ? Number(val).toFixed(1) : '—'}</span>
     </span>
@@ -108,14 +109,21 @@ export default function TeamPerformance() {
     : null;
 
   return (
-    <div className="tp-root">
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Performance"
+        title="Team Performance"
+        subtitle="Reviews, goals, and ratings across the team"
+      />
+    }>
       {/* Header */}
       <div className="tp-header">
         <div className="tp-header-left">
           <div className="tp-header-icon"><Users size={20} /></div>
           <div>
-            <h1 className="tp-title">Team Performance</h1>
-            <p className="tp-sub">Reviews, goals, and ratings across the team</p>
+
+
           </div>
         </div>
         <div className="tp-header-right">
@@ -131,8 +139,8 @@ export default function TeamPerformance() {
           {[
             { icon: <Users size={18} />,       val: kpis.total,      label: 'Team Size',         bg: '#eef2ff', color: '#4338ca' },
             { icon: <CheckCircle size={18} />,  val: kpis.completed,  label: 'Reviews Done',      bg: '#dcfce7', color: '#15803d' },
-            { icon: <Clock size={18} />,        val: kpis.notStarted, label: 'Not Started',       bg: '#fef3c7', color: '#d97706' },
-            { icon: <Star size={18} />,         val: kpis.avgRating,  label: 'Avg Team Rating',   bg: '#fffbeb', color: '#d97706' },
+            { icon: <Clock size={18} />,        val: kpis.notStarted, label: 'Not Started',       bg: '#ede9fe', color: '#6d28d9' },
+            { icon: <Star size={18} />,         val: kpis.avgRating,  label: 'Avg Team Rating',   bg: '#f5f3ff', color: '#6d28d9' },
             { icon: <Target size={18} />,       val: kpis.totalGoals, label: 'Total Goals',       bg: '#f0fdf4', color: '#15803d' },
             { icon: <Award size={18} />,        val: kpis.achieved,   label: 'Goals Achieved',    bg: '#dcfce7', color: '#065f46' },
           ].map(k => (
@@ -210,7 +218,7 @@ export default function TeamPerformance() {
                           <div className="tp-goals">
                             <span className="tp-goals-num">{goalPct}%</span>
                             <div className="tp-goals-track">
-                              <div className="tp-goals-fill" style={{ width: `${goalPct}%`, background: goalPct >= 75 ? '#10b981' : goalPct >= 50 ? '#6366f1' : '#f59e0b' }} />
+                              <div className="tp-goals-fill" style={{ width: `${goalPct}%`, background: goalPct >= 75 ? '#10b981' : goalPct >= 50 ? '#6366f1' : '#7c5cf0' }} />
                             </div>
                             <span style={{ fontSize: 10, color: '#9ca3af' }}>({m.achieved_goals}/{m.total_goals})</span>
                           </div>
@@ -319,6 +327,6 @@ export default function TeamPerformance() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

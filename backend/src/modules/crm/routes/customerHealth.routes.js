@@ -19,7 +19,7 @@ import express from 'express';
 import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import * as svc from '../customerHealth.service.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
 
 const router = express.Router();
 
@@ -106,7 +106,10 @@ router.patch('/alerts/:alertId/resolve', requirePermission('crm', 'edit'), async
   try {
     const { alertId } = req.params;
     const companyId = companyOf(req);
-    const employeeId = req.user?.employee_id || req.user?.id;
+    // resolved_by FKs employees(id). The old fallback was req.user.id, which is
+    // always undefined (the JWT carries `userId`); employeeOf() does the real
+    // users.employee_id lookup.
+    const employeeId = await employeeOf(req, pool);
 
     await pool.query(
       `UPDATE customer_health_alerts

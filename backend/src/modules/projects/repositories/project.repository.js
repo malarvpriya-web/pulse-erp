@@ -56,6 +56,35 @@ const projectRepository = {
       paramCount++;
     }
 
+    // Dashboard dimensions (see shared/dashboardFilters.js). Bound, never
+    // interpolated — these arrive straight off req.query.
+    if (filters.zone) {
+      query += ` AND p.zone = $${paramCount}`;
+      params.push(filters.zone);
+      paramCount++;
+    }
+
+    if (filters.project_type) {
+      query += ` AND p.project_type = $${paramCount}`;
+      params.push(filters.project_type);
+      paramCount++;
+    }
+
+    // Period filter: a project belongs to the window if its run overlaps it, not
+    // if it merely started inside it — an 18-month EPC job is still "in" Q3.
+    // An open-ended project (no end_date) counts as running indefinitely.
+    if (filters.date_from) {
+      query += ` AND (p.end_date IS NULL OR p.end_date >= $${paramCount}::date)`;
+      params.push(filters.date_from);
+      paramCount++;
+    }
+
+    if (filters.date_to) {
+      query += ` AND (p.start_date IS NULL OR p.start_date <= $${paramCount}::date)`;
+      params.push(filters.date_to);
+      paramCount++;
+    }
+
     query += ` GROUP BY p.id, e.first_name, e.last_name, pcs.total_cost ORDER BY p.created_at DESC`;
 
     const result = await pool.query(query, params);

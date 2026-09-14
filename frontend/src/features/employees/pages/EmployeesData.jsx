@@ -11,6 +11,7 @@ import { useAuth } from '@/context/AuthContext';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './EmployeesData.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Mirrors the backend HR_ROLES guard on employee writes — everyone else gets a
 // "not allowed to edit" notice instead of edit controls that would 403.
@@ -21,7 +22,7 @@ const EMPLOYEE_EDITOR_ROLES = new Set([
 // ── Status config ─────────────────────────────────────────────────────────────
 const STATUS_CFG = {
   Active:    { bg: '#dcfce7', color: '#166534', dot: '#22c55e' },
-  Probation: { bg: '#fef3c7', color: '#92400e', dot: '#f59e0b' },
+  Probation: { bg: '#ede9fe', color: '#5b21b6', dot: '#7c5cf0' },
   Notice:    { bg: '#fee2e2', color: '#991b1b', dot: '#ef4444' },
   Inactive:  { bg: '#f3f4f6', color: '#374151', dot: '#9ca3af' },
   Left:      { bg: '#f3f4f6', color: '#6b7280', dot: '#9ca3af' },
@@ -34,9 +35,9 @@ const DESTRUCTIVE_STATUSES = new Set(['Notice', 'Inactive', 'Left']);
 // ── Avatar colors (hash-based) ────────────────────────────────────────────────
 const AVATAR_PALETTES = [
   { bg:'#ede9fe', color:'#6d28d9' }, { bg:'#dbeafe', color:'#1d4ed8' },
-  { bg:'#dcfce7', color:'#166534' }, { bg:'#fff7ed', color:'#c2410c' },
+  { bg:'#dcfce7', color:'#166534' }, { bg:'#fff7ed', color:'#5b21b6' },
   { bg:'#fdf4ff', color:'#9333ea' }, { bg:'#f0fdfa', color:'#0f766e' },
-  { bg:'#fef9c3', color:'#a16207' }, { bg:'#fce7f3', color:'#9d174d' },
+  { bg:'#ede9fe', color:'#6d28d9' }, { bg:'#fce7f3', color:'#9d174d' },
 ];
 function avatarPalette(name = '') {
   let h = 0;
@@ -678,7 +679,7 @@ export default function EmployeesData({ setPage, setSelectedEmployee }) {
 
   const KPI_CARDS = [
     { label:'Active',     value:active.length,    icon:TrendingUp, palette:{ bg:'#f0fdf4', color:'#166534', icon:'#22c55e' }, filter:'Active'    },
-    { label:'Probation',  value:probation.length, icon:Clock,      palette:{ bg:'#fffbeb', color:'#92400e', icon:'#f59e0b' }, filter:'Probation' },
+    { label:'Probation',  value:probation.length, icon:Clock,      palette:{ bg:'#f5f3ff', color:'#5b21b6', icon:'#7c5cf0' }, filter:'Probation' },
     { label:'On Notice',  value:notice.length,    icon:AlertCircle,palette:{ bg:'#fef2f2', color:'#991b1b', icon:'#ef4444' }, filter:'Notice'    },
     { label:'Inactive',   value:inactive.length,  icon:Users,      palette:{ bg:'#f9fafb', color:'#374151', icon:'#9ca3af' }, filter:'Inactive'  },
     { label:'Total Staff',value:allStaff.length,  icon:Briefcase,  palette:{ bg:'#ede9fe', color:'#5b21b6', icon:'#6B3FDB' }, filter:null        },
@@ -757,7 +758,24 @@ export default function EmployeesData({ setPage, setSelectedEmployee }) {
   const orderedCols = COLUMN_DEFS.filter(c => c.always || visibleCols.has(c.key));
 
   return (
-    <div className="ed-root">
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Employees"
+        title="All Employees"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load} title="Refresh"><RefreshCw size={14}/></button>
+          <button className="plh-cta plh-cta--ghost" onClick={() => exportCSV(filtered, visibleCols)}>
+            <Download size={13}/> Export
+          </button>
+          {!readOnly && (
+            <button className="plh-cta" onClick={() => { if (blockEdit()) return; setSelectedEmployee(null); setPage('AddEmployee'); }}>
+              <Plus size={14}/> Add Employee
+            </button>
+          )}
+        </>}
+      />
+    }>
 
       {/* Toast */}
       {toast && (
@@ -831,29 +849,6 @@ export default function EmployeesData({ setPage, setSelectedEmployee }) {
       {readOnly && <ReadOnlyBanner />}
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="ed-header">
-        <div className="ed-header-l">
-          <div className="ed-header-icon"><Users size={20}/></div>
-          <div>
-            <h1 className="ed-title">All Employees</h1>
-            <p className="ed-sub">
-              {filtered.length} of {allStaff.length} employees
-              {hasFilters ? ' — filtered' : ''}
-            </p>
-          </div>
-        </div>
-        <div className="ed-header-actions">
-          <button className="ed-icon-btn" onClick={load} title="Refresh"><RefreshCw size={14}/></button>
-          <button className="ed-export-btn" onClick={() => exportCSV(filtered, visibleCols)}>
-            <Download size={13}/> Export
-          </button>
-          {!readOnly && (
-            <button className="ed-add-btn" onClick={() => { if (blockEdit()) return; setSelectedEmployee(null); setPage('AddEmployee'); }}>
-              <Plus size={14}/> Add Employee
-            </button>
-          )}
-        </div>
-      </div>
 
       {/* ── KPI Cards ──────────────────────────────────────────────────────── */}
       <div className="ed-kpi-row">
@@ -1134,6 +1129,6 @@ export default function EmployeesData({ setPage, setSelectedEmployee }) {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

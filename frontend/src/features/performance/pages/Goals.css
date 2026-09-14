@@ -151,7 +151,7 @@
 .gl-card-badges { display: flex; gap: 5px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .gl-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 700; }
 .gl-badge-high   { background: #fee2e2; color: #991b1b; }
-.gl-badge-medium { background: #fef3c7; color: #92400e; }
+.gl-badge-medium { background: #ede9fe; color: #5b21b6; }
 .gl-badge-low    { background: #d1fae5; color: #065f46; }
 .gl-badge-cat    { background: #eef2ff; color: #4338ca; }
 
@@ -170,7 +170,7 @@
 .gl-status-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 700; }
 .gl-chip-active   { background: #dbeafe; color: #1d4ed8; }
 .gl-chip-achieved { background: #dcfce7; color: #15803d; }
-.gl-chip-at_risk  { background: #fef3c7; color: #d97706; }
+.gl-chip-at_risk  { background: #ede9fe; color: #6d28d9; }
 .gl-chip-overdue  { background: #fee2e2; color: #dc2626; }
 .gl-chip-draft    { background: #f3f4f6; color: #6b7280; }
 

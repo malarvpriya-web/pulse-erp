@@ -8,6 +8,8 @@ import pool from '../../../config/db.js';
 import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { deriveResponseFields } from '../services/voc.service.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -45,7 +47,7 @@ router.post('/surveys', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/surveys/:id', verifyToken, async (req, res) => {
+router.put('/surveys/:id', verifyToken, captureBefore('voc_surveys'), async (req, res) => {
   try {
     const { name, trigger_event, questions, is_active } = req.body;
     const { rows } = await pool.query(
@@ -96,8 +98,9 @@ router.post('/responses', async (req, res) => {
       return res.status(400).json({ error: 'nps_score must be 0-10' });
     }
 
-    const sentiment = nps_score !== undefined ? (nps_score >= 9 ? 'promoter' : nps_score >= 7 ? 'passive' : 'detractor') : null;
-    const classification = category || classifyFeedback(suggestions, improvement_ideas, new_feature_requests);
+    // One banding rule, shared with the automatic triggers — see voc.service.js.
+    const { sentiment, classification } = deriveResponseFields({
+      nps_score, rating, category, suggestions, improvement_ideas, new_feature_requests });
 
     const { rows } = await pool.query(
       `INSERT INTO voc_responses
@@ -116,7 +119,7 @@ router.post('/responses', async (req, res) => {
 });
 
 // PUT /voc/responses/:id/action — mark as actioned
-router.put('/responses/:id/action', verifyToken, async (req, res) => {
+router.put('/responses/:id/action', verifyToken, captureBefore('voc_responses'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE voc_responses
@@ -130,7 +133,7 @@ router.put('/responses/:id/action', verifyToken, async (req, res) => {
 });
 
 // PUT /voc/responses/:id/classify
-router.put('/responses/:id/classify', verifyToken, async (req, res) => {
+router.put('/responses/:id/classify', verifyToken, captureBefore('voc_responses'), async (req, res) => {
   try {
     const { classification } = req.body;
     const { rows } = await pool.query(
@@ -150,12 +153,18 @@ router.get('/dashboard', verifyToken, async (req, res) => {
   try {
     const [kpis, npsBreakdown, byEvent, byClassification, topComplaints, topSuggestions, trend] = await Promise.all([
       pool.query(`
+        -- Banded off SENTIMENT, not nps_score. The commissioning, field-visit and
+        -- project-closure triggers capture a 1-5 rating rather than an NPS
+        -- answer, so counting promoters off nps_score made every automatically
+        -- collected response invisible to this KPI. avg_nps still averages only
+        -- real NPS answers — a rating is not converted into a fake 0-10 score.
         SELECT COUNT(*) AS total_responses,
                ROUND(AVG(nps_score)::NUMERIC,2) AS avg_nps,
                ROUND(AVG(rating)::NUMERIC,2) AS avg_rating,
-               COUNT(CASE WHEN nps_score >= 9 THEN 1 END) AS promoters,
-               COUNT(CASE WHEN nps_score BETWEEN 7 AND 8 THEN 1 END) AS passives,
-               COUNT(CASE WHEN nps_score <= 6 THEN 1 END) AS detractors,
+               COUNT(CASE WHEN sentiment = 'promoter'  THEN 1 END) AS promoters,
+               COUNT(CASE WHEN sentiment = 'passive'   THEN 1 END) AS passives,
+               COUNT(CASE WHEN sentiment = 'detractor' THEN 1 END) AS detractors,
+               COUNT(CASE WHEN nps_score IS NOT NULL THEN 1 END)   AS nps_answers,
                COUNT(CASE WHEN is_actioned = false THEN 1 END) AS unactioned
           FROM voc_responses WHERE company_id = $1 AND submitted_at >= NOW() - INTERVAL '90 days'
       `, [cid(req)]),

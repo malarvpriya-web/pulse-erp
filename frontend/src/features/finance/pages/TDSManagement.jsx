@@ -1,7 +1,9 @@
 // C:\Users\malar\OneDrive\Desktop\Pulse_WORKING\Pulse\frontend\src\features\finance\pages\TDSManagement.jsx
 import React, { useCallback, useMemo, useState } from 'react';
+import { FileCheck2 } from 'lucide-react';
 import api from '@/services/api/client';
 import { ResponsiveContainer, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar } from 'recharts';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT_BG = '#f5f3ff';
@@ -28,7 +30,7 @@ function formatINR(value) {
 function badge(status) {
   const s = String(status || '').toLowerCase();
   if (s.includes('issued') || s.includes('deposited') || s.includes('paid')) return { background: '#dcfce7', color: '#166534' };
-  if (s.includes('pending') || s.includes('draft')) return { background: '#fef3c7', color: '#92400e' };
+  if (s.includes('pending') || s.includes('draft')) return { background: '#ede9fe', color: '#5b21b6' };
   if (s.includes('overdue') || s.includes('rejected')) return { background: '#fee2e2', color: '#991b1b' };
   return { background: LIGHT_BG, color: '#5b21b6' };
 }
@@ -261,11 +263,14 @@ export default function TDSManagement() {
   const chartData = useMemo(() => (Array.isArray(quarterly?.by_quarter) ? quarterly.by_quarter : []).map((q) => ({ quarter: q.quarter || 'Q?', deducted: Number(q.total_tds_deducted || 0), deposited: Number(q.total_deposited || 0), pending: Number(q.pending_amount || 0) })), [quarterly]);
 
   return (
-    <div style={{ padding: 16, background: LIGHT_BG, minHeight: 'calc(100vh - 80px)' }}>
-      <div style={{ marginBottom: 12 }}>
-        <h2 style={{ margin: 0, color: '#1f2937', fontSize: 24 }}>TDS Management</h2>
-        <p style={{ margin: '6px 0 0', color: '#6b7280', fontSize: 13 }}>Deductees, transactions, quarterly filing, and Form 16A certificates.</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={FileCheck2}
+        eyebrow="Finance"
+        title="TDS Management"
+        subtitle="Deductees, transactions, quarterly filing, and Form 16A certificates."
+      />
+    }>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         {TABS.map((tab, idx) => (
@@ -431,6 +436,6 @@ export default function TDSManagement() {
           </Panel>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

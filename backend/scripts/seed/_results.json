@@ -1,0 +1,14 @@
+{
+ "seededAt": "2026-08-21T05:23:43.705Z",
+ "rowsPerTable": 5,
+ "skippedUnsafe": [],
+ "partitions": [],
+ "results": [
+  {
+   "table": "customer_visit_action_items",
+   "inserted": 5,
+   "attempted": 5,
+   "failures": []
+  }
+ ]
+}

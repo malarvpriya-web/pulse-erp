@@ -3,8 +3,13 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts';
-import { RefreshCw, Download, Zap, Activity, TrendingUp, CheckCircle, AlertTriangle, Wrench } from 'lucide-react';
+import {
+  RefreshCw, Download, Zap, Activity, TrendingUp, CheckCircle,
+  AlertTriangle, Wrench, BarChart3,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 /* ── palette ── */
 const P     = '#6B3FDB';
@@ -12,8 +17,8 @@ const LIGHT = '#f5f3ff';
 const BD    = '#e9e4ff';
 const CARD  = { background: '#fff', border: `1px solid ${BD}`, borderRadius: 12, padding: '18px 20px' };
 
-const BAND_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444'];
-const LINE_COLORS = { thd_i: '#ef4444', thd_v: '#f59e0b', avg_pf: '#10b981', min_pf: '#94a3b8', max_pf: '#3b82f6' };
+const BAND_COLORS = ['#10b981', '#3b82f6', '#7c5cf0', '#ef4444'];
+const LINE_COLORS = { thd_i: '#ef4444', thd_v: '#7c5cf0', avg_pf: '#10b981', min_pf: '#94a3b8', max_pf: '#3b82f6' };
 
 /* ── helpers ── */
 const pct  = (n) => (n == null || isNaN(n) ? '—' : `${Number(n).toFixed(1)}%`);
@@ -21,18 +26,9 @@ const fix2 = (n) => (n == null || isNaN(n) ? '—' : Number(n).toFixed(2));
 const fix3 = (n) => (n == null || isNaN(n) ? '—' : Number(n).toFixed(3));
 
 function KpiCard({ icon: Icon, label, value, color = P, sub }) {
-  return (
-    <div style={{ ...CARD, display: 'flex', alignItems: 'center', gap: 14 }}>
-      <div style={{ width: 46, height: 46, borderRadius: 11, background: `${color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <Icon size={20} color={color} />
-      </div>
-      <div>
-        <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
-        <div style={{ fontSize: 24, fontWeight: 800, color: '#111827', lineHeight: 1 }}>{value}</div>
-        {sub && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{sub}</div>}
-      </div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat icon={Icon} label={label} value={value} color={color} sub={sub} />;
 }
 
 function SectionCard({ title, sub, children, action }) {
@@ -71,6 +67,11 @@ export default function PowerQualityAnalytics() {
   const [lastSync,   setLastSync]   = useState(null);
   const [exporting,  setExporting]  = useState(false);
 
+  // Test-historian metrics are activity over time; the window was hardcoded to
+  // a rolling 6/12 months per query and now follows this selector.
+  const filters = useDashboardFilters({ defaultPeriod: 'last12m', storageKey: 'power-quality' });
+  const { params, bounds } = filters;
+
   const isMounted = useRef(true);
   useEffect(() => {
     isMounted.current = true;
@@ -79,13 +80,14 @@ export default function PowerQualityAnalytics() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    const opts = { params };
     const [k, thd, pf, prod, harm, m] = await Promise.allSettled([
-      api.get('/analytics/pq/kpis'),
-      api.get('/analytics/pq/thd-trend'),
-      api.get('/analytics/pq/power-factor'),
-      api.get('/analytics/pq/product-kpis'),
-      api.get('/analytics/pq/harmonics'),
-      api.get('/analytics/pq/maintenance'),
+      api.get('/analytics/pq/kpis', opts),
+      api.get('/analytics/pq/thd-trend', opts),
+      api.get('/analytics/pq/power-factor', opts),
+      api.get('/analytics/pq/product-kpis', opts),
+      api.get('/analytics/pq/harmonics', opts),
+      api.get('/analytics/pq/maintenance', opts),
     ]);
 
     if (!isMounted.current) return;
@@ -102,15 +104,23 @@ export default function PowerQualityAnalytics() {
 
     setLastSync(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
     setLoading(false);
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
 
   /* ── CSV export ── */
-  const handleExport = async (days = 90) => {
+  const handleExport = async () => {
     setExporting(true);
     try {
-      const res = await api.get(`/analytics/pq/export?days=${days}&format=csv`, { responseType: 'blob' });
+      // The export endpoint predates the shared contract and takes a day count,
+      // so derive it from the selected window rather than a fixed 90.
+      const days = bounds.from && bounds.to
+        ? Math.max(1, Math.round((new Date(bounds.to) - new Date(bounds.from)) / 86400000) + 1)
+        : 3650; // period=all — effectively everything
+      const res = await api.get('/analytics/pq/export', {
+        params: { days, format: 'csv' },
+        responseType: 'blob',
+      });
       const url  = URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }));
       const link = document.createElement('a');
       link.href     = url;
@@ -126,42 +136,38 @@ export default function PowerQualityAnalytics() {
   const totalDone = (kpis?.passed ?? 0) + (kpis?.failed ?? 0);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif' }}>
-
-      {/* ── Header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 22, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#111827' }}>Power Quality Analytics</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-            THD · Power Factor · SST/HVDC Test KPIs · Maintenance
-            {lastSync && <span style={{ marginLeft: 8, color: '#d1d5db' }}>· Synced {lastSync}</span>}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={() => handleExport(90)}
-            disabled={exporting}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', background: '#fff', border: `1px solid ${BD}`, borderRadius: 8, cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 600 }}
-          >
-            <Download size={14} />{exporting ? 'Exporting…' : 'Export CSV (90d)'}
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Engineering"
+        title="Power Quality Analytics"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={handleExport}
+            disabled={exporting}>
+            {/* Exports the selected window, not a fixed 90 days. */}
+            <Download size={14} />{exporting ? 'Exporting…' : 'Export CSV'}
           </button>
-          <button
+          <button className="plh-cta"
             onClick={load}
-            disabled={loading}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', background: P, border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, color: '#fff', fontWeight: 600 }}
-          >
+            disabled={loading}>
             <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
             Refresh
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      {/* ── Header ── */}
+
+      <DashboardFilterBar filters={filters} />
 
       {/* ── KPI Strip ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14, marginBottom: 20 }}>
-        <KpiCard icon={CheckCircle} label="Total Tests (12M)"  value={loading ? '—' : (kpis?.total_tests ?? 0)}         color="#6B3FDB" />
+        <KpiCard icon={CheckCircle} label={`Total Tests · ${kpis?.period_label || 'Period'}`} value={loading ? '—' : (kpis?.total_tests ?? 0)} color="#6B3FDB" />
         <KpiCard icon={TrendingUp}  label="First-Pass Rate"    value={loading ? '—' : pct(kpis?.first_pass_rate)}       color="#10b981" sub={`${kpis?.passed ?? 0} passed / ${kpis?.failed ?? 0} failed`} />
         <KpiCard icon={Zap}         label="Avg THD-I"          value={loading ? '—' : `${fix2(kpis?.avg_thd_i)} %`}    color="#ef4444" sub="Current harmonic distortion" />
-        <KpiCard icon={Zap}         label="Avg THD-V"          value={loading ? '—' : `${fix2(kpis?.avg_thd_v)} %`}    color="#f59e0b" sub="Voltage harmonic distortion" />
+        <KpiCard icon={Zap}         label="Avg THD-V"          value={loading ? '—' : `${fix2(kpis?.avg_thd_v)} %`}    color="#7c5cf0" sub="Voltage harmonic distortion" />
         <KpiCard icon={Activity}    label="Avg Power Factor"   value={loading ? '—' : fix3(kpis?.avg_pf)}              color="#3b82f6" sub="Unity = 1.000" />
         <KpiCard icon={Wrench}      label="Open Breakdowns"    value={loading ? '—' : (maint?.open_breakdowns ?? 0)}    color="#ef4444" sub={`MTTR: ${fix2(maint?.mttr_hrs)} h`} />
       </div>
@@ -253,7 +259,7 @@ export default function PowerQualityAnalytics() {
                           <td style={{ padding: '7px 8px', textAlign: 'right', color: '#374151' }}>{h.total}</td>
                           <td style={{ padding: '7px 8px', textAlign: 'right', color: h.failures > 0 ? '#dc2626' : '#374151', fontWeight: h.failures > 0 ? 700 : 400 }}>{h.failures}</td>
                           <td style={{ padding: '7px 8px', textAlign: 'right' }}>
-                            <span style={{ color: critical ? '#dc2626' : h.failure_rate > 5 ? '#d97706' : '#16a34a', fontWeight: 700 }}>{pct(h.failure_rate)}</span>
+                            <span style={{ color: critical ? '#dc2626' : h.failure_rate > 5 ? '#6d28d9' : '#16a34a', fontWeight: 700 }}>{pct(h.failure_rate)}</span>
                           </td>
                           <td style={{ padding: '7px 8px', textAlign: 'right', color: '#6b7280', fontFamily: 'monospace' }}>{fix3(h.avg_value)}</td>
                         </tr>
@@ -316,7 +322,7 @@ export default function PowerQualityAnalytics() {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
             {[
-              { label: 'Assets Due (7 days)', value: maint.assets_due,      color: '#d97706', bg: '#fef3c7' },
+              { label: 'Assets Due (7 days)', value: maint.assets_due,      color: '#6d28d9', bg: '#ede9fe' },
               { label: 'Open Breakdowns',     value: maint.open_breakdowns,  color: '#dc2626', bg: '#fee2e2' },
               { label: 'MTTR (hrs)',           value: `${fix2(maint.mttr_hrs)} h`, color: '#6B3FDB', bg: LIGHT },
               { label: 'Maintenance Cost MTD', value: maint.cost_mtd > 0 ? `₹${Math.round(maint.cost_mtd).toLocaleString('en-IN')}` : '₹0', color: '#2563eb', bg: '#dbeafe' },
@@ -356,7 +362,7 @@ export default function PowerQualityAnalytics() {
               </thead>
               <tbody>
                 {productKpis.map((p, i) => {
-                  const rateColor = p.pass_rate >= 95 ? '#16a34a' : p.pass_rate >= 80 ? '#d97706' : '#dc2626';
+                  const rateColor = p.pass_rate >= 95 ? '#16a34a' : p.pass_rate >= 80 ? '#6d28d9' : '#dc2626';
                   return (
                     <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
                       <td style={{ padding: '9px 10px', fontWeight: 600, color: '#374151' }}>{p.product}</td>
@@ -365,7 +371,7 @@ export default function PowerQualityAnalytics() {
                       <td style={{ padding: '9px 10px', textAlign: 'right', color: rateColor, fontWeight: 700 }}>{pct(p.pass_rate)}</td>
                       <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace', color: p.avg_thd_i > 5 ? '#dc2626' : '#374151' }}>{fix2(p.avg_thd_i)}</td>
                       <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace', color: p.avg_thd_v > 8 ? '#dc2626' : '#374151' }}>{fix2(p.avg_thd_v)}</td>
-                      <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace', color: p.avg_pf < 0.95 ? '#d97706' : '#16a34a', fontWeight: 600 }}>{fix3(p.avg_pf)}</td>
+                      <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace', color: p.avg_pf < 0.95 ? '#6d28d9' : '#16a34a', fontWeight: 600 }}>{fix3(p.avg_pf)}</td>
                       <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{fix2(p.avg_p_out)}</td>
                     </tr>
                   );
@@ -379,6 +385,6 @@ export default function PowerQualityAnalytics() {
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       `}</style>
-    </div>
+    </PageShell>
   );
 }

@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Users, ShieldCheck, Activity, Database, RefreshCw,
   Plus, Key, FileText, X, Search, ChevronRight,
   AlertCircle, CheckCircle, ToggleLeft, ToggleRight,
-  Server, Zap, Eye, EyeOff, Upload, Lock, BarChart2, Inbox,
+  Server, Zap, Eye, EyeOff, Lock, BarChart2, Inbox,
+  Gauge,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import ManagerDashboard from './ManagerDashboard';
@@ -13,24 +14,19 @@ import {
 } from 'recharts';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import { PageHero, PageShell, StatBand, Stat, SectionTitle } from '@/components/pulse-ui';
 import './AdminDashboard.css';
 
 const ROLE_META = {
   super_admin:    { bg: '#ede9fe', color: '#7c3aed', label: 'Super Admin' },
   admin:          { bg: '#dbeafe', color: '#1d4ed8', label: 'Admin' },
   manager:        { bg: '#dcfce7', color: '#15803d', label: 'Manager' },
-  department_head:{ bg: '#fef3c7', color: '#92400e', label: 'Dept Head' },
+  department_head:{ bg: '#ede9fe', color: '#5b21b6', label: 'Dept Head' },
   employee:       { bg: '#f3f4f6', color: '#374151', label: 'Employee' },
 };
 
-const MODULE_COLORS = { Admin: '#6366f1', Auth: '#8b5cf6', Leaves: '#10b981', Finance: '#3b82f6', System: '#9ca3af', Settings: '#f59e0b' };
+const MODULE_COLORS = { Admin: '#6366f1', Auth: '#8b5cf6', Leaves: '#10b981', Finance: '#3b82f6', System: '#9ca3af', Settings: '#6b21a8' };
 
-const DEPARTMENTS = [
-  'Engineering', 'Product', 'Design', 'Marketing', 'Sales',
-  'Finance', 'HR', 'Operations', 'Legal', 'Customer Success', 'Other',
-];
-
-const PERM_MODULES = ['Leaves', 'Finance', 'CRM', 'Inventory', 'Projects', 'Reports', 'HR'];
 
 const timeAgo = ts => {
   if (!ts) return '—';
@@ -75,45 +71,25 @@ const pwdStrength = pwd => {
   if (/[0-9]/.test(pwd)) score++;
   if (/[^a-zA-Z0-9]/.test(pwd)) score++;
   if (score <= 2) return { label: 'Weak',   color: '#ef4444', pct: 33 };
-  if (score <= 3) return { label: 'Medium', color: '#f59e0b', pct: 66 };
+  if (score <= 3) return { label: 'Medium', color: '#6d28d9', pct: 66 };
   return              { label: 'Strong', color: '#10b981', pct: 100 };
 };
 
-const emptyPerms = () =>
-  PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: false, edit: false } }), {});
 
-const defaultPerms = role => {
-  if (['super_admin', 'admin'].includes(role))
-    return PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: true, edit: true } }), {});
-  if (role === 'manager')
-    return PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: true, edit: m !== 'Finance' } }), {});
-  if (role === 'department_head')
-    return PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: true, edit: ['Leaves', 'Projects', 'HR'].includes(m) } }), {});
-  return PERM_MODULES.reduce((a, m) => ({ ...a, [m]: { view: m === 'Leaves', edit: false } }), {});
-};
-
-const emptyUser = () => ({ name: '', email: '', role: 'employee', department: '', password: '', force_change_pwd: false });
-
-const parseCSV = text => {
-  const lines = text.trim().split('\n').filter(Boolean);
-  if (lines.length < 2) return [];
-  return lines.slice(1).map(line => {
-    const [name = '', email = '', role = 'employee', department = ''] =
-      line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
-    return { name, email, role: role || 'employee', department };
-  }).filter(r => r.name && r.email);
-};
 
 // ── KPI card ──────────────────────────────────────────────────────────────────
-const KPI = ({ icon: Icon, label, value, sub, color, alert }) => (
-  <div className={`adm-kpi${alert ? ' adm-kpi-alert' : ''}`} style={{ '--c': color }}>
-    <div className="adm-kpi-icon"><Icon size={19} /></div>
-    <div>
-      <p className="adm-kpi-label">{label}</p>
-      <h3 className="adm-kpi-val">{value}</h3>
-      {sub && <p className="adm-kpi-sub">{sub}</p>}
-    </div>
-  </div>
+// Delegates to the design-system <Stat> (manual §116.4) — the signature is
+// unchanged so every call site below keeps working untouched.
+const KPI = ({ icon: Icon, label, value, sub, color, alert, index = 0 }) => (
+  <Stat
+    icon={Icon}
+    label={label}
+    value={value}
+    sub={sub}
+    color={color}
+    warn={alert}
+    index={index}
+  />
 );
 
 const EmptyState = ({ Icon: IconComponent = Inbox, message }) => (
@@ -158,8 +134,7 @@ const PwdField = ({ label, value, onChange }) => {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 export default function AdminDashboard({ setPage }) {
-  const { role, user } = useAuth();
-  const isSuperAdmin = role === 'super_admin';
+  const { role } = useAuth();
   const isAdmin = ['super_admin', 'admin'].includes(role);
   const [activeTab, setActiveTab] = useState(() => isAdmin ? 'admin' : 'team');
 
@@ -169,19 +144,12 @@ export default function AdminDashboard({ setPage }) {
   const [loading,    setLoading]    = useState(false);
   const [search,     setSearch]     = useState('');
   const [drawer,     setDrawer]     = useState(null);
-  const [form,       setForm]       = useState(emptyUser());
-  const [perms,      setPerms]      = useState(emptyPerms());
-  const [deptOther,  setDeptOther]  = useState('');
-  const [showPerms,  setShowPerms]  = useState(false);
   const [pwdUser,    setPwdUser]    = useState(null);
   const [newPwd,     setNewPwd]     = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [toast,      setToast]      = useState(null);
-  const [csvDrawer,  setCsvDrawer]  = useState(false);
-  const [csvRows,    setCsvRows]    = useState([]);
-  const [csvError,   setCsvError]   = useState('');
-  const [importing,  setImporting]  = useState(false);
-  const fileRef = useRef();
+  const [storage,    setStorage]    = useState(null);
+  const [health,     setHealth]     = useState(null);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -190,10 +158,14 @@ export default function AdminDashboard({ setPage }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [usersRes, auditRes, actRes] = await Promise.allSettled([
+    const [usersRes, auditRes, actRes, storageRes, healthRes] = await Promise.allSettled([
       api.get('/admin/users'),
       api.get('/audit/', { params: { limit: 20 } }),
       api.get('/admin/module-activity'),
+      // Both are admin-only; skipped for non-admins so the Team Ops tab does not
+      // fire 403s that land in access_denials.
+      isAdmin ? api.get('/system-health/storage') : Promise.resolve(null),
+      isAdmin ? api.get('/system-health/status')  : Promise.resolve(null),
     ]);
     const rawUsers = usersRes.status === 'fulfilled' ? (usersRes.value.data?.users || usersRes.value.data) : [];
     setUsers(Array.isArray(rawUsers) ? rawUsers : []);
@@ -203,8 +175,12 @@ export default function AdminDashboard({ setPage }) {
     setAudit(Array.isArray(rawAudit) ? rawAudit : []);
     const rawAct = actRes.status === 'fulfilled' ? (actRes.value.data?.activity || actRes.value.data) : [];
     setActivity(Array.isArray(rawAct) ? rawAct : []);
+    // Left null when the call fails or is skipped, so the tiles show an explicit
+    // unknown state. Defaulting to 0 would render as a real measurement.
+    setStorage(storageRes.status === 'fulfilled' && storageRes.value?.data?.ok     ? storageRes.value.data : null);
+    setHealth (healthRes .status === 'fulfilled' && healthRes .value?.data?.status ? healthRes .value.data : null);
     setLoading(false);
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -219,37 +195,6 @@ export default function AdminDashboard({ setPage }) {
       // Revert optimistic update on failure
       setUsers(us => us.map(u => u.id === user.id ? { ...u, status: user.status } : u));
       showToast(err.response?.data?.error || 'Failed to update user status', 'error');
-    }
-  };
-
-  const closeAddUser = () => {
-    setDrawer(null);
-    setForm(emptyUser());
-    setPerms(emptyPerms());
-    setDeptOther('');
-    setShowPerms(false);
-  };
-
-  const handleRoleChange = role => {
-    setForm(f => ({ ...f, role }));
-    setPerms(defaultPerms(role));
-  };
-
-  const handleAddUser = async () => {
-    if (!form.name || !form.email) return showToast('Name and email required', 'error');
-    if (!form.password || form.password.length < 8) return showToast('Password must be at least 8 characters', 'error');
-    const dept = form.department === 'Other' ? deptOther : form.department;
-    const payload = { ...form, department: dept, permissions: perms };
-    setSubmitting(true);
-    try {
-      await api.post('/admin/users', payload);
-      showToast('User created');
-      closeAddUser();
-      load();
-    } catch(err) {
-      showToast(err.response?.data?.error || 'Failed to create user', 'error');
-    } finally {
-      setSubmitting(false);
     }
   };
 
@@ -269,66 +214,38 @@ export default function AdminDashboard({ setPage }) {
     }
   };
 
-  const handleCSVFile = e => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      try {
-        const rows = parseCSV(ev.target.result);
-        if (rows.length === 0) { setCsvError('No valid rows found. Check your CSV format.'); setCsvRows([]); }
-        else { setCsvRows(rows); setCsvError(''); }
-      } catch { setCsvError('Failed to parse file.'); }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  };
-
-  const handleImportCSV = async () => {
-    if (csvRows.length === 0) return;
-    setImporting(true);
-    let ok = 0;
-    for (const row of csvRows) {
-      try {
-        await api.post('/admin/users', { ...row, password: generatePassword(), force_change_pwd: true });
-        ok++;
-      } catch {
-        // Count failures — reported in toast below
-      }
-    }
-    const failed = csvRows.length - ok;
-    showToast(
-      failed === 0
-        ? `Imported all ${ok} users successfully`
-        : `Imported ${ok} of ${csvRows.length} users (${failed} failed)`,
-      failed > 0 ? 'error' : 'success'
-    );
-    setCsvDrawer(false);
-    setCsvRows([]);
-    setCsvError('');
-    setImporting(false);
-    load();
-  };
-
-  const togglePerm = (mod, key, checked) => {
-    setPerms(p => ({
-      ...p,
-      [mod]: {
-        ...p[mod],
-        [key]: checked,
-        ...(key === 'view' && !checked ? { edit: false } : {}),
-      },
-    }));
-  };
 
   const displayed = users.filter(u => {
     const q = search.toLowerCase();
     return !q || u.name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q) || u.role?.includes(q);
   });
 
+  const fmtBytes = b => {
+    if (b === null || b === undefined) return '—';
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 ** 2) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1024 ** 3) return `${(b / 1024 ** 2).toFixed(1)} MB`;
+    return `${(b / 1024 ** 3).toFixed(2)} GB`;
+  };
+
   const activeUsers   = users.filter(u => u.status === 'active').length;
   const inactiveUsers = users.filter(u => u.status === 'inactive').length;
   const adminCount    = users.filter(u => ['admin','super_admin'].includes(u.role)).length;
+
+  // Storage: total_bytes is null when the file store could not be sized (S3/R2),
+  // so fall back to showing the database figure alone and say so in the subtitle
+  // rather than presenting a partial sum as a total.
+  const storageValue = storage ? fmtBytes(storage.total_bytes ?? storage.database.bytes) : '—';
+  const storageSub   = !storage
+    ? (loading ? 'Measuring…' : 'Usage unavailable')
+    : storage.files.measured
+      ? `DB ${fmtBytes(storage.database.bytes)} · ${storage.files.file_count} files ${fmtBytes(storage.files.bytes)}`
+      : `DB only · ${storage.files.provider.toUpperCase()} files not measured`;
+
+  // No amber anywhere in this palette — degraded uses the lavender step of the
+  // ramp, matching the rest of the app.
+  const healthColor = { up: '#10b981', degraded: '#a78bfa', down: '#ef4444' }[health?.status] || '#9ca3af';
+  const healthSub   = health ? health.summary : (loading ? 'Checking services…' : 'Status unavailable');
 
   const activityChart = (h = 200) => (
     <ResponsiveContainer width="100%" height={h}>
@@ -346,66 +263,62 @@ export default function AdminDashboard({ setPage }) {
 
 
   return (
-    <div className="adm-root">
-      <style>{`@keyframes adm-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
-
-      {toast && <div className={`adm-toast adm-toast-${toast.type}`}>{toast.msg}</div>}
-
-      {/* header */}
-      <div className="adm-header">
-        <div>
-          <h2 className="adm-title">Operations Dashboard</h2>
-          <p className="adm-sub">
-            {activeTab === 'team' ? 'Team management & approvals' : 'User administration & system management'}
-          </p>
-        </div>
-        <div className="adm-header-r">
-          {/* Tab switcher — admin tab only visible to admin/super_admin */}
-          <div style={{ display: 'flex', gap: 2, background: '#f3f4f6', borderRadius: 10, padding: 3, marginRight: 8 }}>
-            <button
-              onClick={() => setActiveTab('team')}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                padding: '5px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500,
-                background: activeTab === 'team' ? '#fff' : 'transparent',
-                color: activeTab === 'team' ? '#6366f1' : '#6b7280',
-                boxShadow: activeTab === 'team' ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
-              }}
-            >
-              <Users size={13} /> Team Ops
-            </button>
-            {isAdmin && (
-              <button
-                onClick={() => setActiveTab('admin')}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  padding: '5px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500,
-                  background: activeTab === 'admin' ? '#fff' : 'transparent',
-                  color: activeTab === 'admin' ? '#6366f1' : '#6b7280',
-                  boxShadow: activeTab === 'admin' ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
-                }}
-              >
-                <BarChart2 size={13} /> Admin
-              </button>
-            )}
-          </div>
-          {activeTab === 'admin' && <>
-          <button className="adm-btn-outline" onClick={() => setPage && setPage('AuditLogs')}>
+    <PageShell className="adm-root" dock={<>
+      <PageHero
+        icon={Gauge}
+        eyebrow="Administration"
+        title="Operations Dashboard"
+        subtitle={activeTab === 'team'
+          ? 'Team management & approvals'
+          : 'User administration & system management'}
+        meta={activeTab === 'admin' ? [
+          { label: 'users',    value: users.length },
+          { label: 'active',   value: activeUsers, tone: 'good' },
+          { label: 'inactive', value: inactiveUsers, tone: inactiveUsers > 0 ? 'bad' : undefined },
+          { label: 'admins',   value: adminCount },
+        ] : undefined}
+        actions={activeTab === 'admin' ? <>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('AuditLogs')}>
             <Eye size={13} /> Audit Trail
           </button>
-          <button className="adm-btn-outline" onClick={() => { setCsvRows([]); setCsvError(''); setCsvDrawer(true); }}>
-            <Upload size={13} /> Import CSV
-          </button>
-          <button className="adm-btn-outline" onClick={() => { setPwdUser(null); setNewPwd(''); setDrawer('resetPwd'); }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => { setPwdUser(null); setNewPwd(''); setDrawer('resetPwd'); }}>
             <Key size={13} /> Reset Password
           </button>
-          <button className="adm-btn-primary" onClick={() => { setForm(emptyUser()); setPerms(defaultPerms('employee')); setDrawer('addUser'); }}>
+          <button className="plh-cta" onClick={() => setPage && setPage('AccessControl')}>
             <Plus size={14} /> Add User
           </button>
-          <button className="adm-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          </>}
+          <button className="plh-icon-btn" onClick={load} title="Refresh" disabled={loading}>
+            <RefreshCw size={14} className={loading ? 'adm-spin' : undefined} />
+          </button>
+        </> : undefined}
+      />
+
+      {/* Tab strip. The Admin tab is admin-only, so a non-admin gets no strip
+          at all rather than a one-tab strip that switches nothing. It lives in
+          the frozen dock, so switching never scrolls the control out of reach. */}
+      {isAdmin && (
+        <div className="tax-tabs" role="tablist">
+          <button
+            role="tab"
+            aria-selected={activeTab === 'team'}
+            className={`tax-tab${activeTab === 'team' ? ' is-on' : ''}`}
+            onClick={() => setActiveTab('team')}
+          >
+            <Users size={14} /> Team Ops
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === 'admin'}
+            className={`tax-tab${activeTab === 'admin' ? ' is-on' : ''}`}
+            onClick={() => setActiveTab('admin')}
+          >
+            <BarChart2 size={14} /> Admin
+          </button>
         </div>
-      </div>
+      )}
+    </>}>
+
+      {toast && <div className={`adm-toast adm-toast-${toast.type}`}>{toast.msg}</div>}
 
       {/* ── Team Ops Tab (ManagerDashboard) ──────────────────────────────────── */}
       {activeTab === 'team' && <ManagerDashboard setPage={setPage} hideHeader />}
@@ -414,16 +327,17 @@ export default function AdminDashboard({ setPage }) {
       {activeTab === 'admin' && <>
 
       {/* KPIs */}
-      <div className="adm-kpis">
-        <KPI icon={Users}      label="Total Users"    value={users.length}  color="#6366f1" sub={`${activeUsers} active`} />
-        <KPI icon={CheckCircle}label="Active Users"   value={activeUsers}   color="#10b981" sub="Currently enabled" />
-        <KPI icon={AlertCircle}label="Inactive Users" value={inactiveUsers} color="#ef4444" alert={inactiveUsers > 0} sub="Disabled accounts" />
-        <KPI icon={ShieldCheck}label="Admins"         value={adminCount}    color="#8b5cf6" sub="Admin & Super Admin" />
-        <KPI icon={Server}     label="System Health"  value="Healthy"       color="#10b981" sub="All services running" />
-        <KPI icon={Database}   label="Storage"        value="—"             color="#3b82f6" sub="Usage not available" />
-      </div>
+      <StatBand cols={6}>
+        <KPI icon={Users}      label="Total Users"    value={users.length}  color="#6366f1" sub={`${activeUsers} active`} index={0} />
+        <KPI icon={CheckCircle}label="Active Users"   value={activeUsers}   color="#10b981" sub="Currently enabled" index={1} />
+        <KPI icon={AlertCircle}label="Inactive Users" value={inactiveUsers} color="#ef4444" alert={inactiveUsers > 0} sub="Disabled accounts" index={2} />
+        <KPI icon={ShieldCheck}label="Admins"         value={adminCount}    color="#8b5cf6" sub="Admin & Super Admin" index={3} />
+        <KPI icon={Server}     label="System Health"  value={health?.label ?? '—'} color={healthColor} alert={health?.status === 'down'} sub={healthSub} index={4} />
+        <KPI icon={Database}   label="Storage"        value={storageValue}         color="#3b82f6" sub={storageSub} index={5} />
+      </StatBand>
 
       {/* main layout */}
+      <SectionTitle rule>Access &amp; Directory</SectionTitle>
       <div className="adm-grid">
 
         {/* user management */}
@@ -510,9 +424,9 @@ export default function AdminDashboard({ setPage }) {
             <div className="adm-box-hd"><span className="adm-section-title"><Zap size={13} style={{ marginRight: 5 }} />Quick Actions</span></div>
             <div className="adm-box-body adm-quick-actions">
               {[
-                { label: 'Add New User',    icon: Plus,     action: () => { setForm(emptyUser()); setPerms(defaultPerms('employee')); setDrawer('addUser'); }, color: '#6366f1' },
-                { label: 'Import CSV',      icon: Upload,   action: () => { setCsvRows([]); setCsvError(''); setCsvDrawer(true); }, color: '#10b981' },
-                { label: 'Reset Password',  icon: Key,      action: () => { setPwdUser(null); setNewPwd(''); setDrawer('resetPwd'); }, color: '#f59e0b' },
+                { label: 'Add New User',    icon: Plus,     action: () => setPage && setPage('AccessControl'), color: '#6366f1' },
+                { label: 'Roles & Access',  icon: ShieldCheck, action: () => setPage && setPage('AccessControl'), color: '#10b981' },
+                { label: 'Reset Password',  icon: Key,      action: () => { setPwdUser(null); setNewPwd(''); setDrawer('resetPwd'); }, color: '#6d28d9' },
                 { label: 'View Audit Trail',icon: FileText, action: () => setPage && setPage('AuditLogs'), color: '#3b82f6' },
                 { label: 'System Settings', icon: Server,   action: () => setPage && setPage('SettingsCenter'), color: '#8b5cf6' },
               ].map(({ label, icon: Icon, action, color }) => (
@@ -528,17 +442,27 @@ export default function AdminDashboard({ setPage }) {
           <div className="adm-card-box" style={{ cursor: 'pointer' }} onClick={() => setPage && setPage('SystemHealth')}>
             <div className="adm-box-hd"><span className="adm-section-title"><Activity size={13} style={{ marginRight: 5 }} />System Health</span></div>
             <div className="adm-box-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '20px 16px', textAlign: 'center' }}>
-              <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#f0fdf4', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Activity size={20} color="#10b981" />
+              {/* Reads the same /system-health/status the KPI above does, so the
+                  card cannot claim "operational" while the KPI says degraded.
+                  Until it answers, this says so rather than asserting health. */}
+              <div style={{ width: 40, height: 40, borderRadius: '50%', background: `color-mix(in srgb, ${healthColor} 12%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Activity size={20} color={healthColor} />
               </div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>All Systems Operational</div>
-              <div style={{ fontSize: 11, color: '#9ca3af' }}>Click to run full health check</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>
+                {health ? health.label : (loading ? 'Checking services…' : 'Status unavailable')}
+              </div>
+              <div style={{ fontSize: 11, color: '#9ca3af' }}>{health ? healthSub : 'Click to run full health check'}</div>
               <div style={{ fontSize: 11, color: '#6366f1', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 3 }}>
                 Open System Health <ChevronRight size={11} />
               </div>
             </div>
           </div>
         </div>
+
+      </div>
+
+      <SectionTitle rule>Activity</SectionTitle>
+      <div className="adm-grid">
 
         {/* module activity chart */}
         <div className="adm-fc8">
@@ -603,95 +527,6 @@ export default function AdminDashboard({ setPage }) {
 
       </>} {/* end activeTab === 'admin' */}
 
-      {/* ── Add User Drawer ────────────────────────────────────────────────────── */}
-      {drawer === 'addUser' && (
-        <div className="adm-overlay" onClick={closeAddUser}>
-          <div className="adm-drawer adm-drawer-lg" onClick={e => e.stopPropagation()}>
-            <div className="adm-drawer-hd">
-              <h3>Add New User</h3>
-              <button className="adm-icon-btn" onClick={closeAddUser}><X size={16} /></button>
-            </div>
-            <div className="adm-drawer-body">
-              <div className="adm-field">
-                <label>Full Name *</label>
-                <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Full name…" />
-              </div>
-              <div className="adm-field">
-                <label>Email *</label>
-                <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="user@company.com" />
-              </div>
-              <div className="adm-row2">
-                <div className="adm-field">
-                  <label>Role</label>
-                  <select value={form.role} onChange={e => handleRoleChange(e.target.value)}>
-                    <option value="employee">Employee</option>
-                    <option value="manager">Manager</option>
-                    <option value="department_head">Dept Head</option>
-                    <option value="admin">Admin</option>
-                    {isSuperAdmin && <option value="super_admin">Super Admin</option>}
-                  </select>
-                </div>
-                <div className="adm-field">
-                  <label>Department</label>
-                  <select value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))}>
-                    <option value="">Select…</option>
-                    {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
-                  </select>
-                </div>
-              </div>
-              {form.department === 'Other' && (
-                <div className="adm-field">
-                  <label>Custom Department</label>
-                  <input value={deptOther} onChange={e => setDeptOther(e.target.value)} placeholder="Enter department name…" />
-                </div>
-              )}
-
-              <PwdField
-                label="Temporary Password *"
-                value={form.password}
-                onChange={v => setForm(f => ({ ...f, password: v }))}
-              />
-
-              <label className="adm-checkbox-row">
-                <input type="checkbox" checked={form.force_change_pwd}
-                  onChange={e => setForm(f => ({ ...f, force_change_pwd: e.target.checked }))} />
-                <span>Force password change on first login</span>
-              </label>
-
-              {/* Module permissions */}
-              <div className="adm-perms-block">
-                <button className="adm-perms-toggle" type="button" onClick={() => setShowPerms(v => !v)}>
-                  <Lock size={12} />
-                  Module Permissions
-                  <ChevronRight size={13} style={{ transform: showPerms ? 'rotate(90deg)' : 'none', transition: 'transform .2s', marginLeft: 'auto' }} />
-                </button>
-                {showPerms && (
-                  <div className="adm-perms-grid">
-                    <div className="adm-perms-hd"><span>Module</span><span>View</span><span>Edit</span></div>
-                    {PERM_MODULES.map(m => (
-                      <div key={m} className="adm-perms-row">
-                        <span>{m}</span>
-                        <input type="checkbox" checked={perms[m]?.view || false}
-                          onChange={e => togglePerm(m, 'view', e.target.checked)} />
-                        <input type="checkbox" checked={perms[m]?.edit || false}
-                          disabled={!perms[m]?.view}
-                          onChange={e => togglePerm(m, 'edit', e.target.checked)} />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="adm-drawer-ft">
-              <button className="adm-btn-outline" onClick={closeAddUser}>Cancel</button>
-              <button className="adm-btn-primary" onClick={handleAddUser} disabled={submitting}>
-                {submitting ? 'Creating…' : 'Create User'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── Reset Password Drawer ─────────────────────────────────────────────── */}
       {drawer === 'resetPwd' && (
         <div className="adm-overlay" onClick={() => { setDrawer(null); setPwdUser(null); setNewPwd(''); }}>
@@ -737,62 +572,6 @@ export default function AdminDashboard({ setPage }) {
         </div>
       )}
 
-      {/* ── CSV Import Drawer ─────────────────────────────────────────────────── */}
-      {csvDrawer && (
-        <div className="adm-overlay" onClick={() => { if (!importing) { setCsvDrawer(false); setCsvRows([]); setCsvError(''); } }}>
-          <div className="adm-drawer adm-drawer-lg" onClick={e => e.stopPropagation()}>
-            <div className="adm-drawer-hd">
-              <h3>Bulk Import Users</h3>
-              <button className="adm-icon-btn" onClick={() => { setCsvDrawer(false); setCsvRows([]); setCsvError(''); }}><X size={16} /></button>
-            </div>
-            <div className="adm-drawer-body">
-              <div className="adm-csv-hint">
-                <p style={{ margin: '0 0 4px', fontWeight: 600, fontSize: 12 }}>Expected CSV format (include header row):</p>
-                <code>Name, Email, Role, Department</code>
-                <p style={{ margin: '6px 0 0', fontSize: 11, color: '#9ca3af' }}>
-                  Role values: employee · manager · department_head · admin{isSuperAdmin ? ' · super_admin' : ''}<br />
-                  A random temporary password is generated per user. Force-change-on-login is enabled by default.
-                </p>
-              </div>
-
-              <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={handleCSVFile} />
-              <button className="adm-csv-upload-btn" onClick={() => fileRef.current?.click()}>
-                <Upload size={16} />
-                {csvRows.length > 0 ? `${csvRows.length} users loaded — click to replace` : 'Choose CSV file…'}
-              </button>
-              {csvError && <p className="adm-csv-error">{csvError}</p>}
-
-              {csvRows.length > 0 && (
-                <div>
-                  <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600, color: '#374151' }}>
-                    {csvRows.length} user{csvRows.length !== 1 ? 's' : ''} ready to import
-                  </p>
-                  <div className="adm-table-wrap" style={{ maxHeight: 260, overflowY: 'auto' }}>
-                    <table className="adm-table">
-                      <thead>
-                        <tr><th>Name</th><th>Email</th><th>Role</th><th>Department</th></tr>
-                      </thead>
-                      <tbody>
-                        {csvRows.map((r, i) => (
-                          <tr key={i} className="adm-row">
-                            <td>{r.name}</td><td>{r.email}</td><td>{r.role}</td><td>{r.department || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="adm-drawer-ft">
-              <button className="adm-btn-outline" onClick={() => { setCsvDrawer(false); setCsvRows([]); setCsvError(''); }}>Cancel</button>
-              <button className="adm-btn-primary" onClick={handleImportCSV} disabled={importing || csvRows.length === 0}>
-                {importing ? 'Importing…' : `Import ${csvRows.length > 0 ? `${csvRows.length} Users` : 'Users'}`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    </PageShell>
   );
 }

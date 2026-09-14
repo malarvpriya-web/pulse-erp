@@ -8,9 +8,23 @@ import * as drive from '../../../services/googleDrive.service.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { nextProjectCode, nextLifecycleNumber } from '../../../shared/docNumber.js';
-import { resolveAutoAssignee } from '../services/leadAssignment.service.js';
+import { resolveAutoAssignee, resolveAssignment } from '../services/leadAssignment.service.js';
 import { convertOpportunityToProject } from '../services/opportunityConversion.service.js';
 import notificationsRepository from '../../notifications/repositories/notifications.repository.js';
+import { respondError } from '../../../shared/pgErrors.js';
+import {
+  sqlLeadConverted, sqlOpportunityWon, sqlOpportunityLost, sqlOpportunityOpen,
+  sqlOpportunityClosed, sqlSalesOrderBooked, isIn, LEAD_CLOSED, canonicalState,
+} from '../../../shared/statusSets.js';
+import {
+  resolveCustomer, resolveOrCreateContact, findLikelyDuplicates, normalizeOrgName,
+} from '../services/customerIdentity.service.js';
+import { mergeAccounts } from '../services/customerMerge.service.js';
+import { validateOpportunity } from '../services/opportunityValidation.js';
+import { dispatch as dispatchWorkflows } from '../../../services/workflowEngine.js';
+import { validate as validateRules } from '../../../services/ValidationEngineService.js';
+import { timelineFor, customerTimeline, TIMELINE_KEYS } from '../services/activityTimeline.service.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -51,6 +65,12 @@ router.get('/accounts', requirePermission('crm', 'view'), async (req, res) => {
     const type = (req.query.type   || '').toLowerCase();
     const srch = (req.query.search || '').trim();
 
+    // Aggregates come from correlated subqueries, NOT from joining both child
+    // tables. Joining contacts AND opportunities to the same account row
+    // multiplies the row set, and while COUNT(DISTINCT …) survived that, the
+    // SUM did not — an account with 3 contacts and ₹2,00,000 of pipeline
+    // reported ₹6,00,000 (audit C-09, reproduced live). Soft-deleted children
+    // are excluded here too; the old joins counted them.
     const { rows } = await pool.query(
       `SELECT
          a.id,
@@ -59,26 +79,26 @@ router.get('/accounts', requirePermission('crm', 'view'), async (req, res) => {
          NULL::text AS city,
          a.annual_revenue, a.employees_count AS employee_count,
          (a.status = 'active') AS is_active, a.status, a.logo_url, a.created_at,
-         COUNT(DISTINCT c.id)  AS contacts_count,
-         COUNT(DISTINCT o.id)  AS opportunities_count,
-         COALESCE(SUM(o.expected_value)
-           FILTER (WHERE LOWER(COALESCE(o.stage,'')) NOT IN ('won','lost')), 0)
-           AS open_pipeline_value
+         a.party_id,
+         (SELECT COUNT(*) FROM contacts c
+           WHERE c.account_id = a.id AND c.deleted_at IS NULL)          AS contacts_count,
+         (SELECT COUNT(*) FROM opportunities o
+           WHERE o.account_id = a.id AND o.deleted_at IS NULL)          AS opportunities_count,
+         (SELECT COALESCE(SUM(o.expected_value), 0) FROM opportunities o
+           WHERE o.account_id = a.id AND o.deleted_at IS NULL
+             AND ${sqlOpportunityOpen('o.stage')})                      AS open_pipeline_value
        FROM accounts a
-       LEFT JOIN contacts      c ON c.account_id = a.id
-       LEFT JOIN opportunities o ON o.account_id = a.id
        WHERE (a.deleted_at IS NULL)
          AND ($1::int IS NULL OR a.company_id = $1)
          AND ($2 = '' OR LOWER(a.account_type) = $2)
          AND ($3 = '' OR
               COALESCE(a.name, a.account_name) ILIKE '%' || $3 || '%' OR
               a.industry ILIKE '%' || $3 || '%')
-       GROUP BY a.id
        ORDER BY COALESCE(a.name, a.account_name) ASC`,
       [cid, type, srch]
     );
     res.json({ accounts: rows });
-  } catch (error) { res.status(500).json({ error: error.message }); }
+  } catch (error) { respondError(res, error); }
 });
 
 // ── Account stats ─────────────────────────────────────────────────────────────
@@ -122,7 +142,58 @@ router.get('/accounts/search', requirePermission('crm', 'view'), async (req, res
       [cid, srch]
     );
     res.json(rows);
-  } catch (error) { res.status(500).json({ error: error.message }); }
+  } catch (error) { respondError(res, error); }
+});
+
+// GET /accounts/duplicate-check?name=… — surfaces likely duplicates BEFORE the
+// user commits, so near-matches are a conversation rather than a 409.
+// MUST stay above `/accounts/:id`: Express matches in registration order, and a
+// literal segment registered after a param route is unreachable (the same fault
+// that made /opportunities/export 500 — audit C-13).
+router.get('/accounts/duplicate-check', requirePermission('crm', 'view'), async (req, res) => {
+  try {
+    const matches = await findLikelyDuplicates(pool, {
+      name: req.query.name || '', company_id: companyOf(req),
+      excludeId: req.query.exclude_id ? parseInt(req.query.exclude_id, 10) : null,
+    });
+    res.json({ duplicates: matches });
+  } catch (error) { respondError(res, error); }
+});
+
+// POST /accounts/merge — fold a duplicate into a survivor.
+// Deleting one of a duplicate pair loses its quotes, orders and invoices; this
+// repoints every child reference across both id spaces first, then retires the
+// loser with a soft delete (audit C-21 — no merge existed at all).
+router.post('/accounts/merge', allowRoles('manager', 'admin', 'super_admin'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { survivor_id, duplicate_id } = req.body;
+    if (!survivor_id || !duplicate_id) {
+      return res.status(400).json({ error: 'survivor_id and duplicate_id are required' });
+    }
+    const userId = req.user?.userId ?? req.user?.id ?? null;
+
+    await client.query('BEGIN');
+    const result = await mergeAccounts(client, {
+      survivorAccountId: parseInt(survivor_id, 10),
+      loserAccountId: parseInt(duplicate_id, 10),
+      company_id: companyOf(req),
+    });
+    await client.query('COMMIT');
+
+    logAudit({ userId, module: 'CRM', recordId: survivor_id, recordType: 'account', action: 'merge',
+               oldData: { merged_account_id: duplicate_id, name: result.loser.account_name },
+               newData: { moved: result.moved }, req });
+    res.json({
+      message: `Merged "${result.loser.account_name}" into "${result.survivor.account_name}"`,
+      moved: result.moved,
+      account: result.survivor,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    respondError(res, error);
+  } finally { client.release(); }
 });
 
 router.get('/accounts/:id', requirePermission('crm', 'view'), async (req, res) => {
@@ -153,42 +224,75 @@ router.get('/accounts/:id', requirePermission('crm', 'view'), async (req, res) =
 });
 
 router.post('/accounts', requirePermission('crm', 'add'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const cid = companyOf(req);
-    const { name, industry, website, phone, email, city, account_type, annual_revenue, employee_count, status } = req.body;
+    const userId = req.user?.userId ?? req.user?.id ?? null;
+    const { name, industry, website, phone, email, account_type,
+            annual_revenue, employee_count, status, gstin } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Account name is required' });
 
-    if (cid) {
-      const dup = await pool.query(
-        `SELECT id FROM accounts WHERE company_id=$1
-           AND LOWER(COALESCE(name,account_name))=LOWER($2)
-           AND deleted_at IS NULL LIMIT 1`,
-        [cid, name.trim()]
-      );
-      if (dup.rowCount > 0) return res.status(409).json({ error: 'An account with this name already exists' });
+    await client.query('BEGIN');
+
+    // Duplicate detection is now normalised, so "ABC Engineering Pvt Ltd",
+    // "ABC Engineering Private Limited" and "ABC Engineering Pvt. Ltd." collide
+    // instead of creating three accounts (audit C-23 — reproduced live). The old
+    // check was exact-match only, and was skipped entirely when cid was null.
+    const dup = await client.query(
+      `SELECT id, COALESCE(name, account_name) AS name FROM accounts
+        WHERE (company_id IS NOT DISTINCT FROM $1)
+          AND crm_norm_name(COALESCE(name, account_name)) = crm_norm_name($2)
+          AND deleted_at IS NULL
+        LIMIT 1`,
+      [cid, name.trim()]
+    );
+    if (dup.rowCount > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `An account for this organisation already exists: "${dup.rows[0].name}"`,
+        account_id: dup.rows[0].id,
+      });
     }
 
-    const { rows } = await pool.query(
-      `INSERT INTO accounts
-         (name, account_name, industry, website, phone, email,
-          account_type, annual_revenue, employees_count, status, company_id)
-       VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       RETURNING *, COALESCE(name, account_name) AS name`,
-      [name.trim(), industry||null, website||null, phone||null,
-       email||null, account_type||'Customer',
-       annual_revenue||null, employee_count||null, status||'Active', cid]
+    // Goes through the identity resolver so the account is born attached to a
+    // canonical party — the invariant the audit found broken on 6 of 7 rows.
+    const { party, account, createdParty } = await resolveCustomer(client, {
+      name: name.trim(), company_id: cid,
+      email: email || null, phone: phone || null,
+      website: website || null, industry: industry || null,
+      gstin: gstin || null, account_type: account_type || 'Customer',
+    });
+
+    // Attributes that live only on the CRM extension.
+    const { rows } = await client.query(
+      `UPDATE accounts
+          SET annual_revenue  = COALESCE($1, annual_revenue),
+              employees_count = COALESCE($2, employees_count),
+              status          = COALESCE($3, status),
+              updated_at      = NOW()
+        WHERE id = $4
+      RETURNING *, COALESCE(name, account_name) AS name`,
+      [annual_revenue || null, employee_count || null, status || null, account.id]
     );
-    res.status(201).json(rows[0]);
-  } catch (error) { res.status(500).json({ error: error.message }); }
+
+    await client.query('COMMIT');
+    logAudit({ userId, module: 'CRM', recordId: account.id, recordType: 'account', action: 'create',
+               newData: { name: party.name, party_id: party.id, party_created: createdParty }, req });
+    res.status(201).json({ ...rows[0], party_id: party.id, party_code: party.party_code });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    respondError(res, error);
+  } finally { client.release(); }
 });
 
-router.put('/accounts/:id', requirePermission('crm', 'edit'), async (req, res) => {
+
+router.put('/accounts/:id', requirePermission('crm', 'edit'), captureBefore('accounts'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { name, industry, website, phone, email, city, account_type, annual_revenue, employee_count, status } = req.body;
     const { rows } = await pool.query(
       `UPDATE accounts
-       SET name=$1, account_name=$1, industry=$2, website=$3, phone=$4,
+       SET name=$1, industry=$2, website=$3, phone=$4,
            email=$5, account_type=$6, annual_revenue=$7,
            employees_count=$8, status=$9, updated_at=NOW()
        WHERE id=$10 AND (deleted_at IS NULL)
@@ -204,7 +308,7 @@ router.put('/accounts/:id', requirePermission('crm', 'edit'), async (req, res) =
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.delete('/accounts/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/accounts/:id', requirePermission('crm', 'delete'), captureBefore('accounts'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const { rows: deps } = await pool.query(
@@ -311,6 +415,30 @@ router.post('/contacts', requirePermission('crm', 'add'), async (req, res) => {
     }
 
     const full = `${first_name.trim()} ${(last_name || '').trim()}`.trim();
+
+    // Pre-flight the duplicate so the caller gets a 409 naming the existing
+    // person instead of a 500 carrying a raw Postgres constraint name (audit
+    // C-24). The partial unique indexes on (company_id, email) and
+    // (company_id, normalised mobile) remain the backstop against races.
+    const digits = String(mobile ?? '').replace(/[^0-9]/g, '');
+    const dupe = await client.query(
+      `SELECT id, full_name, account_id FROM contacts
+        WHERE deleted_at IS NULL
+          AND (company_id IS NOT DISTINCT FROM $1)
+          AND ( ($2::text IS NOT NULL AND $2 <> '' AND LOWER(email) = LOWER($2))
+             OR ($3::text <> '' AND regexp_replace(COALESCE(mobile,''), '[^0-9]', '', 'g') = $3) )
+        LIMIT 1`,
+      [cid, email || null, digits]
+    );
+    if (dupe.rowCount > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `This person already exists as "${dupe.rows[0].full_name}" — edit that contact or link it to this account instead.`,
+        contact_id: dupe.rows[0].id,
+        account_id: dupe.rows[0].account_id,
+      });
+    }
+
     const { rows } = await client.query(
       `INSERT INTO contacts
          (first_name, last_name, title, full_name, designation, department,
@@ -326,14 +454,16 @@ router.post('/contacts', requirePermission('crm', 'add'), async (req, res) => {
       ]
     );
     await client.query('COMMIT');
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'CRM', recordId: rows[0].id,
+               recordType: 'contact', action: 'create', newData: { full_name: full, account_id }, req });
     res.status(201).json(rows[0]);
   } catch (error) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: error.message });
+    await client.query('ROLLBACK').catch(() => {});
+    respondError(res, error);
   } finally { client.release(); }
 });
 
-router.put('/contacts/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/contacts/:id', requirePermission('crm', 'edit'), captureBefore('contacts'), async (req, res) => {
   const client = await pool.connect();
   try {
     const cid = companyOf(req);
@@ -382,7 +512,7 @@ router.put('/contacts/:id', requirePermission('crm', 'edit'), async (req, res) =
   } finally { client.release(); }
 });
 
-router.delete('/contacts/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/contacts/:id', requirePermission('crm', 'delete'), captureBefore('contacts'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -557,6 +687,15 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
     const userId     = req.user?.userId ?? req.user?.id;
     const company_id = companyOf(req);
 
+    // Configurable per-tenant rules from validation_rules (module 'crm').
+    // These sit ON TOP of the unconditional checks below and in the repository:
+    // the rule table is where a company expresses its own policy, and it was
+    // empty for this module until migration 20260904000002.
+    const ruleCheck = await validateRules('crm', req.body, { partial: false, companyId: company_id });
+    if (!ruleCheck.valid) {
+      return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors: ruleCheck.errors });
+    }
+
     // 409 on duplicate email within the same company
     if (req.body.email && company_id) {
       const dup = await pool.query(
@@ -582,16 +721,38 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
       } catch (_) {}
     }
 
-    // Auto-assign when auto_assign_owner is enabled — resolveAutoAssignee covers
-    // crm_assignment_rules matches plus real round-robin/load-balanced rotation
-    // across active sales_exec/sales_manager employees.
+    // Resolve owner AND territory. resolveAssignment() runs
+    // crm_assignment_rules, then sales_territories, then round-robin /
+    // load-balanced rotation across active sales_exec/sales_manager employees.
+    //
+    // The territory is stamped even when the lead was assigned by hand and even
+    // when auto_assign_owner is off — territory performance reporting needs to
+    // know where a lead landed, and re-deriving it later from today's territory
+    // definitions would silently rewrite history every time someone edits a
+    // territory boundary.
     let assignedTo = req.body.assigned_to;
     let autoAssignedId = null;
-    if (!assignedTo && crmSettings.auto_assign_owner && company_id) {
+    let territoryId = req.body.territory_id ?? null;
+    if (company_id) {
       try {
-        autoAssignedId = await resolveAutoAssignee(company_id, crmSettings.lead_assignment_method, req.body);
-        if (autoAssignedId) assignedTo = autoAssignedId;
-      } catch (_) {}
+        const resolved = await resolveAssignment(
+          company_id,
+          assignedTo ? 'manual' : crmSettings.lead_assignment_method,
+          req.body
+        );
+        if (territoryId == null) territoryId = resolved.territory_id;
+        if (!assignedTo && crmSettings.auto_assign_owner && resolved.assigned_to) {
+          autoAssignedId = resolved.assigned_to;
+          assignedTo = autoAssignedId;
+        }
+      } catch (err) {
+        // Assignment is an enrichment, not a precondition — a lead must still be
+        // capturable if territory lookup fails. Logged, never swallowed silently.
+        console.warn(JSON.stringify({
+          ts: new Date().toISOString(), level: 'WARN', event: 'lead_assignment_failed',
+          companyId: company_id, message: err.message,
+        }));
+      }
     }
     // assigned_to FKs employees (see leadAssignment.service.js), not users — userId
     // here is a users.id and would silently break every downstream employees-join
@@ -627,6 +788,7 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
       created_by:  userId,
       company_id,
       assigned_to: assignedTo,
+      territory_id: territoryId,
     });
 
     if (autoAssignedId) {
@@ -647,41 +809,57 @@ router.post('/leads', requirePermission('crm', 'add'), async (req, res) => {
 
 router.put('/leads/:id', requirePermission('crm', 'edit'), async (req, res) => {
   try {
-    const lead = await leadsRepository.update(req.params.id, req.body);
+    const userId = req.user?.userId ?? req.user?.id ?? null;
+    const ruleCheck = await validateRules('crm', req.body, { partial: true, companyId: companyOf(req) });
+    if (!ruleCheck.valid) {
+      return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors: ruleCheck.errors });
+    }
+    const before = await leadsRepository.findById(req.params.id, companyOf(req));
+    if (!before) return res.status(404).json({ error: 'Lead not found' });
+    const lead = await leadsRepository.update(req.params.id, req.body, companyOf(req));
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    logAudit({ userId, module: 'CRM', recordId: req.params.id, recordType: 'lead', action: 'update',
+               oldData: before, newData: lead, req });
     res.json(lead);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 router.delete('/leads/:id', requirePermission('crm', 'delete'), async (req, res) => {
   try {
-    await leadsRepository.delete(req.params.id);
+    const userId = req.user?.userId ?? req.user?.id ?? null;
+    const gone = await leadsRepository.delete(req.params.id, companyOf(req));
+    if (!gone) return res.status(404).json({ error: 'Lead not found' });
+    logAudit({ userId, module: 'CRM', recordId: req.params.id, recordType: 'lead', action: 'delete', req });
     res.json({ message: 'Lead deleted' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // PATCH /leads/:id/assign — re-assign owner (managers/admins only)
-router.patch('/leads/:id/assign', allowRoles('manager', 'admin', 'super_admin', 'hr'), async (req, res) => {
+router.patch('/leads/:id/assign', allowRoles('manager', 'admin', 'super_admin', 'hr'), captureBefore('leads'), async (req, res) => {
   try {
     const { owner_id } = req.body;
     if (!owner_id) return res.status(400).json({ error: 'owner_id required' });
     const result = await pool.query(
       `UPDATE leads SET assigned_to = $1, updated_at = NOW()
-       WHERE id = $2 AND deleted_at IS NULL RETURNING *`,
-      [owner_id, req.params.id]
+       WHERE id = $2 AND deleted_at IS NULL
+         AND ($3::int IS NULL OR company_id = $3) RETURNING *`,
+      [owner_id, req.params.id, companyOf(req)]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Lead not found' });
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'CRM', recordId: req.params.id,
+               recordType: 'lead', action: 'reassign', newData: { assigned_to: owner_id }, req });
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // PATCH /leads/:id/score — manual score override
-router.patch('/leads/:id/score', requirePermission('crm', 'edit'), async (req, res) => {
+router.patch('/leads/:id/score', requirePermission('crm', 'edit'), captureBefore('leads'), async (req, res) => {
   try {
     const score = parseInt(req.body.lead_score);
     if (isNaN(score) || score < 0 || score > 100) {
@@ -689,13 +867,14 @@ router.patch('/leads/:id/score', requirePermission('crm', 'edit'), async (req, r
     }
     const result = await pool.query(
       `UPDATE leads SET lead_score = $1, updated_at = NOW()
-       WHERE id = $2 AND deleted_at IS NULL RETURNING *`,
-      [score, req.params.id]
+       WHERE id = $2 AND deleted_at IS NULL
+         AND ($3::int IS NULL OR company_id = $3) RETURNING *`,
+      [score, req.params.id, companyOf(req)]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Lead not found' });
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
@@ -729,21 +908,48 @@ router.post('/leads/import', requirePermission('crm', 'add'), upload.single('fil
     const company_id = companyOf(req);
     const text       = req.file.buffer.toString('utf8');
 
-    // Minimal CSV parser (handles quoted fields)
+    // RFC4180-shaped CSV parser. The previous one split data rows on a bare
+    // `line.split(',')`, so a quoted field containing a comma — "Acme, Inc." —
+    // shifted every subsequent column on that row and silently imported garbage
+    // (audit C-25). Handles quoted fields, escaped quotes ("") and embedded
+    // newlines by scanning character-by-character rather than splitting lines.
     const parseCSV = (raw) => {
-      const lines = raw.split(/\r?\n/).filter(l => l.trim());
-      if (!lines.length) return [];
-      const headers = lines[0].split(',').map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
-      return lines.slice(1).map(line => {
-        const vals = line.split(',').map(v => v.replace(/^"|"$/g, '').trim());
-        return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? '']));
-      });
+      const rows = [];
+      let row = [], field = '', inQuotes = false;
+      const text = raw.replace(/^﻿/, ''); // strip BOM
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (text[i + 1] === '"') { field += '"'; i++; }
+            else inQuotes = false;
+          } else field += ch;
+        } else if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ',') {
+          row.push(field); field = '';
+        } else if (ch === '\n' || ch === '\r') {
+          if (ch === '\r' && text[i + 1] === '\n') i++;
+          row.push(field); field = '';
+          if (row.some(c => c.trim() !== '')) rows.push(row);
+          row = [];
+        } else field += ch;
+      }
+      row.push(field);
+      if (row.some(c => c.trim() !== '')) rows.push(row);
+      if (!rows.length) return [];
+
+      const headers = rows[0].map(h => h.trim().toLowerCase());
+      return rows.slice(1).map(cells =>
+        Object.fromEntries(headers.map((h, i) => [h, (cells[i] ?? '').trim()]))
+      );
     };
 
     const rows = parseCSV(text);
-    let imported = 0;
-    let skipped  = 0;
-    const errors = [];
+    let imported   = 0;
+    let skipped    = 0;
+    let duplicates = 0;
+    const errors   = [];
 
     // Previously always self-assigned to the importer, bypassing auto_assign_owner
     // entirely — fetched once since it's the same setting for the whole file.
@@ -758,59 +964,134 @@ router.post('/leads/import', requirePermission('crm', 'add'), upload.single('fil
       } catch (_) {}
     }
 
-    for (const row of rows) {
-      const email = row.email?.trim();
-      try {
-        // Skip duplicates within this company
-        if (email && company_id) {
-          const dup = await pool.query(
-            `SELECT id FROM leads WHERE company_id = $1 AND email = $2 AND deleted_at IS NULL LIMIT 1`,
-            [company_id, email]
-          );
-          if (dup.rowCount > 0) { skipped++; continue; }
+    // ── Duplicate detection, batched ────────────────────────────────────────
+    // Was one SELECT per row against the pool. On a 5,000-row file that is 5,000
+    // round trips before a single insert. Two queries now fetch every existing
+    // key at once, and matching happens in memory.
+    const rowKey = r => ({
+      email: (r.email || '').trim().toLowerCase(),
+      name:  (r.company_name || r.company || '').trim(),
+    });
+    const emails = [...new Set(rows.map(r => rowKey(r).email).filter(Boolean))];
+    const names  = [...new Set(rows.map(r => rowKey(r).name).filter(Boolean))];
+
+    const [existingEmails, existingNames] = await Promise.all([
+      emails.length
+        ? pool.query(
+            `SELECT LOWER(email) AS k FROM leads
+              WHERE (company_id IS NOT DISTINCT FROM $1)
+                AND deleted_at IS NULL AND LOWER(email) = ANY($2::text[])`,
+            [company_id, emails]
+          )
+        : Promise.resolve({ rows: [] }),
+      names.length
+        ? pool.query(
+            `SELECT crm_norm_name(company_name) AS k FROM leads
+              WHERE (company_id IS NOT DISTINCT FROM $1)
+                AND deleted_at IS NULL
+                AND crm_norm_name(company_name) = ANY(
+                      SELECT crm_norm_name(n) FROM unnest($2::text[]) AS n)`,
+            [company_id, names]
+          )
+        : Promise.resolve({ rows: [] }),
+    ]);
+    const seenEmails = new Set(existingEmails.rows.map(r => r.k));
+    const seenNames  = new Set(existingNames.rows.map(r => r.k));
+    // Also guards duplicates *within the same file*, which the per-row version
+    // could not see — two identical rows both passed their own lookup.
+    const normName = n => normalizeOrgName(n);
+
+    // ── One transaction for the whole file ──────────────────────────────────
+    // A mid-file failure used to leave every row before it committed, with no
+    // way to tell how far it got. Either the file imports or nothing does.
+    const client = await pool.connect();
+    const pendingNotifications = [];
+    try {
+      await client.query('BEGIN');
+
+      for (const row of rows) {
+        const { email, name: companyName } = rowKey(row);
+        try {
+          if (email) {
+            if (seenEmails.has(email)) { duplicates++; continue; }
+            seenEmails.add(email);
+          } else if (companyName) {
+            const key = normName(companyName);
+            if (seenNames.has(key)) { duplicates++; continue; }
+            seenNames.add(key);
+          }
+
+          let autoAssignedId = null;
+          if (crmSettings.auto_assign_owner && company_id) {
+            try {
+              autoAssignedId = await resolveAutoAssignee(company_id, crmSettings.lead_assignment_method, row);
+            } catch (_) {}
+          }
+
+          const lead = await leadsRepository.create({
+            company_name:   row.company_name   || row.company   || '',
+            contact_person: row.contact_name   || row.contact   || '',
+            email:          email || null,
+            phone:          row.phone          || null,
+            lead_source:    row.source         || row.lead_source || 'Manual',
+            industry:       row.industry       || null,
+            location:       row.city           || row.location  || null,
+            lead_score:     parseInt(row.lead_score) || 0,
+            status:         row.status         || 'New',
+            created_by:     userId,
+            company_id,
+            // assigned_to FKs employees, not users — see the same fix in POST /leads.
+            assigned_to:    autoAssignedId || (req.user?.employee_id ?? null),
+          }, client);
+
+          // Notifications are queued, not sent inside the transaction: they are
+          // not rollback-able, and firing them for rows that later roll back
+          // would tell people about leads that do not exist.
+          if (autoAssignedId) {
+            pendingNotifications.push({ autoAssignedId, lead });
+          }
+
+          imported++;
+        } catch (err) {
+          skipped++;
+          errors.push({ row: row.company_name || email || '(unnamed)', error: err.message });
         }
-
-        let autoAssignedId = null;
-        if (crmSettings.auto_assign_owner && company_id) {
-          try {
-            autoAssignedId = await resolveAutoAssignee(company_id, crmSettings.lead_assignment_method, row);
-          } catch (_) {}
-        }
-
-        const lead = await leadsRepository.create({
-          company_name:   row.company_name   || row.company   || '',
-          contact_person: row.contact_name   || row.contact   || '',
-          email:          email || null,
-          phone:          row.phone          || null,
-          lead_source:    row.source         || row.lead_source || 'Manual',
-          industry:       row.industry       || null,
-          location:       row.city           || row.location  || null,
-          lead_score:     parseInt(row.lead_score) || 0,
-          status:         row.status         || 'New',
-          created_by:     userId,
-          company_id,
-          // assigned_to FKs employees, not users — see the same fix in POST /leads.
-          assigned_to:    autoAssignedId || (req.user?.employee_id ?? null),
-        });
-
-        if (autoAssignedId) {
-          const assigneeUserId = await resolveEmployeeUserId(autoAssignedId);
-          await notifyAutoAssignment({
-            userId: assigneeUserId,
-            referenceId: lead.id,
-            recordType: 'Lead',
-            label: `${lead.iem_no || lead.company_name || 'A lead'}`,
-          }).catch(() => {});
-        }
-
-        imported++;
-      } catch (err) {
-        skipped++;
-        errors.push({ row: row.company_name || email, error: err.message });
       }
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
 
-    res.json({ imported, skipped, errors: errors.slice(0, 10) });
+    // Fire-and-forget, after the data is durable.
+    for (const { autoAssignedId, lead } of pendingNotifications) {
+      resolveEmployeeUserId(autoAssignedId)
+        .then(assigneeUserId => notifyAutoAssignment({
+          userId: assigneeUserId,
+          referenceId: lead.id,
+          recordType: 'Lead',
+          label: `${lead.iem_no || lead.company_name || 'A lead'}`,
+        }))
+        .catch(() => {});
+    }
+
+    if (imported > 0) {
+      logAudit({ userId, module: 'CRM', recordType: 'lead', action: 'import',
+                 newData: { imported, duplicates, skipped, total_rows: rows.length }, req });
+    }
+
+    // `duplicates` is reported separately from `skipped`: re-running the same
+    // file should read as "nothing new", not as a partial failure.
+    res.json({
+      imported,
+      duplicates,
+      skipped,
+      total_rows: rows.length,
+      errors: errors.slice(0, 10),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -853,9 +1134,15 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
     expected_value,
     probability_percentage,
     expected_closing_date,
-    stage = 'Qualification',
+    stage: rawStage,
     assigned_to,
   } = req.body;
+
+  // Canonical stored spelling (crm_pipeline_stages.stage_key). The default was
+  // 'Qualification', which the pipeline GROUP BY drew as a second stage beside
+  // the 'qualification' rows every other path writes; a client-supplied stage
+  // was stored verbatim, which did the same for any stage it named.
+  const stage = canonicalState(rawStage) || 'qualification';
 
   if (!opportunity_name || !opportunity_name.trim()) {
     return res.status(400).json({ error: 'opportunity_name is required' });
@@ -914,6 +1201,25 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
       ? (lead.probability ?? 50)
       : parseInt(probability_percentage, 10);
 
+    // Conversion creates an opportunity, so it must satisfy the same configured
+    // requirements as POST /opportunities. It did not, which is one of the two
+    // routes by which opportunities with no expected_closing_date entered this
+    // database — and a deal with no close date belongs to no period, so it is
+    // absent from every forecast and ageing report without ever erroring.
+    const convCheck = await validateOpportunity(client, lead.company_id, {
+      opportunity_name,
+      expected_value: value,
+      estimate_value: lead.estimated_value,
+      expected_closing_date,
+      probability_percentage: prob,
+      stage,
+      account_id: lead.id,   // conversion always materialises an account below
+    });
+    if (!convCheck.ok) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: convCheck.errors.join('; '), errors: convCheck.errors });
+    }
+
     // Only reached when the lead itself had no owner either — a normal
     // conversion just carries the lead's existing assigned_to forward.
     let autoAssignedId = null;
@@ -932,13 +1238,56 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
       } catch (_) {}
     }
 
-    // Create the opportunity — inherit company_id from the lead
+    // ── Materialise the customer ──────────────────────────────────────────
+    // Conversion used to create an Opportunity and nothing else: no Account, no
+    // Contact, and account_id left NULL on every row. That is precisely where
+    // the commercial chain was severed — a converted lead produced a deal that
+    // no customer owned, so Customer 360, revenue-by-customer and every
+    // CRM→Sales join found nothing (audit C-05, 0 of 7 opportunities linked).
+    //
+    // resolveCustomer() is idempotent on the normalised organisation name, so
+    // converting a second lead from the same company attaches to the existing
+    // account rather than minting a duplicate.
+    let account = null, party = null;
+    if ((lead.company_name || '').trim()) {
+      const resolved = await resolveCustomer(client, {
+        name: lead.company_name.trim(),
+        company_id: lead.company_id || null,
+        email: lead.email || null,
+        phone: lead.phone || null,
+        industry: lead.industry || null,
+        assigned_to: finalAssignedTo || null,
+      });
+      account = resolved.account;
+      party   = resolved.party;
+
+      // The person on the enquiry becomes a contact under that account.
+      if ((lead.contact_person || '').trim()) {
+        await resolveOrCreateContact(client, {
+          account_id: account.id,
+          company_id: lead.company_id || null,
+          full_name: lead.contact_person.trim(),
+          email: lead.email || null,
+          phone: lead.phone || null,
+          mobile: lead.phone || null,
+          is_primary: true,
+        });
+      }
+    }
+
+    // Create the opportunity — inherit company_id AND territory from the lead.
+    //
+    // territory_id is carried forward rather than re-derived. Re-matching the
+    // territory rules at conversion time would let an edit to a territory
+    // boundary silently move historical deals between territories, which makes
+    // territory revenue unreproducible; the lead recorded where it landed, and
+    // the opportunity inherits that fact.
     const oppRes = await client.query(
       `INSERT INTO opportunities
          (lead_id, opportunity_name, expected_value, probability_percentage,
           expected_closing_date, stage, assigned_to, created_by, company_id,
-          region, notes, estimate_value)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          region, notes, estimate_value, account_id, territory_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING *`,
       [
         leadId,
@@ -946,7 +1295,7 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
         value,
         Math.min(100, Math.max(0, Number.isNaN(prob) ? 50 : prob)),
         expected_closing_date || null,
-        stage || 'Qualification',
+        stage,
         finalAssignedTo,
         userId,
         lead.company_id || null,
@@ -955,9 +1304,20 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
         // The enquiry's original estimate, preserved alongside the (possibly
         // revalued) expected_value so the IEM summary can show the spread.
         lead.estimated_value ?? null,
+        account?.id ?? null,
+        lead.territory_id ?? null,
       ]
     );
     const opportunity = oppRes.rows[0];
+
+    // Opening stage row so time-in-stage and sales-cycle have a t0. Without it
+    // every velocity metric reads 0 forever (audit C-16).
+    await client.query(
+      `INSERT INTO opportunity_stage_history
+         (opportunity_id, company_id, from_stage, to_stage, changed_by, notes)
+       VALUES ($1, $2, NULL, $3, $4, 'Created by lead conversion')`,
+      [opportunity.id, lead.company_id || null, opportunity.stage, userId]
+    );
 
     // Mark lead as converted
     const updatedLeadRes = await client.query(
@@ -983,10 +1343,15 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
 
     await client.query('COMMIT');
 
-    logAudit({ userId, module: 'CRM', recordId: leadId, recordType: 'lead', action: 'convert', newData: { opportunity_id: opportunity.id }, req });
-    const assignedUserId = opportunity.assigned_to || null;
+    logAudit({ userId, module: 'CRM', recordId: leadId, recordType: 'lead', action: 'convert',
+               newData: { opportunity_id: opportunity.id, account_id: account?.id ?? null, party_id: party?.id ?? null }, req });
+    // An employees.id, not a users.id — notifyWorkflowEvent resolves recipientIds
+    // through its own resolveEmployeeUserId(). It was named `assignedUserId`,
+    // which is the exact confusion that left `opportunities.assigned_to` carrying
+    // both id spaces until 20260827000002 put a foreign key on it.
+    const assignedEmployeeId = opportunity.assigned_to || null;
     import('../../../services/WorkflowNotificationService.js').then(({ notifyWorkflowEvent }) => {
-      notifyWorkflowEvent('submitted', { module: 'CRM', recordId: opportunity.id, submitterId: userId, recipientIds: assignedUserId ? [assignedUserId] : [] }).catch(() => {});
+      notifyWorkflowEvent('submitted', { module: 'CRM', recordId: opportunity.id, submitterId: userId, recipientIds: assignedEmployeeId ? [assignedEmployeeId] : [] }).catch(() => {});
     }).catch(() => {});
 
     if (autoAssignedId) {
@@ -1001,6 +1366,8 @@ router.post('/leads/:id/convert', requirePermission('crm', 'add'), async (req, r
     res.status(201).json({
       opportunity,
       lead: updatedLeadRes.rows[0],
+      account,
+      party,
       message: 'Lead successfully converted to opportunity',
     });
   } catch (err) {
@@ -1035,40 +1402,56 @@ router.get('/opportunities/stats', requirePermission('crm', 'view'), async (req,
     const cid = companyOf(req);
     const params = cid != null ? [cid] : [];
     const cidClause = cid != null ? 'AND company_id = $1' : '';
+    // `avg_deal_size` used to mean "mean of OPEN opportunities" here and "mean
+    // of WON opportunities" in /analytics/avg-deal-size — one name, two
+    // definitions, both on screen at once (audit C-14). Both are legitimate
+    // questions, so both are returned under explicit names and `avg_deal_size`
+    // is now unambiguously the won figure, matching the industry meaning.
     const { rows } = await pool.query(`
       SELECT
         COUNT(*)                                                                        AS total,
         COALESCE(SUM(expected_value), 0)                                               AS total_value,
-        COUNT(*) FILTER (WHERE LOWER(stage) = 'won')                                   AS won_count,
-        COALESCE(SUM(expected_value) FILTER (WHERE LOWER(stage) = 'won'), 0)           AS won_value,
-        COUNT(*) FILTER (WHERE LOWER(stage) = 'lost')                                  AS lost_count,
+        COALESCE(SUM(expected_value) FILTER (WHERE ${sqlOpportunityOpen('stage')}), 0) AS open_pipeline_value,
+        COALESCE(SUM(expected_value * probability_percentage / 100.0)
+          FILTER (WHERE ${sqlOpportunityOpen('stage')}), 0)                            AS weighted_pipeline_value,
+        COUNT(*) FILTER (WHERE ${sqlOpportunityWon('stage')})                          AS won_count,
+        COALESCE(SUM(expected_value) FILTER (WHERE ${sqlOpportunityWon('stage')}), 0)  AS won_value,
+        COUNT(*) FILTER (WHERE ${sqlOpportunityLost('stage')})                         AS lost_count,
+        COALESCE(SUM(expected_value) FILTER (WHERE ${sqlOpportunityLost('stage')}), 0) AS lost_value,
         COUNT(*) FILTER (
           WHERE expected_closing_date < CURRENT_DATE
-            AND LOWER(stage) NOT IN ('won','lost')
+            AND ${sqlOpportunityOpen('stage')}
         )                                                                               AS overdue_count,
-        COALESCE(AVG(expected_value) FILTER (
-          WHERE LOWER(stage) NOT IN ('won','lost')
-        ), 0)                                                                           AS avg_deal_size,
+        COALESCE(AVG(expected_value) FILTER (WHERE ${sqlOpportunityWon('stage')}), 0)  AS avg_deal_size,
+        COALESCE(AVG(expected_value) FILTER (WHERE ${sqlOpportunityOpen('stage')}), 0) AS avg_open_deal_size,
+        COALESCE(AVG(sales_cycle_days) FILTER (
+          WHERE ${sqlOpportunityWon('stage')} AND sales_cycle_days IS NOT NULL
+        ), 0)                                                                           AS avg_sales_cycle_days,
         ROUND(
-          COUNT(*) FILTER (WHERE LOWER(stage) = 'won')::numeric /
-          NULLIF(COUNT(*) FILTER (WHERE LOWER(stage) IN ('won','lost')), 0) * 100, 1
+          COUNT(*) FILTER (WHERE ${sqlOpportunityWon('stage')})::numeric /
+          NULLIF(COUNT(*) FILTER (WHERE ${sqlOpportunityClosed('stage')}), 0) * 100, 1
         )                                                                               AS win_rate
       FROM opportunities
       WHERE deleted_at IS NULL ${cidClause}
     `, params);
     const r = rows[0];
     res.json({
-      total:         parseInt(r.total)          || 0,
-      total_value:   parseFloat(r.total_value)  || 0,
-      won_count:     parseInt(r.won_count)       || 0,
-      won_value:     parseFloat(r.won_value)     || 0,
-      lost_count:    parseInt(r.lost_count)      || 0,
-      overdue_count: parseInt(r.overdue_count)   || 0,
-      avg_deal_size: parseFloat(r.avg_deal_size) || 0,
-      win_rate:      parseFloat(r.win_rate)      || 0,
+      total:                   parseInt(r.total)                          || 0,
+      total_value:             parseFloat(r.total_value)                  || 0,
+      open_pipeline_value:     parseFloat(r.open_pipeline_value)          || 0,
+      weighted_pipeline_value: parseFloat(r.weighted_pipeline_value)      || 0,
+      won_count:               parseInt(r.won_count)                      || 0,
+      won_value:               parseFloat(r.won_value)                    || 0,
+      lost_count:              parseInt(r.lost_count)                     || 0,
+      lost_value:              parseFloat(r.lost_value)                   || 0,
+      overdue_count:           parseInt(r.overdue_count)                  || 0,
+      avg_deal_size:           parseFloat(r.avg_deal_size)                || 0,
+      avg_open_deal_size:      parseFloat(r.avg_open_deal_size)           || 0,
+      avg_sales_cycle_days:    Math.round(parseFloat(r.avg_sales_cycle_days) || 0),
+      win_rate:                parseFloat(r.win_rate)                     || 0,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
@@ -1135,6 +1518,46 @@ router.get('/opportunities/win-loss', requirePermission('crm', 'view'), async (r
   }
 });
 
+// GET /opportunities/export — MUST be registered before `/opportunities/:id`.
+// Express matches in registration order, so while this sat lower in the file
+// the param route captured it and Postgres was handed the literal string
+// "export" as an integer id (audit C-13: 500 invalid input syntax).
+router.get('/opportunities/export', requirePermission('crm', 'view'), async (req, res) => {
+  try {
+    const cid = companyOf(req);
+
+    const { rows } = await pool.query(
+      `SELECT o.id, o.opportunity_name, o.stage, o.expected_value, o.probability_percentage,
+              o.expected_closing_date, o.closed_date, o.notes, o.created_at,
+              e.name AS assigned_to,
+              COALESCE(a.name, a.account_name) AS account_name
+       FROM opportunities o
+       LEFT JOIN employees e ON e.id = o.assigned_to
+       LEFT JOIN accounts  a ON a.id = o.account_id AND a.deleted_at IS NULL
+       WHERE o.deleted_at IS NULL
+         AND ($1::int IS NULL OR o.company_id = $1)
+       ORDER BY o.created_at DESC`,
+      [cid]
+    );
+
+    const headers = ['ID','Opportunity Name','Account','Stage','Expected Value','Probability %','Expected Close','Closed Date','Assigned To','Notes','Created At'];
+    const toRow = r => [
+      r.id, r.opportunity_name, r.account_name, r.stage,
+      r.expected_value, r.probability_percentage,
+      r.expected_closing_date ? new Date(r.expected_closing_date).toISOString().split('T')[0] : '',
+      r.closed_date           ? new Date(r.closed_date).toISOString().split('T')[0] : '',
+      r.assigned_to, (r.notes || '').replace(/[\r\n,]/g, ' '),
+      new Date(r.created_at).toISOString().split('T')[0],
+    ].map(v => `"${(v ?? '').toString().replace(/"/g, '""')}"`).join(',');
+
+    const csv = [headers.join(','), ...rows.map(toRow)].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="opportunities_${Date.now()}.csv"`);
+    res.send(csv);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
 router.get('/opportunities/:id', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const opportunity = await opportunitiesRepository.findById(req.params.id, companyOf(req));
@@ -1154,19 +1577,20 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
     const userId     = req.user?.userId ?? req.user?.id;
     const company_id = companyOf(req);
 
-    // Validate require_close_date setting
-    if (company_id && !expected_closing_date) {
-      try {
-        const sr = await pool.query(
-          `SELECT required_fields_to_close FROM crm_settings WHERE company_id = $1`,
-          [company_id]
-        );
-        const required = sr.rows[0]?.required_fields_to_close || [];
-        if (Array.isArray(required) && required.includes('expected_close_date')) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'Expected closing date is required (configured in CRM settings)' });
-        }
-      } catch (_) {}
+    // Enforce crm_settings.required_fields_to_close through the shared validator.
+    // This used to honour only 'expected_close_date' (ignoring the configured
+    // 'value') and swallowed any error reading crm_settings, so a failed lookup
+    // silently passed validation.
+    const check = await validateOpportunity(client, company_id, req.body);
+    if (!check.ok) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: check.errors.join('; '), errors: check.errors });
+    }
+    // Configurable rules (module 'sales') on top of the invariants above.
+    const oppRules = await validateRules('sales', req.body, { partial: false, companyId: company_id });
+    if (!oppRules.valid) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors: oppRules.errors });
     }
 
     // Prevent duplicate opportunities for the same lead when lead_id is supplied
@@ -1204,18 +1628,100 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
     // assigned_to FKs employees, not users — see the same fix in POST /leads.
     finalAssignedTo = finalAssignedTo || (req.user?.employee_id ?? null);
 
+    // ── Every opportunity must belong to a customer ────────────────────────
+    // This endpoint never set account_id, which is how a deal could exist that
+    // no customer owned — exactly the break the audit measured as 0 of 7
+    // opportunities linked. Resolution order: an explicit account, else the
+    // originating lead's company, else a company name typed on the form.
+    let accountId = req.body.account_id ?? null;
+    if (accountId) {
+      const ok = await client.query(
+        `SELECT id FROM accounts WHERE id = $1 AND deleted_at IS NULL
+           AND ($2::int IS NULL OR company_id = $2)`,
+        [accountId, company_id]
+      );
+      if (!ok.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Account not found' });
+      }
+    } else {
+      let sourceName = (req.body.company_name || '').trim();
+      if (!sourceName && lead_id) {
+        const l = await client.query(
+          `SELECT company_name, email, phone, industry FROM leads
+            WHERE id = $1 AND deleted_at IS NULL
+              AND ($2::int IS NULL OR company_id = $2)`,
+          [lead_id, company_id]
+        );
+        sourceName = (l.rows[0]?.company_name || '').trim();
+        if (sourceName) {
+          const { account } = await resolveCustomer(client, {
+            name: sourceName, company_id,
+            email: l.rows[0]?.email || null, phone: l.rows[0]?.phone || null,
+            industry: l.rows[0]?.industry || null, assigned_to: finalAssignedTo,
+          });
+          accountId = account.id;
+        }
+      } else if (sourceName) {
+        const { account } = await resolveCustomer(client, {
+          name: sourceName, company_id, assigned_to: finalAssignedTo,
+        });
+        accountId = account.id;
+      }
+    }
+    if (!accountId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'An opportunity must belong to a customer — supply account_id, company_name, or a lead_id.',
+      });
+    }
+
+    // Territory: inherit from the originating lead when there is one, otherwise
+    // match on the geography supplied with the opportunity. Stamped regardless
+    // of how the owner was chosen, so territory reporting sees every deal.
+    let oppTerritoryId = req.body.territory_id ?? null;
+    if (oppTerritoryId == null && company_id) {
+      try {
+        if (lead_id) {
+          const { rows: lt } = await client.query(
+            `SELECT territory_id FROM leads WHERE id = $1`, [lead_id]
+          );
+          oppTerritoryId = lt[0]?.territory_id ?? null;
+        }
+        if (oppTerritoryId == null) {
+          const resolved = await resolveAssignment(company_id, 'manual', req.body);
+          oppTerritoryId = resolved.territory_id;
+        }
+      } catch (err) {
+        // Enrichment, not a precondition — an opportunity must still be
+        // creatable if territory lookup fails. Logged, never swallowed silently.
+        console.warn(JSON.stringify({
+          ts: new Date().toISOString(), level: 'WARN', event: 'opportunity_territory_failed',
+          companyId: company_id, message: err.message,
+        }));
+      }
+    }
+
     const oppRes = await client.query(
       `INSERT INTO opportunities
          (lead_id, opportunity_name, expected_value, probability_percentage,
           expected_closing_date, stage, assigned_to, notes, created_by, company_id,
-          estimate_value, held_by, follow_up_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+          estimate_value, held_by, follow_up_date, account_id, territory_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [lead_id || null, opportunity_name, expected_value, probability_percentage,
        expected_closing_date || null, stage, finalAssignedTo, notes || null, userId, company_id,
        estimate_value === '' || estimate_value == null ? null : estimate_value,
-       held_by || null, follow_up_date || null]
+       held_by || null, follow_up_date || null, accountId, oppTerritoryId]
     );
     const opportunity = oppRes.rows[0];
+
+    // Opening stage row, same as the conversion path — velocity metrics need a t0.
+    await client.query(
+      `INSERT INTO opportunity_stage_history
+         (opportunity_id, company_id, from_stage, to_stage, changed_by, notes)
+       VALUES ($1, $2, NULL, $3, $4, 'Opportunity created')`,
+      [opportunity.id, company_id, opportunity.stage, userId]
+    );
 
     // Atomically mark the lead converted if linked
     if (lead_id) {
@@ -1248,8 +1754,13 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
 router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { stage, notes: stageNotes, close_reason } = req.body;
-    if (!stage) return res.status(400).json({ error: 'stage is required' });
+    const { stage: rawStage, notes: stageNotes, close_reason, competitor } = req.body;
+    if (!rawStage) return res.status(400).json({ error: 'stage is required' });
+    // The client's casing is a display choice, not a value. Storing it verbatim
+    // is how this column ended up holding 'Qualification' and 'qualification'
+    // as two stages — the Kanban sends 'Won', the conversion path wrote
+    // 'Qualification', and every GROUP BY drew each spelling as its own column.
+    const stage  = canonicalState(rawStage);
     const cid    = companyOf(req);
     const userId = req.user?.userId ?? req.user?.id ?? null;
 
@@ -1264,14 +1775,33 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
 
     const params = [stage, req.params.id];
     let extraSet = '';
-    const stageLc = stage.toLowerCase();
+    const stageLc = stage; // already canonical — kept named for the branches below
     if (stageLc === 'won') {
-      extraSet = ', closed_date = NOW(), probability_percentage = 100';
+      // sales_cycle_days is what makes "average sales cycle" computable; it was
+      // never populated, so the KPI read 0 even once deals started closing.
+      extraSet = `, closed_date = NOW(), probability_percentage = 100,
+                   order_won_date = CURRENT_DATE,
+                   sales_cycle_days = GREATEST(0, (CURRENT_DATE - created_at::date))`;
     } else if (stageLc === 'lost') {
-      extraSet = ', closed_date = NOW(), probability_percentage = 0';
+      extraSet = `, closed_date = NOW(), probability_percentage = 0,
+                   sales_cycle_days = GREATEST(0, (CURRENT_DATE - created_at::date))`;
     }
+    // close_reason exists as of migration 20260819000002. Before it, this line
+    // spliced a non-existent column into the UPDATE, so every Won/Lost close
+    // carrying a reason threw 42703 and rolled the stage change back — which is
+    // why no opportunity had ever reached Won (audit C-03).
     if (close_reason && (stageLc === 'won' || stageLc === 'lost')) {
       extraSet += `, close_reason = $${params.push(close_reason)}`;
+      if (stageLc === 'lost') extraSet += `, lost_reason = $${params.length}`;
+    }
+    // `competitor` had no write path anywhere in the app, so the Top Competitors
+    // panel on the Sales Command Center could only ever render its own empty
+    // state telling the user to tag deals the UI gave them no way to tag.
+    // Captured on both close stages: who you lost to drives loss analysis, and
+    // who you beat is what makes win-rate-vs-competitor computable later.
+    if (typeof competitor === 'string' && competitor.trim() &&
+        (stageLc === 'won' || stageLc === 'lost')) {
+      extraSet += `, competitor = $${params.push(competitor.trim())}`;
     }
     const cidClause = cid != null ? ` AND company_id = $${params.push(cid)}` : '';
 
@@ -1287,16 +1817,47 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
       return res.status(404).json({ error: 'Opportunity not found' });
     }
 
-    // Write stage history record
+    // Stage history is not optional bookkeeping — it is the only source for
+    // sales cycle, time-in-stage and funnel conversion. The previous
+    // `.catch(() => {})` was actively dangerous: a failed INSERT aborts the
+    // surrounding transaction, so Postgres downgrades the following COMMIT to a
+    // ROLLBACK and the caller still receives 200 with the "updated" row. The
+    // stage change would silently not have happened. Let it throw instead.
+    //
+    // `notes` records the reason on close so /win-loss-analysis can group by it;
+    // it previously read a field the Kanban never sent, leaving loss_reasons
+    // permanently empty (audit C-17).
     await client.query(
       `INSERT INTO opportunity_stage_history
          (opportunity_id, company_id, from_stage, to_stage, changed_by, notes)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [req.params.id, cid, prevStage, stage, userId, stageNotes || null]
-    ).catch(() => {}); // graceful — table may not exist until migration runs
+      [req.params.id, cid, prevStage, stage, userId, stageNotes || close_reason || null]
+    );
 
     await client.query('COMMIT');
+    logAudit({ userId, module: 'CRM', recordId: req.params.id, recordType: 'opportunity',
+               action: 'stage_change', oldData: { stage: prevStage },
+               newData: { stage, close_reason: close_reason || null }, req });
     res.json(rows[0]);
+
+    // Fire configured automation for this event. Deliberately AFTER the commit
+    // and after the response: a workflow rule is an observer of the stage
+    // change, not a participant in it, so a broken rule must not be able to
+    // fail or slow the change it was watching. dispatch() never throws — every
+    // outcome lands in workflow_run_logs.
+    //
+    // `previous` carries the before-image so a rule can use the `changed`
+    // operator, which is otherwise unanswerable from the new row alone.
+    dispatchWorkflows({
+      companyId: cid,
+      module: 'opportunity',
+      event: 'stage_changed',
+      entityId: Number(req.params.id),
+      table: 'opportunities',
+      record: rows[0],
+      previous: { stage: prevStage },
+      actorUserId: userId,
+    });
 
     // Auto-convert on Won — mirrors the Sales Order path's auto-bootstrap
     // (sales.routes.js) so a Won opportunity gets a project regardless of
@@ -1342,19 +1903,33 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
 
 router.put('/opportunities/:id', requirePermission('crm', 'edit'), async (req, res) => {
   try {
-    const opportunity = await opportunitiesRepository.update(req.params.id, req.body);
+    const userId = req.user?.userId ?? req.user?.id ?? null;
+    const before = await opportunitiesRepository.findById(req.params.id, companyOf(req));
+    if (!before) return res.status(404).json({ error: 'Opportunity not found' });
+    const opportunity = await opportunitiesRepository.update(req.params.id, req.body, companyOf(req));
+    if (!opportunity) return res.status(404).json({ error: 'Opportunity not found' });
+
+    // Amount and owner changes are exactly what an audit trail exists for —
+    // neither was recorded anywhere before (audit C-22).
+    logAudit({ userId, module: 'CRM', recordId: req.params.id, recordType: 'opportunity', action: 'update',
+               oldData: { expected_value: before.expected_value, assigned_to: before.assigned_to, stage: before.stage },
+               newData: { expected_value: opportunity.expected_value, assigned_to: opportunity.assigned_to, stage: opportunity.stage },
+               req });
     res.json(opportunity);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 router.delete('/opportunities/:id', requirePermission('crm', 'delete'), async (req, res) => {
   try {
-    await opportunitiesRepository.delete(req.params.id);
+    const userId = req.user?.userId ?? req.user?.id ?? null;
+    const gone = await opportunitiesRepository.delete(req.params.id, companyOf(req));
+    if (!gone) return res.status(404).json({ error: 'Opportunity not found' });
+    logAudit({ userId, module: 'CRM', recordId: req.params.id, recordType: 'opportunity', action: 'delete', req });
     res.json({ message: 'Opportunity deleted' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
@@ -1366,10 +1941,18 @@ router.post('/opportunities/:id/create-quotation', requirePermission('sales', 'a
     const cid_val   = companyOf(req);
     const userId    = req.user?.userId ?? req.user?.id ?? null;
 
+    // party_id is what quotations.customer_id actually FKs (uuid → parties).
+    // The old code passed o.account_id — an integer — straight into that uuid
+    // column, so a quotation either 42804'd (account set) or was created with a
+    // NULL customer and no way back to a customer at all (audit C-02). Live
+    // proof at the time: 0 quotations had ever been created from an opportunity.
     const oppRes = await client.query(
-      `SELECT o.*, COALESCE(a.name, a.account_name) AS customer_name
+      `SELECT o.*,
+              COALESCE(a.name, a.account_name, l.company_name) AS customer_name,
+              a.party_id
        FROM opportunities o
-       LEFT JOIN accounts a ON a.id = o.account_id
+       LEFT JOIN accounts a ON a.id = o.account_id AND a.deleted_at IS NULL
+       LEFT JOIN leads    l ON l.id = o.lead_id
        WHERE o.id=$1 AND o.deleted_at IS NULL AND ($2::int IS NULL OR o.company_id=$2)
        FOR UPDATE OF o`,
       [req.params.id, cid_val]
@@ -1389,12 +1972,32 @@ router.post('/opportunities/:id/create-quotation', requirePermission('sales', 'a
       });
     }
 
-    // Generate quotation number
-    const seqRes = await client.query(
-      `SELECT COUNT(*)::int AS n FROM quotations WHERE ($1::int IS NULL OR company_id=$1)`,
-      [cid_val]
-    );
-    const seq = String((seqRes.rows[0]?.n || 0) + 1).padStart(4, '0');
+    // A quotation must name a customer, so an opportunity that never got one
+    // resolves (or creates) its identity here rather than producing an orphan.
+    let partyId = opp.party_id ?? null;
+    let customerName = opp.customer_name ?? null;
+    if (!partyId) {
+      if (!customerName) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'This opportunity has no customer. Link it to an account before raising a quotation.',
+        });
+      }
+      const { party, account } = await resolveCustomer(client, {
+        name: customerName, company_id: cid_val,
+      });
+      partyId = party.id;
+      customerName = party.name;
+      // Backfill the link so the next document doesn't have to guess again.
+      await client.query(`UPDATE opportunities SET account_id = $1 WHERE id = $2`, [account.id, opp.id]);
+    }
+
+    // Quotation number came from COUNT(*)+1 against a UNIQUE column: it races
+    // under concurrency and reuses numbers after a delete (audit C-37). A
+    // sequence is monotonic and concurrency-safe.
+    await client.query(`CREATE SEQUENCE IF NOT EXISTS quotation_number_seq`);
+    const seqRes = await client.query(`SELECT nextval('quotation_number_seq')::bigint AS n`);
+    const seq = String(seqRes.rows[0].n).padStart(4, '0');
     const yr  = new Date().getFullYear();
     const qNo = `QT-${yr}-${seq}`;
 
@@ -1404,17 +2007,19 @@ router.post('/opportunities/:id/create-quotation', requirePermission('sales', 'a
          (quotation_number, company_id, customer_id, customer_name, opportunity_id,
           quotation_date, validity_date, subtotal, tax_amount, total_amount, notes, status, created_by)
        VALUES ($1,$2,$3,$4,$5,CURRENT_DATE,$6,$7,0,$7,$8,'draft',$9) RETURNING *`,
-      [qNo, cid_val, opp.account_id, opp.customer_name, opp.id,
+      [qNo, cid_val, partyId, customerName, opp.id,
        validityDate, opp.expected_value || 0,
        req.body.notes || `From opportunity: ${opp.opportunity_name}`,
        userId]
     );
 
-    // Link opportunity → quotation
+    // Link opportunity → quotation. Not swallowed: if this fails the quotation
+    // exists with no back-reference, and the duplicate guard above (which reads
+    // opp.quotation_id) would let a second one be raised.
     await client.query(
       `UPDATE opportunities SET quotation_id=$1, stage='negotiation', updated_at=NOW() WHERE id=$2`,
       [qRows[0].id, opp.id]
-    ).catch(() => {});
+    );
 
     await client.query('COMMIT');
 
@@ -1476,18 +2081,26 @@ router.get('/stats', requirePermission('crm', 'view'), async (req, res) => {
     const cw  = cid != null ? 'AND company_id = $1' : '';
 
     const [leadsRow, oppsRow, thisMonthRow, acctRow, contactRow, prevMonthRow] = await Promise.all([
+      // A lead counts as converted whether it was pushed to an opportunity
+      // ('converted') or closed as business directly ('won'). Keying only on
+      // 'converted' pinned this KPI to 0% forever while 4 Won leads worth
+      // ₹2.8 Cr sat in the table (audit C-06). Vocabulary now comes from
+      // shared/statusSets.js so it cannot drift again.
       pool.query(
         `SELECT COUNT(*) AS total_leads,
-           COUNT(*) FILTER (WHERE LOWER(status) = 'converted') AS converted_leads
+           COUNT(*) FILTER (WHERE ${sqlLeadConverted('status')}) AS converted_leads,
+           COUNT(*) FILTER (WHERE ${isIn('status', LEAD_CLOSED)})  AS decided_leads
          FROM leads WHERE deleted_at IS NULL ${cw}`,
         cp
       ),
       pool.query(
         `SELECT
-           COUNT(*) FILTER (WHERE LOWER(stage) = 'won') AS won_deals,
-           COALESCE(SUM(expected_value) FILTER (WHERE LOWER(stage) NOT IN ('won','lost')), 0) AS pipeline_value,
+           COUNT(*) FILTER (WHERE ${sqlOpportunityWon('stage')}) AS won_deals,
+           COALESCE(SUM(expected_value) FILTER (WHERE ${sqlOpportunityOpen('stage')}), 0) AS pipeline_value,
+           COALESCE(SUM(expected_value * probability_percentage / 100.0)
+             FILTER (WHERE ${sqlOpportunityOpen('stage')}), 0) AS weighted_pipeline_value,
            COALESCE(SUM(expected_value) FILTER (
-             WHERE LOWER(stage) NOT IN ('won','lost')
+             WHERE ${sqlOpportunityOpen('stage')}
                AND created_at >= DATE_TRUNC('month', NOW())
            ), 0) AS pipeline_this_month
          FROM opportunities WHERE deleted_at IS NULL ${cw}`,
@@ -1509,7 +2122,7 @@ router.get('/stats', requirePermission('crm', 'view'), async (req, res) => {
       ),
       pool.query(
         `SELECT COALESCE(SUM(expected_value) FILTER (
-           WHERE LOWER(stage) NOT IN ('won','lost')
+           WHERE ${sqlOpportunityOpen('stage')}
              AND created_at >= DATE_TRUNC('month', NOW() - INTERVAL '1 month')
              AND created_at <  DATE_TRUNC('month', NOW())
          ), 0) AS pipeline_prev_month
@@ -1524,8 +2137,15 @@ router.get('/stats', requirePermission('crm', 'view'), async (req, res) => {
     const pipelineValue     = parseFloat(oppsRow.rows[0].pipeline_value)      || 0;
     const pipelineThisMonth = parseFloat(oppsRow.rows[0].pipeline_this_month) || 0;
     const pipelinePrevMonth = parseFloat(prevMonthRow.rows[0].pipeline_prev_month) || 0;
-    const convRate = totalLeads > 0
-      ? parseFloat((convertedLeads / totalLeads * 100).toFixed(1))
+    // Denominator is DECIDED leads (converted + lost), not all leads — a lead
+    // still in flight is not a failed conversion, and counting it as one
+    // understates the rate. This must stay identical to
+    // leadsRepository.getConversionRate(), which /analytics/conversion-rate
+    // serves: publishing the same KPI under two different denominators is the
+    // defect this remediation exists to remove, not to reintroduce.
+    const decidedLeads = parseInt(leadsRow.rows[0].decided_leads) || 0;
+    const convRate = decidedLeads > 0
+      ? parseFloat((convertedLeads / decidedLeads * 100).toFixed(1))
       : null;
     const pipelineChange = pipelinePrevMonth > 0
       ? parseFloat(((pipelineThisMonth - pipelinePrevMonth) / pipelinePrevMonth * 100).toFixed(1))
@@ -1536,12 +2156,13 @@ router.get('/stats', requirePermission('crm', 'view'), async (req, res) => {
       leads_this_month: parseInt(thisMonthRow.rows[0].leads_this_month) || 0,
       won_deals:        wonDeals,
       pipeline_value:   pipelineValue,
+      weighted_pipeline_value: parseFloat(oppsRow.rows[0].weighted_pipeline_value) || 0,
       conversion_rate:  convRate,
       pipeline_change:  pipelineChange,
       total_accounts:   parseInt(acctRow.rows[0].total_accounts)        || 0,
       total_contacts:   parseInt(contactRow.rows[0].total_contacts)     || 0,
     });
-  } catch (error) { res.status(500).json({ error: error.message }); }
+  } catch (error) { respondError(res, error); }
 });
 
 // Analytics
@@ -1815,18 +2436,24 @@ router.get('/analytics/lead-dashboard', requirePermission('crm', 'view'), async 
 router.get('/delivery-tracker', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const cid = companyOf(req);
+    // The column is `order_status`, not `status` — this referenced a column
+    // that does not exist on sales_orders, and the failure was swallowed twice
+    // (a `.catch()` on the query AND a bare `catch { res.json([]) }`), so the
+    // Delivery Tracker has always rendered an empty list. Status vocabulary now
+    // comes from statusSets rather than an inline literal.
     const { rows } = await pool.query(
-      `SELECT so.id, so.order_number, so.status, so.total_amount,
+      `SELECT so.id, so.order_number, so.order_status AS status, so.total_amount,
               p.name AS customer_name, so.delivery_date, so.created_at
        FROM sales_orders so
        LEFT JOIN parties p ON p.id = so.customer_id
        WHERE ($1::int IS NULL OR so.company_id=$1)
-         AND so.status NOT IN ('cancelled')
+         AND so.deleted_at IS NULL
+         AND ${sqlSalesOrderBooked('so.order_status')}
        ORDER BY so.delivery_date NULLS LAST LIMIT 200`,
       [cid]
-    ).catch(() => ({ rows: [] }));
+    );
     res.json(rows);
-  } catch { res.json([]); }
+  } catch (error) { respondError(res, error); }
 });
 
 router.get('/marketing-dashboard', requirePermission('crm', 'view'), async (req, res) => {
@@ -2211,42 +2838,6 @@ router.get('/won-lost-leads/export', requirePermission('crm', 'view'), async (re
   }
 });
 
-router.get('/opportunities/export', requirePermission('crm', 'view'), async (req, res) => {
-  try {
-    const cid = companyOf(req);
-
-    const { rows } = await pool.query(
-      `SELECT o.id, o.opportunity_name, o.stage, o.expected_value, o.probability_percentage,
-              o.expected_closing_date, o.closed_date, o.notes, o.created_at,
-              e.name AS assigned_to,
-              COALESCE(a.name, a.account_name) AS account_name
-       FROM opportunities o
-       LEFT JOIN employees e ON e.id = o.assigned_to
-       LEFT JOIN accounts  a ON a.id = o.account_id AND a.deleted_at IS NULL
-       WHERE o.deleted_at IS NULL
-         AND ($1::int IS NULL OR o.company_id = $1)
-       ORDER BY o.created_at DESC`,
-      [cid]
-    );
-
-    const headers = ['ID','Opportunity Name','Account','Stage','Expected Value','Probability %','Expected Close','Closed Date','Assigned To','Notes','Created At'];
-    const toRow = r => [
-      r.id, r.opportunity_name, r.account_name, r.stage,
-      r.expected_value, r.probability_percentage,
-      r.expected_closing_date ? new Date(r.expected_closing_date).toISOString().split('T')[0] : '',
-      r.closed_date           ? new Date(r.closed_date).toISOString().split('T')[0] : '',
-      r.assigned_to, (r.notes || '').replace(/[\r\n,]/g, ' '),
-      new Date(r.created_at).toISOString().split('T')[0],
-    ].map(v => `"${(v ?? '').toString().replace(/"/g, '""')}"`).join(',');
-
-    const csv = [headers.join(','), ...rows.map(toRow)].join('\n');
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="opportunities_${Date.now()}.csv"`);
-    res.send(csv);
-  } catch (error) { res.status(500).json({ error: error.message }); }
-});
-
 // ── CRM Activities CRUD ───────────────────────────────────────────────────────
 
 router.get('/activities', requirePermission('crm', 'view'), async (req, res) => {
@@ -2286,9 +2877,14 @@ router.get('/activities', requirePermission('crm', 'view'), async (req, res) => 
 
     q += ` ORDER BY ca.activity_date DESC NULLS LAST LIMIT 200`;
 
-    const { rows } = await pool.query(q, params).catch(() => ({ rows: [] }));
+    // No `.catch(() => ({ rows: [] }))`. `crm_activities` did not exist in any
+    // migration, and swallowing that error meant the endpoint returned 200 with
+    // an empty list forever — indistinguishable from "nothing logged yet" — for
+    // a feature with a complete CRUD UI on top of it (audit C-04). The table is
+    // created by migration 20260819000002; a failure here must now surface.
+    const { rows } = await pool.query(q, params);
     res.json({ activities: rows });
-  } catch (error) { res.status(500).json({ error: error.message }); }
+  } catch (error) { respondError(res, error); }
 });
 
 router.post('/activities', requirePermission('crm', 'add'), async (req, res) => {
@@ -2302,21 +2898,27 @@ router.post('/activities', requirePermission('crm', 'add'), async (req, res) => 
 
     if (!activity_type) return res.status(400).json({ error: 'activity_type is required' });
 
+    // performed_by FKs employees — the list query joins `employees e ON
+    // e.id = ca.performed_by` for the display name, so writing a users.id here
+    // is the stock_ledger.created_by bug in a new place.
     const { rows } = await pool.query(
       `INSERT INTO crm_activities
          (company_id, activity_type, subject, description, activity_date, duration_mins,
-          lead_id, opportunity_id, account_id, contact_id, performed_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          lead_id, opportunity_id, account_id, contact_id, performed_by, created_by, next_followup_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [cid, activity_type, subject || null, description || null,
        activity_date || new Date().toISOString(), duration_mins || null,
-       lead_id || null, opportunity_id || null, account_id || null, contact_id || null, userId]
+       lead_id || null, opportunity_id || null, account_id || null, contact_id || null,
+       req.user?.employee_id ?? null, userId, req.body.next_followup_date || null]
     );
+    logAudit({ userId, module: 'CRM', recordId: rows[0].id, recordType: 'activity', action: 'create',
+               newData: { activity_type, subject: subject || null }, req });
     res.status(201).json(rows[0]);
-  } catch (error) { res.status(500).json({ error: error.message }); }
+  } catch (error) { respondError(res, error); }
 });
 
-router.put('/activities/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/activities/:id', requirePermission('crm', 'edit'), captureBefore('crm_activities'), async (req, res) => {
   try {
     const cid = companyOf(req);
     const {
@@ -2340,7 +2942,7 @@ router.put('/activities/:id', requirePermission('crm', 'edit'), async (req, res)
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.delete('/activities/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/activities/:id', requirePermission('crm', 'delete'), captureBefore('crm_activities'), async (req, res) => {
   try {
     const cid = companyOf(req);
     await pool.query(
@@ -2353,57 +2955,177 @@ router.delete('/activities/:id', requirePermission('crm', 'delete'), async (req,
 });
 
 // ── Customer 360 — single-call comprehensive account view ─────────────────────
+/**
+ * GET /api/crm/timeline — activities directly attached to one or more entities.
+ *
+ * Query keys are the entity columns themselves (lead_id, opportunity_id,
+ * ticket_id, quotation_id, …) and are OR-ed: an activity on an opportunity
+ * belongs to that opportunity's history whether or not it also names the
+ * account. Requiring every supplied key to match would return almost nothing.
+ */
+router.get('/timeline', requirePermission('crm', 'view'), async (req, res) => {
+  try {
+    const filters = {};
+    for (const k of TIMELINE_KEYS) {
+      if (req.query[k] !== undefined && req.query[k] !== '') filters[k] = req.query[k];
+    }
+    if (!Object.keys(filters).length) {
+      // Refusing beats returning every activity in the tenant: an unfiltered
+      // timeline is not a useful answer and is an expensive accident.
+      return res.status(400).json({
+        error: `Supply at least one of: ${TIMELINE_KEYS.join(', ')}`,
+      });
+    }
+    const rows = await timelineFor(pool, {
+      companyId: companyOf(req), filters,
+      from: req.query.from, to: req.query.to, limit: req.query.limit,
+      types: req.query.types ? String(req.query.types).split(',') : undefined,
+    });
+    res.json({ count: rows.length, filters, data: rows });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/crm/timeline/customer/:accountId — the whole customer history.
+ *
+ * Resolves the account's opportunities, leads, quotations, orders and projects
+ * first, then returns every activity attached to ANY of them. This is the
+ * question Customer 360 asks and the one that could not be answered while the
+ * seven activity tables had no common read model.
+ */
+router.get('/timeline/customer/:accountId', requirePermission('crm', 'view'), async (req, res) => {
+  try {
+    const accountId = parseInt(req.params.accountId, 10);
+    if (!Number.isInteger(accountId)) return res.status(400).json({ error: 'accountId must be an integer' });
+
+    // Scope check before reading history: the timeline crosses tables whose own
+    // company_id is inherited, so the account is the boundary to enforce.
+    const cid = companyOf(req);
+    const { rows: [acct] } = await pool.query(
+      `SELECT id FROM accounts WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [accountId, cid]
+    );
+    if (!acct) return res.status(404).json({ error: 'Account not found' });
+
+    const result = await customerTimeline(pool, {
+      companyId: cid, accountId,
+      from: req.query.from, to: req.query.to, limit: req.query.limit,
+      types: req.query.types ? String(req.query.types).split(',') : undefined,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 router.get('/customer-360/:accountId', requirePermission('crm', 'view'), async (req, res) => {
   try {
     const { accountId } = req.params;
     const cid = companyOf(req);
 
+    // Every query below is company-scoped. Previously only the invoice lookup
+    // was: the account, its contacts, its opportunities and its emails were
+    // fetched on id alone, so any authenticated user could read another
+    // tenant's customer by walking ids (audit C-07 — proven against a synthetic
+    // second tenant).
     const accRes = await pool.query(
-      'SELECT * FROM accounts WHERE id = $1 AND deleted_at IS NULL',
-      [accountId]
+      `SELECT a.*, p.party_code, p.gstin, p.credit_limit, p.payment_terms
+         FROM accounts a
+         LEFT JOIN parties p ON p.id = a.party_id
+        WHERE a.id = $1 AND a.deleted_at IS NULL
+          AND ($2::int IS NULL OR a.company_id = $2)`,
+      [accountId, cid]
     );
     if (!accRes.rows[0]) return res.status(404).json({ error: 'Account not found' });
     const account = accRes.rows[0];
 
-    const [contactsRes, oppsRes, emailsRes, activitiesRes, invoicesRes] = await Promise.allSettled([
-      pool.query(
-        `SELECT * FROM contacts WHERE account_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC`,
-        [accountId]
-      ),
-      pool.query(
-        `SELECT * FROM opportunities WHERE account_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC`,
-        [accountId]
-      ),
-      pool.query(
-        `SELECT * FROM crm_emails WHERE account_id = $1 ORDER BY sent_at DESC LIMIT 10`,
-        [accountId]
-      ),
-      pool.query(
-        `SELECT * FROM crm_activities WHERE account_id = $1 ORDER BY created_at DESC LIMIT 20`,
-        [accountId]
-      ),
-      pool.query(
-        `SELECT * FROM invoices
-         WHERE ($1::int IS NULL OR company_id = $1)
-           AND LOWER(customer_name) = LOWER($2)
-         ORDER BY created_at DESC LIMIT 20`,
-        [cid || null, account.account_name]
-      ),
-    ]);
+    // Invoices join on the canonical customer id, not on a name string.
+    // The old predicate was `LOWER(customer_name) = LOWER($2)` against a column
+    // that does not exist on `invoices` (it is `party_name`), so the query threw
+    // 42703 every time, Promise.allSettled swallowed it, and the Invoices panel
+    // rendered an empty "no records" state permanently (audit C-11).
+    const [contactsRes, oppsRes, emailsRes, activitiesRes, invoicesRes, quotesRes, ordersRes] =
+      await Promise.all([
+        pool.query(
+          `SELECT * FROM contacts
+            WHERE account_id = $1 AND deleted_at IS NULL
+              AND ($2::int IS NULL OR company_id = $2)
+            ORDER BY is_primary DESC, created_at DESC`,
+          [accountId, cid]
+        ),
+        pool.query(
+          `SELECT * FROM opportunities
+            WHERE account_id = $1 AND deleted_at IS NULL
+              AND ($2::int IS NULL OR company_id = $2)
+            ORDER BY created_at DESC`,
+          [accountId, cid]
+        ),
+        pool.query(
+          `SELECT * FROM crm_emails
+            WHERE account_id = $1
+              AND ($2::int IS NULL OR company_id = $2)
+            ORDER BY sent_at DESC LIMIT 10`,
+          [accountId, cid]
+        ),
+        pool.query(
+          `SELECT ca.*, e.name AS performed_by_name
+             FROM crm_activities ca
+             LEFT JOIN employees e ON e.id = ca.performed_by
+            WHERE ca.account_id = $1 AND ca.deleted_at IS NULL
+              AND ($2::int IS NULL OR ca.company_id = $2)
+            ORDER BY ca.activity_date DESC LIMIT 20`,
+          [accountId, cid]
+        ),
+        pool.query(
+          `SELECT i.* FROM invoices i
+            WHERE i.customer_id = $1 AND i.deleted_at IS NULL
+              AND ($2::int IS NULL OR i.company_id = $2)
+            ORDER BY i.invoice_date DESC LIMIT 20`,
+          [account.party_id, cid]
+        ),
+        pool.query(
+          `SELECT q.id, q.quotation_number, q.quotation_date, q.total_amount, q.status
+             FROM quotations q
+            WHERE q.customer_id = $1
+              AND ($2::int IS NULL OR q.company_id = $2)
+            ORDER BY q.quotation_date DESC LIMIT 20`,
+          [account.party_id, cid]
+        ),
+        pool.query(
+          `SELECT so.id, so.order_number, so.order_date, so.total_amount, so.order_status
+             FROM sales_orders so
+            WHERE so.customer_id = $1 AND so.deleted_at IS NULL
+              AND ($2::int IS NULL OR so.company_id = $2)
+            ORDER BY so.order_date DESC LIMIT 20`,
+          [account.party_id, cid]
+        ),
+      ]);
 
-    const contacts      = contactsRes.status    === 'fulfilled' ? contactsRes.value.rows    : [];
-    const opportunities = oppsRes.status        === 'fulfilled' ? oppsRes.value.rows        : [];
-    const emails        = emailsRes.status      === 'fulfilled' ? emailsRes.value.rows      : [];
-    const activities    = activitiesRes.status  === 'fulfilled' ? activitiesRes.value.rows  : [];
-    const invoices      = invoicesRes.status    === 'fulfilled' ? invoicesRes.value.rows    : [];
+    const contacts      = contactsRes.rows;
+    const opportunities = oppsRes.rows;
+    const emails        = emailsRes.rows;
+    const activities    = activitiesRes.rows;
+    const invoices      = invoicesRes.rows;
+    const quotations    = quotesRes.rows;
+    const sales_orders  = ordersRes.rows;
 
-    const wonOpps    = opportunities.filter(o => (o.stage || '').toLowerCase() === 'won');
-    const activeOpps = opportunities.filter(o => !['won', 'lost'].includes((o.stage || '').toLowerCase()));
+    const isWon    = o => /^won$/i.test(o.stage || '');
+    const isClosed = o => /^(won|lost)$/i.test(o.stage || '');
+    const wonOpps    = opportunities.filter(isWon);
+    const activeOpps = opportunities.filter(o => !isClosed(o));
 
     const allDates = [
       ...emails.map(e => e.sent_at),
-      ...activities.map(a => a.created_at),
+      ...activities.map(a => a.activity_date),
     ].filter(Boolean).sort().reverse();
+
+    const num = v => parseFloat(v || 0);
+    // Billed/collected come from the ledger, not from opportunity amounts —
+    // pipeline value and revenue are different business concepts.
+    const totalBilled    = invoices.reduce((s, i) => s + num(i.total_amount), 0);
+    const totalCollected = invoices.reduce((s, i) => s + num(i.paid_amount), 0);
 
     res.json({
       account,
@@ -2412,22 +3134,29 @@ router.get('/customer-360/:accountId', requirePermission('crm', 'view'), async (
       emails,
       activities,
       invoices,
+      quotations,
+      sales_orders,
       stats: {
-        total_pipeline_value: activeOpps.reduce((s, o) => s + parseFloat(o.expected_value || 0), 0),
-        total_won_value:      wonOpps.reduce((s, o) => s + parseFloat(o.expected_value || 0), 0),
+        total_pipeline_value: activeOpps.reduce((s, o) => s + num(o.expected_value), 0),
+        weighted_pipeline_value: activeOpps.reduce(
+          (s, o) => s + num(o.expected_value) * (num(o.probability_percentage) / 100), 0),
+        total_won_value:      wonOpps.reduce((s, o) => s + num(o.expected_value), 0),
         open_opportunities:   activeOpps.length,
         total_contacts:       contacts.length,
+        total_billed:         totalBilled,
+        total_collected:      totalCollected,
+        outstanding:          totalBilled - totalCollected,
         last_contact_date:    allDates[0] || null,
         days_as_customer:     account.created_at
           ? Math.floor((Date.now() - new Date(account.created_at).getTime()) / 86400000)
           : 0,
-        avg_deal_size: opportunities.length
-          ? opportunities.reduce((s, o) => s + parseFloat(o.expected_value || 0), 0) / opportunities.length
+        avg_deal_size: wonOpps.length
+          ? wonOpps.reduce((s, o) => s + num(o.expected_value), 0) / wonOpps.length
           : 0,
       },
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 

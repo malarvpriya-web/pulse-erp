@@ -1,24 +1,41 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { AlertTriangle, Plus, X, CheckCircle, Clock, Filter, Search, RefreshCw, Flag } from 'lucide-react';
+import {
+  AlertTriangle, Plus, X, CheckCircle, Clock, Filter, Search,
+  RefreshCw, Flag, FolderKanban,
+} from 'lucide-react';
 import { getProjectIssues, createProjectIssue, updateProjectIssue, deleteProjectIssue, getProjects, getProjectEmployees } from '../services/projectsService';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const SEVERITY_META = {
   critical: { bg: '#ffd4d4', color: '#b91c1c', label: 'Critical' },
   high:     { bg: '#fee2e2', color: '#dc2626', label: 'High' },
-  medium:   { bg: '#fef3c7', color: '#92400e', label: 'Medium' },
+  medium:   { bg: '#ede9fe', color: '#5b21b6', label: 'Medium' },
   low:      { bg: '#f3f4f6', color: '#6b7280', label: 'Low' },
 };
 
 const STATUS_META = {
   open:        { bg: '#fee2e2', color: '#dc2626', label: 'Open' },
-  in_progress: { bg: '#fef3c7', color: '#92400e', label: 'In Progress' },
+  in_progress: { bg: '#ede9fe', color: '#5b21b6', label: 'In Progress' },
   resolved:    { bg: '#dcfce7', color: '#15803d', label: 'Resolved' },
   closed:      { bg: '#f3f4f6', color: '#6b7280', label: 'Closed' },
   wont_fix:    { bg: '#e0e7ff', color: '#4338ca', label: "Won't Fix" },
 };
 
 const ISSUE_TYPES = ['general', 'technical', 'scope', 'resource', 'schedule', 'quality', 'commercial'];
+
+// The client retries a short 429 on its own; anything that reaches here has
+// already outlasted that budget, so tell the user what to do rather than
+// failing silently to an empty page.
+function describeLoadError(err) {
+  if (err?.status === 429 || err?.response?.status === 429) {
+    const secs = err?.retryAfter ?? err?.response?.data?.retry_after;
+    return secs
+      ? `Too many requests — the server asked us to wait ${secs}s. Retry after that.`
+      : 'Too many requests — please wait a moment and retry.';
+  }
+  return err?.response?.data?.error || 'Could not load issue data. Please retry.';
+}
 
 const empty = () => ({
   title: '', description: '', issue_type: 'general', severity: 'medium',
@@ -39,6 +56,7 @@ export default function IssueManagement({ setPage, urlParams }) {
   const [statusFilter,setStatusFilter]= useState('all');
   const [toast,       setToast]       = useState(null);
   const [pendingHandleDelete, setPendingHandleDelete] = useState(null);
+  const [loadError,   setLoadError]   = useState(null);
   const isMounted = useRef(true);
 
   useEffect(() => {
@@ -51,24 +69,35 @@ export default function IssueManagement({ setPage, urlParams }) {
     setTimeout(() => setToast(null), 3000);
   };
 
+  // Reference data (project list + assignee list). allSettled, not all: an
+  // unguarded Promise.all rejected the whole pair on a single 429 and left an
+  // unhandled rejection in the console with nothing shown to the user.
+  const loadRefs = useCallback(async () => {
+    const [prjs, emps] = await Promise.allSettled([getProjects(), getProjectEmployees()]);
+    if (!isMounted.current) return;
+    if (prjs.status === 'fulfilled') setProjects(Array.isArray(prjs.value) ? prjs.value : []);
+    if (emps.status === 'fulfilled') setEmployees(Array.isArray(emps.value) ? emps.value : []);
+
+    const failed = [prjs, emps].find(r => r.status === 'rejected');
+    if (failed) setLoadError(describeLoadError(failed.reason));
+    else if (isMounted.current) setLoadError(null);
+  }, []);
+
   useEffect(() => {
     const pid = urlParams?.id || sessionStorage.getItem('selectedProjectId');
     if (pid) setSelectedPid(String(pid));
-
-    Promise.all([getProjects(), getProjectEmployees()]).then(([prjs, emps]) => {
-      if (!isMounted.current) return;
-      setProjects(prjs);
-      setEmployees(emps);
-    });
-  }, []);
+    loadRefs();
+  }, [loadRefs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     if (!selectedPid) return;
     setLoading(true);
     try {
       const data = await getProjectIssues(selectedPid);
-      if (isMounted.current) setIssues(Array.isArray(data) ? data : []);
-    } catch { /* handled */ }
+      if (isMounted.current) { setIssues(Array.isArray(data) ? data : []); setLoadError(null); }
+    } catch (e) {
+      if (isMounted.current) { setIssues([]); setLoadError(describeLoadError(e)); }
+    }
     if (isMounted.current) setLoading(false);
   }, [selectedPid]);
 
@@ -128,7 +157,22 @@ export default function IssueManagement({ setPage, urlParams }) {
   const resolvedCount= issues.filter(i => ['resolved','closed'].includes(i.status)).length;
 
   return (
-    <div style={{ padding: '20px 24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Projects"
+        title="Issue Management"
+        subtitle="Track blockers, technical issues, scope deviations, and NCRs"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={14} />
+          </button>
+          <button className="plh-cta" onClick={openCreate}>
+            <Plus size={14} /> Raise Issue
+          </button>
+        </>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -148,25 +192,24 @@ export default function IssueManagement({ setPage, urlParams }) {
         }}>{toast.msg}</div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>
-            Issue Management
-          </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>
-            Track blockers, technical issues, scope deviations, and NCRs
-          </p>
+
+      {loadError && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,
+          padding: '10px 14px', borderRadius: 8,
+          background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 13,
+        }}>
+          <AlertTriangle size={16} />
+          <span style={{ flex: 1 }}>{loadError}</span>
+          <button
+            onClick={() => { setLoadError(null); loadRefs(); load(); }}
+            style={{
+              padding: '5px 12px', border: '1px solid #fcd34d', borderRadius: 6,
+              background: '#fff', color: '#92400e', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+            }}
+          >Retry</button>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{ padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', cursor: 'pointer' }}>
-            <RefreshCw size={14} />
-          </button>
-          <button onClick={openCreate} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
-            <Plus size={14} /> Raise Issue
-          </button>
-        </div>
-      </div>
+      )}
 
       {/* Project selector */}
       <div style={{ marginBottom: 16 }}>
@@ -185,7 +228,7 @@ export default function IssueManagement({ setPage, urlParams }) {
         {[
           { label: 'Total Issues', value: issues.length, color: '#6366f1', bg: '#eef2ff' },
           { label: 'Open', value: openCount, color: '#dc2626', bg: '#fef2f2' },
-          { label: 'Blockers', value: blockerCount, color: '#ea580c', bg: '#fff7ed' },
+          { label: 'Blockers', value: blockerCount, color: '#6d28d9', bg: '#fff7ed' },
           { label: 'Resolved', value: resolvedCount, color: '#15803d', bg: '#f0fdf4' },
         ].map(k => (
           <div key={k.label} style={{ background: k.bg, borderRadius: 8, padding: '14px 16px', border: `1px solid ${k.color}22` }}>
@@ -373,6 +416,6 @@ export default function IssueManagement({ setPage, urlParams }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,25 +1,17 @@
 // frontend/src/features/hr/pages/AssessmentCenter.jsx
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { GraduationCap } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const inputStyle = { width:'100%', boxSizing:'border-box', padding:'8px 10px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 };
 
 function Modal({ title, onClose, children, wide }) {
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
-
-      <ConfirmDialog
-        open={!!pendingArchiveAssessment}
-        title="Archive Assessment"
-        message="Archive this assessment?"
-        confirmLabel="Archive"
-        variant="warning"
-        onConfirm={archiveAssessment}
-        onCancel={() => setPendingArchiveAssessment(null)}
-      />
       <div style={{ background:'#fff', borderRadius:12, padding:24, width:'100%', maxWidth: wide ? 820 : 560, maxHeight:'90vh', overflowY:'auto' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
           <h3 style={{ margin:0, color:'#4c1d95', fontSize:16 }}>{title}</h3>
@@ -167,11 +159,15 @@ export default function AssessmentCenter() {
   const fmtTime = (s) => `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
-      <div style={{ marginBottom:16 }}>
-        <h2 style={{ margin:0, color:'#4c1d95', fontSize:22 }}>📝 Assessment Center</h2>
-        <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Build quizzes, administer tests, and track results</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={GraduationCap}
+        eyebrow="Human Resources"
+        title="📝 Assessment Center"
+        subtitle="Build quizzes, administer tests, and track results"
+      />
+    }>
+
 
       <div style={{ display:'flex', gap:4, borderBottom:'2px solid #e9e4ff', flexWrap:'wrap' }}>
         {[['list','Assessments'],['take','Take Assessment'],['history','My History']].map(([k,l]) => (
@@ -205,7 +201,7 @@ export default function AssessmentCenter() {
                   <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
                     <button onClick={() => openQEditor(a)} style={{ padding:'5px 12px', background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Edit Questions</button>
                     <button onClick={() => startAttempt(a)} style={{ padding:'5px 12px', background:'#dcfce7', color:'#16a34a', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Take</button>
-                    <button onClick={() => openResults(a)} style={{ padding:'5px 12px', background:'#fef3c7', color:'#d97706', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Results</button>
+                    <button onClick={() => openResults(a)} style={{ padding:'5px 12px', background:'#ede9fe', color:'#6d28d9', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Results</button>
                     <button onClick={() => setPendingArchiveAssessment(a.id)} style={{ padding:'5px 12px', background:'#fef2f2', color:'#dc2626', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Archive</button>
                   </div>
                 </div>
@@ -410,6 +406,16 @@ export default function AssessmentCenter() {
           </table>
         </Modal>
       )}
-    </div>
+
+      <ConfirmDialog
+        open={!!pendingArchiveAssessment}
+        title="Archive Assessment"
+        message="Archive this assessment?"
+        confirmLabel="Archive"
+        variant="warning"
+        onConfirm={archiveAssessment}
+        onCancel={() => setPendingArchiveAssessment(null)}
+      />
+    </PageShell>
   );
 }

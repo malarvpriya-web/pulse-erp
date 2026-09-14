@@ -26,7 +26,7 @@ const MODULE_MAP = {
 
 const SEV_STYLE = {
   high:   { bg:'#fee2e2', color:'#dc2626', label:'High',   dot:'#dc2626' },
-  medium: { bg:'#fef3c7', color:'#d97706', label:'Medium', dot:'#d97706' },
+  medium: { bg:'#ede9fe', color:'#6d28d9', label:'Medium', dot:'#6d28d9' },
   low:    { bg:'#d1fae5', color:'#16a34a', label:'Low',    dot:'#16a34a' },
 };
 
@@ -92,7 +92,7 @@ export default function AnomalyDetection({ setPage }) {
 
       {/* severity counters */}
       <div style={{ display:'flex', gap:8, marginBottom:14 }}>
-        {[['all','All',anomalies.length,'#7c3aed'],['high','Critical',counts.high,'#dc2626'],['medium','Warning',counts.medium,'#d97706'],['low','Info',counts.low,'#16a34a']].map(([k,l,n,c]) => (
+        {[['all','All',anomalies.length,'#7c3aed'],['high','Critical',counts.high,'#dc2626'],['medium','Warning',counts.medium,'#6d28d9'],['low','Info',counts.low,'#16a34a']].map(([k,l,n,c]) => (
           <button key={k} onClick={() => setFilter(k)}
             style={{ flex:1, padding:'7px 4px', borderRadius:8, border:`1.5px solid ${filter===k ? c : '#e9e4ff'}`, background: filter===k ? `${c}15` : '#fff', cursor:'pointer', textAlign:'center' }}>
             <div style={{ fontSize:18, fontWeight:700, color:c }}>{n}</div>

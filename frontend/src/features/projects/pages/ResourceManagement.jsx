@@ -1,10 +1,11 @@
 // frontend/src/features/projects/pages/ResourceManagement.jsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { Users, Target, AlertTriangle } from 'lucide-react';
+import { Users, Target, AlertTriangle, FolderKanban } from 'lucide-react';
 import api from '@/services/api/client';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function EmptyState({ icon: Icon, title, sub, action }) {
   return (
@@ -39,7 +40,7 @@ const ALLOC_COLOR = (pct, target = 80) => {
 
 const RISK_PROB = { low: 1, medium: 2, high: 4 };
 const RISK_IMP = { low: 1, medium: 2, high: 4 };
-const RISK_COLORS = { open: '#dc2626', mitigating: '#d97706', closed: '#059669' };
+const RISK_COLORS = { open: '#dc2626', mitigating: '#6d28d9', closed: '#059669' };
 const STATUS_ICON = { completed: '✅', 'in-progress': '🔄', pending: '⏳', delayed: '⚠️' };
 
 export default function ResourceManagement({ setPage } = {}) {
@@ -107,9 +108,12 @@ export default function ResourceManagement({ setPage } = {}) {
     try { await api.post(`/projects/projects/${assignForm.project_id}/resources`, assignForm); setShowAssign(false); load(); } catch (_) { setShowAssign(false); }
   };
 
+  // One entry per week. Keyed on the full week-start date — slicing to 'YYYY-MM'
+  // collapsed 8 columns into ~3 duplicate keys and mislabelled every column.
   const weeks = Array.from({ length: 8 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() + (i - 2) * 7);
-    return d.toISOString().split('T')[0].slice(0, 7);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return { key: iso, label: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) };
   });
 
   const _riskMatrix = Array.from({ length: 4 }, (_, y) => Array.from({ length: 4 }, (_, x) => ({ x: x + 1, y: y + 1, risks: risks.filter(r => RISK_PROB[r.probability] === (y + 1) && RISK_IMP[r.impact] === (x + 1)) })));
@@ -117,7 +121,14 @@ export default function ResourceManagement({ setPage } = {}) {
   const overdue = milestones.filter(m => m.status !== 'completed' && new Date(m.due_date) < new Date());
 
   return (
-    <div style={{ padding: '24px', background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Projects"
+        title="Resource Management"
+        subtitle="Resource allocation, milestones, risk register"
+      />
+    }>
       <ConfirmDialog
         open={!!pendingInvoiceNav}
         title="Invoice Created"
@@ -127,10 +138,6 @@ export default function ResourceManagement({ setPage } = {}) {
         onConfirm={() => { setPendingInvoiceNav(null); setPage('InvoicesNew'); }}
         onCancel={() => setPendingInvoiceNav(null)}
       />
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: '#111827', margin: 0 }}>Resource Management</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 14 }}>Resource allocation, milestones, risk register</p>
-      </div>
 
       <div style={{ display: 'flex', gap: 4, background: '#f0ebff', padding: 4, borderRadius: 10, marginBottom: 24, width: 'fit-content' }}>
         {['Resource Allocation', 'Milestones', 'Risk Register'].map((t, i) => (
@@ -199,7 +206,7 @@ export default function ResourceManagement({ setPage } = {}) {
                 <tr>
                   <th style={{ ...thStyle, minWidth: 200 }}>Employee</th>
                   <th style={{ ...thStyle, minWidth: 100 }}>Total %</th>
-                  {weeks.map(w => <th key={w} style={{ ...thStyle, textAlign: 'center', minWidth: 90 }}>{w}</th>)}
+                  {weeks.map(w => <th key={w.key} style={{ ...thStyle, textAlign: 'center', minWidth: 90 }}>{w.label}</th>)}
                 </tr>
               </thead>
               <tbody>
@@ -219,7 +226,7 @@ export default function ResourceManagement({ setPage } = {}) {
                       const bg = ALLOC_COLOR(allocForWeek, utilizationTarget);
                       const textColor = allocForWeek > 50 ? '#fff' : '#374151';
                       return (
-                        <td key={w} style={{ ...tdStyle, textAlign: 'center', padding: 4 }}>
+                        <td key={w.key} style={{ ...tdStyle, textAlign: 'center', padding: 4 }}>
                           <div style={{ background: bg, color: textColor, borderRadius: 6, padding: '6px 4px', fontSize: 11, fontWeight: 500, cursor: 'pointer' }}
                             title={(emp?.projects ?? []).map(p => `${p?.project_name ?? ''}: ${p?.allocation_pct ?? 0}%`).join('\n')}>
                             {allocForWeek > 0 ? `${allocForWeek}%` : '-'}
@@ -342,7 +349,7 @@ export default function ResourceManagement({ setPage } = {}) {
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
             <div style={{ display: 'flex', gap: 12, fontSize: 13 }}>
-              {[['open', '#dc2626'], ['mitigating', '#d97706'], ['closed', '#059669']].map(([s, c]) => (
+              {[['open', '#dc2626'], ['mitigating', '#6d28d9'], ['closed', '#059669']].map(([s, c]) => (
                 <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <div style={{ width: 10, height: 10, borderRadius: '50%', background: c }} />
                   <span>{s}: {risks.filter(r => r.status === s).length}</span>
@@ -402,7 +409,7 @@ export default function ResourceManagement({ setPage } = {}) {
                       return py === yIdx && ix === xIdx;
                     });
                     const cellScore = (yIdx + 1) * (xIdx + 1);
-                    const bg = cellScore >= 9 ? '#fee2e2' : cellScore >= 4 ? '#fef3c7' : '#f0fdf4';
+                    const bg = cellScore >= 9 ? '#fee2e2' : cellScore >= 4 ? '#ede9fe' : '#f0fdf4';
                     return (
                       <div key={xIdx} style={{ width: 44, height: 44, background: bg, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 2 }}>
                         {cellRisks.map((r, ri) => (
@@ -422,13 +429,13 @@ export default function ResourceManagement({ setPage } = {}) {
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead><tr>{['Risk', 'Category', 'Probability', 'Impact', 'Score', 'Owner', 'Status', 'Mitigation'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {risks.sort((a, b) => b.risk_score - a.risk_score).map((r, i) => (
+                  {[...risks].sort((a, b) => b.risk_score - a.risk_score).map((r, i) => (
                     <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
                       <td style={{ ...tdStyle, fontWeight: 600, maxWidth: 160 }}>{r.title}</td>
                       <td style={tdStyle}><span style={{ padding: '2px 6px', background: '#f0ebff', color: '#6B3FDB', borderRadius: 4, fontSize: 11 }}>{r.category}</span></td>
-                      <td style={tdStyle}><span style={{ padding: '2px 6px', background: r.probability === 'high' ? '#fee2e2' : r.probability === 'medium' ? '#fef3c7' : '#f0fdf4', color: r.probability === 'high' ? '#dc2626' : r.probability === 'medium' ? '#92400e' : '#059669', borderRadius: 4, fontSize: 11 }}>{r.probability}</span></td>
-                      <td style={tdStyle}><span style={{ padding: '2px 6px', background: r.impact === 'high' ? '#fee2e2' : r.impact === 'medium' ? '#fef3c7' : '#f0fdf4', color: r.impact === 'high' ? '#dc2626' : r.impact === 'medium' ? '#92400e' : '#059669', borderRadius: 4, fontSize: 11 }}>{r.impact}</span></td>
-                      <td style={{ ...tdStyle, fontWeight: 700, color: r.risk_score >= 9 ? '#dc2626' : r.risk_score >= 4 ? '#d97706' : '#059669' }}>{r.risk_score}</td>
+                      <td style={tdStyle}><span style={{ padding: '2px 6px', background: r.probability === 'high' ? '#fee2e2' : r.probability === 'medium' ? '#ede9fe' : '#f0fdf4', color: r.probability === 'high' ? '#dc2626' : r.probability === 'medium' ? '#5b21b6' : '#059669', borderRadius: 4, fontSize: 11 }}>{r.probability}</span></td>
+                      <td style={tdStyle}><span style={{ padding: '2px 6px', background: r.impact === 'high' ? '#fee2e2' : r.impact === 'medium' ? '#ede9fe' : '#f0fdf4', color: r.impact === 'high' ? '#dc2626' : r.impact === 'medium' ? '#5b21b6' : '#059669', borderRadius: 4, fontSize: 11 }}>{r.impact}</span></td>
+                      <td style={{ ...tdStyle, fontWeight: 700, color: r.risk_score >= 9 ? '#dc2626' : r.risk_score >= 4 ? '#6d28d9' : '#059669' }}>{r.risk_score}</td>
                       <td style={tdStyle}>{r.owner_name || '-'}</td>
                       <td style={tdStyle}><span style={{ padding: '2px 6px', borderRadius: 4, fontSize: 11, background: `${RISK_COLORS[r.status] || '#6b7280'}20`, color: RISK_COLORS[r.status] || '#6b7280' }}>{r.status}</span></td>
                       <td style={{ ...tdStyle, maxWidth: 200, fontSize: 12, color: '#6b7280' }}>{r.mitigation_plan}</td>
@@ -440,6 +447,6 @@ export default function ResourceManagement({ setPage } = {}) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

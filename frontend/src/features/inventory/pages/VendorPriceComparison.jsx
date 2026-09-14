@@ -4,12 +4,12 @@
 // breaks the catalogue down by ABC class and category. Filter by store,
 // category, ABC class and search. Data: GET /inventory/catalog/vendor-price-comparison
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Package, Users, IndianRupee, Percent } from 'lucide-react';
+import { Search, Package, Users, IndianRupee, Percent, Building2 } from 'lucide-react';
 import api from '@/services/api/client';
-import { getVendorPriceComparison, getCategories } from '../services/inventoryService';
-import { PageLayout, PageHeader, KPICardGrid, KPICard, ContentCard, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { getCategories } from '../services/inventoryService';
+import { PageLayout, PageHeader, KPICardGrid, KPICard, ContentCard, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
-const ABC_COLORS = { A: ['#d1fae5', '#16a34a'], B: ['#fef3c7', '#d97706'], C: ['#f3f4f6', '#6b7280'], Unclassified: ['#f3f4f6', '#9ca3af'] };
+const ABC_COLORS = { A: ['#d1fae5', '#16a34a'], B: ['#ede9fe', '#6d28d9'], C: ['#f3f4f6', '#6b7280'], Unclassified: ['#f3f4f6', '#9ca3af'] };
 const BRAND = '#6B3FDB';
 
 const fmtMoney = (v) => {
@@ -94,16 +94,24 @@ export default function VendorPriceComparison() {
   const selInput = { padding: '8px 12px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, background: '#fff' };
 
   return (
-    <PageLayout>
-      <PageHeader
-        title="Component & Vendor Pricing"
-        description="Compare every vendor quote per store — best price, spread & savings vs the preferred vendor, by category & ABC class"
-        actions={items.length > 0 && (
-          <button onClick={() => exportCSV(items)} className="pl-icon-btn">⬇ Export CSV</button>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Building2}
+          eyebrow="Inventory"
+          title="Component & Vendor Pricing"
+          subtitle="Compare every vendor quote per store — best price, spread & savings vs the preferred vendor, by category & ABC class"
+          actions={items.length > 0 && (
+          <button onClick={() => exportCSV(items)} className="plh-cta">⬇ Export CSV</button>
         )}
-        search={{ value: filters.search, onChange: v => setFilters(f => ({ ...f, search: v })), placeholder: 'Search component…' }}
-        filters={
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        />
+        <div className="plh-toolbar">
+          <label className="plh-search">
+            <Search size={13} aria-hidden="true" />
+            <input value={filters.search} onChange={e => (v => setFilters(f => ({ ...f, search: v })))(e.target.value)}
+              placeholder={'Search component…'} aria-label={'Search component…'} />
+          </label>
+          {<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <select style={selInput} value={filters.warehouse_id} onChange={e => setFilters(f => ({ ...f, warehouse_id: e.target.value }))}>
               <option value="">All Stores</option>
               {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouse_name || w.name}</option>)}
@@ -119,9 +127,11 @@ export default function VendorPriceComparison() {
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
               <input type="checkbox" checked={onlySavings} onChange={e => setOnlySavings(e.target.checked)} /> Only with savings
             </label>
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
 
       {error && <div style={{ background: '#fee2e2', color: '#dc2626', borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13, fontWeight: 600 }}>{error}</div>}
       {loading && <div style={{ textAlign: 'center', padding: 48, color: '#9ca3af', fontSize: 14 }}>Loading comparison…</div>}
@@ -198,7 +208,7 @@ export default function VendorPriceComparison() {
                       <td style={{ padding: '8px 12px', whiteSpace: 'nowrap', color: '#374151' }}>{r.best_vendor || '—'}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#6b7280' }}>{fmtMoney(r.avg_price)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#6b7280' }}>{fmtMoney(r.highest_price)}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.spread_pct > 0 ? '#d97706' : '#9ca3af' }}>{r.spread_pct != null ? `${fmtNum(r.spread_pct)}%` : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.spread_pct > 0 ? '#6d28d9' : '#9ca3af' }}>{r.spread_pct != null ? `${fmtNum(r.spread_pct)}%` : '—'}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#6b7280' }}>{fmtMoney(r.preferred_price)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: savings > 0 ? 700 : 400, color: savings > 0 ? '#16a34a' : '#9ca3af' }}>{savings > 0 ? fmtMoney(savings) : '—'}</td>
                     </tr>
@@ -209,6 +219,6 @@ export default function VendorPriceComparison() {
           </TableContainer>
         </>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

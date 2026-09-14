@@ -3,9 +3,11 @@
 // Sales & Operations Planning: RCCP (rough-cut capacity from MPS) + aggregate
 // S&OP plan (demand vs supply vs projected inventory). Drives /sop.
 import { useState, useEffect, useCallback, Fragment } from 'react';
+import { Factory } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB', HEAD = '#4c1d95', INK = '#374151', MUT = '#6b7280';
 const card = { background: '#fff', border: '1px solid #ede9fe', borderRadius: 12, padding: 16 };
@@ -16,8 +18,8 @@ function loadColor(pct) {
   if (pct <= 0) return { bg: '#f9fafb', fg: '#9ca3af' };
   if (pct <= 70) return { bg: '#dcfce7', fg: '#15803d' };
   if (pct <= 90) return { bg: '#d1fae5', fg: '#047857' };
-  if (pct <= 100) return { bg: '#fef3c7', fg: '#b45309' };
-  if (pct <= 150) return { bg: '#fed7aa', fg: '#c2410c' };
+  if (pct <= 100) return { bg: '#ede9fe', fg: '#6d28d9' };
+  if (pct <= 150) return { bg: '#ddd6fe', fg: '#5b21b6' };
   return { bg: '#fecaca', fg: '#b91c1c' };
 }
 
@@ -55,11 +57,18 @@ export default function SOPPlanning() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="📈 Sales & Operations Planning"
+        subtitle="Rough-cut capacity validation of the MPS + aggregate demand/supply/inventory plan"
+      />
+    }>
       <div style={{ marginBottom: 18, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ margin: '0 0 4px', color: HEAD, fontSize: 22 }}>📈 Sales &amp; Operations Planning</h2>
-          <p style={{ margin: 0, color: MUT, fontSize: 13 }}>Rough-cut capacity validation of the MPS + aggregate demand/supply/inventory plan</p>
+
+
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <label style={{ fontSize: 12, color: MUT }}>Horizon (days)
@@ -142,6 +151,6 @@ export default function SOPPlanning() {
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

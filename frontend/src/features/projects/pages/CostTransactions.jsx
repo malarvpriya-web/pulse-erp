@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const LIGHT = '#f5f3ff';
@@ -20,7 +22,7 @@ const COST_TYPES = [
 ];
 
 const TYPE_COLORS = {
-  SALES_TRAVEL:'#d97706', APPLICATION_ENGINEERING:'#b45309', ENGINEERING:'#2563eb',
+  SALES_TRAVEL:'#6d28d9', APPLICATION_ENGINEERING:'#6d28d9', ENGINEERING:'#2563eb',
   PROCUREMENT:'#0d9488', MATERIAL:'#6B3FDB', INVENTORY:'#047857', PRODUCTION:'#0891b2',
   LABOUR:'#1d4ed8', QUALITY:'#6d28d9', FAT:'#4f46e5', TRANSPORT:'#0369a1',
   INSTALLATION:'#dc2626', COMMISSIONING:'#7c2d12', SERVICE:'#9f1239', AMC:'#065f46', OTHER:'#6b7280',
@@ -165,30 +167,24 @@ export default function CostTransactions({ setPage }) {
   const unallocatedCount = unallocated?.count || 0;
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111' }}>Cost Transactions</h2>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>
-            Unified cost ledger across all modules — {total} entries · {cr(totalAmount)} total
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button onClick={handleCapture} disabled={capturing}
-            style={{ padding: '8px 14px', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, color: '#374151', fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Projects"
+        title="Cost Transactions"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={handleCapture} disabled={capturing}>
             {capturing ? 'Capturing…' : '⬇ Capture Module Costs'}
           </button>
-          <button onClick={() => setPage?.('ProjectProfitabilityDashboard')}
-            style={{ padding: '8px 14px', background: LIGHT, border: `1px solid ${BORDER}`, borderRadius: 8, color: P, fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('ProjectProfitabilityDashboard')}>
             ← Dashboard
           </button>
-          <button onClick={() => { setForm(EMPTY); setEditId(null); setShowForm(true); }}
-            style={{ padding: '8px 16px', background: P, border: 'none', borderRadius: 8, color: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+          <button className="plh-cta" onClick={() => { setForm(EMPTY); setEditId(null); setShowForm(true); }}>
             + Add Cost
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       {captureMsg && (
         <div style={{ marginBottom: 16, padding: '10px 14px', background: captureMsg.startsWith('✓') ? '#f0fdf4' : '#fef2f2', border: `1px solid ${captureMsg.startsWith('✓') ? '#86efac' : '#fca5a5'}`, borderRadius: 8, color: captureMsg.startsWith('✓') ? '#059669' : '#dc2626', fontSize: 13 }}>
@@ -198,10 +194,10 @@ export default function CostTransactions({ setPage }) {
 
       {/* Unallocated Alert */}
       {unallocatedCount > 0 && (
-        <div style={{ marginBottom: 16, padding: '10px 14px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, color: '#92400e', fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ marginBottom: 16, padding: '10px 14px', background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 8, color: '#5b21b6', fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>⚠️ <strong>{unallocatedCount} UNALLOCATED COSTS</strong> — {cr(unallocated?.total_unallocated)} not linked to a project, customer, PO, or cost centre.</span>
           <button onClick={() => setFilters(f => ({ ...f, unallocated: f.unallocated === 'true' ? '' : 'true' }))}
-            style={{ padding: '4px 10px', background: '#92400e', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+            style={{ padding: '4px 10px', background: '#5b21b6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
             {filters.unallocated === 'true' ? 'Show All' : 'Show Unallocated'}
           </button>
         </div>
@@ -305,7 +301,7 @@ export default function CostTransactions({ setPage }) {
             </div>
             {/* Allocation check preview */}
             {(form.cost_type || form.amount) && (
-              <div style={{ marginTop: 12, padding: '8px 12px', background: (!form.project_id || !form.customer_name || !form.po_number || !form.cost_center_id) ? '#fef3c7' : '#f0fdf4', borderRadius: 8, fontSize: 12 }}>
+              <div style={{ marginTop: 12, padding: '8px 12px', background: (!form.project_id || !form.customer_name || !form.po_number || !form.cost_center_id) ? '#ede9fe' : '#f0fdf4', borderRadius: 8, fontSize: 12 }}>
                 {(!form.project_id || !form.customer_name || !form.po_number || !form.cost_center_id)
                   ? `⚠ UNALLOCATED: Missing — ${[!form.project_id && 'Project', !form.customer_name && 'Customer', !form.po_number && 'PO Number', !form.cost_center_id && 'Cost Centre'].filter(Boolean).join(', ')}`
                   : '✓ Fully allocated — Project, Customer, PO & Cost Centre linked'}
@@ -342,7 +338,7 @@ export default function CostTransactions({ setPage }) {
               <tbody>
                 {visibleRows.map((r, i) => (
                   <tr key={r.id} style={{
-                    background: r.is_unallocated ? '#fffbeb' : (i % 2 === 0 ? '#fff' : '#fafafa'),
+                    background: r.is_unallocated ? '#f5f3ff' : (i % 2 === 0 ? '#fff' : '#fafafa'),
                     borderBottom: '1px solid #f3f4f6',
                   }}>
                     <td style={{ padding: '9px 12px', whiteSpace: 'nowrap', color: '#374151' }}>
@@ -361,7 +357,7 @@ export default function CostTransactions({ setPage }) {
                     <td style={{ padding: '9px 12px', textAlign: 'right', fontWeight: 600 }}>{cr(r.amount)}</td>
                     <td style={{ padding: '9px 12px' }}>
                       {r.is_unallocated ? (
-                        <span title={r.unallocated_reason} style={{ background: '#fef3c7', color: '#92400e', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600, cursor: 'help' }}>
+                        <span title={r.unallocated_reason} style={{ background: '#ede9fe', color: '#5b21b6', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600, cursor: 'help' }}>
                           UNALLOCATED
                         </span>
                       ) : (
@@ -396,6 +392,6 @@ export default function CostTransactions({ setPage }) {
           )}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

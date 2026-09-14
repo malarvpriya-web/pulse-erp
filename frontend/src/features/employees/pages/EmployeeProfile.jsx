@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
+import { Users } from 'lucide-react';
 import api from "@/services/api/client";
 import './EmployeesData.css';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P      = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -30,7 +32,7 @@ const Card = ({ title, children }) => (
   </div>
 );
 
-const EX_STATUSES = new Set(['left','terminated','resigned','inactive','ex-employee','notice_period','notice period']);
+const EX_STATUSES = new Set(['left','terminated','resigned','inactive','ex-employee','notice','notice_period','notice period']);
 function isExStatus(s) { return EX_STATUSES.has((s || '').toLowerCase()); }
 
 const SEPARATION_OPTIONS = [
@@ -139,7 +141,14 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   const [fetchError, setFetchError] = useState(null);
   const isMounted = useRef(true);
 
-  const [activeTab, setActiveTab] = useState("Overview");
+  // Deep-linkable tab, so callers can land on a specific section rather than
+  // Overview — My Workbench's "Recently Hired" card links straight to Onboarding.
+  // Validated against BASE_TABS: an unknown ?tab= would otherwise render a header
+  // with no matching panel below it. 'Exit Details' is intentionally not reachable
+  // this way, since it only exists for ex-employees and is added later, per-record.
+  const [activeTab, setActiveTab] = useState(
+    BASE_TABS.includes(urlParams?.tab) ? urlParams.tab : "Overview"
+  );
   const [notesText, setNotesText] = useState("");
   const [notesList, setNotesList] = useState([]);
   const [showOffboardModal, setShowOffboardModal] = useState(false);
@@ -328,14 +337,37 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
 
   const STATUS_STYLE = {
     Active:    { bg: '#dcfce7', color: '#166534' },
-    Probation: { bg: '#fef3c7', color: '#92400e' },
+    Probation: { bg: '#ede9fe', color: '#5b21b6' },
     Notice:    { bg: '#fee2e2', color: '#991b1b' },
     Left:      { bg: '#f3f4f6', color: '#6b7280' },
   };
   const ss = STATUS_STYLE[employee.status] || STATUS_STYLE.Active;
 
   return (
-    <div style={{ margin: '-20px', background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Employees"
+        title={`${employee.first_name}${employee.last_name}`}
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage(isEx ? 'ExEmployees' : 'EmployeesData')}>
+            ← Back to List
+          </button>
+          {!isEx && (
+              <button className="plh-cta plh-cta--ghost" onClick={() => setShowOffboardModal(true)}>
+                🚪 Offboard
+              </button>
+            )}
+          <button className="plh-cta" onClick={() => {
+              sessionStorage.setItem('selectedEmployee', JSON.stringify(employee));
+              sessionStorage.setItem('selectedEmployeeId', String(employee.id));
+              setPage('EditEmployee');
+            }}>
+              ✏️ Edit Employee
+            </button>
+        </>}
+      />
+    }>
 
       {/* Edit Exit Details modal */}
       {showExitEdit && (
@@ -399,98 +431,6 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
       )}
 
       {/* ── Hero ── */}
-      <div style={{
-        background: 'linear-gradient(135deg, #4f46e5 0%, #6d28d9 60%, #6B3FDB 100%)',
-        padding: '28px 32px 32px',
-        position: 'relative', overflow: 'hidden',
-      }}>
-        {/* decorative circles */}
-        <div style={{ position:'absolute', top:-40, right:-40, width:180, height:180, borderRadius:'50%', background:'rgba(255,255,255,.06)' }} />
-        <div style={{ position:'absolute', bottom:-30, left:'40%', width:120, height:120, borderRadius:'50%', background:'rgba(255,255,255,.05)' }} />
-
-        {/* top row: back + actions */}
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24, position:'relative', zIndex:1 }}>
-          <button onClick={() => setPage(isEx ? 'ExEmployees' : 'EmployeesData')} style={{
-            display:'flex', alignItems:'center', gap:6,
-            background:'rgba(255,255,255,.15)', border:'1px solid rgba(255,255,255,.25)',
-            color:'#fff', borderRadius:8, padding:'7px 14px', fontSize:13, fontWeight:600, cursor:'pointer',
-          }}>
-            ← Back to List
-          </button>
-          <div style={{ display:'flex', gap:8 }}>
-            {!isEx && (
-              <button onClick={() => setShowOffboardModal(true)} style={{
-                display:'flex', alignItems:'center', gap:6,
-                background:'rgba(220,38,38,.85)', border:'none',
-                color:'#fff', borderRadius:8, padding:'7px 14px', fontSize:13, fontWeight:700, cursor:'pointer',
-              }}>
-                🚪 Offboard
-              </button>
-            )}
-            <button onClick={() => {
-              sessionStorage.setItem('selectedEmployee', JSON.stringify(employee));
-              sessionStorage.setItem('selectedEmployeeId', String(employee.id));
-              setPage('EditEmployee');
-            }} style={{
-              display:'flex', alignItems:'center', gap:6,
-              background:'#fff', border:'none',
-              color: P, borderRadius:8, padding:'7px 16px', fontSize:13, fontWeight:700, cursor:'pointer',
-            }}>
-              ✏️ Edit Employee
-            </button>
-          </div>
-        </div>
-
-        {/* profile info row */}
-        <div style={{ display:'flex', alignItems:'center', gap:20, position:'relative', zIndex:1 }}>
-          {employee.photo_url ? (
-            <img
-              src={`${import.meta.env.VITE_API_URL?.replace('/api', '')}${employee.photo_url}`}
-              alt={employee?.name ? `${employee.name} profile photo` : 'Employee profile photo'}
-              style={{ width:80, height:80, borderRadius:'50%', border:'3px solid rgba(255,255,255,.4)', objectFit:'cover', flexShrink:0 }}
-            />
-          ) : (
-            <div style={{
-              width:80, height:80, borderRadius:'50%',
-              background:'rgba(255,255,255,.2)', border:'3px solid rgba(255,255,255,.4)',
-              display:'flex', alignItems:'center', justifyContent:'center',
-              fontSize:28, fontWeight:800, color:'#fff', flexShrink:0,
-            }}>
-              {initials}
-            </div>
-          )}
-          <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-              <h1 style={{ margin:0, fontSize:22, fontWeight:800, color:'#fff' }}>
-                {employee.first_name} {employee.last_name}
-              </h1>
-              <span style={{
-                padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:700,
-                background: ss.bg, color: ss.color,
-              }}>
-                {employee.status || 'Active'}
-              </span>
-            </div>
-            <p style={{ margin:'4px 0 0', fontSize:14, color:'rgba(255,255,255,.8)' }}>
-              {employee.designation}{employee.department ? ` · ${employee.department}` : ''}
-            </p>
-            <div style={{ display:'flex', flexWrap:'wrap', gap:'12px 20px', marginTop:8 }}>
-              {employee.office_id && (
-                <span style={{ fontSize:12, color:'rgba(255,255,255,.7)' }}>🪪 {employee.office_id}</span>
-              )}
-              {employee.company_email && (
-                <span style={{ fontSize:12, color:'rgba(255,255,255,.7)' }}>✉️ {employee.company_email}</span>
-              )}
-              {employee.phone && (
-                <span style={{ fontSize:12, color:'rgba(255,255,255,.7)' }}>📱 {employee.phone}</span>
-              )}
-              {employee.joining_date && (
-                <span style={{ fontSize:12, color:'rgba(255,255,255,.7)' }}>📅 Joined {fmtDate(employee.joining_date)}</span>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
 
       {/* ── Tabs ── */}
       <div className="emp-profile-tabs" style={{
@@ -694,8 +634,8 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                       {docRecords.map(doc => {
                         const status   = doc.status || (doc.verified ? 'verified' : 'pending');
                         const viewUrl  = doc.drive_url || doc.file_url || null;
-                        const STATUS_C = { verified:'#15803d', pending:'#92400e', rejected:'#dc2626' };
-                        const STATUS_B = { verified:'#dcfce7', pending:'#fef3c7', rejected:'#fee2e2' };
+                        const STATUS_C = { verified:'#15803d', pending:'#5b21b6', rejected:'#dc2626' };
+                        const STATUS_B = { verified:'#dcfce7', pending:'#ede9fe', rejected:'#fee2e2' };
                         return (
                           <tr key={doc.id} style={{ borderBottom:`1px solid #f3f4f6` }}>
                             <td style={{ padding:'10px 14px' }}>
@@ -754,7 +694,7 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                   </thead>
                   <tbody>
                     {assetRecords.map((a, i) => {
-                      const statusColor = a.status === 'returned' ? '#6b7280' : a.status === 'allocated' ? '#16a34a' : '#d97706';
+                      const statusColor = a.status === 'returned' ? '#6b7280' : a.status === 'allocated' ? '#16a34a' : '#6d28d9';
                       return (
                         <tr key={a.id} style={{ borderBottom:`1px solid #f0ebff`, background: i%2===0?'#fff':'#faf9ff' }}>
                           <td style={{ padding:'10px 14px', fontWeight:600, color:'#1f2937' }}>
@@ -990,9 +930,9 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                             disabled={clearanceSaving}
                             style={{
                               fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
-                              background: done ? '#dcfce7' : '#fef9c3',
-                              color: done ? '#166534' : '#92400e',
-                              border: `1px solid ${done ? '#bbf7d0' : '#fde68a'}`,
+                              background: done ? '#dcfce7' : '#ede9fe',
+                              color: done ? '#166534' : '#5b21b6',
+                              border: `1px solid ${done ? '#bbf7d0' : '#ddd6fe'}`,
                               opacity: clearanceSaving ? 0.6 : 1,
                             }}
                           >
@@ -1053,7 +993,7 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
         )}
 
       </div>
-    </div>
+    </PageShell>
   );
 }
 

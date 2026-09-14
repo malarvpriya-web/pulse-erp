@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 import {
   LineChart, Line, ResponsiveContainer,
 } from 'recharts';
@@ -35,7 +37,7 @@ function Sparkline({ data }) {
   );
 }
 
-export default function ForexManagement() {
+export default function ForexManagement({ embedded = false }) {
   const [tab, setTab] = useState(0);
   const [rates, setRates] = useState([]);
   const [exposure, setExposure] = useState([]);
@@ -153,11 +155,14 @@ export default function ForexManagement() {
   const allCurrencies = ['INR', ...rates.map(r => r.from_currency).filter(c => c !== 'INR')];
 
   return (
-    <div style={{ padding: '24px', background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: '#111827', margin: 0 }}>Forex Management</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 14 }}>Multi-currency exchange rates, exposure &amp; revaluation</p>
-      </div>
+    <PageShell embedded={embedded} dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="Forex Management"
+        subtitle="Multi-currency exchange rates, exposure & revaluation"
+      />
+    }>
 
       <div style={{ display: 'flex', gap: 4, background: '#f0ebff', padding: 4, borderRadius: 10, marginBottom: 16, width: 'fit-content' }}>
         {['Exchange Rates', 'Forex Exposure', 'Revaluation'].map((t, i) => (
@@ -167,13 +172,13 @@ export default function ForexManagement() {
 
       {/* Staleness warning banner */}
       {isStale && (
-        <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8, padding: '10px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
+        <div style={{ background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: 8, padding: '10px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
           <span style={{ fontSize: 16 }}>⚠</span>
-          <span style={{ color: '#92400e' }}>
+          <span style={{ color: '#5b21b6' }}>
             Exchange rates may be outdated — last updated {fmtDate(lastUpdated)}.
           </span>
           <button onClick={fetchLiveRates} disabled={fetchingLive}
-            style={{ marginLeft: 'auto', padding: '4px 12px', background: '#f59e0b', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+            style={{ marginLeft: 'auto', padding: '4px 12px', background: '#7c5cf0', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
             {fetchingLive ? 'Fetching…' : 'Fetch Live Rates'}
           </button>
         </div>
@@ -269,7 +274,7 @@ export default function ForexManagement() {
                         ₹{fmtFx(r.rate, 4)}
                         {isRateStale && (
                           <span title={`Last updated ${fmtDate(r.fetched_at || r.rate_date)}`}
-                            style={{ marginLeft: 6, padding: '1px 6px', borderRadius: 4, fontSize: 10, background: '#fef3c7', color: '#92400e' }}>
+                            style={{ marginLeft: 6, padding: '1px 6px', borderRadius: 4, fontSize: 10, background: '#ede9fe', color: '#5b21b6' }}>
                             ⚠ Stale
                           </span>
                         )}
@@ -547,7 +552,7 @@ export default function ForexManagement() {
                     <td style={{ ...tdStyle, fontWeight: 600 }}>{fmtDate(r.revaluation_date)}</td>
                     <td style={tdStyle}>{r.period}</td>
                     <td style={tdStyle}>
-                      <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: r.status === 'posted' ? '#d1fae5' : '#fef3c7', color: r.status === 'posted' ? '#065f46' : '#92400e' }}>
+                      <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: r.status === 'posted' ? '#d1fae5' : '#ede9fe', color: r.status === 'posted' ? '#065f46' : '#5b21b6' }}>
                         {r.status}
                       </span>
                     </td>
@@ -563,6 +568,6 @@ export default function ForexManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

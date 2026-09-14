@@ -202,7 +202,7 @@
 .vc-stat-val { font-weight: 700; color: #111827; }
 .vc-stat-val.green { color: #15803d; }
 .vc-stat-val.red   { color: #dc2626; }
-.vc-stat-val.amber { color: #d97706; }
+.vc-stat-val.amber { color: #6d28d9; }
 
 /* Winner badge */
 .vc-winner-badge {
@@ -358,7 +358,7 @@
 .vc-iv-trend-down { color: #15803d; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 2px; }
 .vc-iv-trend-flat { color: #9ca3af; font-size: 11px; }
 .vc-iv-rating { display: flex; align-items: center; gap: 3px; font-size: 12px; font-weight: 600; color: #374151; }
-.vc-iv-rating svg { color: #f59e0b; }
+.vc-iv-rating svg { color: #7c5cf0; }
 .vc-iv-btn-rfq {
   display: inline-flex; align-items: center; gap: 5px;
   background: #ede9fe; color: #6d28d9; border: 1.5px solid #c4b5fd;

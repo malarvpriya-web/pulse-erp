@@ -4,11 +4,13 @@ import {
   ResponsiveContainer, Cell
 } from 'recharts';
 import {
-  Package, AlertTriangle, TrendingUp, ShoppingCart,
-  RefreshCw, ArrowUpRight, Plus, ArrowRightLeft
+  Package, AlertTriangle, TrendingUp, ShoppingCart, RefreshCw,
+  ArrowUpRight, Plus, ArrowRightLeft, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import './InventoryDashboard.css';
 
 const fmt = n => {
@@ -19,7 +21,7 @@ const fmt = n => {
 };
 
 
-const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#3b82f6', '#8b5cf6'];
+const COLORS = ['#6366f1', '#10b981', '#7c5cf0', '#3b82f6', '#8b5cf6'];
 
 const KPI = ({ icon: Icon, label, value, sub, color, alert }) => (
   <div className={`invd-kpi${alert ? ' invd-kpi-alert' : ''}`} style={{ '--c': color }}>
@@ -43,16 +45,35 @@ export default function InventoryDashboard({ setPage }) {
   const [loading, setLoading] = useState(false);
   const [apiErrors, setApiErrors] = useState([]);
 
+  const [options, setOptions] = useState({ warehouses: [], categories: [] });
+
+  // No period: every KPI here is a point-in-time balance (stock on hand, open
+  // POs), so a date range would be meaningless — warehouse and category are the
+  // dimensions that actually mean something for stock.
+  const filters = useDashboardFilters({
+    dimensions: { warehouse_id: 'all', category_id: 'all' },
+    storageKey: 'inventory-dashboard',
+  });
+  const { params } = filters;
+
   const isMounted = useRef(true);
   useEffect(() => {
     isMounted.current = true;
     return () => { isMounted.current = false; };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/inventory/dashboard/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     const [dashRes, sumRes, lowRes, movRes, itemsRes] = await Promise.allSettled([
-      api.get('/inventory/dashboard'),
+      api.get('/inventory/dashboard', { params }),
       api.get('/inventory/stock/summary'),
       api.get('/inventory/stock/low-stock'),
       api.get('/inventory/stock/movement', { params: { limit: 8 } }),
@@ -85,9 +106,14 @@ export default function InventoryDashboard({ setPage }) {
     setSelectedItemId(prev => prev || (finalItems.length > 0 ? String(finalItems[0].id) : ''));
 
     setLoading(false);
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const filterDimensions = [
+    { key: 'warehouse_id', label: 'Warehouse', allLabel: 'All Warehouses', options: options.warehouses },
+    { key: 'category_id',  label: 'Category',  allLabel: 'All Categories', options: options.categories },
+  ];
   useEffect(() => {
     const fetchEoq = async () => {
       if (!selectedItemId) {
@@ -134,7 +160,7 @@ export default function InventoryDashboard({ setPage }) {
     return acc;
   }, {
     A: { count: 0, value: 0, color: '#ef4444' },
-    B: { count: 0, value: 0, color: '#f59e0b' },
+    B: { count: 0, value: 0, color: '#7c5cf0' },
     C: { count: 0, value: 0, color: '#10b981' },
   });
   const abcChartData = ['A', 'B', 'C'].map((k) => ({
@@ -173,30 +199,33 @@ export default function InventoryDashboard({ setPage }) {
   );
 
   return (
-    <div className="invd-root">
-      {/* header */}
-      <div className="invd-header">
-        <div>
-          <h2 className="invd-title">Inventory Dashboard</h2>
-          <p className="invd-sub">Stock levels, alerts &amp; movement overview</p>
-        </div>
-        <div className="invd-header-r">
-          <button className="invd-btn-outline" onClick={() => setPage && setPage('ItemMaster')}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Inventory"
+        title="Inventory Dashboard"
+        subtitle="Stock levels, alerts & movement overview"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('ItemMaster')}>
             Item Master <ArrowUpRight size={13} />
           </button>
-          <button className="invd-btn-primary" onClick={() => setPage && setPage('ItemMaster')}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('ItemMaster')}>
             <Plus size={14} /> Add Item
           </button>
-          <button className="invd-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          <button className="plh-cta"
             onClick={() => setPage && setPage('InventorySettings')}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: '1px solid #e5e7eb', borderRadius: 7, padding: '6px 12px', cursor: 'pointer', color: '#6b7280', fontSize: 13, fontWeight: 500 }}
-            title="Inventory Settings"
-          >
+            
+            title="Inventory Settings">
             ⚙ Settings
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {/* header */}
+
+      {/* Stock is a point-in-time balance — dimensions only, no date range. */}
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} showPeriod={false} />
 
       {/* API error banner */}
       {apiErrors.length > 0 && (
@@ -212,7 +241,7 @@ export default function InventoryDashboard({ setPage }) {
         <KPI icon={AlertTriangle} label="Low Stock"       value={s.low_stock_count || 0} color="#ef4444" alert={(s.low_stock_count||0)>0} sub="Below reorder level" />
         <KPI icon={TrendingUp}    label="Inventory Value" value={fmt(s.total_value)}     color="#10b981" sub="Total valuation" />
         <KPI icon={TrendingUp}    label="Holding Cost / Month" value={fmt(s.total_holding_cost_monthly)} color="#6B3FDB" sub={`Annual rate ${(parseFloat(s.holding_cost_rate_annual || 0) * 100).toFixed(1)}%`} />
-        <KPI icon={ShoppingCart}  label="Pending POs"     value={s.pending_pos || 0}     color="#f59e0b" sub="Awaiting receipt" />
+        <KPI icon={ShoppingCart}  label="Pending POs"     value={s.pending_pos || 0}     color="#7c5cf0" sub="Awaiting receipt" />
       </div>
 
       {/* main grid */}
@@ -258,7 +287,7 @@ export default function InventoryDashboard({ setPage }) {
                       {bal.toLocaleString('en-IN')} / {rl.toLocaleString('en-IN')}
                     </span>
                     <div className="invd-bar-track">
-                      <div className="invd-bar" style={{ width: `${pct}%`, background: pct < 30 ? '#ef4444' : '#f59e0b' }} />
+                      <div className="invd-bar" style={{ width: `${pct}%`, background: pct < 30 ? '#ef4444' : '#7c5cf0' }} />
                     </div>
                   </div>
                 </div>
@@ -377,6 +406,6 @@ export default function InventoryDashboard({ setPage }) {
           <ArrowRightLeft size={14} /> Stock Adjustment
         </button>
       </div>
-    </div>
+    </PageShell>
   );
 }

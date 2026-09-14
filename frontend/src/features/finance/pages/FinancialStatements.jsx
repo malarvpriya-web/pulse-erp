@@ -6,10 +6,14 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   ReferenceLine,
 } from 'recharts';
-import { TrendingUp, TrendingDown, Scale, Droplets, BarChart2, Activity } from 'lucide-react';
+import {
+  TrendingUp, TrendingDown, Scale, Droplets, BarChart2, Activity,
+  BarChart3,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useFY } from '@/context/FYContext';
 import FYSelector from '@/components/core/FYSelector';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -18,7 +22,7 @@ const PURPLE   = '#6B3FDB';
 const LIGHT    = '#f5f3ff';
 const BORDER   = '#e9e4ff';
 const GREEN    = '#10b981';
-const AMBER    = '#f59e0b';
+const AMBER    = '#7c5cf0';
 const RED      = '#ef4444';
 
 function inr(n) {
@@ -301,25 +305,15 @@ export default function FinancialStatements({ setPage } = {}) {
   }, [fyParams.fyStart, fyParams.fyEnd]);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>Financial Statements</h1>
-            <span style={{
-              fontSize: 11, fontWeight: 600, background: '#f0fdf4', color: '#16a34a',
-              border: '1px solid #bbf7d0', borderRadius: 6, padding: '2px 8px',
-            }}>STATUTORY VIEW</span>
-          </div>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>
-            {fyLabel} — Full-year IFRS-structured statements &nbsp;·&nbsp;
-            <span style={{ color: '#9ca3af' }}>For management reports use </span>
-            <button onClick={() => setPage?.('FinancialReports')} style={{ color: PURPLE, background: 'none', border: 'none', padding: 0, fontWeight: 500, fontSize: 13, cursor: 'pointer' }}>Financial Reports ↗</button>
-          </p>
-        </div>
-        <FYSelector showProgress />
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Finance"
+        title="Financial Statements"
+        subtitle="STATUTORY VIEW"
+        actions={<button className="plh-cta" onClick={() => setPage?.('FinancialReports')}>Financial Reports ↗</button>}
+      />
+    }>
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, padding: 4, width: 'fit-content' }}>
@@ -376,7 +370,7 @@ export default function FinancialStatements({ setPage } = {}) {
                 <Legend />
                 <Line type="monotone" dataKey="revenue"     stroke={PURPLE} strokeWidth={2} dot={false} name="Revenue" />
                 <Line type="monotone" dataKey="grossProfit" stroke={GREEN}  strokeWidth={2} dot={false} name="Gross Profit" />
-                <Line type="monotone" dataKey="netProfit"   stroke="#f59e0b" strokeWidth={2} dot={false} name="Net Profit" />
+                <Line type="monotone" dataKey="netProfit"   stroke="#7c5cf0" strokeWidth={2} dot={false} name="Net Profit" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -630,6 +624,6 @@ export default function FinancialStatements({ setPage } = {}) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -3,8 +3,10 @@
 // BOM modeling: mark a BOM as phantom (blow-through in MRP) and manage its
 // co-/by-product outputs. Drives /mfg.
 import { useState, useEffect, useCallback } from 'react';
+import { Factory } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB', HEAD = '#4c1d95', INK = '#374151', MUT = '#6b7280';
 const card = { background: '#fff', border: '1px solid #ede9fe', borderRadius: 12, padding: 16 };
@@ -53,11 +55,14 @@ export default function BOMModeling() {
   const delOutput = async (oid) => { try { await api.delete(`/mfg/outputs/${oid}`); openBom(sel); loadBoms(); } catch { toast.error('Delete failed'); } };
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 18 }}>
-        <h2 style={{ margin: '0 0 4px', color: HEAD, fontSize: 22 }}>🧩 BOM Modeling — Phantom &amp; Co-Products</h2>
-        <p style={{ margin: 0, color: MUT, fontSize: 13 }}>Phantom BOMs blow through in MRP (never planned); co-/by-products are stocked in on completion and supply MRP demand</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="🧩 BOM Modeling — Phantom & Co-Products"
+        subtitle="Phantom BOMs blow through in MRP (never planned); co-/by-products are stocked in on completion and supply MRP demand"
+      />
+    }>
 
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         {/* BOM list */}
@@ -74,7 +79,7 @@ export default function BOMModeling() {
                     <td style={td}>
                       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
                         <input type="checkbox" checked={!!b.is_phantom} onChange={e => togglePhantom(b, e.target.checked)} />
-                        {b.is_phantom ? <span style={{ color: '#d97706', fontWeight: 700, fontSize: 12 }}>Phantom</span> : <span style={{ color: MUT, fontSize: 12 }}>No</span>}
+                        {b.is_phantom ? <span style={{ color: '#6d28d9', fontWeight: 700, fontSize: 12 }}>Phantom</span> : <span style={{ color: MUT, fontSize: 12 }}>No</span>}
                       </label>
                     </td>
                     <td style={td}>{b.output_count > 0 ? <span style={{ background: '#ede9fe', color: PURPLE, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{b.output_count}</span> : '—'}</td>
@@ -110,7 +115,7 @@ export default function BOMModeling() {
                   {outputs.map(o => (
                     <tr key={o.id}>
                       <td style={{ ...td, fontWeight: 600 }}>{o.item_name}</td>
-                      <td style={td}><span style={{ background: o.output_type === 'by' ? '#fef3c7' : '#e0f2fe', color: o.output_type === 'by' ? '#d97706' : '#0369a1', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{o.output_type === 'by' ? 'by-product' : 'co-product'}</span></td>
+                      <td style={td}><span style={{ background: o.output_type === 'by' ? '#ede9fe' : '#e0f2fe', color: o.output_type === 'by' ? '#6d28d9' : '#0369a1', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{o.output_type === 'by' ? 'by-product' : 'co-product'}</span></td>
                       <td style={td}>{Number(o.qty_per_parent)}</td>
                       <td style={td}>{Number(o.cost_share_pct)}%</td>
                       <td style={td}><button style={{ ...btnS, background: '#fee2e2', color: '#dc2626' }} onClick={() => delOutput(o.id)}>✕</button></td>
@@ -123,6 +128,6 @@ export default function BOMModeling() {
           )}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

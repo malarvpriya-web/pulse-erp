@@ -11,13 +11,13 @@ import api from '@/services/api/client';
 const STATUS_BAND = [
   { y: 90, label: 'Excellent', color: '#16a34a22' },
   { y: 75, label: 'Good',      color: '#2563eb22' },
-  { y: 50, label: 'Watchlist', color: '#d9770622' },
+  { y: 50, label: 'Watchlist', color: '#6d28d922' },
 ];
 
 const STATUS_LINE_COLOR = {
   Excellent: '#16a34a',
   Good:      '#2563eb',
-  Watchlist: '#d97706',
+  Watchlist: '#6d28d9',
   Critical:  '#dc2626',
 };
 
@@ -25,10 +25,10 @@ const DIMENSIONS = [
   { key: 'revenue_score',    label: 'Revenue',     color: '#6B3FDB', max: 20 },
   { key: 'collection_score', label: 'Collections', color: '#2563eb', max: 20 },
   { key: 'margin_score',     label: 'Margin',      color: '#16a34a', max: 15 },
-  { key: 'project_score',    label: 'Projects',    color: '#d97706', max: 10 },
+  { key: 'project_score',    label: 'Projects',    color: '#6d28d9', max: 10 },
   { key: 'quality_score',    label: 'Quality',     color: '#6B3FDB', max: 10 },
   { key: 'service_score',    label: 'Service',     color: '#0ea5e9', max: 10 },
-  { key: 'amc_score',        label: 'AMC',         color: '#f59e0b', max:  5 },
+  { key: 'amc_score',        label: 'AMC',         color: '#7c5cf0', max:  5 },
   { key: 'engagement_score', label: 'Engagement',  color: '#ec4899', max:  5 },
   { key: 'risk_score',       label: 'Risk Buffer', color: '#6b7280', max:  5 },
 ];
@@ -148,7 +148,7 @@ export default function CustomerHealthTrend({ customerId, showDimensions = false
               {/* Threshold bands */}
               <ReferenceLine y={90} stroke="#16a34a" strokeDasharray="4 2" strokeOpacity={.5} />
               <ReferenceLine y={75} stroke="#2563eb" strokeDasharray="4 2" strokeOpacity={.5} />
-              <ReferenceLine y={50} stroke="#d97706" strokeDasharray="4 2" strokeOpacity={.5} />
+              <ReferenceLine y={50} stroke="#6d28d9" strokeDasharray="4 2" strokeOpacity={.5} />
               <Line
                 type="monotone" dataKey="health_score" name="Health Score"
                 stroke="#6B3FDB" strokeWidth={2.5}

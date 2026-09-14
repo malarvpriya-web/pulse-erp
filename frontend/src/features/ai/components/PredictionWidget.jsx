@@ -32,7 +32,7 @@ function buildPredictions({ lastMonthRevenue, attendanceTrend, projectVelocity }
       trend: projectVelocity >= 80 ? 'On track' : projectVelocity >= 60 ? 'At risk' : 'Delayed',
       trendDir: projectVelocity >= 80 ? 'up' : projectVelocity >= 60 ? 'neutral' : 'down',
       confidence: 'Based on current sprint velocity',
-      color: projectVelocity >= 80 ? '#10b981' : projectVelocity >= 60 ? '#f59e0b' : '#ef4444',
+      color: projectVelocity >= 80 ? '#10b981' : projectVelocity >= 60 ? '#7c5cf0' : '#ef4444',
     },
   ];
 }

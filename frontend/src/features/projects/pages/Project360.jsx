@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
 } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const C = {
   primary: '#6B3FDB', light: '#f5f3ff', border: '#e9e4ff',
-  green: '#16a34a', red: '#dc2626', amber: '#d97706', blue: '#2563eb',
+  green: '#16a34a', red: '#dc2626', amber: '#6d28d9', blue: '#2563eb',
   cyan: '#0891b2', gray: '#6b7280',
   card: { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12 },
 };
-const PIE_COLORS = ['#6B3FDB','#2563eb','#d97706','#16a34a','#0891b2','#dc2626','#f59e0b','#8b5cf6'];
+const PIE_COLORS = ['#6B3FDB','#2563eb','#6d28d9','#16a34a','#0891b2','#dc2626','#7c5cf0','#8b5cf6'];
 
 const TABS = [
   { id: 'overview',        label: 'Overview',         icon: '📊' },
@@ -62,7 +64,7 @@ const STATUS_MAP = {
   active:        { color: '#15803d', bg: '#dcfce7' },
   completed:     { color: '#6b7280', bg: '#f3f4f6' },
   planning:      { color: '#1d4ed8', bg: '#dbeafe' },
-  on_hold:       { color: '#92400e', bg: '#fef3c7' },
+  on_hold:       { color: '#5b21b6', bg: '#ede9fe' },
   cancelled:     { color: C.red,    bg: '#fee2e2' },
   Won:           { color: '#15803d', bg: '#dcfce7' },
   Lost:          { color: C.red,    bg: '#fee2e2' },
@@ -73,7 +75,7 @@ const STATUS_MAP = {
   Closed:        { color: '#6b7280', bg: '#f3f4f6' },
   passed:        { color: '#15803d', bg: '#dcfce7' },
   failed:        { color: C.red,    bg: '#fee2e2' },
-  pending:       { color: C.amber,  bg: '#fef3c7' },
+  pending:       { color: C.amber,  bg: '#ede9fe' },
   'in_progress': { color: '#1d4ed8', bg: '#dbeafe' },
 };
 const statusBadge = s => {
@@ -82,12 +84,11 @@ const statusBadge = s => {
 };
 
 function KpiCard({ label, value, sub, color = C.primary, wide }) {
+  // Delegates to the design-system card. `wide` was a minWidth bump; it is now
+  // a class the grid understands.
   return (
-    <div style={{ ...C.card, padding: '12px 16px', minWidth: wide ? 180 : 130 }}>
-      <div style={{ fontSize: 10, color: C.gray, fontWeight: 500, marginBottom: 3 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 800, color }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: C.gray, marginTop: 2 }}>{sub}</div>}
-    </div>
+    <Stat label={label} value={value} sub={sub} color={color}
+      className={wide ? 'plh-stat--wide' : undefined} />
   );
 }
 
@@ -278,7 +279,7 @@ function TabOverview({ data }) {
               <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>{doneMiles.length}</div>
               <div style={{ fontSize: 10, color: C.gray }}>Completed</div>
             </div>
-            <div style={{ flex: 1, padding: '8px 12px', background: '#fef3c7', borderRadius: 8, textAlign: 'center' }}>
+            <div style={{ flex: 1, padding: '8px 12px', background: '#ede9fe', borderRadius: 8, textAlign: 'center' }}>
               <div style={{ fontSize: 20, fontWeight: 800, color: C.amber }}>{openMiles.length}</div>
               <div style={{ fontSize: 10, color: C.gray }}>Pending</div>
             </div>
@@ -312,7 +313,7 @@ function TabOverview({ data }) {
           <MiniTable
             cols={[
               { key: 'title', label: 'Issue' },
-              { key: 'severity', label: 'Sev', render: v => <Badge label={v} color={v==='Critical'||v==='High'?C.red:C.amber} bg={v==='Critical'||v==='High'?'#fee2e2':'#fef3c7'} /> },
+              { key: 'severity', label: 'Sev', render: v => <Badge label={v} color={v==='Critical'||v==='High'?C.red:C.amber} bg={v==='Critical'||v==='High'?'#fee2e2':'#ede9fe'} /> },
               { key: 'status', label: '', render: v => statusBadge(v) },
             ]}
             rows={openIssues.slice(0, 5)}
@@ -552,7 +553,7 @@ function TabQuality({ data }) {
           cols={[
             { key: 'ncr_number', label: 'NCR #' },
             { key: 'description', label: 'Description' },
-            { key: 'severity', label: 'Severity', render: v => <Badge label={v} color={v==='Critical'||v==='Major'?C.red:C.amber} bg={v==='Critical'||v==='Major'?'#fee2e2':'#fef3c7'} /> },
+            { key: 'severity', label: 'Severity', render: v => <Badge label={v} color={v==='Critical'||v==='Major'?C.red:C.amber} bg={v==='Critical'||v==='Major'?'#fee2e2':'#ede9fe'} /> },
             { key: 'status', label: 'Status', render: v => statusBadge(v) },
             { key: 'created_at', label: 'Raised', render: v => fmtDate(v) },
           ]}
@@ -659,7 +660,7 @@ function TabInstallation({ data }) {
         <MiniTable
           cols={[
             { key: 'title', label: 'Issue' },
-            { key: 'severity', label: 'Severity', render: v => <Badge label={v} color={v==='Critical'||v==='High'?C.red:C.amber} bg={v==='Critical'||v==='High'?'#fee2e2':'#fef3c7'} /> },
+            { key: 'severity', label: 'Severity', render: v => <Badge label={v} color={v==='Critical'||v==='High'?C.red:C.amber} bg={v==='Critical'||v==='High'?'#fee2e2':'#ede9fe'} /> },
             { key: 'is_blocker', label: 'Blocker', render: v => v ? <Badge label="Yes" color={C.red} bg="#fee2e2" /> : '—' },
             { key: 'status', label: 'Status', render: v => statusBadge(v) },
             { key: 'created_at', label: 'Raised', render: v => fmtDate(v) },
@@ -731,7 +732,7 @@ function TabService({ data }) {
           cols={[
             { key: 'ticket_number', label: 'Ticket #' },
             { key: 'subject', label: 'Subject' },
-            { key: 'priority', label: 'Priority', render: v => <Badge label={v} color={v==='High'||v==='Critical'?C.red:C.amber} bg={v==='High'||v==='Critical'?'#fee2e2':'#fef3c7'} /> },
+            { key: 'priority', label: 'Priority', render: v => <Badge label={v} color={v==='High'||v==='Critical'?C.red:C.amber} bg={v==='High'||v==='Critical'?'#fee2e2':'#ede9fe'} /> },
             { key: 'status', label: 'Status', render: v => statusBadge(v) },
             { key: 'created_at', label: 'Date', render: v => fmtDate(v) },
           ]}
@@ -1033,8 +1034,8 @@ function TabTimeline({ data }) {
 // ── Tab: Risk Engine ──────────────────────────────────────────────────────────
 function TabRisks({ data }) {
   const risks = data.risks || [];
-  const levelColor = l => l === 'Critical' ? C.red : l === 'High' ? '#ea580c' : l === 'Medium' ? C.amber : C.green;
-  const levelBg    = l => l === 'Critical' ? '#fee2e2' : l === 'High' ? '#ffedd5' : l === 'Medium' ? '#fef3c7' : '#dcfce7';
+  const levelColor = l => l === 'Critical' ? C.red : l === 'High' ? '#6d28d9' : l === 'Medium' ? C.amber : C.green;
+  const levelBg    = l => l === 'Critical' ? '#fee2e2' : l === 'High' ? '#ede9fe' : l === 'Medium' ? '#ede9fe' : '#dcfce7';
   const byLevel = { Critical: 0, High: 0, Medium: 0, Low: 0 };
   risks.forEach(r => { if (byLevel[r.level] !== undefined) byLevel[r.level]++; });
   return (
@@ -1067,8 +1068,8 @@ function TabRisks({ data }) {
 // ── Tab: War Room ─────────────────────────────────────────────────────────────
 function TabWarRoom({ data }) {
   const alerts = data.alerts || [];
-  const levelColor = l => l === 'critical' ? C.red : l === 'high' ? '#ea580c' : C.amber;
-  const levelBg = l => l === 'critical' ? '#fee2e2' : l === 'high' ? '#ffedd5' : '#fef3c7';
+  const levelColor = l => l === 'critical' ? C.red : l === 'high' ? '#6d28d9' : C.amber;
+  const levelBg = l => l === 'critical' ? '#fee2e2' : l === 'high' ? '#ede9fe' : '#ede9fe';
   if (!alerts.length) {
     return (
       <div style={{ textAlign: 'center', padding: 48 }}>
@@ -1288,22 +1289,33 @@ export default function Project360() {
   const [search, setSearch]         = useState('');
   const [tab, setTab]               = useState('overview');
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Re-arm on mount, do not just disarm on unmount. StrictMode mounts, unmounts
+  // and remounts every component in dev: the cleanup set this to false and
+  // nothing ever set it back, so every `if (mountedRef.current)` guard below
+  // failed on the surviving mount and the page hung on "Loading…" forever.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
+  // Depends on nothing: the list is fetched once and filtered in the browser.
+  // It used to depend on `search`, so every keystroke re-ran the effect, flipped
+  // the rail back to its "Loading…" branch and fired a fresh request that raced
+  // the previous one with no cancellation — the last response to land won,
+  // regardless of which query it answered.
   const loadProjects = useCallback(async () => {
     setListLoading(true);
     try {
       const res = await api.get('/projects/projects', { params: { limit: 200 } });
       if (!mountedRef.current) return;
       const rows = Array.isArray(res.data) ? res.data : (res.data?.rows || []);
-      const filtered = search
-        ? rows.filter(p => (p.project_number + p.name + (p.customer_name||'')).toLowerCase().includes(search.toLowerCase()))
-        : rows;
-      setProjects(filtered);
-      if (!selectedId && filtered.length > 0) setSelectedId(filtered[0].id);
+      setProjects(rows);
+      // Functional form: reading `selectedId` from the closure captured the value
+      // at the time the callback was built, not at the time the response landed.
+      setSelectedId(prev => prev ?? (rows.length > 0 ? rows[0].id : null));
     } catch { if (mountedRef.current) setProjects([]); }
     finally  { if (mountedRef.current) setListLoading(false); }
-  }, [search]);
+  }, []);
 
   const loadProject = useCallback(async (id) => {
     if (!id) return;
@@ -1319,6 +1331,15 @@ export default function Project360() {
   useEffect(() => { loadProjects(); }, [loadProjects]);
   useEffect(() => { if (selectedId) { loadProject(selectedId); setTab('overview'); } }, [selectedId, loadProject]);
 
+  // Concatenating the fields without separators ("IPP-001" + "Acme") let a query
+  // straddling the join match a project that contains it in neither field.
+  const q = search.trim().toLowerCase();
+  const visibleProjects = q
+    ? projects.filter(p =>
+        [p.project_number, p.name, p.customer_name]
+          .filter(Boolean).join(' ').toLowerCase().includes(q))
+    : projects;
+
   const proj    = data?.project || {};
   const health  = data?.health;
   const alerts  = data?.alerts || [];
@@ -1328,43 +1349,65 @@ export default function Project360() {
   }[s] || C.gray);
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 60px)', fontFamily: 'inherit', overflow: 'hidden' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Projects"
+        title={proj.name || 'Project 360°'}
+        subtitle={
+          selectedId && data
+            ? [proj.project_number, proj.customer_name].filter(Boolean).join(' · ') || 'Full project lifecycle'
+            : 'Pick a project to see sales, engineering, supply chain, delivery and money in one view'
+        }
+      />
+    }>
+      {/* Two-pane body. Both panes used to be rendered inside PageHero's
+          `actions` slot, which is a narrow flex item at the end of the hero row
+          (it is documented for buttons). The 20-tab workspace laid itself out
+          2331px wide in there and pushed the project list to y=1104 on a 768px
+          screen — below the fold, so the page read as "stuck on Loading…" even
+          though both fetches returned 200. The hero now carries only the project
+          identity and the panes live in the page body, where they fit. */}
+      <div style={{ display: 'flex', alignItems: 'stretch', minHeight: 0 }}>
 
-      {/* ── Left: Project List ──────────────────────────────────────────────── */}
-      <div style={{ width: 270, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fafafa', flexShrink: 0 }}>
-        <div style={{ padding: '14px 12px 10px', borderBottom: `1px solid ${C.border}`, background: '#fff' }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Project 360°</div>
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && loadProjects()}
-            placeholder="Search projects…"
-            style={{ width: '100%', padding: '7px 10px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, boxSizing: 'border-box', outline: 'none' }}
-          />
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {listLoading ? (
-            <div style={{ padding: 20, color: C.gray, textAlign: 'center', fontSize: 12 }}>Loading…</div>
-          ) : projects.map(p => (
-            <div key={p.id} onClick={() => setSelectedId(p.id)} style={{
-              padding: '10px 12px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer',
-              background: selectedId === p.id ? C.light : '#fff',
-              borderLeft: selectedId === p.id ? `3px solid ${C.primary}` : '3px solid transparent',
-            }}>
-              <div style={{ fontWeight: 600, fontSize: 12, color: '#111827', marginBottom: 1 }}>{p.project_number || p.name}</div>
-              <div style={{ fontSize: 11, color: C.gray, marginBottom: 3 }}>{p.name}</div>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={{ fontSize: 10, color: statusColor(p.status), fontWeight: 600 }}>{(p.status||'').toUpperCase()}</span>
-                {p.completion_percentage > 0 && <span style={{ fontSize: 10, color: C.gray }}>{p.completion_percentage}%</span>}
+        {/* ── Left: Project List ──────────────────────────────────────────────── */}
+        <div style={{ width: 270, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fafafa', flexShrink: 0 }}>
+          <div style={{ padding: '14px 12px 10px', borderBottom: `1px solid ${C.border}`, background: '#fff' }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Project 360°</div>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search projects…"
+              style={{ width: '100%', padding: '7px 10px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, boxSizing: 'border-box', outline: 'none' }}
+            />
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {listLoading ? (
+              <div style={{ padding: 20, color: C.gray, textAlign: 'center', fontSize: 12 }}>Loading…</div>
+            ) : visibleProjects.map(p => (
+              <div key={p.id} onClick={() => setSelectedId(p.id)} style={{
+                padding: '10px 12px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer',
+                background: selectedId === p.id ? C.light : '#fff',
+                borderLeft: selectedId === p.id ? `3px solid ${C.primary}` : '3px solid transparent',
+              }}>
+                <div style={{ fontWeight: 600, fontSize: 12, color: '#111827', marginBottom: 1 }}>{p.project_number || p.name}</div>
+                <div style={{ fontSize: 11, color: C.gray, marginBottom: 3 }}>{p.name}</div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, color: statusColor(p.status), fontWeight: 600 }}>{(p.status||'').toUpperCase()}</span>
+                  {p.completion_percentage > 0 && <span style={{ fontSize: 10, color: C.gray }}>{p.completion_percentage}%</span>}
+                </div>
               </div>
-            </div>
-          ))}
-          {!listLoading && projects.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: C.gray, fontSize: 12 }}>No projects found</div>}
+            ))}
+            {!listLoading && visibleProjects.length === 0 && (
+              <div style={{ padding: 24, textAlign: 'center', color: C.gray, fontSize: 12 }}>
+                {q ? `No project matches "${search.trim()}"` : 'No projects found'}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* ── Right: Detail Panel ─────────────────────────────────────────────── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* ── Right: Detail Panel ──────────────────────────────── */}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {!selectedId ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.gray }}>
             <div style={{ textAlign: 'center' }}><div style={{ fontSize: 48, marginBottom: 12 }}>📋</div><div style={{ fontWeight: 600 }}>Select a project</div></div>
@@ -1386,9 +1429,9 @@ export default function Project360() {
                     </h2>
                     <span style={{ fontSize: 12, fontWeight: 700, color: C.primary }}>{proj.project_number}</span>
                     {statusBadge(proj.status)}
-                    {alerts.length > 0 && (
+                    {alerts.length> 0 && (
                       <span style={{ fontSize: 11, fontWeight: 700, color: C.red, background: '#fee2e2', padding: '2px 8px', borderRadius: 10 }}>
-                        🚨 {alerts.length} Alert{alerts.length > 1 ? 's' : ''}
+                        🚨 {alerts.length} Alert{alerts.length> 1 ? 's' : ''}
                       </span>
                     )}
                   </div>
@@ -1406,7 +1449,7 @@ export default function Project360() {
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 20, fontWeight: 800, color: C.primary }}>{fmtINR(proj.contract_value)}</div>
                     <div style={{ fontSize: 10, color: C.gray }}>Contract Value</div>
-                    {proj.completion_pct > 0 && (
+                    {proj.completion_pct> 0 && (
                       <div style={{ marginTop: 4 }}>
                         <div style={{ width: 120, background: '#f3f4f6', borderRadius: 4, height: 5 }}>
                           <div style={{ width: `${Math.min(proj.completion_pct, 100)}%`, background: C.green, height: 5, borderRadius: 4 }} />
@@ -1422,34 +1465,23 @@ export default function Project360() {
               {/* Quick Actions row */}
               <div style={{ padding: '8px 20px 0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {[
-                  { label: '🚨 War Room', action: () => setTab('warroom'), alert: alerts.length > 0 },
+                  { label: '🚨 War Room', action: () => setTab('warroom'), alert: alerts.length> 0 },
                   { label: '🤖 AI Copilot', action: () => setTab('ai') },
                   { label: '📅 Timeline', action: () => setTab('timeline') },
                   { label: '📈 Profitability', action: () => setTab('profitability') },
                   { label: '⚠️ Risks', action: () => setTab('risks') },
                 ].map((a, i) => (
-                  <button key={i} onClick={a.action} style={{
-                    padding: '4px 10px', fontSize: 11, fontWeight: 600,
-                    border: `1px solid ${a.alert ? C.red : C.border}`,
-                    borderRadius: 6, background: a.alert ? '#fee2e2' : '#fff',
-                    color: a.alert ? C.red : '#374151', cursor: 'pointer',
-                  }}>{a.label}</button>
+                  <button className="plh-cta" key={i} onClick={a.action}>{a.label}</button>
                 ))}
               </div>
 
               {/* Tab Navigation */}
               <div style={{ display: 'flex', overflowX: 'auto', padding: '6px 20px 0', gap: 0, scrollbarWidth: 'none' }}>
                 {TABS.map(t => (
-                  <button key={t.id} onClick={() => setTab(t.id)} style={{
-                    padding: '6px 12px', border: 'none', background: 'none', cursor: 'pointer',
-                    whiteSpace: 'nowrap', fontSize: 11, fontWeight: 600,
-                    color: tab === t.id ? C.primary : C.gray,
-                    borderBottom: tab === t.id ? `2px solid ${C.primary}` : '2px solid transparent',
-                    marginBottom: -1, display: 'flex', alignItems: 'center', gap: 4,
-                    ...(t.id === 'warroom' && alerts.length > 0 ? { color: C.red } : {}),
-                  }}>
+                  <button className="plh-cta" key={t.id} onClick={() => setTab(t.id)}
+                    style={tab === t.id ? { background: C.primary, color: '#fff' } : undefined}>
                     <span>{t.icon}</span> {t.label}
-                    {t.id === 'warroom' && alerts.length > 0 && (
+                    {t.id === 'warroom' && alerts.length> 0 && (
                       <span style={{ background: C.red, color: '#fff', borderRadius: 10, fontSize: 9, padding: '1px 5px', fontWeight: 700 }}>{alerts.length}</span>
                     )}
                   </button>
@@ -1482,7 +1514,9 @@ export default function Project360() {
             </div>
           </>
         )}
+        </div>
+
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { RefreshCw, Plus, X, TrendingUp, Users, IndianRupee, AlertCircle } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  RefreshCw, Plus, X, TrendingUp, Users, IndianRupee, AlertCircle,
+  ShoppingCart, Search,
+} from 'lucide-react';
 
 const STATUS_TABS = ['all','active','paused','cancelled','expired'];
 const STATUS_LABEL = { all:'All', active:'Active', paused:'Paused', cancelled:'Cancelled', expired:'Expired' };
 const STATUS_COLOR = {
   active:    { bg:'#d1fae5', color:'#065f46' },
-  paused:    { bg:'#fef3c7', color:'#92400e' },
+  paused:    { bg:'#ede9fe', color:'#5b21b6' },
   cancelled: { bg:'#fee2e2', color:'#991b1b' },
   expired:   { bg:'#f3f4f6', color:'#6b7280' },
 };
@@ -43,6 +47,7 @@ export default function Subscriptions() {
   const [customers, setCustomers] = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [activeTab, setActiveTab] = useState('all');
+  const [search,    setSearch]    = useState('');
   const [showForm,  setShowForm]  = useState(false);
   const [form,      setForm]      = useState(EMPTY);
   const [saving,    setSaving]    = useState(false);
@@ -98,17 +103,25 @@ export default function Subscriptions() {
     }
   }
 
-  return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+  // Status is filtered server-side (the chips below); this narrows the returned
+  // page by customer or plan name.
+  const q = search.trim().toLowerCase();
+  const visibleSubs = !q ? subs : subs.filter(s =>
+    [s.customer_name, s.plan_name, s.billing_cycle].some(v => (v ?? '').toString().toLowerCase().includes(q))
+  );
 
-      {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Subscriptions</h1>
-        <button onClick={() => setShowForm(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+  return (
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Subscriptions"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15}/> New Subscription
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
 
       {/* KPI cards */}
       <div style={{ display:'flex', gap:12, marginBottom:20, flexWrap:'wrap' }}>
@@ -118,7 +131,23 @@ export default function Subscriptions() {
         <KPICard icon={AlertCircle} label="Churned (mo.)" value={stats.churn_count || 0}   color="#ef4444"/>
       </div>
 
-      {/* Status filter tabs */}
+      {/* Search + status filter */}
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12, background:'#fff', border:'1px solid #f0f0f4', borderRadius:8, padding:'0 10px', maxWidth:380 }}>
+        <Search size={14} color="#9ca3af"/>
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search customer, plan or cycle…"
+          style={{ flex:1, border:'none', outline:'none', padding:'9px 0', fontSize:13, background:'transparent' }}
+        />
+        {search && (
+          <button onClick={() => setSearch('')} title="Clear search" aria-label="Clear search"
+            style={{ border:'none', background:'transparent', cursor:'pointer', display:'flex', padding:2 }}>
+            <X size={12} color="#9ca3af"/>
+          </button>
+        )}
+      </div>
+
       <div style={{ display:'flex', gap:6, marginBottom:16, flexWrap:'wrap' }}>
         {STATUS_TABS.map(tab => {
           const countMap = { all: stats.total, active: stats.active, paused: stats.paused, cancelled: stats.cancelled, expired: stats.expired };
@@ -138,10 +167,12 @@ export default function Subscriptions() {
       <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
         {loading ? (
           <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>Loading...</div>
-        ) : subs.length === 0 ? (
+        ) : visibleSubs.length === 0 ? (
           <div style={{ padding:60, textAlign:'center', color:'#9ca3af' }}>
             <RefreshCw size={36} color="#d1d5db" style={{ display:'block', margin:'0 auto 12px' }}/>
-            <p>No subscriptions found. Click "+ New Subscription" to create one.</p>
+            <p>{subs.length === 0
+              ? 'No subscriptions found. Click "+ New Subscription" to create one.'
+              : 'No subscriptions match your search.'}</p>
           </div>
         ) : (
           <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
@@ -153,7 +184,7 @@ export default function Subscriptions() {
               </tr>
             </thead>
             <tbody>
-              {subs.map((s, i) => {
+              {visibleSubs.map((s, i) => {
                 const sc = STATUS_COLOR[s.status] || STATUS_COLOR.active;
                 return (
                   <tr key={s.id || i} style={{ borderBottom:'1px solid #f9fafb', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
@@ -169,7 +200,7 @@ export default function Subscriptions() {
                       <div style={{ display:'flex', gap:6 }}>
                         {s.status === 'active' && (
                           <button onClick={() => handleAction(s.id, 'pause')}
-                            style={{ padding:'4px 10px', fontSize:11, fontWeight:600, background:'#fef3c7', color:'#92400e', border:'none', borderRadius:6, cursor:'pointer' }}>Pause</button>
+                            style={{ padding:'4px 10px', fontSize:11, fontWeight:600, background:'#ede9fe', color:'#5b21b6', border:'none', borderRadius:6, cursor:'pointer' }}>Pause</button>
                         )}
                         {s.status === 'paused' && (
                           <button onClick={() => handleAction(s.id, 'renew')}
@@ -253,6 +284,6 @@ export default function Subscriptions() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

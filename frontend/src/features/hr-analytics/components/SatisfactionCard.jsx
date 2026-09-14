@@ -11,12 +11,12 @@ export default function SatisfactionCard({ data = {}, loading }) {
     : 'No reviews yet';
 
   const engColor = score >= 80 ? '#166534'
-    : score >= 60 ? '#92400e'
+    : score >= 60 ? '#5b21b6'
     : score > 0   ? '#991b1b'
     : '#9ca3af';
 
   const engBg = score >= 80 ? '#f0fdf4'
-    : score >= 60 ? '#fffbeb'
+    : score >= 60 ? '#f5f3ff'
     : score > 0   ? '#fef2f2'
     : '#f3f4f6';
 

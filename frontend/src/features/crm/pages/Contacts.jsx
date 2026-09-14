@@ -1,12 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, Plus, RefreshCw, X, Users, Edit2, Mail, Phone } from 'lucide-react';
+import { Search, Plus, RefreshCw, X, Users, Edit2, Mail, Phone, Contact } from 'lucide-react';
 import api from '@/services/api/client';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './Contacts.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import MasterSelect from '@/components/core/MasterSelect';
 
 const TITLES = ['Mr', 'Ms', 'Mrs', 'Dr', 'Prof'];
-const DEPARTMENTS = ['Sales', 'Marketing', 'Finance', 'IT', 'Operations', 'HR', 'Executive', 'Other'];
+// Departments come from the master via <MasterSelect>, which also offers an
+// inline add so a missing one does not mean a trip to Master Setup.
+// The hardcoded array that was here disagreed with every other screen's, so a
+// record created here could carry a department name no report could group by.
 
 
 const emptyForm = () => ({
@@ -18,7 +23,7 @@ const emptyForm = () => ({
 
 const initials = c => `${(c.first_name || '?').charAt(0)}${(c.last_name || '').charAt(0)}`.toUpperCase();
 
-const AVATAR_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#3b82f6', '#8b5cf6'];
+const AVATAR_COLORS = ['#6366f1', '#10b981', '#7c5cf0', '#ef4444', '#3b82f6', '#8b5cf6'];
 
 export default function Contacts() {
   const { readOnly } = usePageAccess();
@@ -85,22 +90,23 @@ export default function Contacts() {
   const uniqueAccounts = [...new Set(contacts.map(c => c.account_name).filter(Boolean))];
 
   return (
-    <div className="ct-root">
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="CRM"
+        title="Contacts"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          {!readOnly && <button className="plh-cta" onClick={openCreate}><Plus size={14} /> Add Contact</button>}
+        </>}
+      />
+    }>
 
       {toast && <div className={`ct-toast ct-toast-${toast.type}`}>{toast.msg}</div>}
 
       {readOnly && <ReadOnlyBanner />}
 
-      <div className="ct-header">
-        <div>
-          <h2 className="ct-title">Contacts</h2>
-          <p className="ct-sub">{displayed.length} contact{displayed.length !== 1 ? 's' : ''}</p>
-        </div>
-        <div className="ct-header-r">
-          <button className="ct-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          {!readOnly && <button className="ct-btn-primary" onClick={openCreate}><Plus size={14} /> Add Contact</button>}
-        </div>
-      </div>
+
 
       {/* filters */}
       <div className="ct-filters">
@@ -219,10 +225,13 @@ export default function Contacts() {
                 </div>
                 <div className="ct-field">
                   <label>Department</label>
-                  <select value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))}>
-                    <option value="">Select…</option>
-                    {DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
-                  </select>
+                  <MasterSelect
+                    endpoint="/master/departments"
+                    label="Department"
+                    value={form.department}
+                    onChange={v => setForm(f => ({ ...f, department: v }))}
+                    placeholder="Select…"
+                  />
                 </div>
               </div>
               <div className="ct-field">
@@ -270,6 +279,6 @@ export default function Contacts() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

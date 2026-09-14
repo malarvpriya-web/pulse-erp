@@ -1,7 +1,8 @@
 // frontend/src/features/admin/pages/TallyIntegration.jsx
 import { useState, useEffect, useCallback } from 'react';
-import { BarChart2, RefreshCw, AlertCircle, Settings } from 'lucide-react';
+import { BarChart2, RefreshCw, AlertCircle, Settings, SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function formatINR(n) {
   const num = parseFloat(n);
@@ -220,10 +221,10 @@ export default function TallyIntegration() {
             {f.hint && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>{f.hint}</div>}
           </div>
         ))}
-        <div style={{ padding: '12px 14px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, marginBottom: 16 }}>
-          <p style={{ margin: 0, fontSize: 12, color: '#92400e' }}>
+        <div style={{ padding: '12px 14px', background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 8, marginBottom: 16 }}>
+          <p style={{ margin: 0, fontSize: 12, color: '#5b21b6' }}>
             <strong>Setup:</strong> Install the TDL Gateway on your Tally server machine. Run{' '}
-            <code style={{ background: '#fde68a', padding: '1px 4px', borderRadius: 3 }}>node gateway/tally-tdl-server.js</code>{' '}
+            <code style={{ background: '#ddd6fe', padding: '1px 4px', borderRadius: 3 }}>node gateway/tally-tdl-server.js</code>{' '}
             and ensure port 9000 is accessible.
           </p>
         </div>
@@ -238,17 +239,15 @@ export default function TallyIntegration() {
   }
 
   return (
-    <div style={{ padding: 24, background: '#fff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title="Tally Integration"
+        subtitle="Sync vouchers, ledgers and transactions with Tally ERP 9 / TallyPrime"
+      />
+    }>
       {/* header */}
-      <div className="page-header" style={{ marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <BarChart2 size={22} color="var(--color-text-primary, #111827)" />
-          <div>
-            <h1 className="page-title" style={{ margin: 0 }}>Tally Integration</h1>
-            <p className="page-subtitle" style={{ margin: 0 }}>Sync vouchers, ledgers and transactions with Tally ERP 9 / TallyPrime</p>
-          </div>
-        </div>
-      </div>
 
       {/* flash */}
       {msg.text && (
@@ -294,7 +293,7 @@ export default function TallyIntegration() {
             { label: 'Last Sync',       value: status.last_sync ? timeAgo(status.last_sync) : 'Never', color: '#374151' },
             { label: 'Ledgers',         value: status.ledger_count || 0,                               color: '#6B3FDB' },
             { label: 'Invoices Synced', value: status.stats?.synced_invoices || 0,                     color: '#16a34a' },
-            { label: 'Pending',         value: pendingCount, color: pendingCount > 0 ? '#d97706' : '#16a34a' },
+            { label: 'Pending',         value: pendingCount, color: pendingCount > 0 ? '#6d28d9' : '#16a34a' },
           ].map(({ label, value, color }) => (
             <div key={label} style={{ textAlign: 'center', minWidth: 70 }}>
               <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
@@ -355,7 +354,7 @@ export default function TallyIntegration() {
                 { label: 'Total Vouchers Pushed', value: status.stats?.total_vouchers   || 0, color: '#6B3FDB', bg: '#ede9fe' },
                 { label: 'Invoices Synced',        value: status.stats?.synced_invoices  || 0, color: '#16a34a', bg: '#d1fae5' },
                 { label: 'Payments Synced',        value: status.stats?.synced_payments  || 0, color: '#2563eb', bg: '#dbeafe' },
-                { label: 'Pending Sync',           value: pendingCount,                         color: '#d97706', bg: '#fef3c7' },
+                { label: 'Pending Sync',           value: pendingCount,                         color: '#6d28d9', bg: '#ede9fe' },
                 { label: 'Sync Errors',            value: status.stats?.last_error_count || errorCount, color: '#dc2626', bg: '#fee2e2' },
                 { label: 'Ledgers in Tally',       value: status.ledger_count || 0,             color: '#374151', bg: '#f3f4f6' },
               ].map(({ label, value, color, bg }) => (
@@ -426,7 +425,7 @@ export default function TallyIntegration() {
                             <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: '#fee2e2', color: '#dc2626' }}>Error</span>
                             <div style={{ fontSize: 10, color: '#dc2626', marginTop: 3 }}>{item.error}</div>
                           </div>
-                        : <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: '#fef3c7', color: '#d97706' }}>Pending</span>
+                        : <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: '#ede9fe', color: '#6d28d9' }}>Pending</span>
                       }
                     </td>
                     <td style={{ padding: '9px 12px' }}>
@@ -473,6 +472,6 @@ export default function TallyIntegration() {
       </div>
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }`}</style>
-    </div>
+    </PageShell>
   );
 }

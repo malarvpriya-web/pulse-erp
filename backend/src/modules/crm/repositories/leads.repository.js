@@ -1,4 +1,7 @@
 import pool from '../../shared/db.js';
+import {
+  sqlLeadConverted, sqlLeadLost, isIn, LEAD_CLOSED,
+} from '../../../shared/statusSets.js';
 
 // Whitelist of columns that can be written to the leads table.
 // Prevents joined columns (assigned_to_name, etc.) from reaching UPDATE/INSERT.
@@ -7,7 +10,7 @@ import pool from '../../shared/db.js';
 const LEAD_COLUMNS = new Set([
   'lead_source', 'company_name', 'contact_person', 'email', 'phone',
   'industry', 'location', 'assigned_to', 'status', 'notes', 'lead_score',
-  'zone', 'estimated_value', 'partner_id', 'probability',
+  'zone', 'estimated_value', 'partner_id', 'probability', 'territory_id',
 ]);
 
 // The IEM number: fiscal year (Apr-Mar) of creation + zero-padded id. Must stay
@@ -33,22 +36,30 @@ const IEM_NO_SQL = `
 const asNum = v => (v === '' || v == null ? null : v);
 
 const leadsRepository = {
-  async create(data) {
+  /**
+   * @param exec  Optional pg client. CSV import runs the whole file inside one
+   *   transaction, and a repository that always reaches for its own pool
+   *   connection would write outside it — a mid-file failure would then leave
+   *   the rows it had already committed behind. Defaults to the pool so every
+   *   existing single-row caller is unaffected.
+   */
+  async create(data, exec = pool) {
     const {
       lead_source, company_name, contact_person, email, phone,
       industry, location, assigned_to, status, notes, created_by,
       lead_score, company_id, zone, estimated_value, partner_id, probability,
+      territory_id,
     } = data;
     // The id is drawn from the sequence first so the enquiry and its IEM number
     // are written together — no second statement, nothing to leave half-done.
-    const result = await pool.query(
+    const result = await exec.query(
       `WITH s AS (SELECT nextval(pg_get_serial_sequence('leads','id')) AS new_id)
        INSERT INTO leads
          (id, lead_source, company_name, contact_person, email, phone,
           industry, location, assigned_to, status, notes, created_by,
           lead_score, company_id, zone, estimated_value, partner_id, probability,
-          iem_no)
-       SELECT s.new_id, $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+          territory_id, iem_no)
+       SELECT s.new_id, $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
               (${IEM_NO_SQL})
          FROM s
        RETURNING *`,
@@ -57,6 +68,7 @@ const leadsRepository = {
         industry, location, assigned_to, status ?? 'New', notes,
         created_by, lead_score ?? 0, company_id ?? null,
         zone || null, asNum(estimated_value), asNum(partner_id), asNum(probability),
+        asNum(territory_id),
       ]
     );
     return result.rows[0];
@@ -179,7 +191,15 @@ const leadsRepository = {
     return result.rows[0];
   },
 
-  async update(id, data) {
+  /**
+   * @param company_id  REQUIRED for tenant safety. Omitting it (the old
+   *   signature) meant PUT /crm/leads/:id could rewrite any tenant's lead by id
+   *   — the update ran on `WHERE id = $1` alone (audit C-08). Passing null is
+   *   still allowed for genuinely global callers (super_admin with no scope),
+   *   matching the `$n::int IS NULL OR company_id = $n` convention used by
+   *   findById.
+   */
+  async update(id, data, company_id = null) {
     const fields = [];
     const values = [];
     let pc = 1;
@@ -199,24 +219,39 @@ const leadsRepository = {
 
     if (fields.length === 0) {
       const result = await pool.query(
-        'SELECT * FROM leads WHERE id = $1 AND deleted_at IS NULL',
-        [id]
+        `SELECT * FROM leads
+          WHERE id = $1 AND deleted_at IS NULL
+            AND ($2::int IS NULL OR company_id = $2)`,
+        [id, company_id ?? null]
       );
       return result.rows[0];
     }
 
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
+    const idParam = pc;
+    values.push(company_id ?? null);
 
     const result = await pool.query(
-      `UPDATE leads SET ${fields.join(', ')} WHERE id = $${pc} AND deleted_at IS NULL RETURNING *`,
+      `UPDATE leads SET ${fields.join(', ')}
+        WHERE id = $${idParam} AND deleted_at IS NULL
+          AND ($${idParam + 1}::int IS NULL OR company_id = $${idParam + 1})
+      RETURNING *`,
       values
     );
     return result.rows[0];
   },
 
-  async delete(id) {
-    await pool.query(`UPDATE leads SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+  /** Tenant-scoped soft delete. Returns the row so callers can 404 on a miss. */
+  async delete(id, company_id = null) {
+    const { rows } = await pool.query(
+      `UPDATE leads SET deleted_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND deleted_at IS NULL
+          AND ($2::int IS NULL OR company_id = $2)
+      RETURNING id`,
+      [id, company_id ?? null]
+    );
+    return rows[0] || null;
   },
 
   async getStats(company_id = null) {
@@ -375,21 +410,31 @@ const leadsRepository = {
     return result.rows;
   },
 
+  /**
+   * Conversion rate over leads that have actually reached a decision.
+   *
+   * Two faults previously made this structurally 0%: it counted only
+   * `status = 'converted'` while the live vocabulary closes a lead as 'Won',
+   * and it divided by ALL leads including ones still in flight — which
+   * understates the rate by treating an open lead as a failure (audit C-06).
+   * Both the numerator and the denominator now come from statusSets.
+   */
   async getConversionRate(company_id = null) {
-    const cid = company_id != null ? company_id : null;
     const result = await pool.query(
       `SELECT
-         COUNT(*) FILTER (WHERE LOWER(status) = 'converted') AS converted,
-         COUNT(*) AS total,
+         COUNT(*) FILTER (WHERE ${sqlLeadConverted('status')})               AS converted,
+         COUNT(*) FILTER (WHERE ${sqlLeadLost('status')})                    AS lost,
+         COUNT(*)                                                            AS total,
+         COUNT(*) FILTER (WHERE ${isIn('status', LEAD_CLOSED)})              AS decided,
          ROUND(
-           COUNT(*) FILTER (WHERE LOWER(status) = 'converted')::numeric
-             / NULLIF(COUNT(*), 0) * 100,
+           COUNT(*) FILTER (WHERE ${sqlLeadConverted('status')})::numeric
+             / NULLIF(COUNT(*) FILTER (WHERE ${isIn('status', LEAD_CLOSED)}), 0) * 100,
            2
          ) AS conversion_rate
        FROM leads
        WHERE deleted_at IS NULL
          AND ($1::int IS NULL OR company_id = $1)`,
-      [cid]
+      [company_id ?? null]
     );
     return result.rows[0];
   },

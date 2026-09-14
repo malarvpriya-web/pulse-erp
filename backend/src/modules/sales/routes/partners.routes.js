@@ -28,6 +28,7 @@ import { companyOf } from '../../../shared/scope.js';
 import {
   ASSOCIATION_TYPES, DEFAULT_ASSOCIATION_TYPE, PARTNER_STATUSES,
 } from '../../../shared/salesPartners.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -448,7 +449,7 @@ router.post('/convert-lead', perm('add'), async (req, res) => {
 // Soft delete — so an IPU number is never reissued and history survives. Leads
 // keep pointing at the archived partner (the FK is ON DELETE SET NULL, which only
 // fires on a hard delete), so attribution is not silently rewritten.
-router.delete('/:id', perm('delete'), async (req, res) => {
+router.delete('/:id', perm('delete'), captureBefore('sales_partners'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE sales_partners SET deleted_at = NOW()

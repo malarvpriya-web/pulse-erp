@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { TrendingUp, TrendingDown, Target, Users, FileText, ShoppingCart, BarChart2 } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmtL = v => {
   const n = Number(v||0);
@@ -15,7 +16,7 @@ const FUNNEL_STAGES = [
   { key:'enquiries',    label:'Enquiries',    icon: Users,       color:'#6366f1' },
   { key:'leads',        label:'Leads',        icon: Target,      color:'#8b5cf6' },
   { key:'opportunities',label:'Opportunities',icon: TrendingUp,  color:'#06b6d4' },
-  { key:'quotations',   label:'Quotations',   icon: FileText,    color:'#f59e0b' },
+  { key:'quotations',   label:'Quotations',   icon: FileText,    color:'#7c5cf0' },
   { key:'orders',       label:'Orders',       icon: ShoppingCart,color:'#10b981' },
 ];
 
@@ -32,7 +33,9 @@ const getFYStart = () => {
   return m >= 4 ? new Date().getFullYear() : new Date().getFullYear() - 1;
 };
 
-export default function SalesFunnel() {
+/** `embedded` — rendered as a tab inside SalesIntelligence, which already owns
+ *  the shell and hero. See the note in SalesIntelligence.jsx. */
+export default function SalesFunnel({ embedded = false }) {
   const [monthly, setMonthly] = useState([]);
   const [ratios, setRatios] = useState(null);
   const [performance, setPerformance] = useState([]);
@@ -56,13 +59,8 @@ export default function SalesFunnel() {
   const funnel = ratios?.funnel || {};
   const maxFunnel = Math.max(...Object.values(funnel).map(Number), 1);
 
-  return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ marginBottom:20 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Sales Funnel & Conversion</h1>
-        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Enquiry → Lead → Opportunity → Quotation → Order conversion analytics</p>
-      </div>
-
+  const body = (
+    <>
       {/* Tabs */}
       <div style={{ display:'flex', gap:0, marginBottom:20, background:'#fff', borderRadius:10, padding:4, border:'1px solid #f0f0f4', width:'fit-content' }}>
         {[['funnel','Funnel Overview'],['monthly','Monthly Trend'],['salesperson','Salesperson']].map(([t,lbl]) => (
@@ -117,10 +115,10 @@ export default function SalesFunnel() {
                     <div key={key} style={{ marginBottom:14 }}>
                       <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4, fontSize:13 }}>
                         <span style={{ color:'#6b7280' }}>{label}</span>
-                        <span style={{ fontWeight:700, color: good ? '#10b981' : val >= 15 ? '#f59e0b' : '#ef4444' }}>{pct(val)}</span>
+                        <span style={{ fontWeight:700, color: good ? '#10b981' : val >= 15 ? '#7c5cf0' : '#ef4444' }}>{pct(val)}</span>
                       </div>
                       <div style={{ height:6, background:'#f0f0f4', borderRadius:3, overflow:'hidden' }}>
-                        <div style={{ height:'100%', width:`${Math.min(val,100)}%`, background: good ? '#10b981' : val >= 15 ? '#f59e0b' : '#ef4444', borderRadius:3 }}/>
+                        <div style={{ height:'100%', width:`${Math.min(val,100)}%`, background: good ? '#10b981' : val >= 15 ? '#7c5cf0' : '#ef4444', borderRadius:3 }}/>
                       </div>
                     </div>
                   );
@@ -166,7 +164,7 @@ export default function SalesFunnel() {
                         <td style={{ padding:'10px 16px', color:'#6366f1' }}>{m.enquiries}</td>
                         <td style={{ padding:'10px 16px', color:'#8b5cf6' }}>{m.leads}</td>
                         <td style={{ padding:'10px 16px', color:'#06b6d4' }}>{m.opportunities}</td>
-                        <td style={{ padding:'10px 16px', color:'#f59e0b' }}>{m.quotations}</td>
+                        <td style={{ padding:'10px 16px', color:'#7c5cf0' }}>{m.quotations}</td>
                         <td style={{ padding:'10px 16px', color:'#10b981', fontWeight:600 }}>{m.orders}</td>
                         <td style={{ padding:'10px 16px', fontWeight:600, color:'#1f2937' }}>{fmtL(m.revenue)}</td>
                       </tr>
@@ -205,7 +203,7 @@ export default function SalesFunnel() {
                     <tbody>
                       {performance.map((p, i) => {
                         const ach = Number(p.achievement_pct||0);
-                        const color = ach >= 100 ? '#10b981' : ach >= 70 ? '#f59e0b' : '#ef4444';
+                        const color = ach >= 100 ? '#10b981' : ach >= 70 ? '#7c5cf0' : '#ef4444';
                         return (
                           <tr key={i} style={{ borderBottom:'1px solid #f9fafb', background:i%2===0?'#fff':'#fafafa' }}>
                             <td style={{ padding:'10px 14px', fontWeight:600, color:'#1f2937' }}>{p.salesperson_name}</td>
@@ -233,6 +231,21 @@ export default function SalesFunnel() {
           )}
         </>
       )}
-    </div>
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Sales Funnel & Conversion"
+        subtitle="Enquiry → Lead → Opportunity → Quotation → Order conversion analytics"
+      />
+    }>
+      {body}
+    </PageShell>
   );
 }

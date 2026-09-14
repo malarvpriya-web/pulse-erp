@@ -8,7 +8,7 @@ import { useToast } from '@/context/ToastContext';
 
 const RISK_CONFIG = {
   low:      { icon: '🟢', label: 'Low',      color: '#16a34a', bg: '#dcfce7', textColor: '#15803d' },
-  medium:   { icon: '🟡', label: 'Medium',   color: '#d97706', bg: '#fef3c7', textColor: '#92400e' },
+  medium:   { icon: '🟡', label: 'Medium',   color: '#6d28d9', bg: '#ede9fe', textColor: '#5b21b6' },
   high:     { icon: '🔴', label: 'High',     color: '#dc2626', bg: '#fee2e2', textColor: '#991b1b' },
   critical: { icon: '🚨', label: 'Critical', color: '#9d174d', bg: '#fce7f3', textColor: '#831843' },
 };

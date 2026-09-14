@@ -1,11 +1,13 @@
 import { useNavigate } from 'react-router-dom';
 import {
-  CheckCircle, AlertCircle, Clock, ArrowRight, Rocket, RefreshCw, PlayCircle, Play,
-  Building2, Network, Users, Shield, IndianRupee, Landmark, Calendar, Plug,
-  ChevronRight, Users2, BarChart2, Workflow, CreditCard,
+  CheckCircle, AlertCircle, Clock, ArrowRight, Rocket, RefreshCw,
+  PlayCircle, Play, Building2, Network, Users, Shield, IndianRupee,
+  Landmark, Calendar, Plug, ChevronRight, Users2, BarChart2, Workflow,
+  CreditCard, LayoutDashboard,
 } from 'lucide-react';
 import { useSetupProgress } from '@/hooks/useSetupProgress';
 import { useAuth } from '@/context/AuthContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P  = '#6B3FDB';
 const PL = '#f5f3ff';
@@ -17,7 +19,7 @@ const STEPS = [
   { key: 'organization', label: 'Organization Structure', icon: Network,     color: '#6B3FDB', wizardIdx: 1 },
   { key: 'users',        label: 'User Accounts',          icon: Users,       color: '#059669', wizardIdx: 2 },
   { key: 'roles',        label: 'Roles & Permissions',    icon: Shield,      color: '#0891b2', wizardIdx: 3 },
-  { key: 'payroll',      label: 'Payroll Structure',      icon: IndianRupee, color: '#d97706', wizardIdx: 4 },
+  { key: 'payroll',      label: 'Payroll Structure',      icon: IndianRupee, color: '#6d28d9', wizardIdx: 4 },
   { key: 'finance',      label: 'Bank Accounts',          icon: Landmark,    color: '#8b5cf6', wizardIdx: 5 },
   { key: 'leaves',       label: 'Leave Policies',         icon: Calendar,    color: '#ef4444', wizardIdx: 6 },
   { key: 'integrations', label: 'Integrations',           icon: Plug,        color: '#0d9488', wizardIdx: 7 },
@@ -33,10 +35,10 @@ const NEXT_STEPS = [
 function StatusBadge({ done, skipped }) {
   if (done)    return <span style={{ padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#059669', fontSize: 10, fontWeight: 700 }}>Done</span>;
   if (skipped) return <span style={{ padding: '2px 8px', borderRadius: 10, background: '#f3f4f6', color: '#9ca3af', fontSize: 10, fontWeight: 700 }}>Skipped</span>;
-  return           <span style={{ padding: '2px 8px', borderRadius: 10, background: '#fef3c7', color: '#d97706', fontSize: 10, fontWeight: 700 }}>Pending</span>;
+  return           <span style={{ padding: '2px 8px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9', fontSize: 10, fontWeight: 700 }}>Pending</span>;
 }
 
-export default function SetupDashboard({ setPage: setPageProp }) {
+export default function SetupDashboard({ setPage: setPageProp, embedded = false }) {
   const navigate = useNavigate();
   const { role }  = useAuth();
   const { progress, isLoading, refetch } = useSetupProgress();
@@ -78,9 +80,9 @@ export default function SetupDashboard({ setPage: setPageProp }) {
     heroHeading = 'Pulse ERP is ready';
     heroSubtext = `All ${STEPS.length} setup steps completed.`;
   } else if (pct === 0) {
-    heroIcon    = <AlertCircle size={40} color="#d97706" />;
-    heroBg      = '#fef3c7';
-    heroRing    = '#fffbeb';
+    heroIcon    = <AlertCircle size={40} color="#6d28d9" />;
+    heroBg      = '#ede9fe';
+    heroRing    = '#f5f3ff';
     heroHeading = "Let's get Pulse ERP set up";
     heroSubtext = `0 of ${STEPS.length} steps completed. Complete setup to unlock full functionality.`;
   } else {
@@ -92,7 +94,14 @@ export default function SetupDashboard({ setPage: setPageProp }) {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#fafbff', padding: '20px 18px', fontFamily: 'inherit' }}>
+    <PageShell embedded={embedded} dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Settings"
+        title={heroHeading}
+        subtitle="Setup completion"
+      />
+    }>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       <div style={{ maxWidth: 960, margin: '0 auto' }}>
@@ -111,9 +120,7 @@ export default function SetupDashboard({ setPage: setPageProp }) {
           }}>
             {heroIcon}
           </div>
-          <h1 style={{ margin: '0 0 7px', fontSize: 22, fontWeight: 800, color: '#1f2937' }}>
-            {heroHeading}
-          </h1>
+
           <p style={{ margin: '0 0 15px', fontSize: 13.5, color: '#6b7280', lineHeight: 1.55, maxWidth: 500, marginLeft: 'auto', marginRight: 'auto' }}>
             {heroSubtext}
           </p>
@@ -121,7 +128,7 @@ export default function SetupDashboard({ setPage: setPageProp }) {
           {/* Progress bar */}
           <div style={{ maxWidth: 360, margin: '0 auto 15px', textAlign: 'left' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-              <span style={{ fontSize: 12, color: '#6b7280' }}>Setup completion</span>
+
               <span style={{ fontSize: 12, fontWeight: 700, color: P }}>{pct}%</span>
             </div>
             <div style={{ height: 8, background: '#e5e7eb', borderRadius: 4, overflow: 'hidden' }}>
@@ -225,7 +232,7 @@ export default function SetupDashboard({ setPage: setPageProp }) {
         {/* ── Remaining setup (skipped steps) ── */}
         {skippedSteps.length > 0 && (
           <div style={{
-            background: '#fff', borderRadius: 14, border: '1.5px solid #fef3c7',
+            background: '#fff', borderRadius: 14, border: '1.5px solid #ede9fe',
             padding: '20px 24px', marginBottom: 32,
             boxShadow: '0 1px 4px rgba(0,0,0,.04)',
           }}>
@@ -316,6 +323,6 @@ export default function SetupDashboard({ setPage: setPageProp }) {
         </div>
 
       </div>
-    </div>
+    </PageShell>
   );
 }

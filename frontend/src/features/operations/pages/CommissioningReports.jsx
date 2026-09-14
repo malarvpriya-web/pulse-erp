@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, ClipboardCheck, CheckSquare, Square, Search } from 'lucide-react';
+import { Plus, X, ClipboardCheck, CheckSquare, Square, Search, BarChart3 } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_COLOR = {
-  open:        { bg: '#fef3c7', color: '#92400e' },
+  open:        { bg: '#ede9fe', color: '#5b21b6' },
   in_progress: { bg: '#dbeafe', color: '#1e40af' },
   completed:   { bg: '#d1fae5', color: '#065f46' },
   failed:      { bg: '#fee2e2', color: '#991b1b' },
@@ -136,17 +137,16 @@ export default function CommissioningReports() {
   };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Commissioning Reports</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>{reports.length} reports · {reports.filter(r => r.status === 'completed').length} completed</p>
-        </div>
-        <button onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); }}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Operations"
+        title="Commissioning Reports"
+        actions={<button className="plh-cta" onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); }}>
           <Plus size={15} /> New Report
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
         <div style={{ position: 'relative', flex: 1 }}>
@@ -339,6 +339,6 @@ export default function CommissioningReports() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

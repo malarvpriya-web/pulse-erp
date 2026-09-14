@@ -6,6 +6,7 @@ import RolesSetup from './RolesSetup';
 import MenuPermissions from './MenuPermissions';
 import ApproverSetup from './ApproverSetup';
 import SecurityCenter from './SecurityCenter';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TABS = [
   { id: 'users',     label: 'User Management',   icon: Users      },
@@ -28,35 +29,23 @@ export default function AccessControl({ setPage }) {
   const go = id => { setActive(id); setSp({ tab: id }, { replace: true }); };
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f8f9fc', fontFamily: 'Inter, sans-serif' }}>
-      <div style={{ background: 'linear-gradient(135deg, #dc2626 0%, #991b1b 100%)', padding: '18px 28px 0' }}>
-        <div style={{ color: '#fff', fontSize: 11, fontWeight: 500, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.75, marginBottom: 4 }}>
-          Administration
-        </div>
-        <h1 style={{ margin: '0 0 2px', fontSize: 22, fontWeight: 700, color: '#fff' }}>Access Control</h1>
-        <p style={{ margin: '0 0 16px', fontSize: 13, color: 'rgba(255,255,255,0.75)' }}>
-          Manage users, define roles and permissions, configure approval chains and security policies
-        </p>
-        <div style={{ display: 'flex', gap: 0, overflowX: 'auto' }}>
-          {TABS.map(({ id, label, icon: Icon }) => {
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Administration"
+        title="Access Control"
+        subtitle="Manage users, define roles and permissions, configure approval chains and security policies"
+        actions={TABS.map(({ id, label, icon: Icon }) => {
             const on = active === id;
             return (
-              <button key={id} onClick={() => go(id)} style={{
-                padding: '10px 18px', border: 'none',
-                background: on ? 'rgba(255,255,255,0.15)' : 'transparent',
-                borderBottom: on ? '2px solid #fff' : '2px solid transparent',
-                borderRadius: on ? '6px 6px 0 0' : 0,
-                color: on ? '#fff' : 'rgba(255,255,255,0.65)',
-                fontWeight: on ? 600 : 400, cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: 7, fontSize: 13,
-                transition: 'all 0.15s', whiteSpace: 'nowrap', fontFamily: 'Inter, sans-serif',
-              }}>
+              <button className="plh-cta" key={id} onClick={() => go(id)}>
                 <Icon size={14} />{label}
               </button>
             );
           })}
-        </div>
-      </div>
+      />
+    }>
+
       <div>
         {active === 'users'     && <UserSetup />}
         {active === 'roles'     && <RolesSetup />}
@@ -64,6 +53,6 @@ export default function AccessControl({ setPage }) {
         {active === 'approvers' && <ApproverSetup setPage={setPage} />}
         {active === 'security'  && <SecurityCenter />}
       </div>
-    </div>
+    </PageShell>
   );
 }

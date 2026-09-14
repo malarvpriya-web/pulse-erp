@@ -16,6 +16,8 @@ import * as esign from '../../../services/esign.service.js';
 import { emitEsignEvent } from '../../../services/esignWebhook.service.js';
 import { sendSigningInvite, sendSigningReminder } from '../../../utils/mailer.js';
 import { generateOtp } from '../../../utils/otp.js';
+import { hasRole } from '../../../middlewares/auth.middleware.js';
+import { companyOf } from '../../../shared/scope.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -56,14 +58,29 @@ const safe = fn => async (req, res) => {
 /* ══════════════════════════════════════════════════════════════════════════
    LIST
    ══════════════════════════════════════════════════════════════════════════ */
+/**
+ * Signing requests, with their audit trail.
+ *
+ * Was `WHERE 1=1` — no company filter and no recipient filter — so a plain
+ * employee saw every tenant's signing requests and every recipient's email.
+ * Approvers see all of their own company's; everyone else sees the ones
+ * addressed to them or that they raised.
+ */
 router.get('/', safe(async (req, res) => {
   const { status, workflow_type, linked_entity_type, linked_entity_id, limit = 100 } = req.query;
   let q = `SELECT s.*,
              (SELECT json_agg(al ORDER BY al.occurred_at)
               FROM signature_audit_log al WHERE al.signing_id = s.id) AS audit_trail
-           FROM document_signings s WHERE 1=1`;
-  const params = [];
-  let i = 1;
+           FROM document_signings s WHERE ($1::int IS NULL OR s.company_id = $1)`;
+  const params = [companyOf(req)];
+  let i = 2;
+
+  const SIGN_ADMIN_ROLES = ['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'department_head', 'manager'];
+  if (!hasRole(req, ...SIGN_ADMIN_ROLES)) {
+    q += ` AND (LOWER(s.recipient_email) = LOWER($${i}) OR s.created_by = $${i + 1})`;
+    params.push(req.user?.email ?? '', req.user?.userId ?? null);
+    i += 2;
+  }
 
   if (status)              { q += ` AND s.status = $${i++}`;              params.push(status); }
   if (workflow_type)       { q += ` AND s.workflow_type = $${i++}`;       params.push(workflow_type); }

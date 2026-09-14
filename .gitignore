@@ -84,3 +84,23 @@ backend/uploads/*
 # Manual source-tree snapshots — contain gitignored files (devLogin.js test credentials)
 frontend/src*.zip
 frontend/src (*).zip
+
+# ── Playwright e2e (tests/) ──────────────────────────────────────────────────
+# The suite itself is tracked; everything it GENERATES is not. Before 2026-08-18
+# the whole suite lived outside this repository and was untracked, so no e2e gate
+# had ever run in CI — see ANALYTICS_AI_FINAL_HARDENING_REPORT.md blocker 1.
+tests/.auth/
+tests/reports/
+tests/role-audit/results/
+tests/role-audit/screenshots/
+tests/audit-screenshots/
+tests/**/*.png
+test-results/
+playwright-report/
+analysis/
+
+# esbuild written to the Windows reserved device name "nul" — a stray nul.css
+# here makes `git add -A` fail outright with "unable to index file".
+nul
+nul.*
+**/nul.*

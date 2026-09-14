@@ -3,10 +3,11 @@ import { Plus, CheckCircle, X, AlertCircle, RefreshCw, IndianRupee, TrendingUp, 
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_COLOR = {
   draft:     { bg: '#6b728018', text: '#6b7280' },
-  submitted: { bg: '#f59e0b18', text: '#f59e0b' },
+  submitted: { bg: '#7c5cf018', text: '#7c5cf0' },
   approved:  { bg: '#10b98118', text: '#10b981' },
   rejected:  { bg: '#ef444418', text: '#ef4444' },
   processed: { bg: '#3b82f618', text: '#3b82f6' },
@@ -89,7 +90,13 @@ export default function IncrementPlanning() {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={TrendingUp}
+        eyebrow="Performance"
+        title="Increment Planning"
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingPushPayroll}
@@ -120,11 +127,7 @@ export default function IncrementPlanning() {
           </div>
         </div>
       )}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <TrendingUp size={20} style={{ color: 'var(--color-primary)' }} /> Increment Planning
-        </h1>
-      </div>
+
 
       <div style={{ display: 'flex', gap: 0, marginBottom: 24, borderBottom: '1px solid var(--color-border-tertiary)' }}>
         {tabs.map(t => (
@@ -297,6 +300,6 @@ export default function IncrementPlanning() {
           </>
         )
       )}
-    </div>
+    </PageShell>
   );
 }

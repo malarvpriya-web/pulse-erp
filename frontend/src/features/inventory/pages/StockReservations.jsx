@@ -5,7 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import './AdvancedInventory.css';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
-import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 const StockReservations = ({ setPage }) => {
   const toast = useToast();
@@ -108,7 +108,7 @@ const StockReservations = ({ setPage }) => {
   const getStatusColor = (status) => {
     const colors = {
       active: '#dbeafe',
-      partially_consumed: '#fef3c7',
+      partially_consumed: '#ede9fe',
       fully_consumed: '#dcfce7',
       cancelled: '#fee2e2',
       expired: '#f3f4f6'
@@ -117,23 +117,16 @@ const StockReservations = ({ setPage }) => {
   };
 
   return (
-    <PageLayout>
-      <ConfirmDialog
-        open={!!pendingHandleCancel}
-        title="Cancel Reservation"
-        message="Cancel this reservation?"
-        confirmLabel="Cancel"
-        variant="warning"
-        onConfirm={handleCancel}
-        onCancel={() => setPendingHandleCancel(null)}
-      />
-
-      <PageHeader
-        actions={
-          <button className="pulse-btn-primary" onClick={() => setShowForm(true)}>+ New Reservation</button>
-        }
-        filters={
-          <div style={{ display: 'flex', gap: 8 }}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Stock Reservations"
+          actions={<button className="plh-cta" onClick={() => setShowForm(true)}>+ New Reservation</button>}
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display: 'flex', gap: 8 }}>
             <select
               className="pl-icon-btn"
               value={filters.status}
@@ -156,9 +149,21 @@ const StockReservations = ({ setPage }) => {
               <option value="production_order_id">Production</option>
               <option value="service_ticket_id">Service</option>
             </select>
-          </div>
-        }
+          </div>}
+        </div>
+      </>
+    }>
+      <ConfirmDialog
+        open={!!pendingHandleCancel}
+        title="Cancel Reservation"
+        message="Cancel this reservation?"
+        confirmLabel="Cancel"
+        variant="warning"
+        onConfirm={handleCancel}
+        onCancel={() => setPendingHandleCancel(null)}
       />
+
+
 
       {showForm && (
         <div className="modal-overlay">
@@ -276,7 +281,7 @@ const StockReservations = ({ setPage }) => {
           </tbody>
         </table>
       </TableContainer>
-    </PageLayout>
+    </PageShell>
   );
 };
 

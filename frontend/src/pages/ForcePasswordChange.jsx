@@ -107,7 +107,7 @@ export default function ForcePasswordChange() {
             </button>
             {next && (
               <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color:
-                strength === "strong" ? "#16a34a" : strength === "medium" ? "#d97706" : "#dc2626" }}>
+                strength === "strong" ? "#16a34a" : strength === "medium" ? "#6d28d9" : "#dc2626" }}>
                 {strength === "strong" ? "Strong password" : strength === "medium" ? "Medium strength" : "Weak — add length, a capital and a number"}
               </div>
             )}

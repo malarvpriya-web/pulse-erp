@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -15,8 +18,8 @@ const fmtL = (n) => {
   return `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 };
 
-const COLORS = ['#6B3FDB', '#0891b2', '#059669', '#f59e0b', '#ef4444', '#8b5cf6'];
-const AGING_COLORS = { '0-30': '#059669', '31-60': '#f59e0b', '61-90': '#f97316', '90+': '#ef4444' };
+const COLORS = ['#6B3FDB', '#0891b2', '#059669', '#7c5cf0', '#ef4444', '#8b5cf6'];
+const AGING_COLORS = { '0-30': '#059669', '31-60': '#7c5cf0', '61-90': '#7c5cf0', '90+': '#ef4444' };
 
 const cardStyle = {
   background: '#fff',
@@ -59,30 +62,56 @@ const AdvancedInventoryDashboard = ({ setPage }) => {
   const [error, setError]     = useState(null);
   const abortRef = useRef(null);
 
-  const fetchData = async () => {
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
+  const [options, setOptions] = useState({ categories: [] });
+
+  // Valuation figures are point-in-time balances, so no period. Category is the
+  // one dimension every query on this endpoint can apply.
+  const filters = useDashboardFilters({
+    dimensions: { category_id: 'all' },
+    storageKey: 'advanced-inventory-dashboard',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/inventory/dashboard/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdown falls back to "All Categories" only */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const fetchData = useCallback(async () => {
+    abortRef.current?.abort();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    // A filter change aborts the previous request; that call's rejection lands
+    // after the new one has started, so it must not clear `loading` (the
+    // dashboard would render its empty state mid-load) or set state at all.
+    const isStale = () => myCtrl.signal.aborted || abortRef.current !== myCtrl;
     try {
       setLoading(true);
       setError(null);
       const res = await api.get('/inventory/advanced-dashboard', {
-        signal: abortRef.current.signal,
+        signal: myCtrl.signal,
+        params,
       });
+      if (isStale()) return;
       setData(res.data?.data ?? {});
     } catch (err) {
-      if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
+      if (isStale() || err?.name === 'CanceledError' || err?.name === 'AbortError') return;
       setError('Failed to load advanced dashboard');
       toast.error('Failed to load advanced dashboard');
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
-  };
+  // toast is stable from context; params drives the refetch
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
 
   useEffect(() => {
     fetchData();
     return () => abortRef.current?.abort();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fetchData]);
 
   if (loading) {
     return (
@@ -183,33 +212,41 @@ const AdvancedInventoryDashboard = ({ setPage }) => {
   );
 
   return (
-    <div style={{ padding: '16px 18px 20px', background: '#f5f3ff', minHeight: '100vh' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: '#111827', margin: 0 }}>Advanced Inventory Dashboard</h1>
-          <p style={{ color: '#6b7280', margin: '3px 0 0', fontSize: 12.5 }}>Valuation, trends, turnover, aging & utilisation</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setPage?.('BatchTracking')}
-            style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #e9e4ff', background: '#fff', color: '#6B3FDB', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Inventory"
+        title="Advanced Inventory Dashboard"
+        subtitle="Valuation, trends, turnover, aging & utilisation"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('BatchTracking')}>
             Batch Tracking
           </button>
-          <button onClick={() => setPage?.('StockReservations')}
-            style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #e9e4ff', background: '#fff', color: '#6B3FDB', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('StockReservations')}>
             Reservations
           </button>
-          <button onClick={() => setPage?.('StockAlertsAndSuggestions')}
-            style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #e9e4ff', background: '#fff', color: '#6B3FDB', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('StockAlertsAndSuggestions')}>
             Stock Alerts
           </button>
-          <button onClick={fetchData}
-            style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #e9e4ff', background: '#6B3FDB', color: '#fff', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}>
+          <button className="plh-cta" onClick={fetchData}>
             Refresh
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+
+      {/* Valuations are point-in-time — category only, no date range. */}
+      <DashboardFilterBar
+        filters={filters}
+        showPeriod={false}
+        dimensions={[{
+          key: 'category_id',
+          label: 'Category',
+          allLabel: 'All Categories',
+          options: options.categories,
+        }]}
+      />
 
       {/* ── STOCK VALUATION ─────────────────────────────── */}
       <div className="dk-anim" style={{ ...cardStyle, '--dk-i': 0 }}>
@@ -441,7 +478,7 @@ const AdvancedInventoryDashboard = ({ setPage }) => {
         )}
       </div>
 
-    </div>
+    </PageShell>
   );
 };
 

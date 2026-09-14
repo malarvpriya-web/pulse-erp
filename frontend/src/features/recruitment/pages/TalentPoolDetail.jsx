@@ -2,20 +2,21 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import {
-  ArrowLeft, Users, Plus, X, Search, Trash2, Tag,
-  ExternalLink, Briefcase, Building2, Pencil,
+  ArrowLeft, Users, Plus, X, Search, Trash2, Tag, ExternalLink,
+  Briefcase, Building2, Pencil, UserPlus,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import DataTable from '@/components/core/DataTable';
 import { fmtDate } from '@/utils/dateFormatter';
 import { matchesSearch } from '../shared/search';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY_FORM = { pool_name: '', description: '', department: '', skills: [], is_active: true };
 
 // ── Stage badge ───────────────────────────────────────────────────────────────
 const STAGE_COLORS = {
   applied:    { bg:'#dbeafe', color:'#1d4ed8' },
-  screening:  { bg:'#fef3c7', color:'#92400e' },
+  screening:  { bg:'#ede9fe', color:'#5b21b6' },
   hired:      { bg:'#dcfce7', color:'#15803d' },
   rejected:   { bg:'#fee2e2', color:'#dc2626' },
 };
@@ -260,7 +261,17 @@ export default function TalentPoolDetail({ setPage, urlParams }) {
   const memberCount = members.length || parseInt(pool?.member_count) || 0;
 
   return (
-    <div style={{ padding: 24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title={pool?.pool_name}
+        subtitle="Candidates"
+        actions={<button className="plh-cta" onClick={openEditModal}>
+              <Pencil size={13}/> Edit Pool
+            </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingRemoveMember}
         title="Remove from Pool"
@@ -278,52 +289,7 @@ export default function TalentPoolDetail({ setPage, urlParams }) {
       </button>
 
       {/* Pool header card */}
-      <div style={{ background:'#fff', borderRadius: 12, padding: 24, border:'1px solid #f0f0f4', marginBottom: 20 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap: 12 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display:'flex', alignItems:'center', gap: 10, flexWrap:'wrap' }}>
-              <h1 style={{ fontSize: 20, fontWeight: 700, color:'#1f2937', margin: 0 }}>{pool?.pool_name}</h1>
-              <span style={{ fontSize: 11, fontWeight: 600, padding:'3px 9px', borderRadius: 20,
-                background: pool?.is_active !== false ? '#dcfce7' : '#f3f4f6',
-                color: pool?.is_active !== false ? '#15803d' : '#6b7280' }}>
-                {pool?.is_active !== false ? 'Active' : 'Inactive'}
-              </span>
-            </div>
 
-            {pool?.department && (
-              <div style={{ display:'flex', alignItems:'center', gap: 4, marginTop: 4 }}>
-                <Building2 size={12} color="#9ca3af"/>
-                <span style={{ fontSize: 12, color:'#9ca3af' }}>{pool.department}</span>
-              </div>
-            )}
-
-            {pool?.description && (
-              <p style={{ fontSize: 13, color:'#6b7280', margin:'8px 0 0' }}>{pool.description}</p>
-            )}
-
-            {poolSkills.length > 0 && (
-              <div style={{ display:'flex', flexWrap:'wrap', gap: 6, marginTop: 10 }}>
-                {poolSkills.map((sk, i) => (
-                  <span key={i} style={{ background:'#f5f3ff', color:'#6B3FDB', padding:'3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 500, display:'flex', alignItems:'center', gap: 3 }}>
-                    <Tag size={9}/>{sk}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap: 8 }}>
-            <div style={{ textAlign:'center', padding:'10px 20px', background:'#f5f3ff', borderRadius: 10 }}>
-              <p style={{ fontSize: 22, fontWeight: 700, color:'#6B3FDB', margin: 0 }}>{memberCount}</p>
-              <p style={{ fontSize: 11, color:'#9ca3af', margin: 0 }}>Candidates</p>
-            </div>
-            <button onClick={openEditModal}
-              style={{ display:'flex', alignItems:'center', gap: 5, padding:'7px 14px', background:'#f9fafb', color:'#374151', border:'1px solid #e5e7eb', borderRadius: 8, cursor:'pointer', fontSize: 12, fontWeight: 600 }}>
-              <Pencil size={13}/> Edit Pool
-            </button>
-          </div>
-        </div>
-      </div>
 
       {/* Members section */}
       <div style={{ background:'#fff', borderRadius: 12, border:'1px solid #f0f0f4' }}>
@@ -595,7 +561,7 @@ export default function TalentPoolDetail({ setPage, urlParams }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  BarChart2, Download, RefreshCw, CheckCircle, X,
-  Clock, AlertCircle, Users, TrendingUp, Lock, Info, Printer,
+  BarChart2, Download, RefreshCw, CheckCircle, X, Clock, AlertCircle,
+  Users, TrendingUp, Lock, Info, Printer, BarChart3,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P    = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 20 };
@@ -243,7 +244,7 @@ export default function MonthlyAttendanceReport() {
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
         borderRadius: 8, marginBottom: 16, fontSize: 13,
-        background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e',
+        background: '#ede9fe', border: '1px solid #ddd6fe', color: '#5b21b6',
       }}>
         <Info size={14} />
         <span>
@@ -256,7 +257,43 @@ export default function MonthlyAttendanceReport() {
   };
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Attendance"
+        title="Monthly Attendance Report"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={() => setPendingPayrollSync(true)}
+            disabled={freezing || !data || records.length === 0}
+            
+            title={allSynced ? 'All records already synced' : 'Freeze attendance and compute LOP for payroll'}>
+            {allSynced && <Lock size={13} />}
+            {freezing ? 'Syncing…' : allSynced ? 'Synced' : 'Sync to Payroll'}
+          </button>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={exportToExcel}
+            disabled={!sorted.length}>
+            <Download size={13} /> Export Excel
+          </button>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={downloadCSV}
+            disabled={!sorted.length}>
+            <Download size={13} /> Export CSV
+          </button>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={() => window.print()}
+            disabled={!sorted.length}>
+            <Printer size={13} /> Print / PDF
+          </button>
+          <button className="plh-cta"
+            onClick={load}>
+            <RefreshCw size={13} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
+            Refresh
+          </button>
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={pendingPayrollSync}
         title="Sync Attendance to Payroll"
@@ -282,81 +319,7 @@ export default function MonthlyAttendanceReport() {
       )}
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>Monthly Attendance Report</h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-            {data
-              ? `${MONTH_NAMES[month - 1]} ${year} · ${records.length} employees · ${data.working_days} working days`
-              : `${MONTH_NAMES[month - 1]} ${year}`}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <button
-            onClick={() => setPendingPayrollSync(true)}
-            disabled={freezing || !data || records.length === 0}
-            style={{
-              padding: '8px 16px', borderRadius: 8, border: 'none',
-              background: allSynced ? '#d1d5db' : P,
-              color: '#fff', fontWeight: 600,
-              cursor: (freezing || !data || records.length === 0) ? 'not-allowed' : 'pointer',
-              fontSize: 13, display: 'flex', alignItems: 'center', gap: 6,
-              opacity: (!data || records.length === 0) ? 0.5 : 1,
-            }}
-            title={allSynced ? 'All records already synced' : 'Freeze attendance and compute LOP for payroll'}
-          >
-            {allSynced && <Lock size={13} />}
-            {freezing ? 'Syncing…' : allSynced ? 'Synced' : 'Sync to Payroll'}
-          </button>
-          <button
-            onClick={exportToExcel}
-            disabled={!sorted.length}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px',
-              borderRadius: 8, border: '1px solid #bbf7d0', background: '#f0fdf4',
-              cursor: sorted.length ? 'pointer' : 'not-allowed',
-              fontSize: 13, color: '#15803d', opacity: sorted.length ? 1 : 0.5,
-            }}
-          >
-            <Download size={13} /> Export Excel
-          </button>
-          <button
-            onClick={downloadCSV}
-            disabled={!sorted.length}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px',
-              borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff',
-              cursor: sorted.length ? 'pointer' : 'not-allowed',
-              fontSize: 13, color: '#374151', opacity: sorted.length ? 1 : 0.5,
-            }}
-          >
-            <Download size={13} /> Export CSV
-          </button>
-          <button
-            onClick={() => window.print()}
-            disabled={!sorted.length}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px',
-              borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff',
-              cursor: sorted.length ? 'pointer' : 'not-allowed',
-              fontSize: 13, color: '#374151', opacity: sorted.length ? 1 : 0.5,
-            }}
-          >
-            <Printer size={13} /> Print / PDF
-          </button>
-          <button
-            onClick={load}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px',
-              borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff',
-              cursor: 'pointer', fontSize: 13, color: '#374151',
-            }}
-          >
-            <RefreshCw size={13} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
-            Refresh
-          </button>
-        </div>
-      </div>
+
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -396,7 +359,7 @@ export default function MonthlyAttendanceReport() {
           <SummaryCard icon={Users}       label="Employees"    value={records.length}              color={P}       bg="#f5f3ff" />
           <SummaryCard icon={CheckCircle} label="Present Days" value={totalPresent}                 color="#10b981" bg="#dcfce7" />
           <SummaryCard icon={X}           label="LOP Days"     value={totalLOP.toFixed(1)}           color="#ef4444" bg="#fee2e2" />
-          <SummaryCard icon={Clock}       label="Late Arrivals" value={totalLate}                   color="#f59e0b" bg="#fef3c7" />
+          <SummaryCard icon={Clock}       label="Late Arrivals" value={totalLate}                   color="#7c5cf0" bg="#ede9fe" />
           <SummaryCard icon={TrendingUp}  label="Total Hours"  value={`${totalHours.toFixed(0)}h`}  color="#0369a1" bg="#e0f2fe" />
           <SummaryCard icon={BarChart2}   label="OT Hours"     value={`${totalOT.toFixed(1)}h`}     color="#8b5cf6" bg="#ede9fe" />
         </div>
@@ -476,14 +439,14 @@ export default function MonthlyAttendanceReport() {
                       <td style={{ padding: '10px 10px', color: '#10b981', fontWeight: 600 }}>{r.present_days}</td>
                       <td style={{
                         padding: '10px 10px', fontWeight: lopVal > 0 ? 700 : 400,
-                        color: lopVal > 2 ? '#ef4444' : lopVal > 0 ? '#f59e0b' : '#10b981',
+                        color: lopVal > 2 ? '#ef4444' : lopVal > 0 ? '#7c5cf0' : '#10b981',
                       }}>
                         {lopVal > 0 ? lopVal : '—'}
                       </td>
                       <td style={{ padding: '10px 10px', color: parseInt(r.absent_days) > 3 ? '#ef4444' : '#374151', fontWeight: parseInt(r.absent_days) > 3 ? 700 : 400 }}>
                         {r.absent_days}
                       </td>
-                      <td style={{ padding: '10px 10px', color: '#f59e0b' }}>{r.late_days}</td>
+                      <td style={{ padding: '10px 10px', color: '#7c5cf0' }}>{r.late_days}</td>
                       <td style={{ padding: '10px 10px', color: '#3b82f6' }}>{r.wfh_days}</td>
                       <td style={{ padding: '10px 10px' }}>{r.half_days}</td>
                       <td style={{ padding: '10px 10px', color: parseInt(r.late_arrivals) >= 3 ? '#ef4444' : '#374151' }}>
@@ -496,8 +459,8 @@ export default function MonthlyAttendanceReport() {
                         <span style={{
                           display: 'inline-block', padding: '2px 7px', borderRadius: 99,
                           fontSize: 11, fontWeight: 700,
-                          background: attPct >= 90 ? '#dcfce7' : attPct >= 75 ? '#fef3c7' : '#fee2e2',
-                          color:      attPct >= 90 ? '#166534' : attPct >= 75 ? '#92400e' : '#991b1b',
+                          background: attPct >= 90 ? '#dcfce7' : attPct >= 75 ? '#ede9fe' : '#fee2e2',
+                          color:      attPct >= 90 ? '#166534' : attPct >= 75 ? '#5b21b6' : '#991b1b',
                         }}>
                           {attPct}%
                         </span>
@@ -524,7 +487,7 @@ export default function MonthlyAttendanceReport() {
                   <td style={{ padding: '10px 10px', fontWeight: 700, color: '#ef4444' }}>
                     {records.reduce((s, r) => s + parseInt(r.absent_days || 0), 0)}
                   </td>
-                  <td style={{ padding: '10px 10px', fontWeight: 700, color: '#f59e0b' }}>
+                  <td style={{ padding: '10px 10px', fontWeight: 700, color: '#7c5cf0' }}>
                     {records.reduce((s, r) => s + parseInt(r.late_days || 0), 0)}
                   </td>
                   <td style={{ padding: '10px 10px' }}>{records.reduce((s, r) => s + parseInt(r.wfh_days || 0), 0)}</td>
@@ -556,6 +519,6 @@ export default function MonthlyAttendanceReport() {
           * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
       `}</style>
-    </div>
+    </PageShell>
   );
 }

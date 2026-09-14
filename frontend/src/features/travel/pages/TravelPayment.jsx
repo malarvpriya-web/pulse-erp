@@ -3,8 +3,12 @@ import * as XLSX from 'xlsx';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
-import { Banknote, Search, Download, X, FileText, Wallet, CheckCircle2 } from 'lucide-react';
+import {
+  Banknote, Search, Download, X, FileText, Wallet, CheckCircle2,
+  ReceiptIndianRupee,
+} from 'lucide-react';
 import { STATUS_COLOR, fmt } from './travelUtils';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /**
  * Payment — the final leg of the reimbursement chain.
@@ -142,13 +146,13 @@ export default function TravelPayment() {
   const preview = payFor ? previewAdjustment(payFor) : null;
 
   return (
-    <div style={{ padding:24, background:'var(--color-bg-page)', minHeight:'100vh' }}>
-      <div style={{ marginBottom:20 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Payment</h1>
-        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
-          {total} claim{total === 1 ? '' : 's'} in the queue · {fmt(queueValue)} net payable after advance adjustment
-        </p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={ReceiptIndianRupee}
+        eyebrow="Travel"
+        title="Payment"
+      />
+    }>
 
       <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:16, marginBottom:16, display:'flex', gap:14, alignItems:'flex-end', flexWrap:'wrap' }}>
         <div style={{ minWidth:200 }}>
@@ -207,7 +211,7 @@ export default function TravelPayment() {
                         <td style={td}>{fmt(c.amount)}</td>
                         <td style={td}>{Number(c.gst_amount) ? fmt(c.gst_amount) : '—'}</td>
                         <td style={{ ...td, fontWeight:600, color:'#1f2937' }}>{fmt(c.total_amount)}</td>
-                        <td style={{ ...td, color: adjusted > 0 ? '#92400e' : '#9ca3af' }}>{adjusted > 0 ? `− ${fmt(adjusted)}` : '—'}</td>
+                        <td style={{ ...td, color: adjusted > 0 ? '#5b21b6' : '#9ca3af' }}>{adjusted > 0 ? `− ${fmt(adjusted)}` : '—'}</td>
                         <td style={{ ...td, fontWeight:700, color:'#065f46' }}>{fmt(net)}</td>
                         <td style={td}>{fmtDate(c.payment_date)}</td>
                         <td style={td}>{c.payment_ref || '—'}</td>
@@ -267,7 +271,7 @@ export default function TravelPayment() {
                 <div style={{ display:'flex', justifyContent:'space-between' }}>
                   <span>Claim total</span><span>{fmt(payFor.total_amount)}</span>
                 </div>
-                <div style={{ display:'flex', justifyContent:'space-between', color: preview.adjusted > 0 ? '#92400e' : '#9ca3af' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', color: preview.adjusted > 0 ? '#5b21b6' : '#9ca3af' }}>
                   <span>Advance adjusted</span><span>{preview.adjusted > 0 ? `− ${fmt(preview.adjusted)}` : '—'}</span>
                 </div>
                 <div style={{ display:'flex', justifyContent:'space-between', fontWeight:700, color:'#065f46', borderTop:'1px solid #e5e7eb', paddingTop:4, marginTop:2 }}>
@@ -309,6 +313,6 @@ export default function TravelPayment() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

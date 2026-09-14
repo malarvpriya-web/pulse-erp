@@ -18,6 +18,20 @@ vi.mock('../services/RuleEngineService.js', () => ({
 vi.mock('../services/AuditService.js', () => ({
   logAudit: vi.fn(),
 }));
+// Required for test isolation, not just for speed. handleStatusUpdate calls
+// notifyLeaveEvent WITHOUT awaiting it, and the real notifyWorkflowEvent defers
+// its work into a setImmediate. Unmocked, that lands one macrotask AFTER
+// res.json() has flushed and supertest has resolved -- i.e. during the NEXT
+// test, where its resolveEmployeeUserId() query silently consumes the first
+// mockResolvedValueOnce that mockAuthWithFullPermission() just primed. The next
+// test's verifyToken then reads {rows: []} instead of ACTIVE_USER and 401s with
+// "Account inactive". That was a ~1-in-5 flake in the full parallel run
+// (rotating victim, always the test following an approve/reject) and 0-in-∞ when
+// this file ran alone, because in isolation the setImmediate wins the race.
+// smoke.approvals.test.js has always mocked this for the same reason.
+vi.mock('../services/WorkflowNotificationService.js', () => ({
+  notifyWorkflowEvent: vi.fn().mockResolvedValue(undefined),
+}));
 
 import request       from 'supertest';
 import pool          from '../config/db.js';

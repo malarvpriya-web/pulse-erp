@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { TrendingUp, TrendingDown, AlertTriangle, RefreshCw, CheckCircle, Download } from 'lucide-react';
+import {
+  TrendingUp, TrendingDown, AlertTriangle, RefreshCw, CheckCircle,
+  Download, IndianRupee,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { currentFY, fyOptions } from '@/utils/financialYear';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtINR = (v) => `₹${Number(v ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
@@ -39,7 +43,7 @@ function KPI({ label, value, sub, color, icon: Icon }) {
 // ── Utilization Progress Bar ──────────────────────────────────────────────────
 function UtilBar({ pct }) {
   const n = Number(pct) || 0;
-  const c = n >= 100 ? '#ef4444' : n >= 85 ? '#f59e0b' : '#10b981';
+  const c = n >= 100 ? '#ef4444' : n >= 85 ? '#7c5cf0' : '#10b981';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
       <div style={{ width: 70, background: '#f5f5f7', borderRadius: 4, height: 6, overflow: 'hidden', flexShrink: 0 }}>
@@ -136,13 +140,13 @@ export function BudgetVsActualsPanel() {
       {/* Alerts */}
       {(data?.alerts || []).map((a, i) => (
         <div key={i} style={{
-          background: a.severity === 'critical' ? '#fef2f2' : '#fef9c3',
-          border: `1px solid ${a.severity === 'critical' ? '#fecaca' : '#fde68a'}`,
+          background: a.severity === 'critical' ? '#fef2f2' : '#ede9fe',
+          border: `1px solid ${a.severity === 'critical' ? '#fecaca' : '#ddd6fe'}`,
           borderRadius: 10, padding: '10px 16px', marginBottom: 12,
           display: 'flex', alignItems: 'center', gap: 10, fontSize: 12,
         }}>
-          <AlertTriangle size={14} color={a.severity === 'critical' ? '#ef4444' : '#f59e0b'} />
-          <span style={{ color: a.severity === 'critical' ? '#991b1b' : '#92400e' }}>
+          <AlertTriangle size={14} color={a.severity === 'critical' ? '#ef4444' : '#7c5cf0'} />
+          <span style={{ color: a.severity === 'critical' ? '#991b1b' : '#5b21b6' }}>
             <strong>{a.department}</strong> is at {fmtPct(a.utilization_pct)} utilization — {
               a.overspent
                 ? `overspent by ${fmtINR(Math.abs(Number(a.variance ?? 0)))}`
@@ -160,7 +164,7 @@ export function BudgetVsActualsPanel() {
         <KPI
           label="Overall Utilization"
           value={fmtPct(s.overall_utilization)}
-          color={Number(s.overall_utilization) >= 100 ? '#ef4444' : Number(s.overall_utilization) >= 85 ? '#f59e0b' : '#10b981'}
+          color={Number(s.overall_utilization) >= 100 ? '#ef4444' : Number(s.overall_utilization) >= 85 ? '#7c5cf0' : '#10b981'}
           sub={`of ${fyLabel}`}
         />
       </div>
@@ -304,8 +308,15 @@ export function BudgetVsActualsPanel() {
 // ── Standalone page wrapper ───────────────────────────────────────────────────
 export default function BudgetVsActuals() {
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="Budget vs Actuals"
+        subtitle="Budgeted spend against actual spend, by cost centre and period"
+      />
+    }>
       <BudgetVsActualsPanel />
-    </div>
+    </PageShell>
   );
 }

@@ -1,0 +1,621 @@
+/**
+ * SourcingStrategy.css
+ *
+ * Every rule is prefixed with the page root `.sourcing-strategy` — the
+ * specificity trap this codebase has been bitten by is a page stylesheet whose
+ * bare `.ss-table` leaks into (or loses to) another module's table. The root
+ * class is passed to <PageShell className="sourcing-strategy">; if that prop is
+ * ever dropped, this entire sheet stops applying, so it must stay.
+ */
+
+.sourcing-strategy .ss-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sourcing-strategy .ss-window {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sourcing-strategy .ss-window option { color: #1f2937; }
+
+.sourcing-strategy .ss-error {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--color-danger, #dc2626);
+  background: var(--color-danger-bg, #fee2e2);
+  color: #991b1b;
+  font-size: 13px;
+}
+
+/* The provenance line under the stat band — deliberately quiet but present. */
+.sourcing-strategy .ss-basis {
+  margin: 10px 2px 18px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-muted, #6b7280);
+}
+.sourcing-strategy .ss-basis code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #eef0f6;
+  font-size: 11.5px;
+}
+
+/* ── Layout ───────────────────────────────────────────────────────────────── */
+
+.sourcing-strategy .ss-grid {
+  display: grid;
+  grid-template-columns: minmax(460px, 1fr) minmax(420px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1180px) {
+  .sourcing-strategy .ss-grid { grid-template-columns: 1fr; }
+}
+
+.sourcing-strategy .ss-card {
+  background: #fff;
+  border: 1px solid #e9ebf2;
+  border-radius: 14px;
+  padding: 18px 18px 20px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.sourcing-strategy .ss-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sourcing-strategy .ss-card-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-text-primary, #1f2937);
+}
+
+.sourcing-strategy .ss-card-sub {
+  font-size: 11.5px;
+  color: var(--color-text-muted, #6b7280);
+}
+
+/* ── The 2x2 ──────────────────────────────────────────────────────────────── */
+
+.sourcing-strategy .ss-plot { position: relative; }
+
+.sourcing-strategy .ss-dot { cursor: pointer; outline: none; }
+.sourcing-strategy .ss-dot:focus-visible circle:nth-child(2) {
+  stroke-width: 3;
+}
+
+.sourcing-strategy .ss-quad-labels {
+  position: absolute;
+  inset: 16px 24px 52px 56px;
+  pointer-events: none;
+}
+
+.sourcing-strategy .ss-ql {
+  position: absolute;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+.sourcing-strategy .ss-ql.tl { top: 4px;    left: 6px; }
+.sourcing-strategy .ss-ql.tr { top: 4px;    right: 6px; }
+.sourcing-strategy .ss-ql.bl { bottom: 4px; left: 6px; }
+.sourcing-strategy .ss-ql.br { bottom: 4px; right: 6px; }
+
+.sourcing-strategy .ss-tip {
+  min-width: 210px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
+  font-size: 12px;
+}
+.sourcing-strategy .ss-tip-title {
+  margin-bottom: 6px;
+  font-weight: 700;
+  color: var(--color-text-primary, #1f2937);
+}
+.sourcing-strategy .ss-tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 1px 0;
+  color: var(--color-text-secondary, #4b5563);
+}
+.sourcing-strategy .ss-tip-row b { color: var(--color-text-primary, #1f2937); }
+.sourcing-strategy .ss-tip-warn {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #e5e7eb;
+  color: #b45309;
+  font-weight: 600;
+}
+
+/* ── Categories that could not be placed ──────────────────────────────────── */
+
+.sourcing-strategy .ss-unplaced {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.sourcing-strategy .ss-unplaced-why {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.sourcing-strategy .ss-unplaced-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sourcing-strategy .ss-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px dashed #cbd2e0;
+  background: #f8f9fc;
+  color: var(--color-text-secondary, #4b5563);
+  font-size: 12px;
+  cursor: pointer;
+}
+.sourcing-strategy .ss-pill:hover { border-color: var(--color-primary, #6B3FDB); color: var(--color-primary, #6B3FDB); }
+.sourcing-strategy .ss-pill.is-sel {
+  border-style: solid;
+  border-color: var(--color-primary, #6B3FDB);
+  background: rgba(107, 63, 219, 0.08);
+  color: var(--color-primary, #6B3FDB);
+  font-weight: 600;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────────── */
+
+.sourcing-strategy .ss-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #eef0f5;
+  border-radius: 10px;
+}
+
+.sourcing-strategy .ss-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.sourcing-strategy .ss-table th {
+  position: sticky;
+  top: 0;
+  padding: 9px 10px;
+  background: #f7f8fb;
+  border-bottom: 1px solid #e9ebf2;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #6b7280);
+  white-space: nowrap;
+}
+
+.sourcing-strategy .ss-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #f2f3f7;
+  color: var(--color-text-secondary, #4b5563);
+  vertical-align: middle;
+}
+
+.sourcing-strategy .ss-table tbody tr { cursor: pointer; }
+.sourcing-strategy .ss-table tbody tr:hover { background: #fafbff; }
+.sourcing-strategy .ss-table tbody tr.is-sel { background: rgba(107, 63, 219, 0.06); }
+.sourcing-strategy .ss-table tbody tr:last-child td { border-bottom: none; }
+.sourcing-strategy .ss-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.sourcing-strategy .ss-quad-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.sourcing-strategy .ss-quad-cell i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+.sourcing-strategy .ss-quad-cell em {
+  font-style: normal;
+  font-size: 10px;
+  color: #b45309;
+}
+
+.sourcing-strategy .ss-strat { font-weight: 600; color: var(--color-text-primary, #1f2937); }
+.sourcing-strategy .ss-strat.is-drift { color: #b45309; }
+.sourcing-strategy .ss-muted { color: #9ca3af; }
+
+.sourcing-strategy .ss-flag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #eef0f6;
+  color: #4b5563;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.sourcing-strategy .ss-flag--warn { background: #fef3c7; color: #92400e; }
+
+/* ── Detail panel ─────────────────────────────────────────────────────────── */
+
+.sourcing-strategy .ss-panel {
+  margin-top: 16px;
+  background: #fff;
+  border: 1px solid #e9ebf2;
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.sourcing-strategy .ss-panel--loading {
+  color: var(--color-text-muted, #6b7280);
+  font-size: 13px;
+}
+
+.sourcing-strategy .ss-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sourcing-strategy .ss-panel-head h2 {
+  margin: 0 0 3px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--color-text-primary, #1f2937);
+}
+
+.sourcing-strategy .ss-panel-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.sourcing-strategy .ss-quadrant-badge {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.sourcing-strategy .ss-quadrant-badge--none {
+  border-color: #d5d8e2;
+  background: #f4f5f9;
+  color: #6b7280;
+}
+
+.sourcing-strategy .ss-thesis {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--color-primary, #6B3FDB);
+  border-radius: 0 8px 8px 0;
+  background: #f8f7fe;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--color-text-secondary, #4b5563);
+}
+
+.sourcing-strategy .ss-note {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: #f4f5f9;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-text-secondary, #4b5563);
+}
+.sourcing-strategy .ss-note--warn { background: #fef3c7; color: #92400e; }
+.sourcing-strategy .ss-note--error { background: var(--color-danger-bg, #fee2e2); color: #991b1b; }
+
+.sourcing-strategy .ss-h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 24px 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-text-primary, #1f2937);
+}
+.sourcing-strategy .ss-h3-sub {
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.sourcing-strategy .ss-empty {
+  margin: 0;
+  padding: 14px;
+  border: 1px dashed #d9dde8;
+  border-radius: 10px;
+  background: #fafbfe;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.sourcing-strategy .ss-loading {
+  padding: 40px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-muted, #6b7280);
+}
+
+/* ── Five forces ──────────────────────────────────────────────────────────── */
+
+.sourcing-strategy .ss-forces {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.sourcing-strategy .ss-force {
+  padding: 12px;
+  border: 1px solid #eef0f5;
+  border-radius: 10px;
+  background: #fff;
+}
+.sourcing-strategy .ss-force.is-unrated {
+  border-style: dashed;
+  background: #fafbfe;
+}
+
+.sourcing-strategy .ss-force-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sourcing-strategy .ss-force-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-primary, #1f2937);
+}
+
+.sourcing-strategy .ss-force-score {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-primary, #6B3FDB);
+}
+.sourcing-strategy .ss-force.is-unrated .ss-force-score { color: #9ca3af; }
+
+.sourcing-strategy .ss-force-bar {
+  height: 5px;
+  margin: 8px 0 8px;
+  border-radius: 3px;
+  background: #eef0f6;
+  overflow: hidden;
+}
+.sourcing-strategy .ss-force-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--color-primary, #6B3FDB);
+}
+
+.sourcing-strategy .ss-force-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sourcing-strategy .ss-chip {
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: #eef0f6;
+  color: #4b5563;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.sourcing-strategy .ss-chip--observed  { background: rgba(13, 148, 136, 0.12); color: #0d6d63; }
+.sourcing-strategy .ss-chip--estimated { background: rgba(107, 63, 219, 0.12); color: #5b35d5; }
+.sourcing-strategy .ss-chip--assumed   { background: #fef3c7; color: #92400e; }
+.sourcing-strategy .ss-chip--unrated   { background: #f0f1f5; color: #6b7280; }
+
+.sourcing-strategy .ss-force-basis {
+  font-size: 10.5px;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.sourcing-strategy .ss-drivers {
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.sourcing-strategy .ss-drivers li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  font-size: 11.5px;
+  color: var(--color-text-secondary, #4b5563);
+}
+.sourcing-strategy .ss-driver-val {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--color-text-primary, #1f2937);
+  white-space: nowrap;
+}
+
+.sourcing-strategy .ss-force-note {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-text-muted, #6b7280);
+}
+
+/* ── Chessboard methods ───────────────────────────────────────────────────── */
+
+.sourcing-strategy .ss-levers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.sourcing-strategy .ss-lever {
+  padding: 12px;
+  border: 1px solid #eef0f5;
+  border-radius: 10px;
+  background: #fcfcfe;
+}
+
+.sourcing-strategy .ss-lever h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-primary, #1f2937);
+}
+
+.sourcing-strategy .ss-method {
+  padding: 8px 0;
+  border-top: 1px solid #f0f1f6;
+}
+.sourcing-strategy .ss-method:first-of-type { border-top: none; }
+
+.sourcing-strategy .ss-method-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sourcing-strategy .ss-method-name {
+  font-size: 12.5px;
+  color: var(--color-text-secondary, #4b5563);
+}
+.sourcing-strategy .ss-method.is-evidenced .ss-method-name {
+  font-weight: 700;
+  color: var(--color-text-primary, #1f2937);
+}
+
+.sourcing-strategy .ss-method-fit {
+  padding: 0 6px;
+  border-radius: 5px;
+  background: #f0f1f6;
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #6b7280;
+}
+.sourcing-strategy .ss-method.is-evidenced .ss-method-fit {
+  background: rgba(107, 63, 219, 0.12);
+  color: var(--color-primary, #6B3FDB);
+}
+
+.sourcing-strategy .ss-method-why {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #5b35d5;
+}
+
+.sourcing-strategy .ss-method-req {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #9ca3af;
+}
+
+/* ── Strategy form ────────────────────────────────────────────────────────── */
+
+.sourcing-strategy .ss-form {
+  padding: 14px;
+  border: 1px solid #eef0f5;
+  border-radius: 10px;
+  background: #fcfcfe;
+}
+
+.sourcing-strategy .ss-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.sourcing-strategy .ss-field { display: flex; flex-direction: column; gap: 4px; }
+.sourcing-strategy .ss-field--wide { grid-column: span 2; }
+.sourcing-strategy .ss-field--full { grid-column: 1 / -1; }
+
+@media (max-width: 720px) {
+  .sourcing-strategy .ss-field--wide { grid-column: 1 / -1; }
+}
+
+.sourcing-strategy .ss-field > span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.sourcing-strategy .ss-field input,
+.sourcing-strategy .ss-field select,
+.sourcing-strategy .ss-field textarea {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid #dfe2ec;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: var(--color-text-primary, #1f2937);
+}
+
+.sourcing-strategy .ss-field input:focus,
+.sourcing-strategy .ss-field select:focus,
+.sourcing-strategy .ss-field textarea:focus {
+  outline: none;
+  border-color: var(--color-primary, #6B3FDB);
+  box-shadow: 0 0 0 3px rgba(107, 63, 219, 0.12);
+}
+
+.sourcing-strategy .ss-field textarea { resize: vertical; }
+
+.sourcing-strategy .ss-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.sourcing-strategy .ss-form-hint {
+  font-size: 11.5px;
+  color: var(--color-text-muted, #6b7280);
+}

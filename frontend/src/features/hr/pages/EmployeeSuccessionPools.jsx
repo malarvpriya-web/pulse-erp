@@ -1,7 +1,9 @@
 // frontend/src/features/hr/pages/EmployeeSuccessionPools.jsx
 import React, { useState, useEffect, useCallback } from 'react';
+import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const INP = { width: '100%', boxSizing: 'border-box', padding: '7px 10px',
               border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 };
@@ -19,13 +21,13 @@ const POOL_TYPES = ['leadership', 'technical', 'hipo', 'project_leaders', 'gradu
 const TYPE_META  = {
   leadership:      { label: 'Leadership',      color: '#6B3FDB', bg: '#ede9fe' },
   technical:       { label: 'Technical',       color: '#0891b2', bg: '#ecfeff' },
-  hipo:            { label: 'High Potential',  color: '#d97706', bg: '#fffbeb' },
+  hipo:            { label: 'High Potential',  color: '#6d28d9', bg: '#f5f3ff' },
   project_leaders: { label: 'Project Leaders', color: '#16a34a', bg: '#f0fdf4' },
   graduate:        { label: 'Graduate',        color: '#2563eb', bg: '#eff6ff' },
   general:         { label: 'General',         color: '#6b7280', bg: '#f9fafb' },
 };
 
-const RISK_COLORS = { high: '#dc2626', medium: '#d97706', low: '#16a34a' };
+const RISK_COLORS = { high: '#dc2626', medium: '#6d28d9', low: '#16a34a' };
 const READY_LABELS = { 'ready-now': 'Ready Now', '1-2-years': '1-2 Yrs', '3-5-years': '3-5 Yrs', 'not_ready': 'Not Ready' };
 
 function Spinner() {
@@ -167,7 +169,14 @@ export default function EmployeeSuccessionPools() {
   if (loading) return <div style={{ padding: 24 }}><Spinner /></div>;
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Talent Pools"
+        subtitle="Employee-based talent pools for succession planning (not recruitment pools)"
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeletePool}
         title="Delete Pool"
@@ -186,12 +195,7 @@ export default function EmployeeSuccessionPools() {
         onConfirm={removeMember}
         onCancel={() => setPendingRemoveMember(null)}
       />
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Talent Pools</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-          Employee-based talent pools for succession planning (not recruitment pools)
-        </p>
-      </div>
+
 
       {msg.text && (
         <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontWeight: 500, fontSize: 14,
@@ -482,6 +486,6 @@ export default function EmployeeSuccessionPools() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

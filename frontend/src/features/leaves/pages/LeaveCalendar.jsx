@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
-import { ChevronLeft, ChevronRight, Users, Calendar, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Users, Calendar, X, CalendarDays } from 'lucide-react';
 import './LeaveCalendar.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-const COLOR_PALETTE = ['#6366f1','#ef4444','#f59e0b','#ec4899','#3b82f6','#8b5cf6','#10b981','#f97316'];
+const COLOR_PALETTE = ['#6366f1','#ef4444','#7c5cf0','#ec4899','#3b82f6','#8b5cf6','#10b981','#7c5cf0'];
 const colorForId = (id) => COLOR_PALETTE[((id ?? 1) - 1) % COLOR_PALETTE.length];
 
 const ADMIN_ROLES = ['admin','super_admin','hr','hr_manager','hr_exec','manager','department_head','l2_approver'];
@@ -160,16 +161,12 @@ export default function LeaveCalendar() {
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
   return (
-    <div className="lc-root">
-      {/* ── Header ── */}
-      <div className="lc-header">
-        <div>
-          <h1 className="lc-title">Leave Calendar</h1>
-          <p className="lc-sub">{isAdmin ? 'Team leave overview' : 'Your approved leaves'}</p>
-        </div>
-
-        {/* Admin: filter controls */}
-        {isAdmin && (
+    <PageShell dock={
+      <PageHero
+        icon={CalendarDays}
+        eyebrow="Leave"
+        title="Leave Calendar"
+        actions={isAdmin && (
           <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
             <select value={filterDept} onChange={e => { setFilterDept(e.target.value); setFilterEmp(''); }} style={FILTER_SELECT}>
               <option value="">All departments</option>
@@ -184,16 +181,17 @@ export default function LeaveCalendar() {
               ))}
             </select>
             {(filterDept || filterEmp) && (
-              <button
-                onClick={() => { setFilterDept(''); setFilterEmp(''); }}
-                style={{ ...FILTER_SELECT, color:'#6b7280', padding:'6px 8px' }}
-              >
+              <button className="plh-cta"
+                onClick={() => { setFilterDept(''); setFilterEmp(''); }}>
                 <X size={13}/>
               </button>
             )}
           </div>
         )}
-      </div>
+      />
+    }>
+      {/* ── Header ── */}
+
 
       <div className="lc-layout">
         {/* ── Calendar card ── */}
@@ -261,7 +259,7 @@ export default function LeaveCalendar() {
                         <div
                           key={h.id}
                           style={{
-                            fontSize:9, background:'#fef3c7', color:'#92400e',
+                            fontSize:9, background:'#ede9fe', color:'#5b21b6',
                             borderRadius:3, padding:'1px 4px',
                             overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
                           }}
@@ -300,7 +298,7 @@ export default function LeaveCalendar() {
                 ))}
                 {holidays.length > 0 && (
                   <div className="lc-legend-item">
-                    <div className="lc-legend-dot" style={{ background:'#fef3c7', border:'1px solid #f59e0b' }}/>
+                    <div className="lc-legend-dot" style={{ background:'#ede9fe', border:'1px solid #7c5cf0' }}/>
                     Holiday
                   </div>
                 )}
@@ -328,7 +326,7 @@ export default function LeaveCalendar() {
               {holidaysOnDay(selectedDay).map(h => (
                 <div
                   key={h.id}
-                  style={{ fontSize:11, color:'#92400e', background:'#fef3c7', borderRadius:5, padding:'4px 8px', marginBottom:4 }}
+                  style={{ fontSize:11, color:'#5b21b6', background:'#ede9fe', borderRadius:5, padding:'4px 8px', marginBottom:4 }}
                 >
                   {h.name}
                 </div>
@@ -408,6 +406,6 @@ export default function LeaveCalendar() {
           </div>
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

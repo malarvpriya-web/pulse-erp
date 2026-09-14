@@ -1,19 +1,21 @@
 import { useState, useCallback, useEffect } from 'react';
 import {
-  Search, Plus, RefreshCw, X, Briefcase,
-  MapPin, Users, Clock, ChevronRight, Building2,
-  Edit2, PauseCircle, PlayCircle, XCircle,
+  Search, Plus, RefreshCw, X, Briefcase, MapPin, Users, Clock,
+  ChevronRight, Building2, Edit2, PauseCircle, PlayCircle, XCircle,
+  UserPlus,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
 import { matchesSearch } from '../shared/search';
 import './JobOpenings.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import MasterSelect from '@/components/core/MasterSelect';
 
 const STATUS_META = {
   open:             { bg: '#dcfce7', color: '#15803d', label: 'Open'     },
   draft:            { bg: '#f3f4f6', color: '#6b7280', label: 'Draft'    },
   closed:           { bg: '#fee2e2', color: '#dc2626', label: 'Closed'   },
-  paused:           { bg: '#fef3c7', color: '#92400e', label: 'Paused'   },
+  paused:           { bg: '#ede9fe', color: '#5b21b6', label: 'Paused'   },
   pending_approval: { bg: '#e0e7ff', color: '#4338ca', label: 'Pending'  },
 };
 const sm = s => STATUS_META[(s || '').toLowerCase()] || STATUS_META.draft;
@@ -21,12 +23,15 @@ const sm = s => STATUS_META[(s || '').toLowerCase()] || STATUS_META.draft;
 const TYPE_META = {
   full_time: { bg: '#dbeafe', color: '#1d4ed8', label: 'Full Time'  },
   contract:  { bg: '#fce7f3', color: '#9d174d', label: 'Contract'   },
-  intern:    { bg: '#fef3c7', color: '#92400e', label: 'Intern'      },
+  intern:    { bg: '#ede9fe', color: '#5b21b6', label: 'Intern'      },
   part_time: { bg: '#f3e8ff', color: '#6B3FDB', label: 'Part Time'  },
 };
 const tm = t => TYPE_META[(t || '').toLowerCase()] || TYPE_META.full_time;
 
-const DEPARTMENTS = ['Engineering', 'Finance', 'HR', 'Sales', 'Operations', 'Marketing', 'Product', 'Legal'];
+// Departments come from the master via <MasterSelect>, which also offers an
+// inline add so a missing one does not mean a trip to Master Setup.
+// The hardcoded array that was here disagreed with every other screen's, so a
+// record created here could carry a department name no report could group by.
 const EMP_TYPES   = ['full_time', 'contract', 'intern', 'part_time'];
 
 const emptyForm = () => ({
@@ -128,21 +133,22 @@ export default function JobOpenings({ setPage }) {
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   return (
-    <div className="jo-root">
-      {toast && <div className={`jo-toast jo-toast-${toast.type}`}>{toast.msg}</div>}
-
-      <div className="jo-header">
-        <div>
-          <h2 className="jo-title">Job Openings</h2>
-          <p className="jo-sub">{displayed.length} opening{displayed.length !== 1 ? 's' : ''}</p>
-        </div>
-        <div className="jo-header-r">
-          <button className="jo-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="jo-btn-primary" onClick={() => { setForm(emptyForm()); setEditingId(null); setDrawer(true); }}>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Job Openings"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          <button className="plh-cta" onClick={() => { setForm(emptyForm()); setEditingId(null); setDrawer(true); }}>
             <Plus size={14} /> Post Job
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {toast && <div className={`jo-toast jo-toast-${toast.type}`}>{toast.msg}</div>}
+
+
 
       <div className="jo-filters">
         <div className="jo-search">
@@ -218,7 +224,7 @@ export default function JobOpenings({ setPage }) {
                     </button>
                     {job.status === 'open' && (
                       <button title="Pause" onClick={() => changeStatus(job, 'paused')}
-                        style={{ padding:'5px 8px', background:'#fef3c7', border:'none', borderRadius:7, cursor:'pointer', display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, color:'#92400e' }}>
+                        style={{ padding:'5px 8px', background:'#ede9fe', border:'none', borderRadius:7, cursor:'pointer', display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600, color:'#5b21b6' }}>
                         <PauseCircle size={12} /> Pause
                       </button>
                     )}
@@ -263,10 +269,13 @@ export default function JobOpenings({ setPage }) {
                 </div>
                 <div className="jo-field">
                   <label>Department <span className="jo-req">*</span></label>
-                  <select value={form.department} onChange={e => setF('department', e.target.value)}>
-                    <option value="">Select…</option>
-                    {DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
-                  </select>
+                  <MasterSelect
+                    endpoint="/master/departments"
+                    label="Department"
+                    value={form.department}
+                    onChange={v => setF('department', v)}
+                    placeholder="Select…"
+                  />
                 </div>
               </div>
               <div className="jo-row2">
@@ -319,6 +328,6 @@ export default function JobOpenings({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

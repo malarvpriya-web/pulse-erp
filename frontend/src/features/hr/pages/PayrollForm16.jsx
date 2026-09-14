@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FileText, Download, Users, AlertCircle, CheckCircle, X, Search } from 'lucide-react';
+import {
+  FileText, Download, Users, AlertCircle, CheckCircle, X, Search,
+  Wallet,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const currentFY = () => {
   const now = new Date();
@@ -112,7 +116,14 @@ export default function PayrollForm16({ setPage: _setPage }) {
     padding: '8px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 });
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Wallet}
+        eyebrow="Human Resources"
+        title="Form 16"
+        subtitle="Annual TDS certificates for employees"
+      />
+    }>
 
       {toast && (
         <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', alignItems: 'center', gap: 8,
@@ -137,8 +148,8 @@ export default function PayrollForm16({ setPage: _setPage }) {
             <FileText size={22} color="#fff" />
           </div>
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Form 16</h1>
-            <p style={{ fontSize: 13, color: '#6b7280', margin: 0 }}>Annual TDS certificates for employees</p>
+
+
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -223,6 +234,6 @@ export default function PayrollForm16({ setPage: _setPage }) {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

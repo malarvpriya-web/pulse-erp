@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -104,7 +105,7 @@ router.post('/objectives', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/objectives/:id', async (req, res) => {
+router.patch('/objectives/:id', captureBefore('okr_objectives'), async (req, res) => {
   const cid = getCid(req);
   const uid = req.user?.userId;
   const { title, description, status, end_date, department } = req.body;
@@ -133,7 +134,7 @@ router.patch('/objectives/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/objectives/:id', async (req, res) => {
+router.delete('/objectives/:id', captureBefore('okr_objectives'), async (req, res) => {
   const cid = getCid(req);
   const uid = req.user?.userId;
   try {
@@ -219,7 +220,7 @@ router.patch('/key-results/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/key-results/:id', async (req, res) => {
+router.delete('/key-results/:id', captureBefore('okr_key_results'), async (req, res) => {
   try {
     await pool.query('DELETE FROM okr_key_results WHERE id = $1', [req.params.id]);
     res.json({ message: 'Deleted' });

@@ -12,6 +12,7 @@ import {
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6366f1';
 const BORDER = '#e5e7eb';
@@ -44,7 +45,7 @@ const ENTITY_TYPES = [
 
 const APPROVAL_META = {
   draft:            { color: '#9ca3af', bg: '#f3f4f6', label: 'Draft' },
-  pending_approval: { color: '#d97706', bg: '#fef3c7', label: 'Pending Approval' },
+  pending_approval: { color: '#6d28d9', bg: '#ede9fe', label: 'Pending Approval' },
   approved:         { color: '#16a34a', bg: '#dcfce7', label: 'Approved' },
   rejected:         { color: '#dc2626', bg: '#fee2e2', label: 'Rejected' },
 };
@@ -82,8 +83,8 @@ function ExpiryCell({ doc, onChange }) {
   const daysLeft = Math.round((expiryLocal - todayLocal) / 86400000);
   const overdue = daysLeft < 0;
   const soon = !overdue && daysLeft <= 30;
-  const color = overdue ? '#dc2626' : soon ? '#d97706' : '#6b7280';
-  const bg    = overdue ? '#fee2e2' : soon ? '#fef3c7' : '#f3f4f6';
+  const color = overdue ? '#dc2626' : soon ? '#6d28d9' : '#6b7280';
+  const bg    = overdue ? '#fee2e2' : soon ? '#ede9fe' : '#f3f4f6';
   return (
     <span onClick={() => setEditing(true)} title="Click to change"
       style={{ padding: '2px 8px', background: bg, color, borderRadius: 20, fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
@@ -330,31 +331,30 @@ export default function DocumentMaster() {
   const driveOk    = driveStatus?.ok;
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ margin: '0 0 4px', fontSize: 22, fontWeight: 700, color: '#111827' }}>Document Master</h1>
-          <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>Google Drive storage · ERP metadata · Revision control · Approval workflow</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{ padding: '8px 10px', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, cursor: 'pointer', color: '#6b7280', display: 'flex', alignItems: 'center' }}>
+    <PageShell dock={
+      <PageHero
+        icon={FileText}
+        eyebrow="Documents"
+        title="Document Master"
+        subtitle="Google Drive storage · ERP metadata · Revision control · Approval workflow"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
             <RefreshCw size={14} />
           </button>
-          <button onClick={() => setShowUpload(true)}
-            style={{ padding: '8px 18px', background: P, color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button className="plh-cta" onClick={() => setShowUpload(true)}>
             <Upload size={14} /> Upload
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       {/* Drive Status Banner */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
-        background: driveOk ? '#dcfce7' : '#fef3c7',
-        border: `1px solid ${driveOk ? '#bbf7d0' : '#fde68a'}`,
+        background: driveOk ? '#dcfce7' : '#ede9fe',
+        border: `1px solid ${driveOk ? '#bbf7d0' : '#ddd6fe'}`,
         borderRadius: 10, marginBottom: 20, fontSize: 13,
-        color: driveOk ? '#15803d' : '#92400e',
+        color: driveOk ? '#15803d' : '#5b21b6',
       }}>
         <FolderOpen size={16} />
         {driveStatus === null
@@ -369,7 +369,7 @@ export default function DocumentMaster() {
         {[
           { label: 'Total Documents', value: docs.length, color: P },
           { label: 'Approved',        value: approved,    color: '#16a34a' },
-          { label: 'Pending Approval', value: pending,    color: '#d97706' },
+          { label: 'Pending Approval', value: pending,    color: '#6d28d9' },
           { label: 'In Drive',
             value: docs.filter(d => d.drive_file_id).length,
             color: '#0ea5e9' },
@@ -507,6 +507,6 @@ export default function DocumentMaster() {
       )}
 
       {showUpload && <UploadModal onClose={() => setShowUpload(false)} onUploaded={() => { setShowUpload(false); load(); }} />}
-    </div>
+    </PageShell>
   );
 }

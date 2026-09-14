@@ -13,7 +13,7 @@ export const sm = s => STATUS_META[(s || '').toLowerCase()] || STATUS_META.open;
 export const PRIORITY_META = {
   critical: { color:'#7e22ce', bg:'#fdf4ff' },
   high:     { color:'#dc2626', bg:'#fee2e2' },
-  medium:   { color:'#92400e', bg:'#fef3c7' },
+  medium:   { color:'#5b21b6', bg:'#ede9fe' },
   low:      { color:'#9ca3af', bg:'#f3f4f6' },
 };
 export const pd = p => (PRIORITY_META[(p || '').toLowerCase()] || PRIORITY_META.medium).color;

@@ -2,14 +2,15 @@ import { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Building2, Users, Calendar, IndianRupee, Package, ShoppingCart,
-  Wrench, Factory, CheckSquare, TrendingUp, Headphones, Bell,
-  FileText, Cloud, PenTool, Link2, Shield, Activity, BarChart2,
-  Search, ChevronRight, Settings, PlayCircle, CheckCircle,
-  AlertCircle, Clock, Globe, Lock, Database, Cpu, Mail,
-  Zap, Star, ArrowRight, ExternalLink, Layers, RefreshCw,
+  Wrench, Factory, CheckSquare, TrendingUp, Headphones, Bell, FileText,
+  Cloud, PenTool, Link2, Shield, Activity, BarChart2, Search,
+  ChevronRight, Settings, PlayCircle, CheckCircle, AlertCircle, Clock,
+  Globe, Lock, Database, Cpu, Mail, Zap, Star, ArrowRight,
+  ExternalLink, Layers, RefreshCw,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
+import { PageHero, MeterCard, MeterGrid } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const PL = '#f5f3ff';
@@ -58,7 +59,7 @@ const CATEGORIES = [
     wizard: 'AttendanceSetupWizard',
   },
   {
-    id: 'payroll', label: 'Payroll', icon: IndianRupee, color: '#d97706',
+    id: 'payroll', label: 'Payroll', icon: IndianRupee, color: '#6d28d9',
     desc: 'Payroll processing, statutory compliance, and payslip configuration',
     items: [
       { label: 'Payroll Processing',   page: 'Payroll',            desc: 'Monthly payroll run and approval',         status: 'configured' },
@@ -105,7 +106,7 @@ const CATEGORIES = [
     wizard: 'EngineeringSetupWizard',
   },
   {
-    id: 'production', label: 'Production', icon: Factory, color: '#f59e0b',
+    id: 'production', label: 'Production', icon: Factory, color: '#7c5cf0',
     desc: 'Work orders, routing, capacity planning, and shop floor control',
     items: [
       { label: 'Production Orders',    page: 'ProductionOrders',    desc: 'Work order templates and schedules',    status: 'configured' },
@@ -147,7 +148,7 @@ const CATEGORIES = [
     wizard: null,
   },
   {
-    id: 'notifications', label: 'Notifications', icon: Bell, color: '#f59e0b',
+    id: 'notifications', label: 'Notifications', icon: Bell, color: '#7c5cf0',
     desc: 'Alert triggers, delivery channels, and notification templates',
     items: [
       { label: 'Notification Setup',   page: 'SetupNotifications',  desc: 'Alert rules and trigger conditions',    status: 'partial' },
@@ -223,7 +224,7 @@ const CATEGORIES = [
 // ─── Status config ────────────────────────────────────────────────────────────
 const STATUS = {
   configured:     { label: 'Configured',     color: '#065f46', bg: '#d1fae5', dot: '#10b981' },
-  partial:        { label: 'Partial',        color: '#92400e', bg: '#fef3c7', dot: '#f59e0b' },
+  partial:        { label: 'Partial',        color: '#5b21b6', bg: '#ede9fe', dot: '#7c5cf0' },
   not_configured: { label: 'Not Configured', color: '#6b7280', bg: '#f3f4f6', dot: '#d1d5db' },
 };
 
@@ -242,22 +243,6 @@ function StatusBadge({ status }) {
 }
 
 // ─── Progress bar ─────────────────────────────────────────────────────────────
-function ProgressRing({ pct }) {
-  const r = 20, c = 2 * Math.PI * r;
-  return (
-    <svg width={50} height={50} style={{ transform: 'rotate(-90deg)' }}>
-      <circle cx={25} cy={25} r={r} fill="none" stroke={PB} strokeWidth={4} />
-      <circle cx={25} cy={25} r={r} fill="none" stroke={P} strokeWidth={4}
-        strokeDasharray={c} strokeDashoffset={c * (1 - pct / 100)}
-        strokeLinecap="round" style={{ transition: 'stroke-dashoffset 0.5s ease' }} />
-      <text x={25} y={25} textAnchor="middle" dominantBaseline="central"
-        style={{ fontSize: 11, fontWeight: 700, fill: P, transform: 'rotate(90deg)', transformOrigin: '25px 25px' }}>
-        {pct}%
-      </text>
-    </svg>
-  );
-}
-
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function SystemSettings() {
   const navigate = useNavigate();
@@ -318,92 +303,47 @@ export default function SystemSettings() {
     <div style={{ minHeight: '100vh', background: '#fafbff', fontFamily: 'inherit' }}>
 
       {/* ── Header ── */}
-      <div style={{ background: '#fff', borderBottom: '1px solid #f0f0f4', padding: '20px 32px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{
-                width: 40, height: 40, borderRadius: 10,
-                background: PL, border: `1px solid ${PB}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <Settings size={20} color={P} />
-              </div>
-              <div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: '#1f2937' }}>System Settings</div>
-                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 1 }}>
-                  Configure all modules and enterprise workflows
-                </div>
-              </div>
-            </div>
-          </div>
+      {/* ── Header ──
+          The completion ring's numbers move into hero meta and a meter below,
+          so the band stays a single compact strip. */}
+      <PageHero
+        icon={Settings}
+        eyebrow="Administration"
+        title="System Settings"
+        subtitle="Configure all modules and enterprise workflows"
+        meta={[
+          { value: `${stats.configured}/${stats.total}`, label: 'configured',
+            tone: stats.pct >= 80 ? 'good' : stats.pct >= 50 ? 'warn' : 'bad' },
+          { value: `${stats.pct}%`, label: 'complete',
+            tone: stats.pct >= 80 ? 'good' : stats.pct >= 50 ? 'warn' : 'bad' },
+        ]}
+        actions={role === 'super_admin' ? (
+          <button
+            className="plh-cta"
+            onClick={runSeedDefaults}
+            disabled={seeding}
+            title="Seed all default registry data (departments, designations, leave types, notification rules, products)"
+          >
+            <Database size={14} /> {seeding ? 'Seeding…' : 'Seed Defaults'}
+          </button>
+        ) : undefined}
+      />
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-            {/* Completion ring */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <ProgressRing pct={stats.pct} />
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#1f2937' }}>
-                  {stats.configured}/{stats.total} Configured
-                </div>
-                <div style={{ fontSize: 11, color: '#6b7280' }}>{alertCount} need attention</div>
-              </div>
-            </div>
-
-            {/* Quick stats */}
-            <div style={{ display: 'flex', gap: 8 }}>
-              {[
-                { label: 'Done',    count: stats.configured, color: '#10b981', bg: '#d1fae5' },
-                { label: 'Partial', count: stats.partial,    color: '#f59e0b', bg: '#fef3c7' },
-                { label: 'Pending', count: stats.empty,      color: '#6b7280', bg: '#f3f4f6' },
-              ].map(s => (
-                <div key={s.label} style={{
-                  padding: '4px 12px', borderRadius: 20, background: s.bg,
-                  fontSize: 12, fontWeight: 600, color: s.color,
-                }}>
-                  {s.count} {s.label}
-                </div>
-              ))}
-            </div>
-
-            {/* Seed Defaults — super_admin only */}
-            {role === 'super_admin' && (
-              <button
-                onClick={runSeedDefaults}
-                disabled={seeding}
-                title="Seed all default registry data (departments, designations, leave types, notification rules, products)"
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                  border: '1px solid #e5e7eb', cursor: seeding ? 'not-allowed' : 'pointer',
-                  background: seeding ? '#f3f4f6' : '#fff',
-                  color: seeding ? '#9ca3af' : '#374151',
-                  opacity: seeding ? 0.7 : 1,
-                }}
-              >
-                {seeding
-                  ? <RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} />
-                  : <Layers size={13} />}
-                {seeding ? 'Seeding…' : 'Seed Defaults'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Search bar */}
-        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 8,
-          background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8,
-          padding: '8px 14px', maxWidth: 400,
-        }}>
-          <Search size={14} color="#9ca3af" />
-          <input
-            value={query} onChange={e => setQuery(e.target.value)}
-            placeholder="Search settings…"
-            style={{ border: 'none', outline: 'none', background: 'transparent',
-              fontSize: 13, color: '#374151', width: '100%' }}
+      {/* The completion ring the old header carried, re-expressed as a meter —
+          same number, but it shows the shortfall as well as the score. */}
+      <div style={{ padding: '0 20px' }}>
+        <MeterGrid>
+          <MeterCard
+            title="Module Configuration"
+            value={stats.pct}
+            legend={[
+              { value: stats.configured, label: 'configured', color: '#16a34a' },
+              { value: stats.total - stats.configured, label: 'outstanding', color: '#6d28d9' },
+            ]}
           />
-        </div>
+        </MeterGrid>
       </div>
+
 
       {/* Seed feedback toast */}
       {seedMsg && (
@@ -465,7 +405,7 @@ export default function SystemSettings() {
                     </div>
                   </div>
                   {cat.items.some(i => i.status === 'not_configured') && (
-                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#7c5cf0', flexShrink: 0 }} />
                   )}
                 </button>
               );
@@ -581,7 +521,7 @@ function SettingCard({ item, onClick }) {
       <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.5 }}>{item.desc}</div>
       {item.status === 'not_configured' && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#d97706',
+          display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#6d28d9',
         }}>
           <AlertCircle size={11} />
           Action required — click to configure

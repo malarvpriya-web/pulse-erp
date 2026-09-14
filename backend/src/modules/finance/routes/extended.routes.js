@@ -1,6 +1,16 @@
 import express from 'express';
 import pool from '../db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
+
+// Every route in this file is gated. It is mounted at the same path as
+// finance.routes.js — `v1Router.use("/finance", verifyToken, ...)` twice — and
+// that sibling had all 56 of its routes carrying requirePermission while this
+// one had 15 of 57. A live probe with a plain `employee` token confirmed the
+// consequence on 2026-09-04: 22 finance endpoints answered 200, including
+// /journal-entries, /cfo-dashboard, /credit-limits, /payment-batches and the
+// whole post-dated-cheque ledger. Nothing in the frontend calls any of them
+// outside features/finance/pages, so none of this was employee self-service.
+
 import bankAccountRepo, { hasChartAccountLink } from '../repositories/bankAccount.repository.js';
 import paymentBatchRepo from '../repositories/paymentBatch.repository.js';
 import paymentBatchService from '../services/paymentBatch.service.js';
@@ -14,7 +24,9 @@ import {
   closePeriod,
   reopenPeriod,
   getCFODashboard,
+  getPeriodSummary,
 } from '../finance.controller.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -196,7 +208,7 @@ router.get('/bank-accounts/:id', requirePermission('finance', 'view'), async (re
   }
 });
 
-router.put('/bank-accounts/:id', requirePermission('finance', 'edit'), async (req, res) => {
+router.put('/bank-accounts/:id', requirePermission('finance', 'edit'), captureBefore('bank_accounts'), async (req, res) => {
   try {
     const account = await bankAccountRepo.update(req.params.id, req.body);
     if (!account) return res.status(404).json({ error: 'Bank account not found' });
@@ -206,7 +218,7 @@ router.put('/bank-accounts/:id', requirePermission('finance', 'edit'), async (re
   }
 });
 
-router.delete('/bank-accounts/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/bank-accounts/:id', requirePermission('finance', 'delete'), captureBefore('bank_accounts'), async (req, res) => {
   try {
     const account = await bankAccountRepo.softDelete(req.params.id);
     res.json({ success: true, account });
@@ -226,7 +238,7 @@ router.get('/bank-accounts/:id/transactions', requirePermission('finance', 'view
   }
 });
 
-router.get('/bank-accounts/:id/unreconciled', async (req, res) => {
+router.get('/bank-accounts/:id/unreconciled', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const transactions = await bankAccountRepo.getUnreconciledTransactions(req.params.id);
     res.json(transactions);
@@ -235,7 +247,7 @@ router.get('/bank-accounts/:id/unreconciled', async (req, res) => {
   }
 });
 
-router.get('/bank-accounts/:id/statement-lines', async (req, res) => {
+router.get('/bank-accounts/:id/statement-lines', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const lines = await bankAccountRepo.getStatementLines(req.params.id);
     res.json(lines);
@@ -244,7 +256,7 @@ router.get('/bank-accounts/:id/statement-lines', async (req, res) => {
   }
 });
 
-router.post('/bank-accounts/:id/statement-lines', async (req, res) => {
+router.post('/bank-accounts/:id/statement-lines', requirePermission('finance', 'edit'), async (req, res) => {
   try {
     const lines = await bankAccountRepo.importStatementLines(req.params.id, req.body.lines || []);
     res.status(201).json(lines);
@@ -253,7 +265,7 @@ router.post('/bank-accounts/:id/statement-lines', async (req, res) => {
   }
 });
 
-router.post('/bank-accounts/:id/auto-match', async (req, res) => {
+router.post('/bank-accounts/:id/auto-match', requirePermission('finance', 'edit'), async (req, res) => {
   try {
     const result = await bankAccountRepo.autoMatch(req.params.id);
     res.json(result);
@@ -262,7 +274,7 @@ router.post('/bank-accounts/:id/auto-match', async (req, res) => {
   }
 });
 
-router.post('/bank-accounts/:id/manual-match', async (req, res) => {
+router.post('/bank-accounts/:id/manual-match', requirePermission('finance', 'edit'), async (req, res) => {
   try {
     const { statement_line_id, transaction_id } = req.body;
     const result = await bankAccountRepo.manualMatch(statement_line_id, transaction_id);
@@ -272,7 +284,7 @@ router.post('/bank-accounts/:id/manual-match', async (req, res) => {
   }
 });
 
-router.post('/bank-accounts/:id/reconcile', async (req, res) => {
+router.post('/bank-accounts/:id/reconcile', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const account = await bankAccountRepo.completeReconciliation(req.params.id);
     res.json(account);
@@ -284,7 +296,11 @@ router.post('/bank-accounts/:id/reconcile', async (req, res) => {
 // =====================================================
 // PAYMENT BATCHES
 // =====================================================
-router.post('/payment-batches', requirePermission('finance', 'write'), async (req, res) => {
+// 'write' is not a permission action this app defines — requirePermission maps
+// view/add/edit/delete/approve/export and rejects anything else with a 400
+// before it ever consults the matrix, so this route was unreachable for every
+// caller regardless of role. Creating a batch is 'add'.
+router.post('/payment-batches', requirePermission('finance', 'add'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const uid = req.user?.userId ?? req.user?.id;
@@ -295,7 +311,7 @@ router.post('/payment-batches', requirePermission('finance', 'write'), async (re
   }
 });
 
-router.get('/payment-batches', async (req, res) => {
+router.get('/payment-batches', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const batches = await paymentBatchService.getBatches({
       ...req.query,
@@ -307,7 +323,7 @@ router.get('/payment-batches', async (req, res) => {
   }
 });
 
-router.get('/payment-batches/summary', async (req, res) => {
+router.get('/payment-batches/summary', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const cidFilter = cid != null ? `AND pb.company_id = ${parseInt(cid, 10)}` : '';
@@ -344,7 +360,7 @@ router.get('/payment-batches/summary', async (req, res) => {
   }
 });
 
-router.get('/payment-batches/:id', async (req, res) => {
+router.get('/payment-batches/:id', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const batch = await paymentBatchService.getBatchById(req.params.id);
     if (!batch) return res.status(404).json({ error: 'Payment batch not found' });
@@ -354,7 +370,10 @@ router.get('/payment-batches/:id', async (req, res) => {
   }
 });
 
-router.post('/payment-batches/:id/submit', requirePermission('finance', 'write'), async (req, res) => {
+// Submitting is the maker's action, not the checker's — deliberately 'edit' and
+// not 'approve', so submitting for approval cannot also approve. (Previously
+// 'write', which is not a defined action and always returned 400.)
+router.post('/payment-batches/:id/submit', requirePermission('finance', 'edit'), async (req, res) => {
   try {
     const batch = await paymentBatchService.submitForApproval(req.params.id);
     res.json(batch);
@@ -393,10 +412,18 @@ router.post('/payment-batches/:id/process', requirePermission('finance', 'approv
 });
 
 // Bank file download for NEFT/RTGS bulk payment upload
-router.get('/payment-batches/:id/bank-file', async (req, res) => {
+router.get('/payment-batches/:id/bank-file', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { format = 'generic' } = req.query;
-    const { batch, items } = await paymentBatchService.getBankFileData(req.params.id);
+    let batch, items;
+    try {
+      ({ batch, items } = await paymentBatchService.getBankFileData(req.params.id));
+    } catch (e) {
+      // The service throws a plain Error for an unknown id — that is a 404,
+      // not the 500 the outer catch was turning it into.
+      if (/not found/i.test(e.message)) return res.status(404).json({ error: e.message });
+      throw e;
+    }
 
     // Check for missing bank details
     const missing = items.filter(it => !it.account_number || !it.ifsc_code);
@@ -453,7 +480,7 @@ function getCompanyId(req) {
 }
 
 // Summary KPIs for PDC Outstanding tab
-router.get('/pdc/summary', async (req, res) => {
+router.get('/pdc/summary', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const cidFilter = cid != null ? `AND p.company_id = ${parseInt(cid, 10)}` : '';
@@ -499,7 +526,7 @@ router.get('/pdc/summary', async (req, res) => {
   }
 });
 
-router.post('/pdc', async (req, res) => {
+router.post('/pdc', requirePermission('finance', 'edit'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const { cheque_type, cheque_number, cheque_date, amount, party_id, bank_account_id, bank_name, reference_type, reference_id, notes } = req.body;
@@ -519,7 +546,7 @@ router.post('/pdc', async (req, res) => {
   }
 });
 
-router.get('/pdc', async (req, res) => {
+router.get('/pdc', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const params = [];
@@ -568,7 +595,7 @@ router.get('/pdc', async (req, res) => {
   }
 });
 
-router.put('/pdc/:id/status', async (req, res) => {
+router.put('/pdc/:id/status', requirePermission('finance', 'approve'), captureBefore('pdc_register'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const { status, cleared_date, bounce_reason, bounce_charges } = req.body;
@@ -587,7 +614,7 @@ router.put('/pdc/:id/status', async (req, res) => {
 });
 
 // Mark PDC as deposited
-router.post('/pdc/:id/deposit', async (req, res) => {
+router.post('/pdc/:id/deposit', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const cidFilter = cid != null ? ` AND company_id = ${parseInt(cid, 10)}` : '';
@@ -606,7 +633,7 @@ router.post('/pdc/:id/deposit', async (req, res) => {
 });
 
 // Mark PDC as cleared (after bank confirms)
-router.post('/pdc/:id/clear', async (req, res) => {
+router.post('/pdc/:id/clear', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const cidFilter = cid != null ? ` AND company_id = ${parseInt(cid, 10)}` : '';
@@ -625,7 +652,7 @@ router.post('/pdc/:id/clear', async (req, res) => {
 });
 
 // Mark PDC as bounced
-router.post('/pdc/:id/bounce', async (req, res) => {
+router.post('/pdc/:id/bounce', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const cidFilter = cid != null ? ` AND company_id = ${parseInt(cid, 10)}` : '';
@@ -644,7 +671,7 @@ router.post('/pdc/:id/bounce', async (req, res) => {
 });
 
 // Cancel PDC
-router.post('/pdc/:id/cancel', async (req, res) => {
+router.post('/pdc/:id/cancel', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const cidFilter = cid != null ? ` AND company_id = ${parseInt(cid, 10)}` : '';
@@ -662,7 +689,7 @@ router.post('/pdc/:id/cancel', async (req, res) => {
 });
 
 // PDC History/Report — cleared, bounced, cancelled cheques
-router.get('/pdc/history', async (req, res) => {
+router.get('/pdc/history', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const { from_date, to_date, cheque_type, status, party_id } = req.query;
@@ -719,7 +746,7 @@ router.get('/pdc/history', async (req, res) => {
 // =====================================================
 // EXPENSE CATEGORIES
 // =====================================================
-router.get('/expense-categories', async (req, res) => {
+router.get('/expense-categories', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT * FROM expense_categories WHERE is_active = true ORDER BY name'
@@ -733,7 +760,7 @@ router.get('/expense-categories', async (req, res) => {
 // =====================================================
 // COMPLIANCE ANALYTICS
 // =====================================================
-router.get('/analytics/without-bill', async (req, res) => {
+router.get('/analytics/without-bill', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
     const result = await pool.query(
@@ -756,18 +783,24 @@ router.get('/analytics/without-bill', async (req, res) => {
   }
 });
 
-router.get('/analytics/gst-claimable', async (req, res) => {
+router.get('/analytics/gst-claimable', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
+    // `is_gst_claimable` has never existed; the claimable flag is expense_claims
+    // .gst_verified. gst_amount also lives on the claim, not the item — joining
+    // expense_claim_items multiplied every claim's GST by its line count.
     const result = await pool.query(
-      `SELECT 
-        SUM(CASE WHEN is_gst_claimable = true THEN gst_amount ELSE 0 END) as claimable_gst,
-        SUM(CASE WHEN is_gst_claimable = false THEN gst_amount ELSE 0 END) as non_claimable_gst,
-        SUM(gst_amount) as total_gst
-       FROM expense_claim_items eci
-       JOIN expense_claims ecl ON eci.expense_claim_id = ecl.id
-       WHERE ecl.claim_date BETWEEN $1 AND $2`,
-      [start_date, end_date]
+      `SELECT
+        COALESCE(SUM(CASE WHEN ecl.gst_verified THEN ecl.gst_amount ELSE 0 END), 0)        AS claimable_gst,
+        COALESCE(SUM(CASE WHEN NOT COALESCE(ecl.gst_verified, false)
+                          THEN ecl.gst_amount ELSE 0 END), 0)                              AS non_claimable_gst,
+        COALESCE(SUM(ecl.gst_amount), 0)                                                   AS total_gst
+       FROM expense_claims ecl
+       WHERE ecl.deleted_at IS NULL
+         AND ($3::int IS NULL OR ecl.company_id = $3)
+         AND ($1::date IS NULL OR ecl.claim_date >= $1::date)
+         AND ($2::date IS NULL OR ecl.claim_date <= $2::date)`,
+      [start_date || null, end_date || null, getCompanyId(req)]
     );
     res.json(result.rows[0]);
   } catch (error) {
@@ -778,7 +811,7 @@ router.get('/analytics/gst-claimable', async (req, res) => {
 // =====================================================
 // FINANCIAL RATIOS
 // =====================================================
-router.get('/ratios', async (req, res) => {
+router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { as_of_date } = req.query;
     const ratios = await financialRatiosService.calculateRatios(as_of_date || new Date().toISOString().split('T')[0]);
@@ -788,10 +821,16 @@ router.get('/ratios', async (req, res) => {
   }
 });
 
-router.get('/ratios/comparative', async (req, res) => {
+router.get('/ratios/comparative', requirePermission('finance', 'view'), async (req, res) => {
   try {
-    const { current_date, previous_date } = req.query;
-    const comparison = await financialRatiosService.getComparativeRatios(current_date, previous_date);
+    // Undefined dates reached the service as `undefined` and blew up with
+    // "Invalid time value". Default the same way GET /ratios does.
+    const today = new Date();
+    const priorYear = new Date(today);
+    priorYear.setFullYear(priorYear.getFullYear() - 1);
+    const currentDate  = req.query.current_date  || today.toISOString().split('T')[0];
+    const previousDate = req.query.previous_date || priorYear.toISOString().split('T')[0];
+    const comparison = await financialRatiosService.getComparativeRatios(currentDate, previousDate);
     res.json(comparison);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -801,7 +840,7 @@ router.get('/ratios/comparative', async (req, res) => {
 // =====================================================
 // TICKETING SYSTEM
 // =====================================================
-router.post('/tickets', async (req, res) => {
+router.post('/tickets', requirePermission('finance', 'edit'), async (req, res) => {
   try {
     const ticketNumber = await ticketRepo.getNextTicketNumber();
     const ticket = await ticketRepo.create({
@@ -814,7 +853,7 @@ router.post('/tickets', async (req, res) => {
   }
 });
 
-router.get('/tickets', async (req, res) => {
+router.get('/tickets', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const tickets = await ticketRepo.findAll(req.query);
     res.json(tickets);
@@ -823,7 +862,7 @@ router.get('/tickets', async (req, res) => {
   }
 });
 
-router.get('/tickets/:id', async (req, res) => {
+router.get('/tickets/:id', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const ticket = await ticketRepo.findById(req.params.id);
     if (!ticket) {
@@ -836,7 +875,7 @@ router.get('/tickets/:id', async (req, res) => {
   }
 });
 
-router.put('/tickets/:id/status', async (req, res) => {
+router.put('/tickets/:id/status', requirePermission('finance', 'edit'), captureBefore('support_tickets'), async (req, res) => {
   try {
     const ticket = await ticketRepo.updateStatus(req.params.id, req.body.status, req.user.userId ?? req.user.id);
     res.json(ticket);
@@ -845,7 +884,7 @@ router.put('/tickets/:id/status', async (req, res) => {
   }
 });
 
-router.put('/tickets/:id/assign', async (req, res) => {
+router.put('/tickets/:id/assign', requirePermission('finance', 'edit'), captureBefore('support_tickets'), async (req, res) => {
   try {
     const ticket = await ticketRepo.assignTicket(req.params.id, req.body.assigned_to);
     res.json(ticket);
@@ -854,7 +893,7 @@ router.put('/tickets/:id/assign', async (req, res) => {
   }
 });
 
-router.post('/tickets/:id/conversations', async (req, res) => {
+router.post('/tickets/:id/conversations', requirePermission('finance', 'edit'), async (req, res) => {
   try {
     const conversation = await ticketRepo.addConversation({
       ticket_id: req.params.id,
@@ -867,7 +906,7 @@ router.post('/tickets/:id/conversations', async (req, res) => {
   }
 });
 
-router.get('/tickets/dashboard/stats', async (req, res) => {
+router.get('/tickets/dashboard/stats', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const stats = await ticketRepo.getDashboardStats();
     res.json(stats);
@@ -876,7 +915,7 @@ router.get('/tickets/dashboard/stats', async (req, res) => {
   }
 });
 
-router.get('/ticket-categories', async (req, res) => {
+router.get('/ticket-categories', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT * FROM ticket_categories WHERE is_active = true ORDER BY name'
@@ -887,7 +926,7 @@ router.get('/ticket-categories', async (req, res) => {
   }
 });
 
-router.get('/sla-policies', async (req, res) => {
+router.get('/sla-policies', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT * FROM sla_policies WHERE is_active = true ORDER BY priority'
@@ -899,7 +938,7 @@ router.get('/sla-policies', async (req, res) => {
 });
 
 // ── Credit limits compat (main table lives in sales module) ──────────────────
-router.get('/credit-limits', async (req, res) => {
+router.get('/credit-limits', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT cl.*, p.name AS customer_name
@@ -912,19 +951,22 @@ router.get('/credit-limits', async (req, res) => {
 });
 
 // ── Journal entries (migrated from financeNewRoutes) ─────────────────────────
-router.get('/journal-entries',  getJournalEntries);
-router.post('/journal-entries', createJournalEntry);
+router.get('/journal-entries', requirePermission('finance', 'view'), getJournalEntries);
+router.post('/journal-entries', requirePermission('finance', 'approve'), createJournalEntry);
 
 // ── Accounting periods (migrated from financeNewRoutes) ───────────────────────
-router.get('/periods',              getPeriods);
+router.get('/periods', requirePermission('finance', 'view'), getPeriods);
 router.post('/periods/:id/close',   requirePermission('finance', 'approve'), closePeriod);
 router.post('/periods/:id/reopen',  requirePermission('finance', 'approve'), reopenPeriod);
+// Real figures for the close decision, replacing PeriodClosing.jsx's hardcoded
+// CURRENT_SUMMARY. Read-only, so it takes finance:view like the listing above.
+router.get('/periods/:id/summary',  requirePermission('finance', 'view'), getPeriodSummary);
 
 // ── CFO dashboard (migrated from financeNewRoutes) ────────────────────────────
-router.get('/cfo-dashboard', getCFODashboard);
+router.get('/cfo-dashboard', requirePermission('finance', 'view'), getCFODashboard);
 
 // ── PDC Outstanding (legacy compat — redirects to /pdc?status=pending) ───────
-router.get('/pdc-outstanding', async (req, res) => {
+router.get('/pdc-outstanding', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const cidFilter = cid != null ? ` AND p.company_id = ${parseInt(cid, 10)}` : '';
@@ -942,7 +984,7 @@ router.get('/pdc-outstanding', async (req, res) => {
 });
 
 // ── Purchase Dashboard / Payables ─────────────────────────────────────────────
-router.get('/purchase-dashboard/payable', async (req, res) => {
+router.get('/purchase-dashboard/payable', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     const params    = companyId != null ? [companyId] : [];
@@ -983,7 +1025,7 @@ router.get('/purchase-dashboard/payable', async (req, res) => {
 });
 
 // ── Report PDC (legacy compat — history tab uses /pdc with status filter) ────
-router.get('/report-pdc', async (req, res) => {
+router.get('/report-pdc', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const { cheque_type, status, from_date, to_date } = req.query;
@@ -1007,7 +1049,7 @@ router.get('/report-pdc', async (req, res) => {
 });
 
 // ── Report Purchase ──────────────────────────────────────────────────────────
-router.get('/report-purchase', async (req, res) => {
+router.get('/report-purchase', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const cid = getCompanyId(req);
     const { date_from, date_to, supplier_id, status } = req.query;

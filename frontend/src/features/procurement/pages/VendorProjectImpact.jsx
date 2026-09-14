@@ -1,3 +1,5 @@
+import { Stat } from '@/components/pulse-ui';
+
 const fmtINR = n => {
   const v = parseFloat(n || 0);
   if (v >= 10000000) return `₹${(v / 10000000).toFixed(2)} Cr`;
@@ -9,13 +11,13 @@ const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit
 
 const C = {
   primary: '#6B3FDB', light: '#f5f3ff', border: '#e9e4ff',
-  green: '#16a34a', red: '#dc2626', amber: '#d97706', blue: '#2563eb',
+  green: '#16a34a', red: '#dc2626', amber: '#6d28d9', blue: '#2563eb',
   card: { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12 },
 };
 
 const RISK_CFG = {
   Low:      { color: C.green, bg: '#dcfce7' },
-  Medium:   { color: C.amber, bg: '#fef3c7' },
+  Medium:   { color: C.amber, bg: '#ede9fe' },
   High:     { color: C.red,   bg: '#fee2e2' },
   Critical: { color: '#7f1d1d', bg: '#fecaca' },
 };
@@ -24,7 +26,7 @@ const STATUS_CFG = {
   Active:      { color: C.green,   bg: '#dcfce7' },
   'In Progress': { color: C.blue,  bg: '#dbeafe' },
   Completed:   { color: '#6b7280', bg: '#f3f4f6' },
-  'On Hold':   { color: C.amber,   bg: '#fef3c7' },
+  'On Hold':   { color: C.amber,   bg: '#ede9fe' },
   Delayed:     { color: C.red,     bg: '#fee2e2' },
   Planning:    { color: C.primary, bg: C.light },
 };
@@ -38,13 +40,9 @@ function Badge({ label, color, bg }) {
 }
 
 function KpiCard({ label, value, sub, color = '#111827' }) {
-  return (
-    <div style={{ ...C.card, padding: '16px 18px' }}>
-      <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 500, marginBottom: 4, textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
+  // Delegates to the design-system card, so this embedded panel's KPIs match
+  // the page it is rendered inside.
+  return <Stat label={label} value={value} sub={sub} color={color} />;
 }
 
 function BudgetBar({ used, total }) {

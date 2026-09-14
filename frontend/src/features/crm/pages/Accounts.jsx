@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Plus, RefreshCw, X, Building2, Edit2 } from 'lucide-react';
+import { Search, Plus, RefreshCw, X, Building2, Edit2, Contact } from 'lucide-react';
 import api from '@/services/api/client';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './Accounts.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = n => {
   const v = parseFloat(n || 0);
@@ -21,14 +22,14 @@ const STATUSES    = ['Active', 'Inactive', 'Prospect'];
 
 const TYPE_META = {
   customer:   { bg: '#dbeafe', color: '#1d4ed8' },
-  prospect:   { bg: '#fef3c7', color: '#92400e' },
+  prospect:   { bg: '#ede9fe', color: '#5b21b6' },
   partner:    { bg: '#d1fae5', color: '#065f46' },
   competitor: { bg: '#fee2e2', color: '#dc2626' },
   other:      { bg: '#f3f4f6', color: '#6b7280' },
 };
 const tm = t => TYPE_META[(t || '').toLowerCase()] || TYPE_META.other;
 
-const AVATAR_COLORS = ['#6B3FDB', '#2563EB', '#059669', '#D97706', '#DC2626'];
+const AVATAR_COLORS = ['#6B3FDB', '#2563EB', '#059669', '#6d28d9', '#DC2626'];
 const avatarColor = name => AVATAR_COLORS[((name || '').charCodeAt(0) || 0) % AVATAR_COLORS.length];
 const getInitials = name => {
   if (!name) return '?';
@@ -116,22 +117,23 @@ export default function Accounts() {
   ];
 
   return (
-    <div className="ac-root">
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="CRM"
+        title="Accounts"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          {!readOnly && <button className="plh-cta" onClick={openCreate}><Plus size={14} /> Add Account</button>}
+        </>}
+      />
+    }>
 
       {toast && <div className={`ac-toast ac-toast-${toast.type}`}>{toast.msg}</div>}
 
       {readOnly && <ReadOnlyBanner />}
 
-      <div className="ac-header">
-        <div>
-          <h2 className="ac-title">Accounts</h2>
-          <p className="ac-sub">{displayed.length} account{displayed.length !== 1 ? 's' : ''}</p>
-        </div>
-        <div className="ac-header-r">
-          <button className="ac-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          {!readOnly && <button className="ac-btn-primary" onClick={openCreate}><Plus size={14} /> Add Account</button>}
-        </div>
-      </div>
+
 
       {/* filters */}
       <div className="ac-filters">
@@ -297,6 +299,6 @@ export default function Accounts() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

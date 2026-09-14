@@ -27,7 +27,7 @@
 .sd-kpis > *:nth-child(4) { animation-delay: 135ms; }
 .sd-kpis > *:nth-child(n+5) { animation-delay: 180ms; }
 .sd-kpi-alert { border-left: 3px solid #ef4444; }
-.sd-kpi-icon  { width: 32px; height: 32px; background: color-mix(in srgb, var(--c) 12%, transparent); border-radius: 9px; display: flex; align-items: center; justify-content: center; color: var(--c); flex-shrink: 0; }
+.sd-kpi-icon  { width: 32px; height: 32px; background: transparent; background: color-mix(in srgb, var(--c) 12%, transparent); border-radius: 9px; display: flex; align-items: center; justify-content: center; color: var(--c); flex-shrink: 0; }
 .sd-kpi-label { font-size: 11.5px; color: #6b7280; margin: 0 0 2px; }
 .sd-kpi-val   { font-size: 20px; font-weight: 700; color: #111827; margin: 0; }
 .sd-kpi-sub   { font-size: 11px; color: #9ca3af; margin: 2px 0 0; }

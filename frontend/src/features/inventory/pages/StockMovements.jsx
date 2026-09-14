@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, RefreshCw, X, ArrowRightLeft } from 'lucide-react';
+import { Search, Plus, RefreshCw, X, ArrowRightLeft, Package } from 'lucide-react';
 import api from '@/services/api/client';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
-import { PageLayout, PageHeader, TableContainer, FormCard, FormSection, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, FormCard, FormSection, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 import './StockMovements.css';
 
 
@@ -110,30 +110,33 @@ export default function StockMovements() {
   ];
 
   return (
-    <PageLayout>
-      {toast && <div className={`sm-toast sm-toast-${toast.type}`}>{toast.msg}</div>}
-
-      <PageHeader
-        description={
-          <>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Stock Movements"
+          subtitle={<>
             {displayed.length} transactions &nbsp;·&nbsp;
             <span style={{ color: '#15803d' }}>▲ {inCount} IN</span> &nbsp;
             <span style={{ color: '#dc2626' }}>▼ {outCount} OUT</span>
-          </>
-        }
-        actions={
-          <>
-            <button className="pl-icon-btn" onClick={load}><RefreshCw size={14} /> Refresh</button>
+          </>}
+          actions={<>
+            <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /> Refresh</button>
             {!readOnly && (
-              <button className="pulse-btn-primary" onClick={() => { setForm(emptyAdj()); setDrawer(true); }}>
+              <button className="plh-cta" onClick={() => { setForm(emptyAdj()); setDrawer(true); }}>
                 <Plus size={14} /> Stock Adjustment
               </button>
             )}
-          </>
-        }
-        search={{ value: search, onChange: setSearch, placeholder: 'Search item, SKU, reference…' }}
-        filters={
-          <div style={{ display: 'flex', gap: 6 }}>
+          </>}
+        />
+        <div className="plh-toolbar">
+          <label className="plh-search">
+            <Search size={13} aria-hidden="true" />
+            <input value={search} onChange={e => (setSearch)(e.target.value)}
+              placeholder={'Search item, SKU, reference…'} aria-label={'Search item, SKU, reference…'} />
+          </label>
+          {<div style={{ display: 'flex', gap: 6 }}>
             {typeFilters.map(t => (
               <button
                 key={t.val}
@@ -144,15 +147,19 @@ export default function StockMovements() {
                 {t.label}
               </button>
             ))}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+      {toast && <div className={`sm-toast sm-toast-${toast.type}`}>{toast.msg}</div>}
+
+
 
       {readOnly && <ReadOnlyBanner />}
 
       {pendingAdj.length > 0 && (
-        <div className="pl-card" style={{ marginBottom: 16, borderColor: '#fde68a', background: '#fffbeb' }}>
-          <div style={{ padding: '10px 14px', fontWeight: 600, fontSize: 13, color: '#92400e' }}>
+        <div className="pl-card" style={{ marginBottom: 16, borderColor: '#ddd6fe', background: '#f5f3ff' }}>
+          <div style={{ padding: '10px 14px', fontWeight: 600, fontSize: 13, color: '#5b21b6' }}>
             {pendingAdj.length} adjustment{pendingAdj.length === 1 ? '' : 's'} awaiting approval
           </div>
           <div className="pl-table-scroll">
@@ -294,6 +301,6 @@ export default function StockMovements() {
           </div>
         </div>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

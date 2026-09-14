@@ -1,14 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, RefreshCw, X, Hash, Eye, Clock, ChevronDown, CheckCircle2, Wrench, AlertTriangle } from 'lucide-react';
+import {
+  Plus, RefreshCw, X, Hash, Eye, Clock, ChevronDown, CheckCircle2,
+  Wrench, AlertTriangle, Package,
+  Search,
+} from 'lucide-react';
 import api from '@/services/api/client';
-import { PageLayout, PageHeader, KPICardGrid, KPICard, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, KPICardGrid, KPICard, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_OPTIONS = ['in_stock', 'dispatched', 'in_service', 'returned', 'scrapped'];
 
 const STATUS_STYLE = {
   in_stock:   { bg: '#f0fdf4', color: '#15803d', label: 'In Stock' },
   dispatched: { bg: '#eff6ff', color: '#1d4ed8', label: 'Dispatched' },
-  in_service: { bg: '#fef3c7', color: '#92400e', label: 'In Service' },
+  in_service: { bg: '#ede9fe', color: '#5b21b6', label: 'In Service' },
   returned:   { bg: '#f5f3ff', color: '#6d28d9', label: 'Returned' },
   scrapped:   { bg: '#fef2f2', color: '#dc2626', label: 'Scrapped' },
 };
@@ -149,7 +153,38 @@ export default function SerialTracking() {
   const st = (s) => STATUS_STYLE[s] || { bg: '#f3f4f6', color: '#374151', label: s };
 
   return (
-    <PageLayout>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Serial Number Tracking"
+          subtitle={`${serials.length} serialised units`}
+          actions={<>
+            <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+            <button className="plh-cta" onClick={openAdd}><Plus size={14} /> Add Serial</button>
+          </>}
+        />
+        <div className="plh-toolbar">
+          <label className="plh-search">
+            <Search size={13} aria-hidden="true" />
+            <input value={search} onChange={e => (setSearch)(e.target.value)}
+              placeholder={'Search serial number, item name, item code…'} aria-label={'Search serial number, item name, item code…'} />
+          </label>
+          {<div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select className="pl-icon-btn" value={fStatus} onChange={e => setFStatus(e.target.value)}>
+              <option value="">All Statuses</option>
+              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{st(s).label}</option>)}
+            </select>
+            {(search || fStatus) && (
+              <button className="pl-icon-btn" onClick={() => { setSearch(''); setFStatus(''); }}>
+                <X size={12} /> Clear
+              </button>
+            )}
+          </div>}
+        </div>
+      </>
+    }>
 
       {toast && (
         <div style={{
@@ -161,30 +196,7 @@ export default function SerialTracking() {
         }}>{toast.msg}</div>
       )}
 
-      <PageHeader
-        title="Serial Number Tracking"
-        description={`${serials.length} serialised units`}
-        actions={
-          <>
-            <button className="pl-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-            <button className="pulse-btn-primary" onClick={openAdd}><Plus size={14} /> Add Serial</button>
-          </>
-        }
-        search={{ value: search, onChange: setSearch, placeholder: 'Search serial number, item name, item code…' }}
-        filters={
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <select className="pl-icon-btn" value={fStatus} onChange={e => setFStatus(e.target.value)}>
-              <option value="">All Statuses</option>
-              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{st(s).label}</option>)}
-            </select>
-            {(search || fStatus) && (
-              <button className="pl-icon-btn" onClick={() => { setSearch(''); setFStatus(''); }}>
-                <X size={12} /> Clear
-              </button>
-            )}
-          </div>
-        }
-      />
+
 
       {/* Stats */}
       {stats && (
@@ -415,6 +427,6 @@ export default function SerialTracking() {
           </div>
         </div>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

@@ -10,19 +10,19 @@ export default function TimeToHireCard({ data = {}, loading }) {
 
   const labelColor = avgDays === 0 ? '#9ca3af'
     : avgDays <= 20 ? '#166534'
-    : avgDays <= 45 ? '#92400e'
+    : avgDays <= 45 ? '#5b21b6'
     : '#991b1b';
 
   const labelBg = avgDays === 0 ? '#f3f4f6'
     : avgDays <= 20 ? '#f0fdf4'
-    : avgDays <= 45 ? '#fffbeb'
+    : avgDays <= 45 ? '#f5f3ff'
     : '#fef2f2';
 
   return (
     <div style={{ background:'#fff', border:'1px solid #f0f0f4', borderRadius:12, padding:'20px' }}>
       <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
-        <div style={{ background:'#fffbeb', borderRadius:8, padding:6 }}>
-          <Clock size={14} color="#f59e0b" />
+        <div style={{ background:'#f5f3ff', borderRadius:8, padding:6 }}>
+          <Clock size={14} color="#7c5cf0" />
         </div>
         <span style={{ fontSize:12, color:'#6b7280', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.04em' }}>
           Time to Hire

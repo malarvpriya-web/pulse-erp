@@ -1,5 +1,6 @@
 // frontend/src/features/finance/pages/FixedAssets.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { Wrench } from 'lucide-react';
 import {
   PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, LineChart, Line, CartesianGrid,
@@ -8,6 +9,7 @@ import api from '@/services/api/client';
 import { useFY } from '@/context/FYContext';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ─── helpers ─────────────────────────────────────────────── */
 function formatINR(n) {
@@ -54,8 +56,8 @@ const EMPTY_FORM = {
 };
 
 const CATEGORIES = ['IT Equipment','Furniture','Vehicles','Electrical','Machinery','Office Equipment','Security','Land & Building','Other'];
-const STATUS_COLORS = { active:'#16a34a', disposed:'#dc2626', 'under-maintenance':'#d97706' };
-const PIE_COLORS = ['#6B3FDB','#2563eb','#d97706','#16a34a','#dc2626','#0891b2','#db2777','#6d28d9','#374151'];
+const STATUS_COLORS = { active:'#16a34a', disposed:'#dc2626', 'under-maintenance':'#6d28d9' };
+const PIE_COLORS = ['#6B3FDB','#2563eb','#6d28d9','#16a34a','#dc2626','#0891b2','#db2777','#6d28d9','#374151'];
 
 /* ─── chart helpers ────────────────────────────────────────── */
 function buildCategoryPie(assets) {
@@ -344,21 +346,21 @@ export default function FixedAssets() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      {readOnly && <ReadOnlyBanner />}
-      {/* header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin:0, color:'#4c1d95', fontSize:22 }}>🏭 Fixed Assets Register</h2>
-          <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Manage assets, depreciation schedules, and disposals</p>
-        </div>
-        {!readOnly && (
-          <button onClick={() => { setForm(EMPTY_FORM); setEditId(null); setShowFormModal(true); }}
-            style={{ background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'9px 20px', cursor:'pointer', fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Wrench}
+        eyebrow="Finance"
+        title="🏭 Fixed Assets Register"
+        subtitle="Manage assets, depreciation schedules, and disposals"
+        actions={!readOnly && (
+          <button className="plh-cta" onClick={() => { setForm(EMPTY_FORM); setEditId(null); setShowFormModal(true); }}>
             + Add Asset
           </button>
         )}
-      </div>
+      />
+    }>
+      {readOnly && <ReadOnlyBanner />}
+      {/* header */}
 
       {/* flash message */}
       {msg.text && (
@@ -393,7 +395,7 @@ export default function FixedAssets() {
             <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:14, marginBottom:24 }}>
               {[
                 { label:'Total Asset Value',        value: formatINR(kpis?.total_cost),            icon:'🏭', color:'#6B3FDB' },
-                { label:'Accumulated Depreciation', value: formatINR(kpis?.total_accumulated_dep), icon:'📉', color:'#d97706' },
+                { label:'Accumulated Depreciation', value: formatINR(kpis?.total_accumulated_dep), icon:'📉', color:'#6d28d9' },
                 { label:'Net Book Value',            value: formatINR(kpis?.net_book_value),        icon:'📊', color:'#16a34a' },
                 { label:'Active Assets',             value: kpis?.total_assets ?? 0,               icon:'✅', color:'#0891b2' },
               ].map(({ label, value, icon, color }) => (
@@ -469,7 +471,7 @@ export default function FixedAssets() {
 
             {/* warranty expiry alerts */}
             <div>
-              <h4 style={{ color:'#d97706', marginBottom:10, fontSize:14 }}>🛡️ Warranty Expiring (Next 90 Days)</h4>
+              <h4 style={{ color:'#6d28d9', marginBottom:10, fontSize:14 }}>🛡️ Warranty Expiring (Next 90 Days)</h4>
               {expiringWarranties.length === 0 ? (
                 <p style={{ color:'#16a34a', fontSize:13, margin:'0 0 8px' }}>✓ No warranties expiring in the next 90 days.</p>
               ) : (
@@ -478,12 +480,12 @@ export default function FixedAssets() {
                     const daysLeft = Math.ceil((new Date(a.warranty_expiry) - new Date()) / 86400000);
                     return (
                       <div key={a.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
-                        padding:'10px 14px', borderRadius:8, border:'1px solid #fef3c7', background:'#fffbeb' }}>
+                        padding:'10px 14px', borderRadius:8, border:'1px solid #ede9fe', background:'#f5f3ff' }}>
                         <div>
                           <span style={{ fontWeight:600, fontSize:13 }}>{a.name}</span>
                           <span style={{ color:'#6b7280', fontSize:12, marginLeft:8 }}>{a.asset_code} · {a.department || 'Unassigned'}</span>
                         </div>
-                        <span style={{ fontSize:12, fontWeight:700, color: daysLeft <= 30 ? '#dc2626' : '#d97706' }}>
+                        <span style={{ fontSize:12, fontWeight:700, color: daysLeft <= 30 ? '#dc2626' : '#6d28d9' }}>
                           Expires in {daysLeft}d ({a.warranty_expiry?.split('T')[0]})
                         </span>
                       </div>
@@ -564,7 +566,7 @@ export default function FixedAssets() {
                         <td style={{ padding:'7px 10px', color:'#6B3FDB', fontWeight:700 }}>{a.asset_code}</td>
                         <td style={{ padding:'7px 10px', fontWeight:500 }}>{a.name}</td>
                         <td style={{ padding:'7px 10px', color:'#6b7280' }}>{a.category}</td>
-                        <td style={{ padding:'7px 10px', color: a.department ? '#6b7280' : '#d97706', fontStyle: a.department ? 'normal' : 'italic' }}>
+                        <td style={{ padding:'7px 10px', color: a.department ? '#6b7280' : '#6d28d9', fontStyle: a.department ? 'normal' : 'italic' }}>
                           {a.department || 'Unassigned'}
                         </td>
                         <td style={{ padding:'7px 10px', whiteSpace:'nowrap' }}>{a.purchase_date?.split('T')[0]}</td>
@@ -580,7 +582,7 @@ export default function FixedAssets() {
                         <td style={{ padding:'7px 10px', textAlign:'center' }}>{a.useful_life_years}y</td>
                         <td style={{ padding:'7px 10px' }}>
                           <span style={{ padding:'2px 8px', borderRadius:12, fontSize:11, fontWeight:600,
-                            background: a.status==='active' ? '#d1fae5' : a.status==='disposed' ? '#fee2e2' : '#fef3c7',
+                            background: a.status==='active' ? '#d1fae5' : a.status==='disposed' ? '#fee2e2' : '#ede9fe',
                             color: STATUS_COLORS[a.status] || '#6b7280' }}>
                             {a.status}
                           </span>
@@ -654,7 +656,7 @@ export default function FixedAssets() {
                           <Tooltip formatter={(v) => [formatINR(v), '']} />
                           <Legend />
                           <Line type="monotone" dataKey="closing" stroke="#6B3FDB" strokeWidth={2} dot={{ r:4 }} name="Book Value" />
-                          <Line type="monotone" dataKey="accumulated" stroke="#d97706" strokeWidth={2} strokeDasharray="4 4" dot={{ r:3 }} name="Accumulated Dep" />
+                          <Line type="monotone" dataKey="accumulated" stroke="#6d28d9" strokeWidth={2} strokeDasharray="4 4" dot={{ r:3 }} name="Accumulated Dep" />
                         </LineChart>
                       </ResponsiveContainer>
                     </div>
@@ -679,7 +681,7 @@ export default function FixedAssets() {
                           <td style={{ padding:'9px 14px', textAlign:'right' }}>{formatINR(row.opening)}</td>
                           <td style={{ padding:'9px 14px', textAlign:'right', color:'#dc2626', fontWeight:500 }}>{formatINR(row.depreciation)}</td>
                           <td style={{ padding:'9px 14px', textAlign:'right', fontWeight:600, color:'#16a34a' }}>{formatINR(row.closing)}</td>
-                          <td style={{ padding:'9px 14px', textAlign:'right', color:'#d97706' }}>{formatINR(row.accumulated)}</td>
+                          <td style={{ padding:'9px 14px', textAlign:'right', color:'#6d28d9' }}>{formatINR(row.accumulated)}</td>
                         </tr>
                       ))}
                       {schedule.length > 0 && (
@@ -688,7 +690,7 @@ export default function FixedAssets() {
                           <td style={{ padding:'9px 14px', textAlign:'right', color:'#4c1d95' }}>{formatINR(schedule[0]?.opening)}</td>
                           <td style={{ padding:'9px 14px', textAlign:'right', color:'#dc2626' }}>{formatINR(schedule.reduce((s,r) => s + (r.depreciation||0), 0))}</td>
                           <td style={{ padding:'9px 14px', textAlign:'right', color:'#16a34a' }}>{formatINR(schedule[schedule.length-1]?.closing)}</td>
-                          <td style={{ padding:'9px 14px', textAlign:'right', color:'#d97706' }}>{formatINR(schedule[schedule.length-1]?.accumulated)}</td>
+                          <td style={{ padding:'9px 14px', textAlign:'right', color:'#6d28d9' }}>{formatINR(schedule[schedule.length-1]?.accumulated)}</td>
                         </tr>
                       )}
                     </tbody>
@@ -795,6 +797,6 @@ export default function FixedAssets() {
         </div>
       )}
 
-    </div>
+    </PageShell>
   );
 }

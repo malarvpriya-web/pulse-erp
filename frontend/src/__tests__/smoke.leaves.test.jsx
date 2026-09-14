@@ -130,7 +130,9 @@ describe('ApplyLeave — smoke', () => {
   it('renders without crashing', () => {
     api.get.mockReturnValue(new Promise(() => {}));
     render(<ApplyLeave />);
-    expect(document.querySelector('.al-root')).not.toBeNull();
+    // The Hero Kit rollout replaced this page's own `.al-root` wrapper with the
+    // shared PageShell, whose root is `.plh-page`. The assertion followed.
+    expect(document.querySelector('.plh-page')).not.toBeNull();
   });
 
   it('shows page heading and subtext', () => {
@@ -252,7 +254,8 @@ describe('AllLeaves — smoke', () => {
     api.get.mockReturnValue(new Promise(() => {}));
     api.post.mockReturnValue(new Promise(() => {}));
     render(<AllLeaves />);
-    expect(document.querySelector('.al-root')).not.toBeNull();
+    // See ApplyLeave above — `.al-root` became PageShell's `.plh-page`.
+    expect(document.querySelector('.plh-page')).not.toBeNull();
   });
 
   it('shows "Leave Management" heading', () => {

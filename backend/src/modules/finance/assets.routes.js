@@ -4,6 +4,8 @@ import pool from '../../config/db.js';
 import journalRepo from './repositories/journal.repository.js';
 import { nextAccountingJournalNumber } from '../../shared/docNumber.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { ACCUM_DEP_CODE_BY_CATEGORY, DEFAULT_ACCUM_DEP_CODE } from './services/depreciation.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -229,7 +231,7 @@ router.post('/', requirePermission('finance', 'add'), async (req, res) => {
 });
 
 /* ── PUT /:id ── */
-router.put('/:id', requirePermission('finance', 'edit'), async (req, res) => {
+router.put('/:id', requirePermission('finance', 'edit'), captureBefore('fixed_assets'), async (req, res) => {
   try {
     const companyId = cid(req);
     const {
@@ -263,7 +265,7 @@ router.put('/:id', requirePermission('finance', 'edit'), async (req, res) => {
 });
 
 /* ── DELETE /:id — soft delete (status → archived) ── */
-router.delete('/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/:id', requirePermission('finance', 'delete'), captureBefore('fixed_assets'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cidClause = companyId != null ? 'AND company_id=$2' : '';
@@ -336,18 +338,29 @@ router.post('/:id/dispose', requirePermission('finance', 'approve'), async (req,
       );
       return rows[0]?.id ?? null;
     }
+    // Accumulated depreciation must be cleared from the same account the
+    // monthly cron actually accumulated it into (services/depreciation.js) —
+    // this used to hardcode '1110', which is this company's Cash account,
+    // not a depreciation account at all (the exact drift depreciation.js's
+    // own header comment already flagged for the retired annual route —
+    // this route was the other half of that same bug, still live).
+    const accumDepCode   = ACCUM_DEP_CODE_BY_CATEGORY[(asset.category || '').toLowerCase()] || DEFAULT_ACCUM_DEP_CODE;
     const bankAcctId     = await acctId('1001');
-    const accumDepAcctId = await acctId('1110');
+    const accumDepAcctId = await acctId(accumDepCode);
     const assetAcctId    = await acctId('1100');
-    const gainAcctId     = await acctId('4100');
+    // No dedicated "Gain on Disposal" account exists in the live chart of
+    // accounts — '4100' is actually Sales Revenue, so posting there inflated
+    // reported sales with non-operating disposal gains. '4003' Other Income
+    // is the correct classification (Ind AS / Companies Act non-operating gain).
+    const gainAcctId     = await acctId('4003');
     const lossAcctId     = await acctId('5800');
 
     const lines = [];
-    if (dispVal  > 0) lines.push({ account_id: bankAcctId,     account_code: '1001', account_name: 'Bank / Cash Account',         debit: dispVal,           credit: 0 });
-    if (accumDep > 0) lines.push({ account_id: accumDepAcctId, account_code: '1110', account_name: 'Accumulated Depreciation',      debit: accumDep,          credit: 0 });
-    if (gainLoss < 0) lines.push({ account_id: lossAcctId,     account_code: '5800', account_name: 'Loss on Disposal of Asset',     debit: Math.abs(gainLoss), credit: 0 });
-    if (cost     > 0) lines.push({ account_id: assetAcctId,    account_code: '1100', account_name: `Fixed Asset — ${asset.name}`,   debit: 0,                 credit: cost });
-    if (gainLoss > 0) lines.push({ account_id: gainAcctId,     account_code: '4100', account_name: 'Gain on Disposal of Asset',     debit: 0,                 credit: gainLoss });
+    if (dispVal  > 0) lines.push({ account_id: bankAcctId,     account_code: '1001',      account_name: 'Bank / Cash Account',                      debit: dispVal,           credit: 0 });
+    if (accumDep > 0) lines.push({ account_id: accumDepAcctId, account_code: accumDepCode, account_name: 'Accumulated Depreciation',                 debit: accumDep,          credit: 0 });
+    if (gainLoss < 0) lines.push({ account_id: lossAcctId,     account_code: '5800',      account_name: 'Loss on Disposal of Asset',                 debit: Math.abs(gainLoss), credit: 0 });
+    if (cost     > 0) lines.push({ account_id: assetAcctId,    account_code: '1100',      account_name: `Fixed Asset — ${asset.name}`,               debit: 0,                 credit: cost });
+    if (gainLoss > 0) lines.push({ account_id: gainAcctId,     account_code: '4003',      account_name: 'Other Income — Gain on Disposal of Asset',  debit: 0,                 credit: gainLoss });
 
     const totalDebit  = lines.reduce((s, l) => s + l.debit,  0);
     const totalCredit = lines.reduce((s, l) => s + l.credit, 0);

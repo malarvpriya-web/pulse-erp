@@ -3,8 +3,19 @@ import { Sparkles, RefreshCw } from 'lucide-react';
 import api from '@/services/api/client';
 import '../ai.css';
 
+// The heading used to read "AI Insights (GPT)" unconditionally, while the
+// endpoint returns `source: 'openai' | 'rules'` and this component never looked
+// at it. With no API key configured every reader of this card was looking at a
+// four-line template believing it was model-generated analysis. The source now
+// drives the label, so the reader can weight what they are reading.
+const SOURCE_LABEL = {
+  openai: { title: 'AI Insights', badge: 'GPT-4o mini', tone: '#4338ca' },
+  rules:  { title: 'KPI Summary', badge: 'Rule-based',  tone: '#0f766e' },
+};
+
 export default function AIInsightCard({ dashboardData }) {
   const [insight, setInsight] = useState('');
+  const [source,  setSource]  = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
   const firedRef = useRef(false);
@@ -17,6 +28,7 @@ export default function AIInsightCard({ dashboardData }) {
     try {
       const res = await api.post('/ai/ceo-insights', { dashboardData });
       setInsight(res.data?.reply || 'No insight generated.');
+      setSource(res.data?.source ?? null);
     } catch (err) {
       const msg = err.response?.data?.error || 'Could not load insights — please refresh.';
       setError(msg);
@@ -45,7 +57,19 @@ export default function AIInsightCard({ dashboardData }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Sparkles size={16} color="#6366f1" />
-          <span style={{ fontWeight: 600, fontSize: 14, color: '#4338ca' }}>AI Insights (GPT)</span>
+          <span style={{ fontWeight: 600, fontSize: 14, color: (SOURCE_LABEL[source] || SOURCE_LABEL.rules).tone }}>
+            {(SOURCE_LABEL[source] || { title: 'Insights' }).title}
+          </span>
+          {source && (
+            <span style={{
+              fontSize: 10, fontWeight: 600, letterSpacing: '.05em', textTransform: 'uppercase',
+              padding: '2px 6px', borderRadius: 3,
+              background: source === 'openai' ? '#6366f11f' : '#0f766e1f',
+              color: SOURCE_LABEL[source].tone,
+            }}>
+              {SOURCE_LABEL[source].badge}
+            </span>
+          )}
         </div>
         <button
           onClick={generateInsight}

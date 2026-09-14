@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Clock, Plus, Edit2, Trash2, Copy, Users,
-  X, Check, AlertCircle, Moon, Coffee, Zap,
+  Clock, Plus, Edit2, Trash2, Copy, Users, X, Check, AlertCircle, Moon,
+  Coffee, Zap, CalendarClock,
 } from 'lucide-react';
 
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const SHIFT_COLORS = ['#6B3FDB','#0369a1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316'];
+const SHIFT_COLORS = ['#6B3FDB','#0369a1','#10b981','#7c5cf0','#ef4444','#8b5cf6','#06b6d4','#7c5cf0'];
 const DEFAULT_ROLE_GRACE = { office: 15, field: 25, manager: 10 };
 
 const EMPTY_SHIFT = {
@@ -646,18 +647,19 @@ export default function ShiftManagement() {
   const totalEmployees = shifts.reduce((s, sh) => s + (parseInt(sh.employee_count || sh.employees_count) || 0), 0);
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Shift Management</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Configure work shifts, assign employees, manage rotations</p>
-        </div>
-        <button onClick={() => { setEditShift(null); setShowForm(true); }}
-          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 10, border: 'none', background: P, color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title="Shift Management"
+        subtitle="Configure work shifts, assign employees, manage rotations"
+        actions={<button className="plh-cta" onClick={() => { setEditShift(null); setShowForm(true); }}>
           <Plus size={16} /> Create Shift
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+      {/* Header */}
+
 
       {msg && (
         <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: '#15803d', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -749,7 +751,7 @@ export default function ShiftManagement() {
                   <Coffee size={10} style={{ verticalAlign: 'middle', marginRight: 3 }} />{sh.break_duration}min break
                 </span>
                 {sh.ot_eligible && (
-                  <span style={{ background: '#fffbeb', color: '#d97706', borderRadius: 12, padding: '2px 8px', fontSize: 11, fontWeight: 500 }}>
+                  <span style={{ background: '#f5f3ff', color: '#6d28d9', borderRadius: 12, padding: '2px 8px', fontSize: 11, fontWeight: 500 }}>
                     <Zap size={10} style={{ verticalAlign: 'middle', marginRight: 3 }} />OT Eligible
                   </span>
                 )}
@@ -813,6 +815,6 @@ export default function ShiftManagement() {
       {assignShift && (
         <AssignPanel shift={assignShift} onClose={() => { setAssignShift(null); load(); }} />
       )}
-    </div>
+    </PageShell>
   );
 }

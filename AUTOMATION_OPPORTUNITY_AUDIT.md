@@ -928,7 +928,7 @@ rule-based fallback; never fabricates numbers.
 **Priority:** N/A (already delivering value)
 
 ### 27.2 Real gaps in the AI footprint
-**Status:** 🟡 Extend Existing (7/9 done) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §69/§70/§71/§74/§75/§77/§78/§79.
+**Status:** ✅ Done (8/9 built, 1/9 reviewed-and-declined) — see `MODULE_FEATURE_CONNECTION_MANUAL.md` §69/§70/§71/§74/§75/§77/§78/§79/§80/§81.
 Extending `/prescriptive` to Sales/Service was found already wired by a concurrent session
 (`ai.routes.js:852-878`, reusing `customerHealth.service.js`'s
 `getSalesDashboard`/`getServiceDashboard`) — but live-testing it end-to-end surfaced the wiring
@@ -981,15 +981,27 @@ data correctly returns empty/minimal results where genuinely nothing exists; syn
 transaction-based tests (rolled back after) proved both endpoints' logic fires correctly when real
 signal is present. Wired into `AllTickets.jsx`'s ticket detail drawer as an "AI Handoff Summary"
 panel.
-Remaining 2 gaps below are still unbuilt (re-confirmed via grep before §70 was written — see §70 in
-the manual for the exact search). Every gap here reuses the same
+In-context drafting assist was built the same day (§80): new reusable
+`components/ai/DraftAssistButton.jsx` calling the existing `/ai/llm-chat` (zero backend changes),
+human stays in the loop (fills the field, doesn't auto-submit). Piloted in `NCRManagement.jsx`'s
+NCR creation form — the audit's own named example ("a QC non-conformance description"). Live-hit
+the real dev server's `/llm-chat` to confirm the exact 503 response shape this environment produces
+(no `OPENAI_API_KEY` set) and verified the button's error handling matches it. Only 3 of the 4
+candidate forms remain unwired (rejection email, offer letter, AMC renewal quote) — the component
+itself is generic, each is a one-line follow-up, not new infrastructure.
+The 9th and last item, individual-level attrition risk, was reviewed and explicitly **declined**
+2026-08-06 (§81) — the user was asked directly and chose not to build it, rather than it being
+built by default off a general "proceed." Reasoning: this is the only item in the whole §27.2 list
+that would score a real, named person on a sensitive predicted personal trait (likelihood of
+quitting) rather than a business object or an aggregate; at this pilot's data scale (8 users) any
+such score is statistical noise that a manager could still mistake for signal and act on punitively;
+and the department-level version of the same insight already exists (§70) without the individual-
+privacy exposure. Not revisited without a fresh, explicit ask. Every other gap here reused the same
 GPT-optional-with-rule-based-fallback pattern already proven in `ceo-insights`/`/prescriptive`, or
-the transparent driver-based scoring pattern proven in `/predict/device-failure`; none needs new AI
+the transparent driver-based scoring pattern proven in `/predict/device-failure`; none needed new AI
 infrastructure, only a new call site on top of data that already exists.
-**Current Process:** individual-level attrition risk (flagged in this audit as needing
-appetite confirmation first — more sensitive than a department rollup), and in-context
-drafting assist (a "draft this" button reusing `/llm-chat` inside specific forms) — neither
-has a code path today.
+**Current Process:** individual-level attrition risk — reviewed and declined 2026-08-06; see
+`MODULE_FEATURE_CONNECTION_MANUAL.md` §81 for the reasoning. Not planned.
 **Pain Point:** the narrate/rank/predict-from-live-data pattern is proven and cheap to
 repeat, but it's so far only been applied to Finance/Inventory/HR/CEO — each of the
 above is a department or persona that gets none of it yet.

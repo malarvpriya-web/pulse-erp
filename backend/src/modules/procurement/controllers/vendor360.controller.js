@@ -80,7 +80,8 @@ export const Vendor360Controller = {
       const companyId = requireCompany(req, res);
       if (companyId === false) return;
       const entry = await svc.saveScorecard(
-        vendorId(req), companyId, req.body, req.user?.id
+        // req.user.id is always undefined — the JWT carries `userId`.
+        vendorId(req), companyId, req.body, req.user?.userId
       );
       res.status(201).json(entry);
     } catch (err) {
@@ -109,6 +110,20 @@ export const Vendor360Controller = {
       const docs = await svc.getDocuments(vendorId(req), companyId);
       if (!docs) return res.status(404).json({ error: 'Vendor not found' });
       res.json(docs);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  },
+
+  // GET /vendor-360/:vendorId/purchase-lines?search=&from=&to=
+  async getPurchaseLines(req, res) {
+    try {
+      const companyId = requireCompany(req, res);
+      if (companyId === false) return;
+      const { search, from, to } = req.query;
+      const data = await svc.getPurchaseLines(vendorId(req), companyId, { search, from, to });
+      if (!data) return res.status(404).json({ error: 'Vendor not found' });
+      res.json(data);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

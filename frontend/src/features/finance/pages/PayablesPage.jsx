@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { ReceiptIndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import NotesList from '@/components/finance/NotesList';
 import SupplierBills from './SupplierBills';
 import SupplierOutstanding from './SupplierOutstanding';
 import ReportPurchase from './ReportPurchase';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -244,14 +246,14 @@ export default function PayablesPage({ setPage, initialTab }) {
   const [activeTab, setActiveTab] = useState(initialTab ?? 'bills');
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
-      {/* Page header */}
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ fontWeight: 800, fontSize: 22, color: '#1f2937', margin: 0 }}>Payables</h2>
-        <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-          Supplier bills, outstanding balances, debit notes and purchase reporting
-        </p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={ReceiptIndianRupee}
+        eyebrow="Finance"
+        title="Payables"
+        subtitle="Supplier bills, outstanding balances, debit notes and purchase reporting"
+      />
+    }>
 
       {/* Tab bar */}
       <div style={{
@@ -281,6 +283,6 @@ export default function PayablesPage({ setPage, initialTab }) {
       {activeTab === 'outstanding'     && <SupplierOutstanding />}
       {activeTab === 'debit-notes'     && <DebitNotesTab />}
       {activeTab === 'purchase-report' && <ReportPurchase />}
-    </div>
+    </PageShell>
   );
 }

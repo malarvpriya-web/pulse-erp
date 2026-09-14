@@ -13,8 +13,9 @@
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Plus, Pencil, Download, FileText, Search, X, Clock, SlidersHorizontal,
-  Tags, ArrowUp, ArrowDown, Trash2, AlertCircle,
+  Plus, Pencil, Download, FileText, Search, X, Clock,
+  SlidersHorizontal, Tags, ArrowUp, ArrowDown, Trash2, AlertCircle,
+  LifeBuoy,
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -24,6 +25,7 @@ import { fmtDate } from '@/utils/dateFormatter';
 import { useAuth } from '@/context/AuthContext';
 import { VizCard, Donut, DonutLegend, HBarList } from '@/components/charts/PulseViz';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /**
  * Categorical order re-stepped off PULSE_SERIES so purple and blue are never
@@ -34,9 +36,9 @@ import ConfirmDialog from '@/components/core/ConfirmDialog';
  * visible value labels, which is what the sub-3:1 contrast warning requires.
  * Colour follows the entity (a zone, a status), never its rank.
  */
-const IPS_SERIES = ['#6B3FDB', '#10b981', '#f59e0b', '#2563eb', '#ef4444', '#14b8a6'];
+const IPS_SERIES = ['#6B3FDB', '#10b981', '#7c5cf0', '#2563eb', '#ef4444', '#14b8a6'];
 const OPENED_COLOR = '#6B3FDB';
-const CLOSED_COLOR = '#f59e0b';
+const CLOSED_COLOR = '#7c5cf0';
 
 // Lifecycle order — the status bar reads as a pipeline, so Open sits left of
 // Closed regardless of volume. Mirrors TICKET_STATUSES in ips.routes.js.
@@ -54,7 +56,7 @@ const STATUS_ORDER = ['Open', 'Analysis', 'In Progress', 'Pending', 'Resolved', 
  */
 const STATUS_COLOR = {
   'Open':        '#6B3FDB', // purple — new
-  'Analysis':    '#f59e0b', // amber  — being worked out
+  'Analysis':    '#7c5cf0', // amber  — being worked out
   'In Progress': '#14b8a6', // teal   — active
   'Pending':     '#ef4444', // red    — blocked
   'Resolved':    '#10b981', // green  — good outcome
@@ -286,7 +288,14 @@ export default function ServiceMasterIPS() {
   const statusTotal = (widgets?.by_status ?? []).reduce((s, d) => s + d.value, 0);
 
   return (
-    <div className="pulse-page" style={{ padding: 24, background: 'var(--color-bg-page, #f8f9fc)', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="Service Master"
+        actions={canAdd && <button className="plh-cta" onClick={openNew}><Plus size={15} /> New</button>}
+      />
+    }>
       <ConfirmDialog
         open={!!confirmCat}
         title="Remove category"
@@ -305,15 +314,6 @@ export default function ServiceMasterIPS() {
       )}
 
       {/* ── header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Service Master</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            Field service tickets (IPS) &middot; {total} record{total === 1 ? '' : 's'}
-          </p>
-        </div>
-        {canAdd && <button onClick={openNew} style={primaryBtn}><Plus size={15} /> New</button>}
-      </div>
 
       {/* ── toolbar ── */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -633,6 +633,6 @@ export default function ServiceMasterIPS() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

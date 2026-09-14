@@ -1,6 +1,9 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
+import { companyOf } from '../../shared/scope.js';
+import { respondError } from '../../shared/pgErrors.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -69,6 +72,33 @@ const READ_ROLES  = ['super_admin', 'admin', 'hr_manager', 'hr_exec', 'finance_m
   }
 })();
 
+// The employee fallback in GET /:type surfaces legacy free-text values as rows
+// with id: null, so clients can hand us "null" here. Postgres answers that with
+// a 22P02 500 ("invalid input syntax for type integer"); reject it up front.
+const numericId = (raw) => {
+  const t = String(raw ?? '').trim();
+  if (!/^[0-9]+$/.test(t)) return null;
+  const n = Number(t);
+  return n > 0 ? n : null;
+};
+
+/**
+ * The company-scoped rows this caller may read or modify.
+ *
+ * A super admin with no company assignment carries `req.scope.isGlobal`, which
+ * means "every company" — not "no company". companyOf() returns null for that
+ * caller *and* for an unscoped one, so the two have to be told apart here: fed
+ * straight into `(company_id IS NULL OR company_id = $1)` a global admin sees
+ * only the shared rows, and the same null in a write predicate matches nothing.
+ *
+ * Global scope → no filter. Everyone else → their own company's rows plus the
+ * shared (company_id IS NULL) ones, which is what the reads always returned.
+ */
+const companyScope = (req, startAt) =>
+  req.scope?.isGlobal === true
+    ? { where: '', params: [] }
+    : { where: ' AND (company_id IS NULL OR company_id = $' + startAt + ')', params: [companyOf(req)] };
+
 const TABLES = {
   departments:  'master_departments',
   zones:        'master_zones',
@@ -88,43 +118,68 @@ const COMPANY_TABLES = {
   const table = COMPANY_TABLES[type];
 
   router.get(`/${type}`, allowRoles(...READ_ROLES), async (req, res) => {
-    const cid = req.scope?.company_id ?? null;
+    const { where, params } = companyScope(req, 1);
     try {
       const { rows } = await pool.query(
-        `SELECT id, name FROM ${table} WHERE is_active = true AND (company_id IS NULL OR company_id = $1) ORDER BY name`,
-        [cid]
+        `SELECT id, name FROM ${table} WHERE is_active = true${where} ORDER BY name`,
+        params
       );
       res.json(rows);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { respondError(res, err); }
   });
 
   router.post(`/${type}`, allowRoles(...ADMIN_ROLES), async (req, res) => {
     const { name } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
-    const cid = req.scope?.company_id ?? null;
+    // Who owns the new row. A super admin with a genuinely global scope creates a
+    // shared (company_id NULL) row on purpose — it belongs to every tenant. Nobody
+    // else may: companyOf() also returns null for an admin whose scope resolved to
+    // no company, and letting that through silently publishes the row into every
+    // tenant's list. Same "null means two different things" collapse companyScope()
+    // handles on the read side, caught here on the write side.
+    const cid = companyOf(req);
+    if (cid === null && req.scope?.isGlobal !== true) {
+      return res.status(400).json({ error: 'No company in scope — cannot create a shared record.' });
+    }
     try {
       const { rows } = await pool.query(
         `INSERT INTO ${table} (company_id, name) VALUES ($1, $2) RETURNING id, name`,
         [cid, name.trim()]
       );
       res.json(rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { respondError(res, err); }
   });
 
   router.put(`/${type}/:id`, allowRoles(...ADMIN_ROLES), async (req, res) => {
     const { name } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+    const id = numericId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    // Scoped so an admin cannot rename another tenant's row by guessing its id.
+    // A row outside the caller's scope is a 404, same as one that doesn't exist.
+    const { where, params } = companyScope(req, 3);
     try {
-      await pool.query(`UPDATE ${table} SET name = $1 WHERE id = $2`, [name.trim(), req.params.id]);
+      const r = await pool.query(
+        `UPDATE ${table} SET name = $1 WHERE id = $2${where}`,
+        [name.trim(), id, ...params]
+      );
+      if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
       res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { respondError(res, err); }
   });
 
   router.delete(`/${type}/:id`, allowRoles(...ADMIN_ROLES), async (req, res) => {
+    const id = numericId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    const { where, params } = companyScope(req, 2);
     try {
-      await pool.query(`UPDATE ${table} SET is_active = false WHERE id = $1`, [req.params.id]);
+      const r = await pool.query(
+        `UPDATE ${table} SET is_active = false WHERE id = $1${where}`,
+        [id, ...params]
+      );
+      if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
       res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { respondError(res, err); }
   });
 });
 
@@ -135,7 +190,7 @@ router.get('/uom', allowRoles(...READ_ROLES), async (req, res) => {
       `SELECT id, code, name, category FROM master_uom WHERE is_active = true ORDER BY code`
     );
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
 router.post('/uom', allowRoles(...ADMIN_ROLES), async (req, res) => {
@@ -147,10 +202,10 @@ router.post('/uom', allowRoles(...ADMIN_ROLES), async (req, res) => {
       [code.trim().toUpperCase(), name.trim(), category?.trim() || 'General']
     );
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
-router.put('/uom/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
+router.put('/uom/:id', allowRoles(...ADMIN_ROLES), captureBefore('master_uom'), async (req, res) => {
   const { code, name, category } = req.body;
   try {
     await pool.query(
@@ -158,14 +213,14 @@ router.put('/uom/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
       [code?.trim().toUpperCase() || null, name?.trim() || null, category?.trim() || null, req.params.id]
     );
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
-router.delete('/uom/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
+router.delete('/uom/:id', allowRoles(...ADMIN_ROLES), captureBefore('master_uom'), async (req, res) => {
   try {
     await pool.query(`UPDATE master_uom SET is_active = false WHERE id = $1`, [req.params.id]);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
 // ── HSN/SAC-specific routes (code + description + gst_rate + type) ────────────
@@ -175,7 +230,7 @@ router.get('/hsn', allowRoles(...READ_ROLES), async (req, res) => {
       `SELECT id, code, description, gst_rate, type FROM master_hsn_sac WHERE is_active = true ORDER BY code`
     );
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
 router.post('/hsn', allowRoles(...ADMIN_ROLES), async (req, res) => {
@@ -187,10 +242,10 @@ router.post('/hsn', allowRoles(...ADMIN_ROLES), async (req, res) => {
       [code.trim(), description.trim(), parseFloat(gst_rate) || 0, (type || 'HSN').toUpperCase()]
     );
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
-router.put('/hsn/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
+router.put('/hsn/:id', allowRoles(...ADMIN_ROLES), captureBefore('master_hsn_sac'), async (req, res) => {
   const { code, description, gst_rate, type } = req.body;
   try {
     await pool.query(
@@ -198,14 +253,14 @@ router.put('/hsn/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
       [code?.trim() || null, description?.trim() || null, (() => { const n = parseFloat(gst_rate); return isNaN(n) ? null : n; })(), type ? type.toUpperCase() : null, req.params.id]
     );
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
-router.delete('/hsn/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
+router.delete('/hsn/:id', allowRoles(...ADMIN_ROLES), captureBefore('master_hsn_sac'), async (req, res) => {
   try {
     await pool.query(`UPDATE master_hsn_sac SET is_active = false WHERE id = $1`, [req.params.id]);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
 // POST /master/departments/bulk — wizard step 2
@@ -279,7 +334,9 @@ router.get('/:type', async (req, res) => {
       );
       for (const e of empRows) {
         const key = (e.name || '').trim().toLowerCase();
-        if (key && !have.has(key)) { have.add(key); rows.push({ id: null, name: e.name }); }
+        // unmanaged: no row in the master table, so it has no id — callers must
+        // not offer rename/delete on it, nor use it as a foreign key value.
+        if (key && !have.has(key)) { have.add(key); rows.push({ id: null, name: e.name, unmanaged: true }); }
       }
       rows.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     }
@@ -322,7 +379,7 @@ router.post('/:type', allowRoles(...ADMIN_ROLES), async (req, res) => {
     );
     res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -332,14 +389,17 @@ router.put('/:type/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
   if (!table) return res.status(400).json({ error: 'Invalid type' });
   const { name } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+  const id = numericId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid id' });
   try {
-    await pool.query(
+    const r = await pool.query(
       `UPDATE ${table} SET name = $1 WHERE id = $2`,
-      [name.trim(), req.params.id]
+      [name.trim(), id]
     );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -347,14 +407,17 @@ router.put('/:type/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
 router.delete('/:type/:id', allowRoles(...ADMIN_ROLES), async (req, res) => {
   const table = TABLES[req.params.type];
   if (!table) return res.status(400).json({ error: 'Invalid type' });
+  const id = numericId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid id' });
   try {
-    await pool.query(
+    const r = await pool.query(
       `UPDATE ${table} SET is_active = false WHERE id = $1`,
-      [req.params.id]
+      [id]
     );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 

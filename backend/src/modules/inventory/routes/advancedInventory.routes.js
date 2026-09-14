@@ -3,6 +3,11 @@ import pool from '../../shared/db.js';
 import repo from '../repositories/advancedInventory.repository.js';
 import purchaseRequestRepo from '../../procurement/repositories/purchaseRequest.repository.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
+// The one helper that writes a stock_ledger row, updates current_stock and runs
+// reorder-breach detection. A batch created without it is stock the ledger has
+// no record of.
+import { postStock } from '../../production/subcontracting.routes.js';
 
 const router = express.Router();
 
@@ -16,12 +21,99 @@ const router = express.Router();
 // =====================================================
 // BATCH MANAGEMENT
 // =====================================================
+/**
+ * POST /batches — book a batch of stock in by hand (Batch Tracking screen).
+ *
+ * Three faults, one of which reopened an invariant the procurement pass had
+ * just closed:
+ *
+ *  1. `repo.createBatch(req.body)` mass-assigned the whole request body into an
+ *     INSERT. Whatever the caller sent, the column list decided what stuck —
+ *     there was no statement of which fields this endpoint accepts.
+ *  2. No tenant check at all. `inventory_batches` has no `company_id` column, so
+ *     the boundary has to be enforced through the parents, and it was not: any
+ *     authenticated caller with inventory-add could book stock against another
+ *     company's item and warehouse.
+ *  3. It created a BATCH WITH NO LEDGER ENTRY. A batch is usable stock — it is
+ *     what allocation, valuation and `v_batch_stock` read — so this was a way to
+ *     conjure stock that the ledger, the thing an auditor reconciles against,
+ *     has no record of. That is exactly the divergence migration 20260903000011
+ *     had to clean up after the GRN path, reachable by hand from a screen.
+ *
+ * Batch and ledger are now written together on one transaction client, the same
+ * rule grn.service.postAcceptedStock follows.
+ *
+ * ⚠ NOT fixed here: `inventory_batches` still has no `company_id` of its own, so
+ * its tenancy remains transitive through the item and warehouse checked below.
+ * Giving it the column is a migration that also touches the GRN write path, and
+ * is worth doing on its own rather than as a rider on this route.
+ */
 router.post('/batches', requirePermission('inventory', 'add'), async (req, res) => {
+  const b = req.body || {};
+  const itemId      = parseInt(b.item_id, 10);
+  const warehouseId = parseInt(b.warehouse_id, 10);
+  const quantity    = parseFloat(b.quantity_received);
+  const rate        = parseFloat(b.rate);
+
+  if (!Number.isFinite(itemId))      return res.status(400).json({ error: 'item_id is required.' });
+  if (!Number.isFinite(warehouseId)) return res.status(400).json({ error: 'warehouse_id is required — a batch has to be booked into a location.' });
+  if (!(quantity > 0))               return res.status(400).json({ error: 'quantity_received must be greater than zero.' });
+
+  const companyId = companyOf(req);
+  const client = await pool.connect();
   try {
-    const batch = await repo.createBatch(req.body);
+    // Both parents, in the caller's company. This is the tenant boundary.
+    const { rows: [item] } = await client.query(
+      `SELECT id, item_name FROM inventory_items
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [itemId, companyId]);
+    if (!item) return res.status(404).json({ error: 'Item not found.' });
+
+    const { rows: [wh] } = await client.query(
+      `SELECT id FROM warehouses
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [warehouseId, companyId]);
+    if (!wh) return res.status(404).json({ error: 'Warehouse not found.' });
+
+    const receivedDate = b.received_date || new Date().toISOString().slice(0, 10);
+    // stock_ledger.created_by FKs employees(id), not users(id).
+    const createdBy = await employeeOf(req, pool);
+
+    await client.query('BEGIN');
+
+    // Only the fields the Batch Tracking form actually offers.
+    const batch = await repo.createBatch({
+      item_id:           itemId,
+      warehouse_id:      warehouseId,
+      batch_number:      b.batch_number || `BATCH-${Date.now()}`,
+      received_date:     receivedDate,
+      expiry_date:       b.expiry_date || null,
+      supplier_id:       Number.isFinite(parseInt(b.supplier_id, 10)) ? parseInt(b.supplier_id, 10) : null,
+      quantity_received: quantity,
+      rate:              Number.isFinite(rate) ? rate : 0,
+    }, client);
+
+    await postStock(client, {
+      itemId,
+      warehouseId,
+      inQty: quantity,
+      txnType: 'batch_receipt',
+      refType: 'inventory_batch',
+      refId: batch.id,
+      rate: Number.isFinite(rate) ? rate : 0,
+      remarks: `Batch ${batch.batch_number} booked in manually`,
+      createdBy,
+      companyId,
+      transactionDate: receivedDate,
+    });
+
+    await client.query('COMMIT');
     res.status(201).json(batch);
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(error.status || 500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -58,7 +150,7 @@ router.post('/reservations', requirePermission('inventory', 'add'), async (req, 
 
 router.get('/reservations', requirePermission('inventory', 'view'), async (req, res) => {
   try {
-    const reservations = await repo.getReservations(req.query);
+    const reservations = await repo.getReservations({ ...req.query, company_id: companyOf(req) });
     res.json(reservations);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message });
@@ -179,11 +271,21 @@ router.post('/purchase-suggestions/:id/convert', requirePermission('inventory', 
     if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
 
     await client.query('BEGIN');
-    const prNumber = await purchaseRequestRepo.getNextNumber();
+    // The company and the transaction client both matter: without the company
+    // the number ignores the configured pr_prefix, and without the client it is
+    // drawn on a different connection and is not part of this unit of work.
+    const companyId = companyOf(req);
+    const prNumber = await purchaseRequestRepo.getNextNumber(client, companyId);
     const pr = await purchaseRequestRepo.create(client, {
       request_number: prNumber,
-      requested_by_employee_id: req.user.employee_id ?? req.user.userId ?? req.user.id,
+      // employeeOf(), never req.user.userId: this column FKs employees(id), and
+      // the users.id fallback that used to sit here FK-violates for any account
+      // whose users.id is not coincidentally also an employees.id.
+      requested_by_employee_id: await employeeOf(req, pool),
       request_date: new Date(),
+      // Without this the requisition is born NULL-company and is invisible to
+      // every company-scoped user, including the buyer who converted it.
+      company_id: companyId,
       notes: `Generated from purchase suggestion for item ${suggestion.item_code}`,
     });
     await purchaseRequestRepo.createItem(client, {
@@ -200,7 +302,7 @@ router.post('/purchase-suggestions/:id/convert', requirePermission('inventory', 
     await purchaseRequestRepo.recomputeTotal(client, pr.id);
     await repo.convertSuggestionToPR(req.params.id, pr.id, client);
     await client.query('COMMIT');
-    res.status(201).json(await purchaseRequestRepo.findById(pr.id));
+    res.status(201).json(await purchaseRequestRepo.findById(pr.id, companyId));
   } catch (error) {
     await client.query('ROLLBACK');
     res.status(error.status || 500).json({ error: error.message });
@@ -241,7 +343,7 @@ router.get('/material-consumption', requirePermission('inventory', 'view'), asyn
 
 router.get('/reserved-vs-available', requirePermission('inventory', 'view'), async (req, res) => {
   try {
-    const data = await repo.getReservedVsAvailableStock(req.query.warehouse_id);
+    const data = await repo.getReservedVsAvailableStock(req.query.warehouse_id, companyOf(req));
     res.json(data);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message });

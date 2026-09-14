@@ -1,10 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { MapPin, Clock, Search, Calendar, CheckCircle, AlertCircle, TrendingUp, Plus, X } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  MapPin, Clock, Search, Calendar, CheckCircle, AlertCircle,
+  TrendingUp, Plus, X, LifeBuoy,
+} from 'lucide-react';
 
 const STATUS_COLOR = {
-  Open:          { bg: '#fef3c7', color: '#92400e' },
+  Open:          { bg: '#ede9fe', color: '#5b21b6' },
   'In Progress': { bg: '#dbeafe', color: '#1e40af' },
   Completed:     { bg: '#d1fae5', color: '#065f46' },
   Cancelled:     { bg: '#f3f4f6', color: '#6b7280' },
@@ -12,7 +16,7 @@ const STATUS_COLOR = {
 };
 const PRIORITY_COLOR = {
   High:   { bg: '#fee2e2', color: '#991b1b' },
-  Medium: { bg: '#fef3c7', color: '#92400e' },
+  Medium: { bg: '#ede9fe', color: '#5b21b6' },
   Low:    { bg: '#f3f4f6', color: '#374151' },
   Normal: { bg: '#f3f4f6', color: '#374151' },
 };
@@ -94,7 +98,7 @@ export default function FieldService() {
   const statCards = [
     { label: 'Total Visits',   value: stats.total,   icon: <TrendingUp size={16} color="#6B3FDB" />, bg: '#ede9fe', color: '#6B3FDB' },
     { label: "Today's Visits", value: stats.today,   icon: <Calendar size={16} color="#2563eb" />,   bg: '#dbeafe', color: '#2563eb' },
-    { label: 'Pending',        value: stats.pending, icon: <AlertCircle size={16} color="#d97706" />, bg: '#fef3c7', color: '#d97706' },
+    { label: 'Pending',        value: stats.pending, icon: <AlertCircle size={16} color="#6d28d9" />, bg: '#ede9fe', color: '#6d28d9' },
     { label: 'Completed',      value: stats.done,    icon: <CheckCircle size={16} color="#059669" />, bg: '#d1fae5', color: '#059669' },
   ];
 
@@ -102,17 +106,16 @@ export default function FieldService() {
   const labelStyle = { display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Field Service</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>{filtered.length} field service visits</p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="Field Service"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15} /> Schedule Visit
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 20 }}>
@@ -294,6 +297,6 @@ export default function FieldService() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

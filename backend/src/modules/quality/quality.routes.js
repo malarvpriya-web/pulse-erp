@@ -2,14 +2,41 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
-import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { requirePermission, verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { resolveRange } from '../../shared/dashboardFilters.js';
 import grnService from '../procurement/services/grn.service.js';
+import { rollupQualityStatus } from './services/qualityRollup.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 router.use(verifyToken);
 
 const cid = (req) => req.scope?.company_id ?? null;
 const uid = (req) => req.user?.userId ?? req.user?.id ?? null;
+
+/**
+ * The supplier a receipt came from, for attributing an NCR raised against it.
+ *
+ * ⚠ `goods_receipt_notes` has NO vendor_id column. Every attempt in this file to
+ * read one silently returned nothing (the writes were wrapped in `.catch(() => {})`),
+ * which is why `ncr_reports.vendor_id` was NULL on every one of the 8 rows in the
+ * live database and Vendor 360's NCR panel — `WHERE vendor_id = $1` — was empty
+ * for every supplier. Identity bridges through the order: grn.po_id → po.supplier_id.
+ *
+ * Returns null for a receipt with no order behind it (direct/unlinked GRN) rather
+ * than guessing. An NCR nobody can attribute is better than one attributed wrongly:
+ * it costs a supplier 5–15 points of quality score on the scorecard.
+ */
+async function vendorOfGrn(grnId) {
+  if (!grnId) return null;
+  const { rows } = await pool.query(
+    `SELECT po.supplier_id, po.id AS po_id
+       FROM goods_receipt_notes g
+       JOIN purchase_orders po ON po.id = g.po_id
+      WHERE g.id = $1`, [grnId]
+  ).catch(() => ({ rows: [] }));
+  return rows[0] ? { vendor_id: rows[0].supplier_id ?? null, po_id: rows[0].po_id ?? null } : null;
+}
 
 // Role guards — codes must match `roles.code` (see phase42_security_roles migration).
 // qc_engineer can view/create, qc_manager can approve/close/delete; production_manager
@@ -102,10 +129,34 @@ const seedData = async () => {
     `);
   } catch (err) { console.warn('[quality] seed failed:', err.message); }
 };
-setTimeout(seedData, 2000);
+
+/**
+ * ⚠ IMPORTING THIS ROUTER USED TO WRITE TO THE DATABASE TWO SECONDS LATER.
+ *
+ * `setTimeout(seedData, 2000)` sat at module scope, so merely importing the
+ * module — from the server, from a script, from a test — scheduled an INSERT
+ * against whatever database was configured, with nothing awaiting it and nobody
+ * having asked for it.
+ *
+ * Under vitest that is worse than untidy. A worker that finishes its file in
+ * under two seconds tears down its pool, the timer then fires into the closed
+ * pool, and the rejection lands during teardown: the FORK EXITS. Vitest reports
+ * "Worker exited unexpectedly" with no stack and no test name, and the entire
+ * file that shared that worker vanishes from the run — 27 tests neither passed
+ * nor failed, while the summary still said "54 passed". Reproduced at roughly
+ * 1 run in 6, and it names an innocent file every time.
+ *
+ * Two guards, both needed:
+ *   - skipped entirely under test, where seeding a shared database from an
+ *     import is never what a test wants;
+ *   - `unref()` so the timer can never by itself hold a process open.
+ */
+if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
+  setTimeout(seedData, 2000).unref();
+}
 
 /* ── INSPECTION CHECKLISTS ────────────────────────────────────────────────── */
-router.get('/checklists', canView, async (req, res) => {
+router.get('/checklists', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { type } = req.query;
     const params = [];
@@ -117,7 +168,7 @@ router.get('/checklists', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/checklists', canManage, async (req, res) => {
+router.post('/checklists', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { name, type = 'inward', items = [] } = req.body;
     if (!name) return res.status(400).json({ success: false, error: 'name is required' });
@@ -129,7 +180,7 @@ router.post('/checklists', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/checklists/:id', canManage, async (req, res) => {
+router.put('/checklists/:id', requirePermission('quality', 'edit'), canManage, captureBefore('inspection_checklists'), async (req, res) => {
   try {
     const { name, type, items } = req.body;
     const { rows } = await pool.query(
@@ -143,7 +194,7 @@ router.put('/checklists/:id', canManage, async (req, res) => {
 });
 
 /* ── INSPECTIONS (IQC / IPQC / FQC) ─────────────────────────────────────── */
-router.get('/inspect', canView, async (req, res) => {
+router.get('/inspect', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, type, stage, reference_type, grn_id, production_order_id, limit = 50, offset = 0 } = req.query;
     const companyId = cid(req);
@@ -152,7 +203,8 @@ router.get('/inspect', canView, async (req, res) => {
       FROM inspection_reports r
       LEFT JOIN inspection_checklists c ON c.id = r.checklist_id
       LEFT JOIN goods_receipt_notes g ON g.id = r.grn_id
-      LEFT JOIN vendors v ON v.id = g.vendor_id
+      LEFT JOIN purchase_orders po ON po.id = g.po_id
+      LEFT JOIN vendors v ON v.id = po.supplier_id
       WHERE ($1::int IS NULL OR r.company_id = $1)`;
     if (status)              { params.push(status);              q += ` AND r.status=$${params.length}`; }
     if (type || stage)       { params.push(type || stage);       q += ` AND c.type=$${params.length}`; }
@@ -169,7 +221,7 @@ router.get('/inspect', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/inspect/:id', canView, async (req, res) => {
+router.get('/inspect/:id', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT r.*, c.name as checklist_name, c.type as inspection_type, c.type as stage, c.items as checklist_items
@@ -189,7 +241,7 @@ router.get('/inspect/:id', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/inspect/:id', canCreate, async (req, res) => {
+router.put('/inspect/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('inspection_reports'), async (req, res) => {
   try {
     const { item_results, overall_result, status } = req.body;
     const existing = await pool.query('SELECT * FROM inspection_reports WHERE id=$1', [req.params.id]);
@@ -214,10 +266,13 @@ router.put('/inspect/:id', canCreate, async (req, res) => {
       if (settings.rows[0]?.iqc_auto_ncr_on_fail) {
         const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
         const ncrNum = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+        // Attribute it to the supplier that shipped the goods, or the scorecard
+        // never sees it — see vendorOfGrn().
+        const src = await vendorOfGrn(before.grn_id);
         const nr = await pool.query(
-          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'major','quality',$8) RETURNING *`,
-          [`Auto NCR - Inspection Fail`, 'Inspection failed', ncrNum, before.inspector_name, before.reference_type, before.reference_id, before.grn_id || null, before.company_id]
+          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, po_id, vendor_id, severity, source, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'major','quality',$10) RETURNING *`,
+          [`Auto NCR - Inspection Fail`, 'Inspection failed', ncrNum, before.inspector_name, before.reference_type, before.reference_id, before.grn_id || null, src?.po_id ?? null, src?.vendor_id ?? null, before.company_id]
         ).catch(() => ({ rows: [] }));
         autoNcr = nr.rows[0] || null;
       }
@@ -226,7 +281,7 @@ router.put('/inspect/:id', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/inspect', canCreate, async (req, res) => {
+router.post('/inspect', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const {
       checklist_id, reference_type, reference_id, grn_id,
@@ -265,10 +320,11 @@ router.post('/inspect', canCreate, async (req, res) => {
       if (settings.rows[0]?.iqc_auto_ncr_on_fail) {
         const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
         const ncrNum = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+        const src = await vendorOfGrn(grn_id);
         const nr = await pool.query(
-          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'major','quality',$8) RETURNING *`,
-          [`Auto NCR - Inspection Fail (${checklist.rows[0].name})`, remarks || 'Inspection failed', ncrNum, inspector_name, resolvedRefType, resolvedRefId, grn_id || null, companyId]
+          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, po_id, vendor_id, severity, source, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'major','quality',$10) RETURNING *`,
+          [`Auto NCR - Inspection Fail (${checklist.rows[0].name})`, remarks || 'Inspection failed', ncrNum, inspector_name, resolvedRefType, resolvedRefId, grn_id || null, src?.po_id ?? null, src?.vendor_id ?? null, companyId]
         );
         autoNcr = nr.rows[0];
       }
@@ -278,7 +334,7 @@ router.post('/inspect', canCreate, async (req, res) => {
 });
 
 // Alias used by QualityManagement.jsx → Inspection Reports tab
-router.get('/reports', canView, async (req, res) => {
+router.get('/reports', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, type, limit = 50 } = req.query;
     const companyId = cid(req);
@@ -294,7 +350,7 @@ router.get('/reports', canView, async (req, res) => {
 });
 
 /* ── NCR — UNIFIED (source: quality|procurement|production|service) ──────── */
-router.get('/ncr', canView, async (req, res) => {
+router.get('/ncr', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, severity, source, vendor_id, limit = 100, offset = 0, export: doExport } = req.query;
     const companyId = cid(req);
@@ -330,7 +386,7 @@ router.get('/ncr', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/ncr/:id', canView, async (req, res) => {
+router.get('/ncr/:id', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT n.*, e_app.name as approver_name_resolved, v.name as vendor_name,
@@ -345,7 +401,7 @@ router.get('/ncr/:id', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/ncr', canCreate, async (req, res) => {
+router.post('/ncr', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const {
       title, description, detected_by, reference_type, reference_id,
@@ -357,23 +413,29 @@ router.post('/ncr', canCreate, async (req, res) => {
     const settings = await pool.query('SELECT ncr_auto_number_prefix FROM quality_settings WHERE company_id=$1', [companyId]).catch(() => ({ rows: [] }));
     const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
     const ncr_number = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+    // A caller that named the receipt but not the supplier still gets attributed:
+    // the order behind the GRN knows who shipped it. An explicit vendor_id wins.
+    const src = vendor_id ? null : await vendorOfGrn(grn_id);
+    const resolvedVendorId = vendor_id || src?.vendor_id || null;
     const { rows } = await pool.query(
-      `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, severity, source, grn_id, vendor_id, project_id, type, containment_action, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [title, description, ncr_number, detected_by, reference_type, reference_id, severity, source, grn_id || null, vendor_id || null, project_id || null, type, containment_action || null, companyId]
+      `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, severity, source, grn_id, po_id, vendor_id, project_id, type, containment_action, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      [title, description, ncr_number, detected_by, reference_type, reference_id, severity, source, grn_id || null, src?.po_id ?? null, resolvedVendorId, project_id || null, type, containment_action || null, companyId]
     );
     logAudit({ userId: uid(req), module: 'quality', recordId: rows[0].id, recordType: 'ncr_report', action: 'create', newData: { ncr_number, title, severity, source }, req });
-    if (vendor_id) {
-      pool.query(
-        `UPDATE vendors SET defect_rate=(SELECT ROUND(COUNT(*)*100.0/GREATEST((SELECT COUNT(*) FROM goods_receipt_notes WHERE vendor_id=$1),1),2) FROM ncr_reports WHERE vendor_id=$1) WHERE id=$1`,
-        [vendor_id]
-      ).catch(() => {});
-    }
+    // ⚠ REMOVED: an `UPDATE vendors SET defect_rate = (… FROM goods_receipt_notes
+    // WHERE vendor_id=$1 …)` used to run here. goods_receipt_notes HAS NO vendor_id
+    // COLUMN, so it threw on every NCR ever raised and the `.catch(() => {})` ate it
+    // — vendors.defect_rate was never once written by this path. It was also a second,
+    // different definition of defect rate (all-time NCR count over receipt count)
+    // competing with the scorecard's (rejected qty over received qty, 12-month window).
+    // vendorHealth.computeAndSave() is the single publisher of vendors.defect_rate and
+    // vendors.on_time_pct; the nightly recalc picks this NCR up.
     res.status(201).json({ success: true, data: rows[0] });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/ncr/:id', canCreate, async (req, res) => {
+router.put('/ncr/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
   try {
     const { rows: [old] } = await pool.query('SELECT * FROM ncr_reports WHERE id=$1', [req.params.id]);
     if (!old) return res.status(404).json({ success: false, error: 'Not found' });
@@ -390,7 +452,7 @@ router.put('/ncr/:id', canCreate, async (req, res) => {
 });
 
 // PATCH /ncr/:id/resolve — moves NCR to 'resolved' status
-router.patch('/ncr/:id/resolve', canCreate, async (req, res) => {
+router.patch('/ncr/:id/resolve', requirePermission('quality', 'edit'), canCreate, captureBefore('ncr_reports'), async (req, res) => {
   try {
     const { resolution } = req.body;
     const { rows } = await pool.query(
@@ -404,7 +466,7 @@ router.patch('/ncr/:id/resolve', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/ncr/:id/approve', canManage, async (req, res) => {
+router.post('/ncr/:id/approve', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { remarks } = req.body;
     const empRow = await pool.query('SELECT name FROM employees WHERE id=$1', [uid(req)]).catch(() => ({ rows: [] }));
@@ -420,7 +482,7 @@ router.post('/ncr/:id/approve', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/ncr/:id/close', canManage, async (req, res) => {
+router.post('/ncr/:id/close', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { disposition, root_cause } = req.body;
     if (!disposition) return res.status(400).json({ success: false, error: 'disposition required' });
@@ -436,13 +498,27 @@ router.post('/ncr/:id/close', canManage, async (req, res) => {
       [disposition, root_cause, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Not found' });
+
+    // 'use-as-is' means Quality is accepting the nonconforming material into
+    // stock despite the failed test. grn.service.js's holdForIqc withheld this
+    // GRN's accepted quantity from inventory_items.current_stock at receipt,
+    // and rollupQualityStatus() only ever releases it when every test on the
+    // GRN passes — a GRN stuck at quality_status='failed' had no other path
+    // to release, so "use as is" material sat unusable forever even though
+    // the business decision was to accept it. releaseGrnStock() is idempotent
+    // (checks the stock_ledger's own grn reference), so this is safe to call
+    // regardless of the GRN's quality_status.
+    if (disposition === 'use-as-is' && rows[0].grn_id) {
+      await grnService.releaseGrnStock(rows[0].grn_id);
+    }
+
     logAudit({ userId: uid(req), module: 'quality', recordId: req.params.id, recordType: 'ncr_report', action: 'close', newData: { disposition }, req });
     res.json({ success: true, data: rows[0] });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
 /* ── CAPA — employee FK, verifier, company scope ─────────────────────────── */
-router.get('/capa', canView, async (req, res) => {
+router.get('/capa', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, ncr_id, overdue, export: doExport } = req.query;
     const companyId = cid(req);
@@ -473,7 +549,7 @@ router.get('/capa', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/capa', canCreate, async (req, res) => {
+router.post('/capa', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const { ncr_id, action_type, description, assigned_to, employee_id, verifier_id, due_date } = req.body;
     if (!ncr_id || !description) return res.status(400).json({ success: false, error: 'ncr_id and description required' });
@@ -485,7 +561,7 @@ router.post('/capa', canCreate, async (req, res) => {
     );
     if (employee_id) {
       pool.query(
-        `INSERT INTO notifications (employee_id, type, title, message, module, link) VALUES ($1,'task','CAPA Assigned',$2,'quality','/quality/capa')`,
+        `INSERT INTO notifications (user_id, notification_type, title, message, module_name, link) VALUES ($1,'task','CAPA Assigned',$2,'quality','/quality/capa')`,
         [employee_id, `CAPA assigned: ${String(description).slice(0, 100)}`]
       ).catch(() => {});
     }
@@ -493,7 +569,7 @@ router.post('/capa', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/capa/:id', canCreate, async (req, res) => {
+router.put('/capa/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('capa_actions'), async (req, res) => {
   try {
     const { status, completion_date, effectiveness_rating, description, due_date } = req.body;
     const { rows } = await pool.query(
@@ -507,7 +583,7 @@ router.put('/capa/:id', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/capa/:id/verify', canManage, async (req, res) => {
+router.post('/capa/:id/verify', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { effectiveness_rating } = req.body;
     const empRow = await pool.query('SELECT name FROM employees WHERE id=$1', [uid(req)]).catch(() => ({ rows: [] }));
@@ -524,7 +600,7 @@ router.post('/capa/:id/verify', canManage, async (req, res) => {
 });
 
 /* ── CALIBRATION EQUIPMENT (ISO 9001 §7.1.5) ────────────────────────────── */
-router.get('/calibration/equipment', canView, async (req, res) => {
+router.get('/calibration/equipment', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { status, department, due_within_days, export: doExport } = req.query;
     const companyId = cid(req);
@@ -549,7 +625,7 @@ router.get('/calibration/equipment', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/calibration/equipment', canManage, async (req, res) => {
+router.post('/calibration/equipment', requirePermission('quality', 'add'), canManage, async (req, res) => {
   try {
     const { equipment_id, name, description, make, manufacturer, model, serial_number, location, department, category, range_min, range_max, unit, accuracy_class, calibration_frequency_days = 365, owner_id, notes, next_calibration_date } = req.body;
     if (!name || !equipment_id) return res.status(400).json({ success: false, error: 'name and equipment_id required' });
@@ -563,7 +639,7 @@ router.post('/calibration/equipment', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/calibration/equipment/:id', canManage, async (req, res) => {
+router.put('/calibration/equipment/:id', requirePermission('quality', 'edit'), canManage, captureBefore('calibration_equipment'), async (req, res) => {
   try {
     const f = req.body;
     const { rows } = await pool.query(
@@ -579,7 +655,7 @@ router.put('/calibration/equipment/:id', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.delete('/calibration/equipment/:id', canAdmin, async (req, res) => {
+router.delete('/calibration/equipment/:id', requirePermission('quality', 'delete'), canAdmin, captureBefore('calibration_equipment'), async (req, res) => {
   try {
     await pool.query('UPDATE calibration_equipment SET deleted_at=NOW() WHERE id=$1', [req.params.id]);
     res.json({ success: true });
@@ -587,7 +663,7 @@ router.delete('/calibration/equipment/:id', canAdmin, async (req, res) => {
 });
 
 /* ── CALIBRATION RECORDS ─────────────────────────────────────────────────── */
-router.get('/calibration/records', canView, async (req, res) => {
+router.get('/calibration/records', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { equipment_id, result } = req.query;
     const companyId = cid(req);
@@ -602,7 +678,7 @@ router.get('/calibration/records', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/calibration/records', canCreate, async (req, res) => {
+router.post('/calibration/records', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const { equipment_id, calibration_date, next_due_date, performed_by, performed_by_id, calibrating_lab, certificate_number, certificate_url, standard_used, traceability, result = 'pass', as_found_condition, as_left_condition, remarks } = req.body;
     if (!equipment_id || !calibration_date) return res.status(400).json({ success: false, error: 'equipment_id and calibration_date required' });
@@ -622,7 +698,7 @@ router.post('/calibration/records', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/calibration/due-alerts', canView, async (req, res) => {
+router.get('/calibration/due-alerts', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { days = 30 } = req.query;
     const companyId = cid(req);
@@ -639,7 +715,7 @@ router.get('/calibration/due-alerts', canView, async (req, res) => {
 });
 
 /* ── PUNCH POINTS (FAT/SAT) ──────────────────────────────────────────────── */
-router.get('/punch-points', canView, async (req, res) => {
+router.get('/punch-points', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { test_run_id, status } = req.query;
     const companyId = cid(req);
@@ -653,7 +729,7 @@ router.get('/punch-points', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/punch-points', canCreate, async (req, res) => {
+router.post('/punch-points', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const { test_run_id, description, raised_by, assigned_to, assigned_to_id, severity, due_date } = req.body;
     if (!test_run_id || !description) return res.status(400).json({ success: false, error: 'test_run_id and description required' });
@@ -667,7 +743,7 @@ router.post('/punch-points', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/punch-points/:id', canCreate, async (req, res) => {
+router.put('/punch-points/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('punch_points'), async (req, res) => {
   try {
     const { status, remarks } = req.body;
     const extra = status === 'closed' ? ', closed_at=NOW()' : '';
@@ -681,7 +757,7 @@ router.put('/punch-points/:id', canCreate, async (req, res) => {
 });
 
 /* ── TEST RUNS (FAT / SAT) ───────────────────────────────────────────────── */
-router.get('/test-runs', canView, async (req, res) => {
+router.get('/test-runs', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { test_type, production_order_id, limit = 50 } = req.query;
@@ -701,7 +777,7 @@ router.get('/test-runs', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/test-runs/:id', canView, async (req, res) => {
+router.get('/test-runs/:id', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -717,7 +793,7 @@ router.get('/test-runs/:id', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.post('/test-runs', canCreate, async (req, res) => {
+router.post('/test-runs', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -732,7 +808,7 @@ router.post('/test-runs', canCreate, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/test-runs/:id', canCreate, async (req, res) => {
+router.put('/test-runs/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('test_runs'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, result, measurements, customer_accepted, customer_accepted_at, ncr_id } = req.body;
@@ -756,7 +832,7 @@ router.put('/test-runs/:id', canCreate, async (req, res) => {
 });
 
 /* ── SUPPLIER QUALITY ────────────────────────────────────────────────────── */
-router.get('/supplier-quality', canView, async (req, res) => {
+router.get('/supplier-quality', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -781,14 +857,22 @@ router.get('/supplier-quality', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/supplier-quality/:vendorId', canView, async (req, res) => {
+router.get('/supplier-quality/:vendorId', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { vendorId } = req.params;
     const [vendorRes, ncrsRes, grnsRes] = await Promise.all([
       pool.query('SELECT * FROM vendors WHERE id=$1', [vendorId]),
       pool.query(`SELECT n.*, g.grn_number FROM ncr_reports n LEFT JOIN goods_receipt_notes g ON g.id=n.grn_id WHERE n.vendor_id=$1 AND ($2::int IS NULL OR n.company_id=$2) ORDER BY n.created_at DESC LIMIT 20`, [vendorId, companyId]),
-      pool.query(`SELECT g.*, ir.status as inspection_status FROM goods_receipt_notes g LEFT JOIN inspection_reports ir ON ir.grn_id=g.id WHERE g.vendor_id=$1 AND ($2::int IS NULL OR g.company_id=$2) ORDER BY g.created_at DESC LIMIT 20`, [vendorId, companyId]),
+      // A GRN carries no vendor_id; the vendor is on the purchase order it
+      // receives against, so supplier quality is reached through po.supplier_id.
+      pool.query(`SELECT g.*, ir.status as inspection_status
+                    FROM goods_receipt_notes g
+                    JOIN purchase_orders po ON po.id = g.po_id
+                    LEFT JOIN inspection_reports ir ON ir.grn_id = g.id
+                   WHERE po.supplier_id::text = $1::text
+                     AND ($2::int IS NULL OR g.company_id = $2)
+                   ORDER BY g.created_at DESC LIMIT 20`, [vendorId, companyId]),
     ]);
     if (!vendorRes.rows.length) return res.status(404).json({ success: false, error: 'Vendor not found' });
     res.json({ success: true, data: { vendor: vendorRes.rows[0], ncrs: ncrsRes.rows, grns: grnsRes.rows } });
@@ -796,7 +880,7 @@ router.get('/supplier-quality/:vendorId', canView, async (req, res) => {
 });
 
 /* ── QUALITY SETTINGS ────────────────────────────────────────────────────── */
-router.get('/settings', canManage, async (req, res) => {
+router.get('/settings', requirePermission('quality', 'view'), canManage, async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query('SELECT * FROM quality_settings WHERE company_id=$1', [companyId]);
@@ -805,7 +889,7 @@ router.get('/settings', canManage, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.put('/settings', canAdmin, async (req, res) => {
+router.put('/settings', requirePermission('quality', 'edit'), canAdmin, async (req, res) => {
   try {
     const companyId = cid(req);
     const s = req.body;
@@ -829,26 +913,43 @@ router.put('/settings', canAdmin, async (req, res) => {
 });
 
 /* ── QUALITY DASHBOARD ───────────────────────────────────────────────────── */
-router.get('/dashboard', canView, async (req, res) => {
+router.get('/dashboard', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
-    const cp = [companyId];
+    // Period filter (?period=… / ?from=&to=). Was hardcoded to MTD for the pass
+    // rate and a fixed 90 days for defect categories, with no way to change it.
+    const range = resolveRange(req.query, { defaultPeriod: 'fytd' });
+    // $1 company, $2 range start, $3 range end (end is inclusive of the day).
+    const cp = [companyId, range.from, range.to];
+    // Activity counts respect the range; open-backlog and now-relative counts
+    // (overdue CAPAs, calibration due, open punch points) are point-in-time by
+    // definition and stay unfiltered.
+    const inRange = (col) => `($2::date IS NULL OR ${col}>=$2::date) AND ($3::date IS NULL OR ${col}<($3::date + INTERVAL '1 day'))`;
     const [pr, ncrs, capas, cats, insp, cal, punch, recent] = await Promise.allSettled([
-      pool.query(`SELECT COUNT(*) FILTER (WHERE status='pass') as passed,COUNT(*) as total FROM inspection_reports WHERE inspected_at>=date_trunc('month',NOW()) AND ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT severity,COUNT(*) as count FROM ncr_reports WHERE status!='closed' AND ($1::int IS NULL OR company_id=$1) GROUP BY severity`, cp),
-      pool.query(`SELECT COUNT(*) as count FROM capa_actions WHERE status NOT IN ('completed','verified') AND due_date<NOW() AND ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT COALESCE(type,'general') as category,COUNT(*) as count FROM ncr_reports WHERE created_at>=NOW()-INTERVAL '90 days' AND ($1::int IS NULL OR company_id=$1) GROUP BY type ORDER BY count DESC LIMIT 5`, cp),
-      pool.query(`SELECT COUNT(*) as total FROM inspection_reports WHERE ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT COUNT(*) as count FROM calibration_equipment WHERE calibration_status IN ('due','overdue','expired') AND deleted_at IS NULL AND ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT COUNT(*) as count FROM punch_points WHERE status NOT IN ('closed','waived') AND ($1::int IS NULL OR company_id=$1)`, cp),
-      pool.query(`SELECT n.ncr_number,n.title,n.severity,n.status,n.created_at,v.name as vendor_name FROM ncr_reports n LEFT JOIN vendors v ON v.id=n.vendor_id WHERE ($1::int IS NULL OR n.company_id=$1) ORDER BY n.created_at DESC LIMIT 5`, cp),
+      pool.query(`SELECT COUNT(*) FILTER (WHERE status='pass') as passed,COUNT(*) as total FROM inspection_reports WHERE ${inRange('inspected_at')} AND ($1::int IS NULL OR company_id=$1)`, cp),
+      pool.query(`SELECT severity,COUNT(*) as count FROM ncr_reports WHERE status!='closed' AND ${inRange('created_at')} AND ($1::int IS NULL OR company_id=$1) GROUP BY severity`, cp),
+      pool.query(`SELECT COUNT(*) as count FROM capa_actions WHERE status NOT IN ('completed','verified') AND due_date<NOW() AND ($1::int IS NULL OR company_id=$1)`, [companyId]),
+      pool.query(`SELECT COALESCE(type,'general') as category,COUNT(*) as count FROM ncr_reports WHERE ${inRange('created_at')} AND ($1::int IS NULL OR company_id=$1) GROUP BY type ORDER BY count DESC LIMIT 5`, cp),
+      // Lifetime total — the "Total Inspections" card is a cumulative figure,
+      // deliberately not narrowed by the period selector.
+      pool.query(`SELECT COUNT(*) as total FROM inspection_reports WHERE ($1::int IS NULL OR company_id=$1)`, [companyId]),
+      pool.query(`SELECT COUNT(*) as count FROM calibration_equipment WHERE calibration_status IN ('due','overdue','expired') AND deleted_at IS NULL AND ($1::int IS NULL OR company_id=$1)`, [companyId]),
+      pool.query(`SELECT COUNT(*) as count FROM punch_points WHERE status NOT IN ('closed','waived') AND ($1::int IS NULL OR company_id=$1)`, [companyId]),
+      pool.query(`SELECT n.ncr_number,n.title,n.severity,n.status,n.created_at,v.name as vendor_name FROM ncr_reports n LEFT JOIN vendors v ON v.id=n.vendor_id WHERE ${inRange('n.created_at')} AND ($1::int IS NULL OR n.company_id=$1) ORDER BY n.created_at DESC LIMIT 5`, cp),
     ]);
     const p = pr.status === 'fulfilled' ? pr.value.rows[0] : { passed: 0, total: 0 };
     const passRatePct = parseInt(p.total) > 0 ? Math.round(parseInt(p.passed) * 100 / parseInt(p.total)) : 0;
     const ncrBySeverity = { critical: 0, major: 0, minor: 0 };
     if (ncrs.status === 'fulfilled') ncrs.value.rows.forEach(r => { ncrBySeverity[r.severity] = parseInt(r.count); });
     res.json({
+      period: range.period,
+      period_label: range.label,
+      period_from: range.from,
+      period_to: range.to,
       pass_rate_pct: passRatePct,
+      inspections_in_period: parseInt(p.total),
+      // Retained for any caller still reading the old key; same number, which is
+      // now the selected period rather than always month-to-date.
       inspections_this_month: parseInt(p.total),
       open_ncrs_total: Object.values(ncrBySeverity).reduce((a, b) => a + b, 0),
       open_ncrs_by_severity: ncrBySeverity,
@@ -863,7 +964,7 @@ router.get('/dashboard', canView, async (req, res) => {
 });
 
 /* ── REPORTS ─────────────────────────────────────────────────────────────── */
-router.get('/reports/ncr-trend', canView, async (req, res) => {
+router.get('/reports/ncr-trend', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { months = 6 } = req.query;
@@ -879,7 +980,7 @@ router.get('/reports/ncr-trend', canView, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-router.get('/reports/inspection-summary', canView, async (req, res) => {
+router.get('/reports/inspection-summary', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { from, to } = req.query;
@@ -921,39 +1022,12 @@ function evaluateTestResult({ actual_value, spec_min, spec_max, expected_value }
   return 'pending'; // recorded but pass/fail decided by inspector via explicit result
 }
 
-// Recompute the parent source's overall quality_status from its tests
-async function rollupQualityStatus({ grn_id, operation_id }) {
-  const bucket = async (idCol, idVal, table, statusCol) => {
-    if (!idVal) return null;
-    const { rows } = await pool.query(
-      `SELECT
-         COUNT(*) FILTER (WHERE result='fail') AS failed,
-         COUNT(*) FILTER (WHERE status='completed') AS done,
-         COUNT(*) AS total
-       FROM quality_tests WHERE ${idCol}=$1`, [idVal]);
-    const r = rows[0];
-    let status;
-    if (parseInt(r.total) === 0)        status = 'not_required';
-    else if (parseInt(r.failed) > 0)    status = 'failed';
-    else if (parseInt(r.done) === parseInt(r.total)) status = 'passed';
-    else if (parseInt(r.done) > 0)      status = 'in_progress';
-    else                                status = 'pending';
-    await pool.query(`UPDATE ${table} SET ${statusCol}=$1 WHERE id=$2`, [status, idVal]).catch(() => {});
-    return status;
-  };
-  const grnStatus = await bucket('grn_id', grn_id, 'goods_receipt_notes', 'quality_status');
-  await bucket('operation_id', operation_id, 'production_operations', 'quality_status');
-  // GRN.service withholds accepted stock from the ledger while IQC is
-  // pending (see grn.service.js createGRN's holdForIqc) — release it now
-  // that every test on this GRN is done and none failed. Idempotent, so a
-  // later edit that keeps the GRN at 'passed' is a safe no-op.
-  if (grn_id && grnStatus === 'passed') {
-    await grnService.releaseGrnStock(grn_id);
-  }
-}
+// Moved to modules/quality/services/qualityRollup.service.js so Procurement's
+// own inspection screen can reach it too — while it was private here, a pass
+// recorded there released nothing. Imported at the top of this file.
 
 // GET /quality/tests — list with source filters
-router.get('/tests', canView, async (req, res) => {
+router.get('/tests', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const { source_type, source_id, grn_id, production_order_id, operation_id, status, result, stage, limit = 200 } = req.query;
     const companyId = cid(req);
@@ -979,7 +1053,7 @@ router.get('/tests', canView, async (req, res) => {
 });
 
 // GET /quality/tests/summary — pending/pass/fail counts (Quality dept worklist)
-router.get('/tests/summary', canView, async (req, res) => {
+router.get('/tests/summary', requirePermission('quality', 'view'), canView, async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1015,7 +1089,7 @@ async function insertQualityTest(t, companyId, userId) {
 }
 
 // POST /quality/tests — create one test or a batch { tests: [...] }
-router.post('/tests', canCreate, async (req, res) => {
+router.post('/tests', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -1034,7 +1108,7 @@ router.post('/tests', canCreate, async (req, res) => {
 
 // POST /quality/tests/from-grn/:grnId — link a stores material lot to Quality by
 // seeding one pending test per GRN line item, and flag the GRN for inspection
-router.post('/tests/from-grn/:grnId', canCreate, async (req, res) => {
+router.post('/tests/from-grn/:grnId', requirePermission('quality', 'add'), canCreate, async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -1068,7 +1142,7 @@ router.post('/tests/from-grn/:grnId', canCreate, async (req, res) => {
 });
 
 // PUT /quality/tests/:id — record a reading / result; auto-evaluate + auto-NCR on fail
-router.put('/tests/:id', canCreate, async (req, res) => {
+router.put('/tests/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('quality_tests'), async (req, res) => {
   try {
     const companyId = cid(req);
     const userId = uid(req);
@@ -1113,13 +1187,29 @@ router.put('/tests/:id', canCreate, async (req, res) => {
         const prefix = settings.rows[0]?.ncr_auto_number_prefix || 'NCR';
         const ncrNum = `${prefix}-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
         const source = updated.source_type === 'grn' ? 'procurement' : 'production';
-        const refType = updated.source_type === 'grn' ? 'grn' : 'production_operation';
+        // Must mirror holdProductionOrderOnQcFail's branching two lines above
+        // (production_order_id takes priority over operation_id) — hasOpenNcr()
+        // in execution.routes.js only ever matches ('production_order', <order
+        // id>) or ('production_operation', <a real production_operations.id>).
+        // This used to hardcode 'production_operation' with reference_id =
+        // source_id for every non-GRN failure, so an order-level test (no
+        // operation_id) raised an NCR tagged with the order's own id under the
+        // wrong reference_type — hasOpenNcr's subquery could never match it
+        // back to a production_operations row, so the stop-ship gate could
+        // never see it and the hold was trivially clearable.
+        const refType = updated.source_type === 'grn' ? 'grn'
+          : updated.production_order_id ? 'production_order'
+          : 'production_operation';
+        const refId = updated.source_type === 'grn' ? (updated.source_id || updated.operation_id)
+          : updated.production_order_id ? updated.production_order_id
+          : (updated.operation_id || updated.source_id);
+        const src = await vendorOfGrn(updated.grn_id);
         const nr = await pool.query(
-          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, severity, source, company_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'major',$8,$9) RETURNING *`,
+          `INSERT INTO ncr_reports (title, description, ncr_number, detected_by, reference_type, reference_id, grn_id, po_id, vendor_id, severity, source, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'major',$10,$11) RETURNING *`,
           [`Quality test failed — ${updated.test_name}`,
            `Test "${updated.test_name}" failed. Reading: ${actual_value ?? ''} ${updated.unit || ''}. ${remarks || ''}`.trim(),
-           ncrNum, testedName, refType, updated.source_id || updated.operation_id, updated.grn_id || null, source, companyId]
+           ncrNum, testedName, refType, refId, updated.grn_id || null, src?.po_id ?? null, src?.vendor_id ?? null, source, companyId]
         ).catch(() => ({ rows: [] }));
         if (nr.rows[0]) {
           autoNcr = nr.rows[0];
@@ -1134,7 +1224,7 @@ router.put('/tests/:id', canCreate, async (req, res) => {
 });
 
 // DELETE /quality/tests/:id
-router.delete('/tests/:id', canManage, async (req, res) => {
+router.delete('/tests/:id', requirePermission('quality', 'delete'), canManage, captureBefore('quality_tests'), async (req, res) => {
   try {
     const { rows } = await pool.query('DELETE FROM quality_tests WHERE id=$1 RETURNING grn_id, operation_id', [req.params.id]);
     if (!rows.length) return res.status(404).json({ success: false, error: 'Not found' });
@@ -1146,7 +1236,7 @@ router.delete('/tests/:id', canManage, async (req, res) => {
 /* ── TRACEABILITY ────────────────────────────────────────────────────────── */
 const TRACEABLE_TYPES = ['fat_report','sat_report','commissioning','serial','service_report','qc'];
 
-router.get('/traceability/:entityType/:entityId/documents', canView, async (req, res) => {
+router.get('/traceability/:entityType/:entityId/documents', requirePermission('quality', 'view'), canView, async (req, res) => {
   const { entityType, entityId } = req.params;
   if (!TRACEABLE_TYPES.includes(entityType)) return res.status(400).json({ error: `Unsupported entity type: ${entityType}` });
   try {
@@ -1158,7 +1248,7 @@ router.get('/traceability/:entityType/:entityId/documents', canView, async (req,
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/traceability/:entityType/:entityId/signatures', canView, async (req, res) => {
+router.get('/traceability/:entityType/:entityId/signatures', requirePermission('quality', 'view'), canView, async (req, res) => {
   const { entityType, entityId } = req.params;
   if (!TRACEABLE_TYPES.includes(entityType)) return res.status(400).json({ error: `Unsupported entity type: ${entityType}` });
   try {

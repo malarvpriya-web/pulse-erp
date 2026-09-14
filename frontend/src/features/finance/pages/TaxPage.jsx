@@ -14,23 +14,27 @@ const TABS = [
 export default function TaxPage() {
   const [tab, setTab] = useState('gst');
 
+  /* Deliberately NO <PageHero> here.
+   *
+   * TaxPage is a tab container: every one of the four children it renders
+   * (GSTModule, TDSManagement, TCSManagement, ComplianceSettings) already
+   * carries its own hero. Adding one at this level would stack two gradient
+   * bands on top of each other. The tab strip is the only chrome this page
+   * owns, so it is all this page styles. */
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: '#f8f9fc' }}>
-      <div style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '0 24px', display: 'flex', gap: 0, flexShrink: 0 }}>
-        {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
-            padding: '14px 20px',
-            border: 'none',
-            borderBottom: tab === t.id ? '2px solid #6366f1' : '2px solid transparent',
-            background: 'transparent',
-            color: tab === t.id ? '#6366f1' : '#6b7280',
-            fontSize: 13,
-            fontWeight: tab === t.id ? 600 : 400,
-            cursor: 'pointer',
-            transition: 'all .15s',
-            marginBottom: -1,
-          }}>{t.label}</button>
-        ))}
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--color-bg-page, #f8f9fc)' }}>
+      <div style={{ padding: '12px 20px 0', flexShrink: 0 }}>
+        <div className="tax-tabs" role="tablist">
+          {TABS.map(t => (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
+              onClick={() => setTab(t.id)}
+              className={`tax-tab${tab === t.id ? ' is-on' : ''}`}
+            >{t.label}</button>
+          ))}
+        </div>
       </div>
 
       <div style={{ flex: 1 }}>

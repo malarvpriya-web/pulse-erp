@@ -1,7 +1,8 @@
 // PATH: frontend/src/features/employees/pages/EmployeesDashboard.jsx
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Users, UserCheck, UserPlus, Clock, TrendingUp, UserX, RefreshCw, AlertCircle,
+  Users, UserCheck, UserPlus, Clock, TrendingUp, UserX, RefreshCw,
+  AlertCircle, LayoutDashboard,
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
@@ -11,6 +12,7 @@ import {
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P      = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -349,7 +351,7 @@ export default function EmployeesDashboard({ setPage }) {
           label={({ name, value }) => `${name}: ${value}`} labelLine={false} fontSize={11}
         >
           {statusData.map((entry) => {
-            const colors = { Active: '#16a34a', Left: '#dc2626', Probation: '#d97706' };
+            const colors = { Active: '#16a34a', Left: '#dc2626', Probation: '#6d28d9' };
             return <Cell key={entry.status} fill={colors[entry.status] || P} />;
           })}
         </Pie>
@@ -391,12 +393,18 @@ export default function EmployeesDashboard({ setPage }) {
   );
 
   return (
-    <div style={{ padding: '16px 18px 20px', background: '#f4f5f9', minHeight: 'calc(100vh - 64px)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Employees"
+        title="Employee Overview"
+      />
+    }>
 
       {/* ── Page header ── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Employee Overview</h1>
+
           <p style={{ margin: '4px 0 0', fontSize: 12, color: '#9ca3af' }}>
             Workforce headcount, analytics and trends
             {lastRefresh && ` · Updated ${lastRefresh.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`}
@@ -445,7 +453,7 @@ export default function EmployeesDashboard({ setPage }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 12 }}>
         <KPI index={0} icon={Users}     label="Total Employees"                                 value={s.total     ?? '—'} sub="Active + Probation"                                                                loading={loading} />
         <KPI index={1} icon={UserCheck} label="Active"                                          value={s.active    ?? '—'} sub={s.total > 0 ? `${((s.active / s.total) * 100).toFixed(0)}% of workforce` : 'Confirmed'} loading={loading} color="#16a34a" />
-        <KPI index={2} icon={Clock}     label="On Probation"                                    value={s.probation ?? '—'} sub="Pending confirmation"                                                             loading={loading} color="#d97706" />
+        <KPI index={2} icon={Clock}     label="On Probation"                                    value={s.probation ?? '—'} sub="Pending confirmation"                                                             loading={loading} color="#6d28d9" />
         <KPI index={3} icon={UserPlus}  label={isCurrentFY ? 'New Hires (Month)' : 'New Hires (FY)'} value={newHiresValue}  sub={isCurrentFY ? 'Joined this month' : `In ${activeFY}`}                          loading={loading} color="#3b82f6" />
         <KPI index={4} icon={UserX}     label="Attrition Rate"                                  value={`${attritionRate}%`} sub={`${s.left ?? 0} exits`}                                                         loading={loading} color="#dc2626" />
         <KPI index={5} icon={TrendingUp} label="Avg. Tenure"                                   value={s.avgTenure ? `${s.avgTenure} yrs` : '—'} sub="Active employees"                                          loading={loading} color={P} />
@@ -463,7 +471,7 @@ export default function EmployeesDashboard({ setPage }) {
             items: anniversaries, dateKey: 'joining_date', badge: 'ANN',
           },
           {
-            icon: '⏳', label: 'Confirmations Due', color: '#d97706', bg: '#fffbeb',
+            icon: '⏳', label: 'Confirmations Due', color: '#6d28d9', bg: '#f5f3ff',
             items: confirmations, dateKey: 'probation_end_date', badge: 'PROB',
           },
           {
@@ -661,6 +669,6 @@ export default function EmployeesDashboard({ setPage }) {
       </div>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </PageShell>
   );
 }

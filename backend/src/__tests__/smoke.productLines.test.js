@@ -18,6 +18,16 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 
 vi.mock('../config/db.js', () => ({ default: { query: vi.fn() } }));
+// captureBefore() SELECTs the row being changed so the audit trail records what
+// it changed FROM. Those queries consume slots from this file's strict
+// `mockResolvedValueOnce` queue, shifting every later answer and failing
+// assertions for a reason unrelated to the route under test. Stubbed here for
+// the same reason the platform engines are stubbed elsewhere; the middleware
+// itself is covered by captureBefore.test.js and by a live probe.
+vi.mock('../middlewares/captureBefore.js', () => ({
+  captureBefore: () => (req, res, next) => next(),
+  default:       () => (req, res, next) => next(),
+}));
 vi.mock('../modules/audit/repositories/audit.repository.js', () => ({
   default: { create: vi.fn().mockResolvedValue({}) },
 }));

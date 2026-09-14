@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { CheckSquare, Square, ChevronDown, ChevronUp, Users, Download } from 'lucide-react';
+import {
+  CheckSquare, Square, ChevronDown, ChevronUp, Users, Download,
+  UserPlus,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const CHECKLIST_TEMPLATE = [
   { category: 'Pre-Joining', items: [
@@ -107,8 +111,14 @@ export default function OnboardingChecklist({ setPage: _setPage }) {
   const pct = totalItems ? Math.round((doneItems / totalItems) * 100) : 0;
 
   return (
-    <div style={{ padding: '24px' }}>
-      <h2 style={{ margin: '0 0 4px', fontSize: '22px', fontWeight: 700 }}>Onboarding Checklist</h2>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Onboarding Checklist"
+      />
+    }>
+
       <p style={{ margin: '0 0 20px', color: '#6b7280', fontSize: '13px' }}>Track new hire onboarding progress</p>
 
       {error && (
@@ -224,6 +234,6 @@ export default function OnboardingChecklist({ setPage: _setPage }) {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

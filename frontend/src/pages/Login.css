@@ -81,6 +81,7 @@
   border: 1px solid rgba(255,255,255,.12);
   border-radius: 14px;
   padding: 16px 20px;
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
 }
 .lp-left-time {
@@ -132,6 +133,7 @@
   border-radius: 10px;
   padding: 12px 10px;
   text-align: center;
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 .lp-left-stat-val {
@@ -210,7 +212,7 @@
   flex-shrink: 0;
 }
 .lp-status-ok       { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.6); animation: lp-pulse 2.5s ease-in-out infinite; }
-.lp-status-checking { background: #fbbf24; box-shadow: 0 0 8px rgba(251,191,36,.6);  animation: lp-pulse 1.2s ease-in-out infinite; }
+.lp-status-checking { background: #8b5cf6; box-shadow: 0 0 8px rgba(251,191,36,.6);  animation: lp-pulse 1.2s ease-in-out infinite; }
 .lp-status-warn     { background: #f87171; box-shadow: 0 0 8px rgba(248,113,113,.6); }
 @keyframes lp-pulse {
   0%, 100% { opacity: 1; }
@@ -319,13 +321,13 @@
 /* Session banner */
 .lp-session-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  background: #fffbeb; color: #92400e;
-  border-bottom: 1px solid #fde68a;
+  background: #f5f3ff; color: #5b21b6;
+  border-bottom: 1px solid #ddd6fe;
   padding: 10px 16px; font-size: 12px; font-weight: 500;
 }
 .lp-session-banner button {
   background: none; border: none; cursor: pointer;
-  color: #92400e; font-size: 16px; line-height: 1; padding: 0;
+  color: #5b21b6; font-size: 16px; line-height: 1; padding: 0;
   opacity: .65; flex-shrink: 0;
 }
 .lp-session-banner button:hover { opacity: 1; }
@@ -417,8 +419,8 @@
 
 /* Lockout */
 .lp-lockout-banner {
-  background: #fef3c7; color: #92400e;
-  border: 1px solid #fde68a; border-radius: 8px;
+  background: #ede9fe; color: #5b21b6;
+  border: 1px solid #ddd6fe; border-radius: 8px;
   padding: 10px 14px; font-size: 12px; font-weight: 500; text-align: center;
 }
 
@@ -515,10 +517,10 @@
   flex: 1; height: 4px; border-radius: 2px; transition: background .25s;
 }
 .lp-pw-bar.lp-pw-weak   { background: #f87171; }
-.lp-pw-bar.lp-pw-medium { background: #fbbf24; }
+.lp-pw-bar.lp-pw-medium { background: #8b5cf6; }
 .lp-pw-bar.lp-pw-strong { background: #34d399; }
 .lp-pw-label-weak   { font-size: 10px; font-weight: 600; color: #dc2626; }
-.lp-pw-label-medium { font-size: 10px; font-weight: 600; color: #d97706; }
+.lp-pw-label-medium { font-size: 10px; font-weight: 600; color: #6d28d9; }
 .lp-pw-label-strong { font-size: 10px; font-weight: 600; color: #059669; }
 
 /* Done state */

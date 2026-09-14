@@ -1,6 +1,6 @@
 export default function AttritionRateCard({ data = {}, loading }) {
   const { rate = 0, voluntary = 0, involuntary = 0, atRisk = 0 } = data;
-  const color = rate > 15 ? '#ef4444' : rate > 10 ? '#f59e0b' : '#10b981';
+  const color = rate > 15 ? '#ef4444' : rate > 10 ? '#7c5cf0' : '#10b981';
 
 
   return (

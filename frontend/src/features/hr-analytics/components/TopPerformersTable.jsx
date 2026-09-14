@@ -1,7 +1,7 @@
 import { Trophy } from 'lucide-react';
 
 const RATING_COLOR = {
-  Exceptional: { bg:'#fef3c7', text:'#92400e' },
+  Exceptional: { bg:'#ede9fe', text:'#5b21b6' },
   Exceeds:     { bg:'#dcfce7', text:'#15803d' },
   Meets:       { bg:'#f3f4f6', text:'#374151' },
 };
@@ -11,14 +11,14 @@ export default function TopPerformersTable({ data = [], loading, onSelect }) {
   return (
     <div style={{ background:'#fff', border:'1px solid #f0f0f4', borderRadius:12, padding:'20px' }}>
       <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16 }}>
-        <Trophy size={14} color="#f59e0b"/>
+        <Trophy size={14} color="#7c5cf0"/>
         <span style={{ fontSize:13, fontWeight:700, color:'#111827' }}>Top Performers</span>
       </div>
       {data.map((p, i) => {
         const rc = RATING_COLOR[p.rating] || RATING_COLOR['Meets'];
         return (
           <div key={p.id} style={{ display:'flex', alignItems:'center', gap:12, paddingBottom:10, borderBottom: i < data.length-1 ? '1px solid #f9fafb' : 'none', marginBottom: i < data.length-1 ? 10 : 0 }}>
-            <div style={{ width:24, height:24, borderRadius:'50%', background: i===0?'#fef3c7':i===1?'#f3f4f6':'#fff7ed', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color: i===0?'#92400e':i===1?'#6b7280':'#c2410c', flexShrink:0 }}>
+            <div style={{ width:24, height:24, borderRadius:'50%', background: i===0?'#ede9fe':i===1?'#f3f4f6':'#fff7ed', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color: i===0?'#5b21b6':i===1?'#6b7280':'#5b21b6', flexShrink:0 }}>
               {i+1}
             </div>
             <div style={{ flex:1, minWidth:0 }}>

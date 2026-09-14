@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
-  MapPin, Plus, Edit2, Trash2, X, Check, AlertCircle,
-  Radio, Navigation, Building, Briefcase, Wrench, Search, Crosshair,
-  TestTube, Filter,
+  MapPin, Plus, Edit2, Trash2, X, Check, AlertCircle, Radio,
+  Navigation, Building, Briefcase, Wrench, Search, Crosshair, TestTube,
+  Filter, CalendarClock,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { getPosition } from '@/mobile/native';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -16,7 +17,7 @@ const RULE_TYPES = [
   { id: 'office',   label: 'Office / Branch', icon: Building,   color: '#6B3FDB', desc: 'Standard office geo-fence for regular employees' },
   { id: 'factory',  label: 'Factory / Plant', icon: Wrench,     color: '#ef4444', desc: 'Manufacturing plant with strict geo-fencing' },
   { id: 'field',    label: 'Field Engineer',  icon: Navigation, color: '#10b981', desc: 'Flexible geo-fence for field staff' },
-  { id: 'customer', label: 'Customer Site',   icon: Briefcase,  color: '#f59e0b', desc: 'Client premises for project work' },
+  { id: 'customer', label: 'Customer Site',   icon: Briefcase,  color: '#7c5cf0', desc: 'Client premises for project work' },
 ];
 
 const RADIUS_PRESETS = [
@@ -612,7 +613,7 @@ function TestLocationModal({ rule, onClose }) {
           </div>
           <div style={{ fontSize: 12, color: '#374151', marginTop: 2 }}>
             Radius: <strong>{rule.radius_meters >= 1000 ? `${(rule.radius_meters / 1000).toFixed(1)} km` : `${rule.radius_meters} m`}</strong>
-            {rule.is_mandatory && <span style={{ marginLeft: 8, background: '#fef3c7', color: '#92400e', borderRadius: 4, padding: '1px 6px', fontSize: 10, fontWeight: 600 }}>Mandatory</span>}
+            {rule.is_mandatory && <span style={{ marginLeft: 8, background: '#ede9fe', color: '#5b21b6', borderRadius: 4, padding: '1px 6px', fontSize: 10, fontWeight: 600 }}>Mandatory</span>}
           </div>
         </div>
 
@@ -780,25 +781,23 @@ export default function GeoFencing() {
   const displayedRules = filterType ? rules.filter(r => r.rule_type === filterType) : rules;
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title="Geo-Fencing Manager"
+        subtitle="Configure location-based attendance zones for branches, factories, and field engineers"
+        actions={<button className="plh-cta"
+          onClick={() => { setEditRule(null); setShowForm(true); }}>
+          <Plus size={16} /> Add Geo Zone
+        </button>}
+      />
+    }>
 
       <style>{`@keyframes spin { to { transform: translateY(-50%) rotate(360deg); } }`}</style>
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Geo-Fencing Manager</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-            Configure location-based attendance zones for branches, factories, and field engineers
-          </p>
-        </div>
-        <button
-          onClick={() => { setEditRule(null); setShowForm(true); }}
-          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 10, border: 'none', background: P, color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}
-        >
-          <Plus size={16} /> Add Geo Zone
-        </button>
-      </div>
+
 
       {/* Toast */}
       {msg && (
@@ -937,7 +936,7 @@ export default function GeoFencing() {
                       {rt.label}
                     </span>
                     {!isActive && <span style={{ background: '#f3f4f6', color: '#9ca3af', borderRadius: 12, padding: '2px 8px', fontSize: 11 }}>Inactive</span>}
-                    {rule.is_mandatory && <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 12, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>Mandatory</span>}
+                    {rule.is_mandatory && <span style={{ background: '#ede9fe', color: '#5b21b6', borderRadius: 12, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>Mandatory</span>}
                     {appLabel && (
                       <span style={{ background: '#eff6ff', color: '#1d4ed8', borderRadius: 12, padding: '2px 8px', fontSize: 11, fontWeight: 500 }}>
                         Dept: {appLabel}
@@ -1034,6 +1033,6 @@ export default function GeoFencing() {
       {testRule && (
         <TestLocationModal rule={testRule} onClose={() => setTestRule(null)} />
       )}
-    </div>
+    </PageShell>
   );
 }

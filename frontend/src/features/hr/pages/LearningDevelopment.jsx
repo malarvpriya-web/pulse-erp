@@ -2,12 +2,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
-import { TrendingUp, PieChart as PieChartIcon } from 'lucide-react';
+import { TrendingUp, PieChart as PieChartIcon, GraduationCap } from 'lucide-react';
 import {
   BarChart, Bar, PieChart, Pie, Cell, LineChart, Line,
   XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function EmptyState({ icon: Icon, title, sub }) {
   return (
@@ -33,14 +34,14 @@ function fmtINR(n) {
   return `₹${Math.round(v).toLocaleString('en-IN')}`;
 }
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const PROF_COLORS = { 1:'#dc2626', 2:'#f97316', 3:'#eab308', 4:'#86efac', 5:'#16a34a' };
+const PROF_COLORS = { 1:'#dc2626', 2:'#7c5cf0', 3:'#8b5cf6', 4:'#86efac', 5:'#16a34a' };
 const PROF_LABELS = { 1:'Beginner', 2:'Basic', 3:'Intermediate', 4:'Advanced', 5:'Expert' };
-const PIE_COLORS  = ['#6B3FDB','#2563eb','#16a34a','#d97706','#dc2626'];
+const PIE_COLORS  = ['#6B3FDB','#2563eb','#16a34a','#6d28d9','#dc2626'];
 
 const SKILL_NAMES = ['Microsoft Excel','Python','SQL','Leadership','Communication','Project Management','Data Analysis','GST Knowledge','Quality Management'];
 
 const STATUS_COLORS = { planned:'#6B3FDB', ongoing:'#2563eb', completed:'#16a34a', cancelled:'#dc2626' };
-const MODE_COLORS   = { online:'#0891b2', offline:'#6B3FDB', hybrid:'#d97706' };
+const MODE_COLORS   = { online:'#0891b2', offline:'#6B3FDB', hybrid:'#6d28d9' };
 
 function tabStyle(active) {
   return { padding: '8px 20px', border: 'none', cursor: 'pointer', borderRadius: '6px 6px 0 0', fontWeight: 600, fontSize: 14, background: active ? '#6B3FDB' : '#e9e4ff', color: active ? '#fff' : '#6B3FDB' };
@@ -346,22 +347,26 @@ export default function LearningDevelopment() {
   const allSkills      = [...new Set(matrixData.map(r => r.skill_name))].sort();
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>🎓 Learning & Development</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Training programs, skill matrix, certifications and cost analytics</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={GraduationCap}
+        eyebrow="Human Resources"
+        title="🎓 Learning & Development"
+        subtitle="Training programs, skill matrix, certifications and cost analytics"
+      />
+    }>
+
 
       {/* KPI cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, marginBottom: 20 }}>
         {[
           { label:'Trainings This Month', value: dashboard.trainings_this_month, icon:'📅', color:'#6B3FDB' },
           { label:'Completion Rate',      value: `${dashboard.completion_rate_pct}%`, icon:'✅', color:'#16a34a' },
-          { label:'Total Training Cost',  value: fmtINR(dashboard.total_training_cost), icon:'💰', color:'#d97706' },
+          { label:'Total Training Cost',  value: fmtINR(dashboard.total_training_cost), icon:'💰', color:'#6d28d9' },
           { label:'Employees Trained',    value: dashboard.employees_trained, icon:'👥', color:'#2563eb' },
           { label:'Skill Gaps (avg<3)',   value: dashboard.skill_gap_count, icon:'⚠️', color:'#dc2626' },
           { label:'Mandatory Pending',    value: dashboard.mandatory_pending, icon:'🔴', color:'#dc2626' },
-          { label:'Certs Expiring 30d',   value: dashboard.certs_expiring_30d, icon:'📋', color:'#f97316' },
+          { label:'Certs Expiring 30d',   value: dashboard.certs_expiring_30d, icon:'📋', color:'#7c5cf0' },
         ].map(k => (
           <div key={k.label} style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 10, padding: '14px 16px' }}>
             <div style={{ fontSize: 20 }}>{k.icon}</div>
@@ -587,6 +592,6 @@ export default function LearningDevelopment() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

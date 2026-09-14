@@ -2,15 +2,19 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '@/services/api/client';
 import { getPosition } from '@/mobile/native';
 import { useToast } from '@/context/ToastContext';
-import { Plus, MapPin, CheckCircle, Circle, Camera, Zap, FileText, X, ChevronDown, ChevronUp, Award, Shield } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  Plus, MapPin, CheckCircle, Circle, Camera, Zap, FileText, X,
+  ChevronDown, ChevronUp, Award, Shield, CheckSquare,
+} from 'lucide-react';
 
 const CARD  = { background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:'20px', marginBottom:16 };
 const BTN   = (bg='#6B3FDB') => ({ background:bg, color:'#fff', border:'none', borderRadius:8, padding:'8px 16px', fontSize:13, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6 });
 const INP   = { width:'100%', padding:'8px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' };
 const LBL   = { display:'block', marginBottom:5, fontSize:11, fontWeight:700, color:'#374151', textTransform:'uppercase', letterSpacing:'.04em' };
 
-const STATUS_COLOR = { pending:'#fef3c7', in_progress:'#dbeafe', signed_off:'#fce7f3', completed:'#d1fae5' };
-const STATUS_TEXT  = { pending:'#92400e', in_progress:'#1e40af', signed_off:'#9d174d', completed:'#065f46' };
+const STATUS_COLOR = { pending:'#ede9fe', in_progress:'#dbeafe', signed_off:'#fce7f3', completed:'#d1fae5' };
+const STATUS_TEXT  = { pending:'#5b21b6', in_progress:'#1e40af', signed_off:'#9d174d', completed:'#065f46' };
 
 const EMPTY_FORM = {
   project_id:'', equipment_id:'', customer_name:'', site_name:'', site_address:'',
@@ -212,7 +216,7 @@ export default function CommissioningWorkflow() {
                   <button onClick={handleCheckin} style={BTN('#059669')}><MapPin size={14}/>GPS Check-In</button>
                 )}
                 {detail.status === 'in_progress' && (
-                  <button onClick={openSignoff} style={BTN('#d97706')}><FileText size={14}/>Customer Sign-Off</button>
+                  <button onClick={openSignoff} style={BTN('#6d28d9')}><FileText size={14}/>Customer Sign-Off</button>
                 )}
                 {detail.status === 'signed_off' && !detail.certificate_issued && (
                   <button onClick={issueCertificate} style={BTN('#6B3FDB')}><Award size={14}/>Issue Certificate</button>
@@ -372,7 +376,7 @@ export default function CommissioningWorkflow() {
                 <div style={{ display:'flex', gap:8 }}>
                   {[1,2,3,4,5].map(n => (
                     <button key={n} onClick={() => setSignoffForm(p=>({...p,customer_rating:n}))}
-                      style={{ width:40, height:40, borderRadius:9999, border:`2px solid ${signoffForm.customer_rating>=n?'#d97706':'#e5e7eb'}`, background:signoffForm.customer_rating>=n?'#fef3c7':'#fff', fontSize:18, cursor:'pointer' }}>⭐</button>
+                      style={{ width:40, height:40, borderRadius:9999, border:`2px solid ${signoffForm.customer_rating>=n?'#6d28d9':'#e5e7eb'}`, background:signoffForm.customer_rating>=n?'#ede9fe':'#fff', fontSize:18, cursor:'pointer' }}>⭐</button>
                   ))}
                 </div>
               </div>
@@ -394,12 +398,12 @@ export default function CommissioningWorkflow() {
                 <label style={LBL}>Customer Feedback</label>
                 <textarea value={signoffForm.customer_feedback} onChange={e => setSignoffForm(p=>({...p,customer_feedback:e.target.value}))} style={{ ...INP, height:80, resize:'vertical' }} placeholder="Any observations or comments..." />
               </div>
-              <div style={{ background:'#fef3c7', borderRadius:8, padding:'10px 12px', fontSize:12, color:'#92400e', marginBottom:16 }}>
+              <div style={{ background:'#ede9fe', borderRadius:8, padding:'10px 12px', fontSize:12, color:'#5b21b6', marginBottom:16 }}>
                 ⚠ All mandatory checklist items must be completed before sign-off.
               </div>
               <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
                 <button onClick={() => setShowSignoff(false)} style={{ padding:'8px 16px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:13 }}>Cancel</button>
-                <button onClick={doSignoff} style={BTN('#d97706')}>Confirm Sign-Off</button>
+                <button onClick={doSignoff} style={BTN('#6d28d9')}>Confirm Sign-Off</button>
               </div>
             </div>
           </>
@@ -409,18 +413,20 @@ export default function CommissioningWorkflow() {
   }
 
   return (
-    <div style={{ padding:'24px' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#111', margin:0 }}>Commissioning Workflows</h1>
-          <p style={{ fontSize:13, color:'#6b7280', margin:'4px 0 0' }}>GPS check-in → checklist → readings → sign-off → certificate → warranty</p>
-        </div>
-        <button onClick={() => setShowCreate(true)} style={BTN()}><Plus size={14}/>New Commissioning</button>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={CheckSquare}
+        eyebrow="Service Desk"
+        title="Commissioning Workflows"
+        subtitle="GPS check-in → checklist → readings → sign-off → certificate → warranty"
+        actions={<button className="plh-cta" onClick={() => setShowCreate(true)}><Plus size={14}/>New Commissioning</button>}
+      />
+    }>
+
 
       {/* Status Summary */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:20 }}>
-        {[['pending','Pending','#fef3c7','#92400e'],['in_progress','In Progress','#dbeafe','#1e40af'],['signed_off','Signed Off','#fce7f3','#9d174d'],['completed','Completed','#d1fae5','#065f46']].map(([s,l,bg,c]) => {
+        {[['pending','Pending','#ede9fe','#5b21b6'],['in_progress','In Progress','#dbeafe','#1e40af'],['signed_off','Signed Off','#fce7f3','#9d174d'],['completed','Completed','#d1fae5','#065f46']].map(([s,l,bg,c]) => {
           const cnt = workflows.filter(w => w.status === s).length;
           return (
             <div key={s} style={{ background:'#fff', border:'1px solid #f0f0f4', borderRadius:10, padding:'14px 16px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -463,12 +469,16 @@ export default function CommissioningWorkflow() {
                     <div style={{ flex:1, height:6, background:'#e9e4ff', borderRadius:9999, overflow:'hidden', minWidth:60 }}>
                       <div style={{ height:'100%', width:`${w.certificate_issued?100:w.status==='signed_off'?80:w.status==='in_progress'?50:10}%`, background:'#6B3FDB', borderRadius:9999 }} />
                     </div>
-                    {w.certificate_issued && <Award size={14} color="#d97706" title="Certificate issued"/>}
+                    {w.certificate_issued && <Award size={14} color="#6d28d9" title="Certificate issued"/>}
                     {w.warranty_activated && <Shield size={14} color="#059669" title="Warranty active"/>}
                   </div>
                 </td>
                 <td style={{ padding:'10px 12px' }}>
-                  <button style={{ background:'#f5f3ff', color:'#6B3FDB', border:'1px solid #e9e4ff', borderRadius:6, padding:'4px 10px', fontSize:12, cursor:'pointer', fontWeight:600 }}>Open</button>
+                  {/* Carried no handler and worked only by bubbling to the row's
+                      onClick. Explicit here so the control is not one refactor of
+                      the row away from silently doing nothing. */}
+                  <button onClick={e => { e.stopPropagation(); loadDetail(w.id); }}
+                    style={{ background:'#f5f3ff', color:'#6B3FDB', border:'1px solid #e9e4ff', borderRadius:6, padding:'4px 10px', fontSize:12, cursor:'pointer', fontWeight:600 }}>Open</button>
                 </td>
               </tr>
             ))}
@@ -510,6 +520,6 @@ export default function CommissioningWorkflow() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

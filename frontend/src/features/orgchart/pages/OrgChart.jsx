@@ -1,9 +1,13 @@
 // PATH: frontend/src/features/orgchart/pages/OrgChart.jsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Users, ChevronDown, ChevronRight, RefreshCw, AlertCircle, Building2, List } from 'lucide-react';
+import {
+  Users, ChevronDown, ChevronRight, RefreshCw, AlertCircle, Building2,
+  List, Network,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './OrgChart.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Mirrors backend orgchart.routes.js's HR_ROLES — only these roles can call
 // POST /orgchart/relationship, so the assignment panel is hidden for everyone
@@ -11,8 +15,8 @@ import './OrgChart.css';
 const HR_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec'];
 
 const DEPT_COLORS = [
-  '#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444',
-  '#8b5cf6','#ec4899','#14b8a6','#f97316','#84cc16',
+  '#6366f1','#0ea5e9','#10b981','#7c5cf0','#ef4444',
+  '#8b5cf6','#ec4899','#14b8a6','#7c5cf0','#84cc16',
 ];
 
 function initials(name = '') {
@@ -191,21 +195,20 @@ export default function OrgChart({ setPage, setSelectedEmployee }) {
   const total = countNodes(tree);
 
   return (
-    <div className="org-page">
-      {/* Header */}
-      <div className="org-header">
-        <div>
-          <h1 className="org-title">Organization Chart</h1>
-          <p className="org-sub">Auto-generated from employee reporting hierarchy · {total} people</p>
-        </div>
-        <div className="org-header-actions">
-          <button className="org-btn-ghost" onClick={expandAll}>Expand All</button>
-          <button className="org-btn-ghost" onClick={collapseAll}>Collapse All</button>
-          <button className="org-btn-refresh" onClick={load} disabled={loading}>
+    <PageShell dock={
+      <PageHero
+        icon={Network}
+        eyebrow="Organisation"
+        title="Organization Chart"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={expandAll}>Expand All</button>
+          <button className="plh-cta plh-cta--ghost" onClick={collapseAll}>Collapse All</button>
+          <button className="plh-cta" onClick={load} disabled={loading}>
             <RefreshCw size={14} className={loading ? 'org-spin' : ''} />
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       {/* Filters */}
       <div className="org-toolbar">
@@ -353,6 +356,6 @@ export default function OrgChart({ setPage, setSelectedEmployee }) {
           </ul>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

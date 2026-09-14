@@ -6,22 +6,23 @@ import { useToast } from '@/context/ToastContext';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import { fmtDate } from '@/utils/dateFormatter';
-import { Download, FileText, ListChecks, History, MessageSquare } from 'lucide-react';
+import { Download, FileText, ListChecks, History, MessageSquare, ShoppingCart } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = (n) => (parseFloat(n) || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 
 const STATUS_COLOR = {
-  planned:     { bg: '#fef9c3', color: '#854d0e' },
+  planned:     { bg: '#ede9fe', color: '#5b21b6' },
   released:    { bg: '#e0f2fe', color: '#0369a1' },
   in_progress: { bg: '#dbeafe', color: '#1e40af' },
-  on_hold:     { bg: '#fef3c7', color: '#d97706' },
+  on_hold:     { bg: '#ede9fe', color: '#6d28d9' },
   completed:   { bg: '#dcfce7', color: '#166534' },
   cancelled:   { bg: '#fee2e2', color: '#991b1b' },
 };
 const PRIORITY_COLOR = {
   low:      { bg: '#f3f4f6', color: '#6b7280' },
-  medium:   { bg: '#fef9c3', color: '#854d0e' },
-  high:     { bg: '#fed7aa', color: '#9a3412' },
+  medium:   { bg: '#ede9fe', color: '#5b21b6' },
+  high:     { bg: '#ddd6fe', color: '#4c1d95' },
   critical: { bg: '#fee2e2', color: '#991b1b' },
 };
 
@@ -122,7 +123,7 @@ export default function ProductionOrders({ setPage, setSelectedProduction }) {
       ]);
       setOrders(Array.isArray(ordersRes.data) ? ordersRes.data : []);
       setStats(statsRes.data || {});
-    } catch (e) {
+    } catch {
       toast.error('Failed to load production orders');
     } finally {
       setLoading(false);
@@ -331,10 +332,10 @@ export default function ProductionOrders({ setPage, setSelectedProduction }) {
 
   const kpiPills = [
     { label: 'All',         key: '',            val: stats.total      || 0, color: '#6366f1' },
-    { label: 'Planned',     key: 'planned',     val: stats.planned    || 0, color: '#f59e0b' },
+    { label: 'Planned',     key: 'planned',     val: stats.planned    || 0, color: '#7c5cf0' },
     { label: 'Released',    key: 'released',    val: stats.released   || 0, color: '#0ea5e9' },
     { label: 'In Progress', key: 'in_progress', val: stats.in_progress|| 0, color: '#8b5cf6' },
-    { label: 'On Hold',     key: 'on_hold',     val: stats.on_hold    || 0, color: '#d97706' },
+    { label: 'On Hold',     key: 'on_hold',     val: stats.on_hold    || 0, color: '#6d28d9' },
     { label: 'Completed',   key: 'completed',   val: stats.completed  || 0, color: '#10b981' },
     { label: 'Cancelled',   key: 'cancelled',   val: stats.cancelled  || 0, color: '#ef4444' },
   ];
@@ -352,18 +353,16 @@ export default function ProductionOrders({ setPage, setSelectedProduction }) {
   const th = { padding: '10px 14px', textAlign: 'left', fontWeight: 600, color: '#6b7280', whiteSpace: 'nowrap' };
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Production"
+        title="Module Production Batches"
+        subtitle="Each batch is one production order (MPP) · feeds the Advanced Production Dashboard"
+        actions={<button className="plh-cta" onClick={load}>↻ Refresh</button>}
+      />
+    }>
       {readOnly && <ReadOnlyBanner />}
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Module Production Batches</h2>
-          <p style={{ margin: 0, fontSize: 12.5, color: '#6b7280' }}>
-            Each batch is one production order (MPP) · feeds the Advanced Production Dashboard
-          </p>
-        </div>
-        <button onClick={load} style={{ padding: '8px 14px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 13 }}>↻ Refresh</button>
-      </div>
 
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -494,13 +493,13 @@ export default function ProductionOrders({ setPage, setSelectedProduction }) {
                           </>}
                           {o.status === 'released' && <>
                             <ActionBtn label="Start"           color="#8b5cf6" onClick={() => doAction('start', o)} />
-                            <ActionBtn label="Issue Materials" color="#d97706" onClick={() => doAction('issue-materials', o)} />
+                            <ActionBtn label="Issue Materials" color="#6d28d9" onClick={() => doAction('issue-materials', o)} />
                             <ActionBtn label="Edit"            color="#6b7280" onClick={() => openEdit(o)} />
                             <ActionBtn label="Cancel"          color="#ef4444" onClick={() => setConfirm({ action: 'cancel', order: o })} />
                           </>}
                           {o.status === 'in_progress' && <>
                             <ActionBtn label="Complete"        color="#10b981" onClick={() => setConfirm({ action: 'complete', order: o })} />
-                            <ActionBtn label="Issue Materials" color="#d97706" onClick={() => doAction('issue-materials', o)} />
+                            <ActionBtn label="Issue Materials" color="#6d28d9" onClick={() => doAction('issue-materials', o)} />
                           </>}
                           {o.status === 'on_hold' && <>
                             <ActionBtn label="Resume" color="#6366f1" onClick={() => doAction('resume', o)} />
@@ -637,7 +636,7 @@ export default function ProductionOrders({ setPage, setSelectedProduction }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

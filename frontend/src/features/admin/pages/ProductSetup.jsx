@@ -10,9 +10,13 @@
  * is generated in the DB, so the grid never re-derives it.
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Package, Plus, Edit2, Trash2, X, Search, RefreshCw, ChevronUp, ChevronDown, AlertTriangle } from 'lucide-react';
+import {
+  Package, Plus, Edit2, Trash2, X, Search, RefreshCw, ChevronUp,
+  ChevronDown, AlertTriangle, SlidersHorizontal,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const VOLTAGE_CLASSES = ['LV', 'MV', 'HV'];
 const PAGE_SIZE = 10;
@@ -328,7 +332,17 @@ export default function ProductSetup() {
   const disabledBtn = { opacity: 0.45, cursor: 'not-allowed' };
 
   return (
-    <div className="pulse-page">
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title="Product Setup"
+        subtitle="The product master. Every Product dropdown in the app reads this list — changes are audit-logged."
+        actions={<button className="plh-cta" onClick={load}>
+          <RefreshCw size={14} /> Refresh
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeleteProduct}
         title="Delete Product"
@@ -350,23 +364,6 @@ export default function ProductSetup() {
         onCancel={() => setPendingDeleteRating(null)}
       />
 
-      {/* Header */}
-      <div className="pulse-page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 10, background: '#f3efff', color: 'var(--color-primary, #6B3FDB)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Package size={20} />
-          </div>
-          <div>
-            <h1 className="pulse-page-title">Product Setup</h1>
-            <p className="pulse-page-subtitle">
-              The product master. Every Product dropdown in the app reads this list — changes are audit-logged.
-            </p>
-          </div>
-        </div>
-        <button className="pulse-btn-secondary" onClick={load}>
-          <RefreshCw size={14} /> Refresh
-        </button>
-      </div>
 
       {msg && (
         <div style={{
@@ -590,6 +587,6 @@ export default function ProductSetup() {
           </div>
         </Modal>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,22 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Users, Plus, Edit2, Key, Trash2, X, Check, Shield, RefreshCw, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  Users, Plus, Edit2, Key, Trash2, X, Check, Shield, RefreshCw,
+  AlertTriangle, ChevronDown, ChevronUp, ShieldCheck,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useRoleCatalog, roleColor } from '@/config/roleCatalog';
+import MasterSelect from '@/components/core/MasterSelect';
 
-// department_head sits next to manager — same manager-tier access, but scoped
-// to a lead of an operational team (warehouse/production/service) rather than
-// an office function. See ROLE_SECTION_ALLOWLIST in config/menuCatalog.js.
-const ROLES = ['employee', 'manager', 'department_head', 'hr', 'finance', 'admin', 'super_admin'];
-
-const ROLE_COLORS = {
-  super_admin:     { color: '#dc2626', bg: '#fee2e2' },
-  admin:           { color: '#6B3FDB', bg: '#ede9fe' },
-  hr:              { color: '#0369a1', bg: '#e0f2fe' },
-  finance:         { color: '#16a34a', bg: '#dcfce7' },
-  manager:         { color: '#d97706', bg: '#fef3c7' },
-  department_head: { color: '#d97706', bg: '#fef3c7' },
-  employee:        { color: '#6b7280', bg: '#f3f4f6' },
-};
+// Roles and departments both come from their single source of truth — the
+// `roles` registry via config/roleCatalog.js, and the departments master via
+// <MasterSelect>, which can also add to it in place. This page used to hardcode
+// a 7-role array that
+// omitted 19 seeded roles (every *_manager / *_exec / *_engineer code), so a
+// user who needed `qc_manager` simply could not be given it here.
 
 const STATUS_CFG = {
   active:   { color: '#16a34a', bg: '#dcfce7', label: 'Active'   },
@@ -51,7 +49,7 @@ function privilegedDeactivateMsg(u) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function RoleBadge({ role }) {
-  const c = ROLE_COLORS[(role ?? 'employee').toLowerCase()] ?? ROLE_COLORS.employee;
+  const c = roleColor((role ?? 'employee').toLowerCase());
   return (
     <span style={{ padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: c.bg, color: c.color }}>
       {(role ?? 'employee').replace('_', ' ').toUpperCase()}
@@ -62,6 +60,7 @@ function RoleBadge({ role }) {
 const EMPTY_FORM = { name: '', email: '', password: '', role: 'employee', department: '' };
 
 export default function UserSetup() {
+  const roles    = useRoleCatalog();
   const [users,               setUsers]               = useState([]);
   const [loading,             setLoading]             = useState(false);
   const [showCreate,          setShowCreate]          = useState(false);
@@ -71,7 +70,6 @@ export default function UserSetup() {
   const [form,                setForm]                = useState(EMPTY_FORM);
   const [pendingDeactivate,   setPendingDeactivate]   = useState(null);
   const [msg,                 setMsg]                 = useState(null);
-  const [deptList,            setDeptList]            = useState([]);
   // Seed audit state
   const [showSeedAudit,       setShowSeedAudit]       = useState(false);
   const [selectedSeeds,       setSelectedSeeds]       = useState(new Set());
@@ -99,9 +97,6 @@ export default function UserSetup() {
   useEffect(() => {
     isMounted.current = true;
     load();
-    api.get('/admin/config/departments')
-      .then(r => setDeptList(Array.isArray(r.data) ? r.data.map(d => d.name || d) : []))
-      .catch(() => setDeptList([]));
     return () => { isMounted.current = false; };
   }, [load]);
 
@@ -188,7 +183,22 @@ export default function UserSetup() {
   const card = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', overflow: 'hidden' };
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Administration"
+        title="User Management"
+        subtitle="Manage system users, roles, and access. All changes are audit-logged."
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button className="plh-cta" onClick={() => setShowCreate(true)}>
+            <Plus size={14} /> Add User
+          </button>
+        </>}
+      />
+    }>
       {/* Single deactivate confirm */}
       <ConfirmDialog
         open={!!pendingDeactivate}
@@ -211,26 +221,6 @@ export default function UserSetup() {
         onCancel={() => setPendingBulkDeact(false)}
       />
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 10, background: '#ede9fe', color: '#6B3FDB', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Users size={20} />
-          </div>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: '#111827' }}>User Management</h1>
-            <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>Manage system users, roles, and access. All changes are audit-logged.</p>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{ padding: '8px 14px', background: '#f5f3ff', color: '#6B3FDB', border: '1px solid #e9e4ff', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-            <RefreshCw size={14} /> Refresh
-          </button>
-          <button onClick={() => setShowCreate(true)} style={{ padding: '8px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
-            <Plus size={14} /> Add User
-          </button>
-        </div>
-      </div>
 
       {/* Toast */}
       {msg && (
@@ -241,22 +231,22 @@ export default function UserSetup() {
 
       {/* ── Seed Account Audit Banner ─────────────────────────────────────────── */}
       {!loading && suspects.length > 0 && (
-        <div style={{ marginBottom: 20, border: '1px solid #fcd34d', borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ marginBottom: 20, border: '1px solid #c4b5fd', borderRadius: 12, overflow: 'hidden' }}>
           {/* Banner header */}
           <button
             onClick={() => setShowSeedAudit(v => !v)}
-            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#fffbeb', border: 'none', cursor: 'pointer', textAlign: 'left' }}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#f5f3ff', border: 'none', cursor: 'pointer', textAlign: 'left' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <AlertTriangle size={16} color="#d97706" />
-              <span style={{ fontWeight: 700, color: '#92400e', fontSize: 13 }}>
+              <AlertTriangle size={16} color="#6d28d9" />
+              <span style={{ fontWeight: 700, color: '#5b21b6', fontSize: 13 }}>
                 Seed Account Audit — {suspects.length} suspect account{suspects.length > 1 ? 's' : ''} detected
               </span>
-              <span style={{ fontSize: 12, color: '#b45309', fontWeight: 400 }}>
+              <span style={{ fontSize: 12, color: '#6d28d9', fontWeight: 400 }}>
                 (generic names or non-company email domains — review before go-live)
               </span>
             </div>
-            {showSeedAudit ? <ChevronUp size={16} color="#92400e" /> : <ChevronDown size={16} color="#92400e" />}
+            {showSeedAudit ? <ChevronUp size={16} color="#5b21b6" /> : <ChevronDown size={16} color="#5b21b6" />}
           </button>
 
           {/* Expanded detail */}
@@ -271,7 +261,7 @@ export default function UserSetup() {
               <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
                 <button
                   onClick={() => setSelectedSeeds(new Set(suspects.map(u => u.id)))}
-                  style={{ fontSize: 12, padding: '4px 10px', background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 6, cursor: 'pointer' }}>
+                  style={{ fontSize: 12, padding: '4px 10px', background: '#ede9fe', color: '#5b21b6', border: '1px solid #c4b5fd', borderRadius: 6, cursor: 'pointer' }}>
                   Select All ({suspects.length})
                 </button>
                 <button
@@ -284,15 +274,15 @@ export default function UserSetup() {
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
-                    <tr style={{ background: '#fffbeb' }}>
+                    <tr style={{ background: '#f5f3ff' }}>
                       {['', 'Name', 'Email', 'Role', 'Dept', 'Last Login'].map(h => (
-                        <th key={h} style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 600, color: '#92400e', borderBottom: '1px solid #fde68a' }}>{h}</th>
+                        <th key={h} style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 600, color: '#5b21b6', borderBottom: '1px solid #ddd6fe' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {suspects.map(u => (
-                      <tr key={u.id} style={{ borderBottom: '1px solid #fef3c7', background: selectedSeeds.has(u.id) ? '#fffbeb' : '#fff' }}>
+                      <tr key={u.id} style={{ borderBottom: '1px solid #ede9fe', background: selectedSeeds.has(u.id) ? '#f5f3ff' : '#fff' }}>
                         <td style={{ padding: '7px 10px' }}>
                           <input
                             type="checkbox"
@@ -353,18 +343,18 @@ export default function UserSetup() {
               <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Role</span>
               <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}
                 style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, background: '#fff', outline: 'none' }}>
-                {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                {roles.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
               </select>
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Department</span>
-              <select
+              <MasterSelect
+                endpoint="/master/departments"
+                label="Department"
                 value={form.department}
-                onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
-                style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, background: '#fff', outline: 'none' }}>
-                <option value="">-- Select Department --</option>
-                {deptList.map(d => <option key={d} value={d}>{d}</option>)}
-              </select>
+                onChange={v => setForm(f => ({ ...f, department: v }))}
+                selectStyle={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, background: '#fff', outline: 'none' }}
+              />
             </label>
           </div>
           <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -382,9 +372,9 @@ export default function UserSetup() {
 
       {/* Reset password panel */}
       {resetTarget && (
-        <div style={{ marginBottom: 20, padding: 20, border: '1px solid #fcd34d', borderRadius: 12, background: '#fffbeb' }}>
+        <div style={{ marginBottom: 20, padding: 20, border: '1px solid #c4b5fd', borderRadius: 12, background: '#f5f3ff' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <h3 style={{ margin: 0, color: '#92400e', fontSize: 15, fontWeight: 700 }}>Reset Password — {resetTarget.name}</h3>
+            <h3 style={{ margin: 0, color: '#5b21b6', fontSize: 15, fontWeight: 700 }}>Reset Password — {resetTarget.name}</h3>
             <button onClick={() => { setResetTarget(null); setResetPwd(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><X size={18} /></button>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -393,10 +383,10 @@ export default function UserSetup() {
               value={resetPwd}
               onChange={e => setResetPwd(e.target.value)}
               placeholder="New password (min. 8 characters)"
-              style={{ flex: 1, padding: '8px 12px', border: '1px solid #fcd34d', borderRadius: 8, fontSize: 13, outline: 'none' }}
+              style={{ flex: 1, padding: '8px 12px', border: '1px solid #c4b5fd', borderRadius: 8, fontSize: 13, outline: 'none' }}
             />
             <button onClick={doResetPwd}
-              style={{ padding: '8px 18px', background: '#d97706', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+              style={{ padding: '8px 18px', background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
               Reset Password
             </button>
           </div>
@@ -437,18 +427,21 @@ export default function UserSetup() {
                         {isEditing ? (
                           <select value={editUser.role} onChange={e => setEditUser(x => ({ ...x, role: e.target.value }))}
                             style={{ padding: '5px 8px', border: '1px solid #a78bfa', borderRadius: 6, fontSize: 12, background: '#fff', outline: 'none' }}>
-                            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                            {roles.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
                           </select>
                         ) : <RoleBadge role={u?.role ?? 'employee'} />}
                       </td>
 
                       <td style={{ padding: '10px 14px', color: '#6b7280' }}>
                         {isEditing ? (
-                          <select value={editUser.department ?? ''} onChange={e => setEditUser(x => ({ ...x, department: e.target.value }))}
-                            style={{ padding: '5px 8px', border: '1px solid #a78bfa', borderRadius: 6, fontSize: 12, width: 110, outline: 'none', background: '#fff' }}>
-                            <option value="">— Dept —</option>
-                            {deptList.map(d => <option key={d} value={d}>{d}</option>)}
-                          </select>
+                          <MasterSelect
+                            endpoint="/master/departments"
+                            label="Department"
+                            value={editUser.department ?? ''}
+                            onChange={v => setEditUser(x => ({ ...x, department: v }))}
+                            placeholder="— Dept —"
+                            selectStyle={{ padding: '5px 8px', border: '1px solid #a78bfa', borderRadius: 6, fontSize: 12, width: 110, outline: 'none', background: '#fff' }}
+                          />
                         ) : (u?.department ?? '—')}
                       </td>
 
@@ -498,7 +491,7 @@ export default function UserSetup() {
                               <button
                                 onClick={() => { setResetTarget({ id: u.id, name: u?.name ?? '' }); setResetPwd(''); }}
                                 title="Reset password"
-                                style={{ padding: '5px 8px', background: '#fffbeb', color: '#d97706', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                                style={{ padding: '5px 8px', background: '#f5f3ff', color: '#6d28d9', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
                                 <Key size={13} />
                               </button>
                               {u?.status === 'active' && (
@@ -522,6 +515,6 @@ export default function UserSetup() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

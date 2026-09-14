@@ -84,7 +84,7 @@ almost nothing" since most sections lack a `module` key).
 |---|---|---|
 | hr | 19 | Compliance · More, Asset Register · More |
 | manager | 18 | — |
-| department_head | 17 | — |
+| department_head | 18† | — |
 | production_manager | 15 | IoT Fleet, R&D, Compliance, Asset Register · More (all 4) |
 | hr_manager | 15 | — |
 | production_engineer | 14 | same 4 |
@@ -112,6 +112,14 @@ e-Signatures), `department_head` (+1: Operations), `hr_manager` (+1:
 e-Signatures), `sales_manager` (+2: e-Signatures, Tenders · More),
 `sales_exec` (+1: Tenders · More), `service_manager`/`service_engineer` (+1
 each: Complaints) — see § F17 below.
+
+† `department_head` grew again to 18 on 2026-07-29 (+1: Complaints, added
+after this table's F17-era snapshot) — see § F16b below. This table is not
+otherwise re-verified against the current HEAD beyond that one row; the
+2026-08-04 `Approvals` cleanup (see `ROLE_DAY_IN_LIFE_AUDIT.md`) also touched
+several rows above (`hr_exec`, `accounts_exec`, `sales_exec`,
+`procurement_exec`, `store_keeper`, `production_engineer`, `qc_engineer`,
+each -1) and is not reflected here.
 
 ## The F16 approvals reconciliation (same-day change)
 
@@ -145,6 +153,36 @@ unrestricted across all categories. The paired migration,
 flips `can_edit`/`can_approve` to `false` on the `approvals` module's
 `role_permissions` rows for the three demoted roles (down migration restores
 `true`; no rows inserted or deleted).
+
+## F16b: `department_head` registration and its ripple through the table above (2026-07-16 / 2026-07-21)
+
+`department_head` was **registered** on **2026-07-16**
+(`20260716000009_user_roles_junction.js`) — the same migration that adds the
+`user_roles` junction table also backfills this role into the `roles`
+registry, because 3 live users already held the `department_head` code with
+**zero `role_permissions` rows**: absent from the registry entirely, they fell
+through every `allowRoles()` check while still rendering the full management
+dashboard. The migration clones `manager`'s permission matrix onto the new
+role rather than inventing one.
+
+That clone ran *after* an earlier migration had hard-revoked `manager`'s
+out-of-domain modules, so `department_head` inherited explicit DENY rows on
+inventory/production/servicedesk/procurement — backwards for a role meant to
+be "manager-tier lead of an operational team." A follow-up migration on
+**2026-07-21** (`20260721000001_department_head_operational_grants.js`)
+UPDATEs those four modules to VAEPX. (An earlier note conflated the two dates
+and described department_head as "registered 2026-07-21" — that's the
+permissions-fix date, not the registration date.)
+
+`department_head`'s `ROLE_SECTION_ALLOWLIST` entry (`menuCatalog.js:321-326`)
+started at 17 sections — matching the table above — then grew to **18** on
+2026-07-29 with the addition of `'Complaints'` (`CustomerComplaintsIPCS` is
+registered under both the `Complaints` and `Service Desk` NAV_ITEMS groups,
+and `getSectionForPage()` resolves to whichever group appears first in the
+array; department_head held `Service Desk` but not `Complaints`, so the page
+was visible but 403'd on click — same shape as the F17 `service_manager`/
+`service_engineer` fix). At 18, `department_head` now **ties `manager` for
+second-broadest allowlist**, not sole second place at 17.
 
 ## F17: closing out Operations, Complaints, e-Signatures, Tenders · More (2026-07-23)
 

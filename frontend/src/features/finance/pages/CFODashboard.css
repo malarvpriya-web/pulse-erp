@@ -1,191 +1,400 @@
-.cfo-root{height:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;padding:14px 16px;background:#f8f9fc;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+/* ── CFO Dashboard (prefix: cfo-) ──────────────────────────────────────────
+ *
+ * DESIGN — this page is on the app-wide Pulse hero language (manual §116/§120):
+ * `PageShell` + `PageHero` + the canonical `<DashboardFilterBar>` in the frozen
+ * dock (manual §126.1 — it replaced a hand-rolled `.tax-tabs` period strip),
+ * then a `StatBand` of white metric cards, then a `DashCard` grid. It is the
+ * same stack ExecutiveDashboard (`.exd-root`) and AdminDashboard (`.adm-root`)
+ * use, and this sheet deliberately mirrors `ExecutiveDashboard.css` so the two
+ * executive cockpits read as one design. Nothing passes a hero `tone` — violet
+ * is the app tone. NO ORANGE: the "needs attention but not critical" step is
+ * lavender/violet, and red/green stay for genuine danger/success only.
+ *
+ * ⚠⚠ `.cfo-root` IS LOAD-BEARING. Every rule here is scoped under it, and the
+ * class is applied by `<PageShell className="cfo-root">` in the JSX. The
+ * 2026-08-20 hero codemod dropped that class and orphaned this entire sheet:
+ * for six days the page rendered with no grid, no cards and 1920px of scroll at
+ * 1366×768. esbuild, eslint and vitest all pass on that state — only a rendered
+ * screenshot catches it. If you convert this page again, carry the class.
+ *
+ * SPECIFICITY — the scope is not only a namespace. `styles/global-overrides.css`
+ * sets `.page-content p|td|th|li|span|div { font-size:13px; line-height:1.6 }`
+ * at (0,1,1), which beats a bare single-class selector and inflates every 9–11px
+ * label to 13px with a ~21px line box (~30% more height inside a container that
+ * cannot grow). `.cfo-root .cfo-thing` is (0,2,0) and wins. Never use !important.
+ *
+ * LAYOUT CONTRACT — the page does not scroll. Four bands absorb the viewport:
+ *   row 1  stat band                                     (auto)
+ *   row 2  Revenue 5 · Cash Flow 4 · Alerts 3            (fr — charts want it)
+ *   row 3  P&L 3 · Forecast 3 · Cost 3 · Working Cap 3   (fr)
+ *   row 4  ratio strip                                   (auto)
+ *
+ * EXACTLY ONE internal scroller is allowed: `.cfo-scroll` on the alert feed,
+ * the only panel whose row count grows with the business. Everything else is
+ * sized to fit its content. Do NOT add `overflow-y:auto` to another card body
+ * to make it "fit" — that is how this page once ended up showing 19px of a
+ * 287px ratio grid (manual §113). If a card no longer fits, take content out or
+ * give its row more `fr`; do not hide it behind a scrollbar.
+ *
+ * Below `max-width:1280px` OR `max-height:680px` the lock is RELEASED and the
+ * page flows with one ordinary page scrollbar — a locked root is
+ * `overflow:hidden`, so on a short viewport it would clip rather than scroll.
+ */
 
-@keyframes cfo-rise{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
-@media(prefers-reduced-motion:reduce){.cfo-exec-kpi,.cfo-card{animation:none !important;opacity:1 !important;}}
-.cfo-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px;color:#6b7280;}
-.cfo-spinner{width:36px;height:36px;border:3px solid #e5e7eb;border-top-color:#6B3FDB;border-radius:50%;animation:cfospin .8s linear infinite;}
-@keyframes cfospin{to{transform:rotate(360deg);}}
-
-/* header */
-.cfo-header{display:flex;justify-content:space-between;align-items:flex-start;flex-shrink:0;}
-.cfo-title-row{display:flex;align-items:center;gap:10px;}
-.cfo-title{font-size:20px;font-weight:600;color:#111827;margin:0;}
-.cfo-badge{background:#6B3FDB;color:#fff;font-size:10px;font-weight:600;padding:3px 9px;border-radius:20px;}
-.cfo-sub{font-size:12px;color:#9ca3af;margin:4px 0 0;}
-.cfo-header-r{display:flex;align-items:center;gap:10px;}
-.cfo-period{display:flex;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;}
-.cfo-period-tab{padding:6px 12px;border:none;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;}
-.cfo-period-tab.active{background:#6B3FDB;color:#fff;}
-.cfo-refresh{display:flex;align-items:center;gap:6px;padding:8px 14px;background:#6B3FDB;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;}
-.cfo-refresh:hover{background:#5B35D5;}
-
-/* executive KPI strip */
-.cfo-exec-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;flex-shrink:0;}
-@media(max-width:1200px){.cfo-exec-kpis{grid-template-columns:repeat(3,1fr);}}
-@media(max-width:768px){.cfo-exec-kpis{grid-template-columns:repeat(2,1fr);}}
-
-.cfo-exec-kpi{border-radius:12px;padding:10px 13px;color:#fff;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;min-height:78px;opacity:0;animation:cfo-rise .45s cubic-bezier(.22,1,.36,1) forwards;transition:box-shadow .2s,transform .2s;}
-.cfo-exec-kpis .cfo-exec-kpi:nth-child(2){animation-delay:45ms;}
-.cfo-exec-kpis .cfo-exec-kpi:nth-child(3){animation-delay:90ms;}
-.cfo-exec-kpis .cfo-exec-kpi:nth-child(4){animation-delay:135ms;}
-.cfo-exec-kpis .cfo-exec-kpi:nth-child(5){animation-delay:180ms;}
-.cfo-exec-kpis .cfo-exec-kpi:nth-child(6){animation-delay:225ms;}
-.cfo-exec-kpi:hover{box-shadow:0 8px 20px rgba(16,24,40,.18);transform:translateY(-2px);}
-.cfo-kpi-rev   {background:linear-gradient(135deg,#6B3FDB,#7B3FE4);}
-.cfo-kpi-profit{background:linear-gradient(135deg,#10b981,#059669);}
-.cfo-kpi-ebitda{background:linear-gradient(135deg,#3b82f6,#1d4ed8);}
-.cfo-kpi-cash  {background:linear-gradient(135deg,#f59e0b,#d97706);}
-.cfo-kpi-ar    {background:linear-gradient(135deg,#7B3FE4,#7B3FE4);}
-.cfo-kpi-burn  {background:linear-gradient(135deg,#ef4444,#dc2626);}
-
-.cfo-exec-kpi-body{position:relative;z-index:1;}
-.cfo-exec-label{font-size:11px;opacity:.85;margin:0 0 6px;text-transform:uppercase;letter-spacing:.4px;}
-.cfo-exec-val{font-size:22px;font-weight:700;margin:0 0 6px;line-height:1;}
-.cfo-exec-meta{display:flex;align-items:center;gap:8px;font-size:12px;opacity:.9;}
-.cfo-exec-vs{font-size:11px;opacity:.8;}
-.cfo-margin-badge{background:rgba(255,255,255,.2);padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;}
-.cfo-exec-kpi-chart{position:absolute;bottom:0;left:0;right:0;opacity:.6;}
-.cfo-exec-icon{position:absolute;right:12px;top:12px;opacity:.2;color:#fff;}
-
-/* grid */
-.cfo-grid{display:grid;grid-template-columns:repeat(12,1fr);grid-template-rows:1.1fr 1fr 0.75fr 1.15fr;gap:10px;flex:1;min-height:0;}
-.cg12{grid-column:span 12;}
-.cg8{grid-column:span 8;}
-.cg6{grid-column:span 6;}
-.cg4{grid-column:span 4;}
-.cg3{grid-column:span 3;}
-.cg12,.cg8,.cg6,.cg4,.cg3{min-height:0;}
-@media(max-width:1200px){
-  .cfo-root{height:auto;overflow:visible;}
-  .cfo-grid{height:auto;grid-template-rows:none;}
-  .cg8,.cg6{grid-column:span 12;}.cg4,.cg3{grid-column:span 6;}
+/* ══ fit lock ═══════════════════════════════════════════════════════════════
+ * `.plh-page` cancels `.page-content`'s 20px padding with a -20px margin, so
+ * filling the scrollport exactly means 100% (of the content box) PLUS that 40px
+ * back. `.page-content` is `flex:1` inside a `height:100vh` column, so its
+ * height is definite and this resolves exactly. */
+.cfo-root.plh-page {
+  height: calc(100% + var(--spacing-md, 20px) * 2);
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
-@media(max-width:768px){.cg8,.cg6,.cg4,.cg3{grid-column:span 12;}}
+.cfo-root .plh-dock { flex: 0 0 auto; }
+.cfo-root .plh-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 
-/* card */
-.cfo-card{background:#fff;border-radius:12px;border:1px solid #f0f0f4;padding:13px;height:100%;box-sizing:border-box;display:flex;flex-direction:column;min-height:0;opacity:0;animation:cfo-rise .5s cubic-bezier(.22,1,.36,1) .08s forwards;transition:box-shadow .2s;}
-@media(max-width:1200px){.cfo-card{min-height:340px;}}
-.cfo-card:hover{box-shadow:0 6px 18px rgba(16,24,40,.07);}
-.cfo-card-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;}
-.cfo-card-title{font-size:13px;font-weight:600;color:#374151;}
-.cfo-card-sub{font-size:12px;color:#9ca3af;}
-.cfo-icon-btn{background:none;border:1px solid #e5e7eb;border-radius:6px;padding:4px 7px;cursor:pointer;color:#6b7280;display:flex;align-items:center;}
-.cfo-icon-btn:hover{background:#f3f4f6;}
-.cfo-card-body{flex:1;min-height:0;overflow:auto;}
-.cfo-chart-fill{flex:1;min-height:0;display:flex;flex-direction:column;}
+/* ══ the grid ═══════════════════════════════════════════════════════════════ */
+.cfo-root .cfo-fit {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-rows: auto minmax(0, 1.06fr) minmax(0, 1fr) auto;
+  gap: 10px;
+}
+.cfo-root .cfo-c3 { grid-column: span 3; min-width: 0; }
+.cfo-root .cfo-c4 { grid-column: span 4; min-width: 0; }
+.cfo-root .cfo-c5 { grid-column: span 5; min-width: 0; }
 
-/* modal */
-.cfo-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;}
-.cfo-modal{background:#fff;border-radius:16px;width:100%;max-width:960px;max-height:90vh;display:flex;flex-direction:column;}
-.cfo-modal-hd{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #f0f0f4;}
-.cfo-modal-hd h3{font-size:15px;font-weight:600;color:#111827;margin:0;}
-.cfo-modal-body{padding:20px;overflow-y:auto;flex:1;}
+/* the stat band and the ratio strip are full-bleed rows */
+.cfo-root .cfo-fit > .plh-stats { grid-column: 1 / -1; margin-bottom: 0; }
+.cfo-root .cfo-ratios { grid-column: 1 / -1; }
 
-/* trend */
-.cfo-trend{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;padding:2px 6px;border-radius:20px;}
-.cfo-trend.up{background:rgba(255,255,255,.25);color:#fff;}
-.cfo-trend.down{background:rgba(255,255,255,.25);color:#fff;}
+/* ══ dock extras ════════════════════════════════════════════════════════════ */
 
-/* chart meta */
-.cfo-chart-meta{display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap;flex-shrink:0;}
-.cfo-cm-chip{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;font-size:12px;}
-.cfo-cm-rev{background:#E8E1FC;}
-.cfo-cm-target{background:#fef3c7;}
-.cfo-cm-profit{background:#dcfce7;}
-.cfo-cm-chip strong{font-size:14px;font-weight:700;color:#111827;}
-.cfo-cm-gap{font-size:11px;color:#dc2626;}
+/* The canonical filter bar (`DashboardFilterBar`). It is a dock child rather
+ * than hero `actions` on purpose: controls inside `.plh-hero-r` wrap onto a
+ * second row and the band clips. */
+.cfo-root .pl-filterbar { margin-bottom: 10px; }
 
-/* P&L summary */
-.cfo-pl-summary{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;flex-shrink:0;}
-.cfo-pl-row{display:flex;justify-content:space-between;font-size:13px;padding:5px 10px;background:#f9fafb;border-radius:6px;}
-.cfo-pl-row strong{font-size:14px;font-weight:700;}
+/* The reach caption. It carries the activity/backlog split, so it must stay
+ * readable — never `display:none` it to win space; drop the hero meta first
+ * (pulse-hero.css already does that under 820px). */
+.cfo-root .cfo-filter-note {
+  font-size: 10.5px; line-height: 1.35; color: #94a3b8;
+  cursor: help; text-align: right; white-space: nowrap;
+}
+@media (max-width: 1180px) {
+  .cfo-root .cfo-filter-note { display: none; }
+}
 
-/* waterfall */
-.cfo-waterfall{display:flex;gap:4px;flex:1;min-height:0;align-items:flex-end;}
-.cfo-wf-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;}
-.cfo-wf-bar-wrap{flex:1;width:100%;display:flex;flex-direction:column;}
-.cfo-wf-spacer{flex-shrink:0;}
-.cfo-wf-bar{border-radius:3px 3px 0 0;min-height:4px;transition:height .5s;}
-.cfo-wf-base{flex-shrink:0;}
-.cfo-wf-val{font-size:9px;font-weight:600;text-align:center;white-space:nowrap;}
-.cfo-wf-label{font-size:9px;color:#9ca3af;text-align:center;white-space:nowrap;}
+/* degraded-load banner — a dead endpoint must never render as an empty state.
+ * One compact line: it lives in the dock, so every px it takes is a px the
+ * locked grid below loses. */
+.cfo-root .cfo-banner {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 11px; border-radius: 9px; margin-bottom: 10px;
+  font-size: 11.5px; line-height: 1.4;
+  background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+}
+.cfo-root .cfo-banner-ico  { flex-shrink: 0; }
+.cfo-root .cfo-banner span { font-size: 11.5px; line-height: 1.4; }
+.cfo-root .cfo-banner-btn {
+  margin-left: auto; padding: 3px 11px;
+  border: 1px solid #fecaca; border-radius: 7px; background: #fff;
+  color: #991b1b; font-size: 11px; font-weight: 700; font-family: inherit;
+  cursor: pointer; white-space: nowrap;
+}
+.cfo-root .cfo-banner-btn:hover { background: #fff5f5; }
 
-/* cash flow */
-.cfo-cf-kpis{display:flex;gap:10px;margin-bottom:10px;flex-shrink:0;}
-.cfo-cf-kpi{display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:7px;font-size:12px;flex:1;}
-.cfo-cf-kpi.green{background:#dcfce7;color:#166534;}
-.cfo-cf-kpi.red{background:#fee2e2;color:#991b1b;}
-.cfo-cf-kpi.amber{background:#fef3c7;color:#92400e;}
-.cfo-cf-kpi strong{font-size:13px;font-weight:700;}
+/* ══ cards ══════════════════════════════════════════════════════════════════
+ * `overflow:hidden` is deliberate: a card that outgrows its row must CLIP, so
+ * the fit harness's clipped-node sweep catches it. Silent bleed into the next
+ * card is the failure mode that check exists to find. */
+.cfo-root .dc-card {
+  padding: 10px 13px 11px;
+  border-radius: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+.cfo-root .dc-hd      { margin-bottom: 7px; }
+.cfo-root .dc-title   { font-size: 12.5px; line-height: 1.25; }
+.cfo-root .dc-sub     { font-size: 10.5px; line-height: 1.3; }
+.cfo-root .dc-icon    { width: 25px; height: 25px; border-radius: 7px; }
+.cfo-root .dc-link    { font-size: 11px; line-height: 1.3; padding: 2px 5px; }
+.cfo-root .dc-iconbtn { width: 23px; height: 23px; }
+.cfo-root .dc-body    { min-height: 0; display: flex; flex-direction: column; }
 
-/* forecast legend */
-.cfo-forecast-legend{display:flex;gap:16px;margin-bottom:8px;font-size:12px;flex-shrink:0;}
-.cfo-fl-item{font-weight:500;}
+/* charts fill whatever height the row hands them — no fixed px in-card */
+.cfo-root .cfo-chart { flex: 1 1 0; min-height: 0; }
 
-/* ratios */
-.cfo-ratios-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
-@media(max-width:900px){.cfo-ratios-grid{grid-template-columns:repeat(2,1fr);}}
-.cfo-ratio-item{padding:10px;border-radius:8px;position:relative;border:1px solid transparent;}
-.cfo-ratio-good{background:#f0fdf4;border-color:#bbf7d0;}
-.cfo-ratio-warn{background:#fffbeb;border-color:#fde68a;}
-.cfo-ratio-label{font-size:10px;color:#9ca3af;margin-bottom:4px;}
-.cfo-ratio-val{font-size:16px;font-weight:700;color:#111827;}
-.cfo-ratio-bench{font-size:10px;color:#9ca3af;margin-top:2px;}
-.cfo-ratio-icon{position:absolute;top:8px;right:8px;}
-.cfo-ratio-icon.green{color:#10b981;}
-.cfo-ratio-icon.amber{color:#f59e0b;}
+/* empty states fill the body instead of padding it out to a fixed height */
+.cfo-root .cfo-empty {
+  flex: 1 1 0; min-height: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 6px; text-align: center; color: #9ca3af;
+}
+.cfo-root .cfo-empty p { margin: 0; font-size: 11.5px; line-height: 1.4; }
 
-/* ROI */
-.cfo-roi-list{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow:auto;}
-.cfo-roi-row{display:flex;align-items:center;gap:10px;}
-.cfo-roi-dept{font-size:12px;color:#374151;width:90px;flex-shrink:0;font-weight:500;}
-.cfo-roi-bars{flex:1;display:flex;flex-direction:column;gap:3px;}
-.cfo-roi-bar-wrap{height:6px;background:#f3f4f6;border-radius:3px;overflow:hidden;}
-.cfo-roi-cost-bar{height:100%;background:#ef4444;border-radius:3px;transition:width .5s;}
-.cfo-roi-rev-bar{height:100%;background:#10b981;border-radius:3px;transition:width .5s;}
-.cfo-roi-nums{display:flex;flex-direction:column;align-items:flex-end;font-size:10px;color:#9ca3af;min-width:80px;}
-.cfo-roi-cost{color:#ef4444;}
-.cfo-roi-rev{color:#10b981;}
-.cfo-roi-badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;min-width:48px;text-align:center;}
-.cfo-roi-badge.good{background:#dcfce7;color:#16a34a;}
-.cfo-roi-badge.neg{background:#fee2e2;color:#dc2626;}
+/* ══ card header extras ═════════════════════════════════════════════════════ */
+.cfo-root .cfo-hdr-stat { display: flex; align-items: center; gap: 7px; }
+.cfo-root .cfo-hdr-stat > span { font-size: 11px; line-height: 1.35; color: #9ca3af; white-space: nowrap; }
+.cfo-root .cfo-hdr-stat b { color: #0f172a; font-weight: 700; }
 
-/* gauges */
-.cfo-gauges{display:flex;justify-content:space-around;margin-bottom:6px;flex-shrink:0;}
-.cfo-gauge{display:flex;justify-content:center;}
-.cfo-wc-stats{display:flex;flex-direction:column;gap:5px;flex:1;min-height:0;overflow:auto;}
-.cfo-wc-stat{display:flex;justify-content:space-between;padding:5px 8px;background:#f9fafb;border-radius:7px;font-size:11px;color:#6b7280;flex-shrink:0;}
-.cfo-wc-stat strong{font-size:13px;font-weight:700;}
+/* "basis" affordance — the forecast's method is a hover, not a line of copy */
+.cfo-root .cfo-hdr-note {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; line-height: 1.3; font-weight: 600; color: #7c5cf0;
+  background: #f5f3ff; border-radius: 20px; padding: 2px 8px;
+  cursor: help; white-space: nowrap;
+}
 
-/* expense */
-.cfo-exp-total{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;}
-.cfo-exp-total span{font-size:12px;color:#9ca3af;}
-.cfo-exp-total strong{font-size:15px;font-weight:700;color:#374151;}
-.cfo-exp-legend{display:flex;flex-direction:column;gap:4px;margin-top:8px;flex:1;min-height:0;overflow:auto;}
-.cfo-exp-row{display:flex;align-items:center;gap:6px;font-size:12px;}
-.cfo-exp-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0;}
-.cfo-exp-name{flex:1;color:#6b7280;}
-.cfo-exp-pct{font-weight:600;color:#374151;}
+/* signed change chip */
+.cfo-root .cfo-delta {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; line-height: 1.35; font-weight: 700;
+  padding: 1px 7px 1px 5px; border-radius: 20px; white-space: nowrap;
+}
+.cfo-root .cfo-delta.is-good { color: #15803d; background: #f0fdf4; }
+.cfo-root .cfo-delta.is-bad  { color: #b91c1c; background: #fef2f2; }
+.cfo-root .cfo-delta.is-flat { color: #6b7280; background: #f4f4f8; }
 
-/* alerts */
-.cfo-alert{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-radius:8px;margin-bottom:8px;gap:10px;}
-.cfo-alert-high{background:#fee2e2;}
-.cfo-alert-medium{background:#fef3c7;}
-.cfo-alert-low{background:#f3f4f6;}
-.cfo-alert-body{display:flex;align-items:center;gap:7px;font-size:12px;color:#374151;flex:1;}
-.cfo-alert-high .cfo-alert-body{color:#991b1b;}
-.cfo-alert-medium .cfo-alert-body{color:#92400e;}
-.cfo-alert-action{font-size:11px;font-weight:600;color:#6B3FDB;background:none;border:1px solid #D4CAFE;border-radius:6px;padding:3px 9px;cursor:pointer;white-space:nowrap;}
+/* series chips — the in-card legend for the two area/bar charts */
+.cfo-root .cfo-chips {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  margin-bottom: 7px; flex: 0 0 auto;
+}
+.cfo-root .cfo-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 20px;
+  background: #f7f6fc; border: 1px solid #eeebfa;
+  font-size: 10.5px; line-height: 1.35; color: #64748b; white-space: nowrap;
+}
+.cfo-root .cfo-chip i { width: 7px; height: 7px; border-radius: 2px; flex-shrink: 0; }
+.cfo-root .cfo-chip b { font-size: 11.5px; font-weight: 700; color: #0f172a; }
 
-/* empty state */
-.cfo-empty{display:flex;align-items:center;justify-content:center;padding:16px;font-size:13px;color:#9ca3af;text-align:center;flex:1;min-height:0;}
+/* ══ P&L bridge ═════════════════════════════════════════════════════════════ */
+.cfo-root .cfo-pl-summary { display: flex; gap: 5px; margin-bottom: 7px; flex: 0 0 auto; }
+.cfo-root .cfo-pl-stat {
+  flex: 1 1 0; min-width: 0;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 4px 8px; background: #fafafc; border-radius: 7px;
+}
+.cfo-root .cfo-pl-stat span {
+  font-size: 9.5px; line-height: 1.25; color: #94a3b8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cfo-root .cfo-pl-stat strong {
+  font-size: 13px; line-height: 1.2; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
-/* pie chart wrap — fixed size, doesn't stretch to fill the card */
-.cfo-pie-wrap{flex-shrink:0;}
+/* waterfall — min-height:0 + overflow:hidden keep the bars inside the card;
+ * without them a short card let the columns render over the summary rows. */
+.cfo-root .cfo-waterfall { display: flex; gap: 4px; flex: 1 1 0; min-height: 0; overflow: hidden; align-items: stretch; }
+.cfo-root .cfo-wf-col { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 1px; }
+.cfo-root .cfo-wf-bar-wrap { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; }
+.cfo-root .cfo-wf-spacer { flex-shrink: 0; }
+.cfo-root .cfo-wf-bar { border-radius: 3px 3px 0 0; min-height: 3px; transition: height .5s; }
+.cfo-root .cfo-wf-base { flex-shrink: 0; }
+.cfo-root .cfo-wf-val {
+  font-size: 9px; line-height: 1.25; font-weight: 700; text-align: center;
+  white-space: nowrap; flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis;
+}
+.cfo-root .cfo-wf-label {
+  font-size: 9px; line-height: 1.25; color: #94a3b8; text-align: center;
+  white-space: nowrap; flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis;
+}
 
-/* alert info level */
-.cfo-alert-info{background:#eff6ff;}
-.cfo-alert-info .cfo-alert-body{color:#1d4ed8;}
+/* ══ cash flow ══════════════════════════════════════════════════════════════ */
+.cfo-root .cfo-cf-kpis { display: flex; gap: 6px; margin-bottom: 7px; flex: 0 0 auto; }
+.cfo-root .cfo-cf-kpi {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 9px; border-radius: 7px;
+  font-size: 10.5px; line-height: 1.3; flex: 1; min-width: 0;
+}
+.cfo-root .cfo-cf-kpi > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cfo-root .cfo-cf-kpi > svg  { flex-shrink: 0; }
+.cfo-root .cfo-cf-kpi.green  { background: #f0fdf4; color: #15803d; }
+.cfo-root .cfo-cf-kpi.red    { background: #fef2f2; color: #b91c1c; }
+.cfo-root .cfo-cf-kpi.violet { background: #f5f3ff; color: #5b21b6; }
+.cfo-root .cfo-cf-kpi strong {
+  font-size: 11.5px; line-height: 1.3; font-weight: 700;
+  margin-left: auto; white-space: nowrap;
+}
 
-/* colours */
-.green{color:#10b981;}.red{color:#ef4444;}.amber{color:#f59e0b;}
+/* ══ cost structure (donut + ranked legend, one card) ═══════════════════════ */
+.cfo-root .cfo-cost-split { display: flex; gap: 10px; align-items: center; flex: 1 1 0; min-height: 0; }
+.cfo-root .cfo-pie-wrap { flex: 0 0 96px; align-self: stretch; min-height: 0; }
+.cfo-root .cfo-cost-side { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; justify-content: center; }
+.cfo-root .cfo-cost-legend { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; justify-content: center; }
+.cfo-root .cfo-cost-item { min-width: 0; }
+.cfo-root .cfo-cost-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; line-height: 1.35; min-width: 0; }
+.cfo-root .cfo-cost-dot { width: 7px; height: 7px; border-radius: 2px; flex: 0 0 auto; }
+.cfo-root .cfo-cost-name { flex: 1 1 auto; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cfo-root .cfo-cost-amt { color: #334155; font-weight: 700; white-space: nowrap; }
+.cfo-root .cfo-cost-pct { color: #94a3b8; min-width: 34px; text-align: right; white-space: nowrap; }
+.cfo-root .cfo-cost-track { height: 4px; background: #f1f1f5; border-radius: 2px; overflow: hidden; margin-top: 2px; }
+.cfo-root .cfo-cost-bar { height: 100%; border-radius: 2px; transition: width .5s; }
+.cfo-root .cfo-more { font-size: 10.5px; line-height: 1.35; color: #9ca3af; padding-top: 1px; }
+
+/* ══ working capital gauges ═════════════════════════════════════════════════ */
+.cfo-root .cfo-gauges { display: flex; align-items: center; gap: 6px; flex: 1 1 0; min-height: 0; }
+.cfo-root .cfo-gauge { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; }
+.cfo-root .cfo-gauge svg { width: 100%; max-width: 92px; height: auto; }
+.cfo-root .cfo-wc-stat {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 5px 9px; margin-top: 6px; flex: 0 0 auto;
+  background: #fafafc; border-radius: 7px;
+  font-size: 10.5px; line-height: 1.3; color: #64748b;
+}
+.cfo-root .cfo-wc-stat > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfo-root .cfo-wc-stat strong { font-size: 12.5px; line-height: 1.3; font-weight: 800; white-space: nowrap; }
+
+/* ══ alerts — the ONE internal scroller on this page ════════════════════════ */
+.cfo-root .cfo-alerts { display: flex; flex-direction: column; gap: 5px; }
+/* The scroller gets a visible, always-on thumb. Without one the feed's last
+ * row is simply cut in half at 1366×768 and reads as a clipping bug rather than
+ * as "there is more below". */
+.cfo-root .cfo-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: #ddd6fe transparent; }
+.cfo-root .cfo-scroll::-webkit-scrollbar { width: 6px; }
+.cfo-root .cfo-scroll::-webkit-scrollbar-track { background: transparent; }
+.cfo-root .cfo-scroll::-webkit-scrollbar-thumb { background: #ddd6fe; border-radius: 3px; }
+.cfo-root .cfo-scroll::-webkit-scrollbar-thumb:hover { background: #c4b5fd; }
+.cfo-root .cfo-alert {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 6px 9px; border-radius: 8px; flex: 0 0 auto;
+}
+.cfo-root .cfo-alert-high   { background: #fef2f2; }
+.cfo-root .cfo-alert-medium { background: #f5f3ff; }
+.cfo-root .cfo-alert-low    { background: #f6f6f9; }
+.cfo-root .cfo-alert-info   { background: #eef2ff; }
+.cfo-root .cfo-alert-body {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10.5px; line-height: 1.35; color: #374151; flex: 1 1 auto; min-width: 0;
+}
+.cfo-root .cfo-alert-body > span { min-width: 0; }
+.cfo-root .cfo-alert-body svg { flex: 0 0 auto; }
+.cfo-root .cfo-alert-high   .cfo-alert-body { color: #991b1b; }
+.cfo-root .cfo-alert-medium .cfo-alert-body { color: #5b21b6; }
+.cfo-root .cfo-alert-info   .cfo-alert-body { color: #3730a3; }
+.cfo-root .cfo-alert-action {
+  font-size: 10px; line-height: 1.3; font-weight: 700; font-family: inherit;
+  color: #6B3FDB; background: #fff; border: 1px solid #ddd6fe; border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; white-space: nowrap; flex: 0 0 auto;
+}
+.cfo-root .cfo-alert-action:hover { background: #f5f3ff; }
+
+/* ══ ratio strip ════════════════════════════════════════════════════════════
+ * A strip, not a card — see the JSX comment. Seven measured ratios as tiles;
+ * the five this schema cannot compute are chips in the header, never tiles and
+ * never with a status colour, so an unmeasured ratio can't read as a passing
+ * one (manual §111: unmeasured ≠ zero). */
+.cfo-root .cfo-ratios {
+  background: #fff; border: 1px solid #e9e4ff; border-radius: 12px;
+  padding: 8px 12px 9px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .05);
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+}
+.cfo-root .cfo-ratios-hd { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.cfo-root .cfo-ratios-title { font-size: 12px; line-height: 1.3; font-weight: 700; color: #0f172a; white-space: nowrap; }
+.cfo-root .cfo-ratios-sub { font-size: 10.5px; line-height: 1.3; color: #9ca3af; white-space: nowrap; }
+
+.cfo-root .cfo-ratio-untracked {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  margin-left: auto; min-width: 0;
+}
+.cfo-root .cfo-ru-label {
+  font-size: 9px; line-height: 1.3; color: #94a3b8; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em; white-space: nowrap;
+}
+.cfo-root .cfo-ru-chip {
+  font-size: 9.5px; line-height: 1.35; color: #64748b;
+  background: #f4f4f8; border-radius: 20px; padding: 1px 8px;
+  cursor: help; white-space: nowrap;
+}
+
+.cfo-root .cfo-ratios-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.cfo-root .cfo-ratio-item {
+  padding: 5px 9px; border-radius: 8px; position: relative;
+  border: 1px solid transparent; min-width: 0; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: center;
+}
+.cfo-root .cfo-ratio-good { background: #f0fdf4; border-color: #bbf7d0; }
+.cfo-root .cfo-ratio-warn { background: #f5f3ff; border-color: #ddd6fe; }
+.cfo-root .cfo-ratio-bad  { background: #fef2f2; border-color: #fecaca; }
+.cfo-root .cfo-ratio-na   { background: #fafafc; border-color: #eef0f4; }
+.cfo-root .cfo-ratio-label {
+  font-size: 9px; line-height: 1.25; color: #94a3b8; margin-bottom: 1px;
+  font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 12px;
+}
+/* value and benchmark share one line: the strip gives each tile ~44px, and a
+ * third line clipped the two above it. */
+.cfo-root .cfo-ratio-row { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; min-width: 0; }
+.cfo-root .cfo-ratio-val {
+  font-size: 14px; line-height: 1.15; font-weight: 800; color: #0f172a;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cfo-root .cfo-ratio-na .cfo-ratio-val { font-size: 11px; font-weight: 700; color: #94a3b8; }
+.cfo-root .cfo-ratio-bench { font-size: 9px; line-height: 1.2; color: #94a3b8; white-space: nowrap; flex: 0 0 auto; }
+.cfo-root .cfo-ratio-icon { position: absolute; top: 5px; right: 6px; }
+.cfo-root .cfo-ratio-icon.green  { color: #16a34a; }
+.cfo-root .cfo-ratio-icon.violet { color: #7c5cf0; }
+
+/* ══ expand-modal extras ════════════════════════════════════════════════════ */
+.cfo-root .cfo-cost-split--modal { align-items: flex-start; gap: 24px; }
+.cfo-root .cfo-cost-split--modal .cfo-pie-wrap { flex: 0 0 300px; }
+.cfo-modal-note {
+  margin: 14px 0 0; font-size: 12px; line-height: 1.5; color: #64748b;
+  background: #f7f6fc; border: 1px solid #eeebfa; border-radius: 9px; padding: 9px 12px;
+}
+.cfo-modal-note strong { color: #334155; font-weight: 700; }
+
+/* ══ shared colour utilities ════════════════════════════════════════════════ */
+.cfo-root .green { color: #16a34a; }
+.cfo-root .red   { color: #dc2626; }
+
+/* ══ responsive — the lock is released, not squeezed ════════════════════════
+ * Narrow OR short. A locked root is `overflow:hidden`, so a viewport too short
+ * for four bands must be allowed to scroll or it clips. */
+@media (max-width: 1600px) {
+  /* Four c3 cards on row 3 leave ~250px each here; the ratio labels are the
+   * first thing to lose, so the strip drops to a scrollable single row. */
+  .cfo-root .cfo-ratios-grid { grid-template-columns: repeat(7, minmax(96px, 1fr)); }
+}
+
+@media (max-width: 1280px), (max-height: 680px) {
+  .cfo-root.plh-page { height: auto; overflow: visible; display: block; }
+  .cfo-root .plh-body { display: block; }
+  .cfo-root .cfo-fit {
+    grid-template-rows: none;
+    grid-auto-rows: minmax(300px, auto);
+  }
+  .cfo-root .cfo-fit > .plh-stats { grid-auto-rows: auto; }
+  .cfo-root .cfo-c5 { grid-column: span 12; }
+  .cfo-root .cfo-c4, .cfo-root .cfo-c3 { grid-column: span 6; }
+  .cfo-root .cfo-ratios { grid-row: auto; }
+  .cfo-root .cfo-ratios-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .cfo-root .cfo-scroll { max-height: 300px; }
+}
+
+@media (max-width: 900px) {
+  .cfo-root .cfo-c5, .cfo-root .cfo-c4, .cfo-root .cfo-c3 { grid-column: span 12; }
+  .cfo-root .cfo-ratios-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cfo-root .cfo-ratio-untracked { margin-left: 0; }
+  .cfo-root .cfo-tabs-note { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cfo-root .cfo-wf-bar, .cfo-root .cfo-cost-bar { transition: none; }
+}

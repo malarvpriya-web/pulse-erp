@@ -2,6 +2,8 @@ import { Router } from 'express';
 import pool from '../shared/db.js';
 import { nextEcnNumber } from '../../shared/docNumber.js';
 import notificationsRepository from '../notifications/repositories/notifications.repository.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -55,7 +57,12 @@ async function notifyEcnImplemented(ecn) {
   }
 }
 
-router.get('/changes', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied engineering in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/changes', requirePermission('engineering', 'view'), async (req, res) => {
   try {
     const { status, change_type, severity, search } = req.query;
     const companyId = cid(req);
@@ -83,7 +90,7 @@ router.get('/changes', async (req, res) => {
   }
 });
 
-router.post('/changes', async (req, res) => {
+router.post('/changes', requirePermission('engineering', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -134,7 +141,7 @@ router.post('/changes', async (req, res) => {
   }
 });
 
-router.get('/changes/:id', async (req, res) => {
+router.get('/changes/:id', requirePermission('engineering', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(`SELECT * FROM engineering_changes WHERE id = $1`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Engineering change not found' });
@@ -149,7 +156,7 @@ router.get('/changes/:id', async (req, res) => {
   }
 });
 
-router.put('/changes/:id', async (req, res) => {
+router.put('/changes/:id', requirePermission('engineering', 'edit'), captureBefore('engineering_changes'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { title, severity, reason, impact_summary, owner_id, owner_name, effective_from, implementation_due } = req.body;
@@ -184,7 +191,7 @@ router.put('/changes/:id', async (req, res) => {
   }
 });
 
-router.post('/changes/:id/items', async (req, res) => {
+router.post('/changes/:id/items', requirePermission('engineering', 'add'), async (req, res) => {
   try {
     const {
       item_type,
@@ -211,7 +218,7 @@ router.post('/changes/:id/items', async (req, res) => {
   }
 });
 
-router.delete('/changes/items/:itemId', async (req, res) => {
+router.delete('/changes/items/:itemId', requirePermission('engineering', 'delete'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM engineering_change_items WHERE id = $1`, [req.params.itemId]);
     res.json({ success: true });
@@ -220,7 +227,7 @@ router.delete('/changes/items/:itemId', async (req, res) => {
   }
 });
 
-router.post('/changes/:id/submit', async (req, res) => {
+router.post('/changes/:id/submit', requirePermission('engineering', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -253,7 +260,7 @@ router.post('/changes/:id/submit', async (req, res) => {
   }
 });
 
-router.post('/changes/:id/approve', async (req, res) => {
+router.post('/changes/:id/approve', requirePermission('engineering', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { remarks } = req.body;
@@ -291,7 +298,7 @@ router.post('/changes/:id/approve', async (req, res) => {
   }
 });
 
-router.post('/changes/:id/reject', async (req, res) => {
+router.post('/changes/:id/reject', requirePermission('engineering', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { remarks } = req.body;
@@ -325,7 +332,7 @@ router.post('/changes/:id/reject', async (req, res) => {
   }
 });
 
-router.post('/changes/:id/implement', async (req, res) => {
+router.post('/changes/:id/implement', requirePermission('engineering', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { implementation_note } = req.body;
@@ -393,7 +400,7 @@ router.post('/changes/:id/implement', async (req, res) => {
    GET /changes/:id/documents  — all documents linked to an ECN
    GET /changes/:id/signatures — all signature requests linked to an ECN
    ────────────────────────────────────────────────────────────────────────── */
-router.get('/changes/:id/documents', async (req, res) => {
+router.get('/changes/:id/documents', requirePermission('engineering', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT * FROM document_master
@@ -408,7 +415,7 @@ router.get('/changes/:id/documents', async (req, res) => {
   }
 });
 
-router.get('/changes/:id/signatures', async (req, res) => {
+router.get('/changes/:id/signatures', requirePermission('engineering', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT s.*,

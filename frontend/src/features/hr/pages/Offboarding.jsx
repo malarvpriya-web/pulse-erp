@@ -3,6 +3,7 @@ import { CheckSquare, Square, ChevronDown, ChevronUp, AlertCircle, Download, Bel
 import api from '@/services/api/client';
 import { exportCSV } from '@/features/_shared/exportUtils';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DEFAULT_TEMPLATE = [
   { category: 'IT & Access',    item_label: 'Revoke system access',                   default_assignee: 'IT' },
@@ -273,7 +274,32 @@ export default function Offboarding({ setPage }) {
 
   // ── render ──────────────────────────────────────────────────────────────────
   return (
-    <div style={{ padding: '24px', maxWidth: 960, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Offboarding"
+        actions={<>
+          {!selectedEmp && (
+            <button className="plh-cta plh-cta--ghost"
+              onClick={() => setPage?.('ExitManagement')}>
+              + Initiate Offboarding
+            </button>
+          )}
+          <button className="plh-cta plh-cta--ghost"
+            onClick={() => setShowTemplate((s) => !s)}>
+            Template Config
+          </button>
+          {!selectedEmp && (
+            <button className="plh-cta"
+              onClick={handleExport}
+              disabled={employees.length === 0}>
+              <Download size={13} /> Export CSV
+            </button>
+          )}
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={pendingMarkComplete}
         title="Complete Offboarding"
@@ -302,43 +328,7 @@ export default function Offboarding({ setPage }) {
       )}
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>Offboarding</h2>
-          {!selectedEmp && !loading && (
-            <p style={{ margin: '2px 0 0', fontSize: 12, color: '#6b7280' }}>
-              {employees.length > 0
-                ? `${employees.length} employee${employees.length !== 1 ? 's' : ''} in offboarding process`
-                : 'No active offboardings'}
-            </p>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          {!selectedEmp && (
-            <button
-              onClick={() => setPage?.('ExitManagement')}
-              style={{ border: 'none', background: '#6366f1', color: '#fff', borderRadius: 6, padding: '7px 14px', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}
-            >
-              + Initiate Offboarding
-            </button>
-          )}
-          <button
-            onClick={() => setShowTemplate((s) => !s)}
-            style={{ border: '1px solid #e5e7eb', background: showTemplate ? '#f3f4f6' : '#fff', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer', color: '#374151' }}
-          >
-            Template Config
-          </button>
-          {!selectedEmp && (
-            <button
-              onClick={handleExport}
-              disabled={employees.length === 0}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, border: '1px solid #e5e7eb', background: '#fff', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: employees.length ? 'pointer' : 'not-allowed', opacity: employees.length ? 1 : 0.55, color: '#374151' }}
-            >
-              <Download size={13} /> Export CSV
-            </button>
-          )}
-        </div>
-      </div>
+
 
       {/* Template Config panel */}
       {showTemplate && (
@@ -517,7 +507,7 @@ export default function Offboarding({ setPage }) {
                   </span>
                 )}
                 {selectedEmp.status && (
-                  <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: '#fef3c7', color: '#92400e', textTransform: 'capitalize' }}>
+                  <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: '#ede9fe', color: '#5b21b6', textTransform: 'capitalize' }}>
                     {selectedEmp.status}
                   </span>
                 )}
@@ -655,7 +645,7 @@ export default function Offboarding({ setPage }) {
           {!checklistLoading && totalItems > 0 && (
             <>
               {pct < 100 ? (
-                <div style={{ background: '#fef3c7', borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, fontSize: 13, color: '#92400e' }}>
+                <div style={{ background: '#ede9fe', borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, fontSize: 13, color: '#5b21b6' }}>
                   <AlertCircle size={14} />
                   {totalItems - doneItems} task{totalItems - doneItems !== 1 ? 's' : ''} remaining before offboarding can be completed
                 </div>
@@ -682,6 +672,6 @@ export default function Offboarding({ setPage }) {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

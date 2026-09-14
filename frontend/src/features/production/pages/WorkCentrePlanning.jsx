@@ -1,13 +1,15 @@
 // frontend/src/features/production/pages/WorkCentrePlanning.jsx
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Factory } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const CHART_COLORS = ['#6B3FDB', '#2563eb', '#d97706', '#16a34a', '#dc2626'];
+const CHART_COLORS = ['#6B3FDB', '#2563eb', '#6d28d9', '#16a34a', '#dc2626'];
 
 function UtilizationBar({ pct }) {
-  const color = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#16a34a';
+  const color = pct >= 90 ? '#dc2626' : pct >= 70 ? '#6d28d9' : '#16a34a';
   return (
     <div style={{ width: '100%' }}>
       <div style={{ height: 8, background: '#e9e4ff', borderRadius: 4, overflow: 'hidden', marginBottom: 3 }}>
@@ -124,13 +126,20 @@ export default function WorkCentrePlanning() {
   const setField = k => e => setAddForm(f => ({ ...f, [k]: e.target.value }));
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="🏭 Work Centre Planning"
+        subtitle="Capacity utilisation and production load management"
+      />
+    }>
 
       {/* ── Header ── */}
       <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ margin: '0 0 4px', color: '#4c1d95', fontSize: 22 }}>🏭 Work Centre Planning</h2>
-          <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>Capacity utilisation and production load management</p>
+
+
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div>
@@ -209,8 +218,8 @@ export default function WorkCentrePlanning() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 14, marginBottom: 22 }}>
           {workCentres.map(wc => {
             const pct = wc.utilization_pct || 0;
-            const statusColor = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#16a34a';
-            const statusBg    = pct >= 90 ? '#fee2e2' : pct >= 70 ? '#fef3c7' : '#d1fae5';
+            const statusColor = pct >= 90 ? '#dc2626' : pct >= 70 ? '#6d28d9' : '#16a34a';
+            const statusBg    = pct >= 90 ? '#fee2e2' : pct >= 70 ? '#ede9fe' : '#d1fae5';
             return (
               <div key={wc.id} style={{ background: '#fff', border: `1px solid ${pct >= 90 ? '#fecaca' : '#e9e4ff'}`, borderRadius: 12, padding: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
@@ -320,6 +329,6 @@ export default function WorkCentrePlanning() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

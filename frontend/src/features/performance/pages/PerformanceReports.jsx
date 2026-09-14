@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react';
 import { Download, FileText, BarChart2, Target, TrendingUp, Award, Users, MessageSquare, RefreshCw, AlertCircle, X } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const REPORTS = [
   { key: 'summary',           label: 'Performance Summary',      desc: 'All employees with ratings, self/manager scores, KRA, calibrated rating', icon: FileText,    color: '#3b82f6', roles: ['manager', 'hr', 'super_admin', 'admin'] },
-  { key: 'pending',           label: 'Pending Reviews',          desc: 'Who hasn\'t completed self or manager reviews yet', icon: RefreshCw,   color: '#f59e0b', roles: ['manager', 'hr', 'super_admin', 'admin'] },
+  { key: 'pending',           label: 'Pending Reviews',          desc: 'Who hasn\'t completed self or manager reviews yet', icon: RefreshCw,   color: '#7c5cf0', roles: ['manager', 'hr', 'super_admin', 'admin'] },
   { key: 'rating-distribution', label: 'Rating Distribution',   desc: 'Bell curve breakdown by department and rating band', icon: BarChart2,   color: '#8b5cf6', roles: ['manager', 'hr', 'super_admin', 'admin'] },
   { key: 'goals',             label: 'Goal Completion',          desc: 'Goal status, achievement %, targets vs actuals per employee', icon: Target,     color: '#10b981', roles: ['manager', 'hr', 'super_admin', 'admin'] },
-  { key: 'kra-scores',        label: 'KRA Scores',               desc: 'Per-KRA scores (self, manager, final) for all employees', icon: BarChart2,  color: '#f59e0b', roles: ['manager', 'hr', 'super_admin', 'admin'] },
+  { key: 'kra-scores',        label: 'KRA Scores',               desc: 'Per-KRA scores (self, manager, final) for all employees', icon: BarChart2,  color: '#7c5cf0', roles: ['manager', 'hr', 'super_admin', 'admin'] },
   { key: 'increments',        label: 'Increment Recommendations', desc: 'Increment % and new CTC by department with approval status', icon: TrendingUp, color: '#10b981', roles: ['hr', 'super_admin', 'admin'] },
   { key: 'promotions',        label: 'Promotion Pipeline',        desc: 'All promotion recommendations with current/proposed designation', icon: Award,     color: '#ef4444', roles: ['hr', 'super_admin', 'admin'] },
   { key: 'feedback360',       label: '360° Feedback Summary',    desc: 'Feedback completion rate and average scores per employee', icon: MessageSquare, color: '#3b82f6', roles: ['hr', 'super_admin', 'admin'] },
@@ -67,10 +68,14 @@ export default function PerformanceReports() {
   const inp = { background: 'var(--color-background)', border: '1px solid var(--color-border-tertiary)', borderRadius: 8, padding: '7px 12px', fontSize: 13, color: 'var(--color-text-primary)' };
 
   return (
-    <div style={{ padding: 24 }}>
-      <h1 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px', color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <FileText size={20} style={{ color: 'var(--color-primary)' }} /> PMS Reports
-      </h1>
+    <PageShell dock={
+      <PageHero
+        icon={FileText}
+        eyebrow="Performance"
+        title="PMS Reports"
+      />
+    }>
+
       <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: '0 0 24px' }}>All reports support CSV export. Use filters to scope by cycle or department.</p>
 
       {/* Filters */}
@@ -185,6 +190,6 @@ export default function PerformanceReports() {
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -132,13 +132,13 @@
 }
 
 .status-badge.in_progress {
-  background: #fef3c7;
-  color: #92400e;
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 .status-badge.waiting {
-  background: #fed7aa;
-  color: #9a3412;
+  background: #ddd6fe;
+  color: #4c1d95;
 }
 
 .status-badge.resolved {

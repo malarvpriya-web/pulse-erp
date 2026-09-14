@@ -1,8 +1,10 @@
 import React, { useCallback, useMemo, useState } from 'react';
+import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TAB_LIST = ['Budget List', 'vs Actuals', 'Forecast', 'Variance Analysis', 'Cash Flow Projection'];
 
@@ -34,7 +36,7 @@ function formatINR(value) {
 
 function utilizationColor(pct) {
   if (pct > 90) return '#dc2626';
-  if (pct > 75) return '#d97706';
+  if (pct > 75) return '#6d28d9';
   return '#15803d';
 }
 
@@ -136,7 +138,7 @@ function StatusBadge({ status }) {
   const map = {
     draft:        { bg: '#f3f4f6', color: '#6b7280', label: 'Draft' },
     submitted:    { bg: '#f5f3ff', color: '#6B3FDB', label: 'Submitted' },
-    under_review: { bg: '#fef3c7', color: '#b45309', label: 'Under Review' },
+    under_review: { bg: '#ede9fe', color: '#6d28d9', label: 'Under Review' },
     approved:     { bg: '#dcfce7', color: '#15803d', label: 'Approved' },
     active:       { bg: '#dbeafe', color: '#1d4ed8', label: 'Active' },
     closed:       { bg: '#f3f4f6', color: '#374151', label: 'Closed' },
@@ -549,7 +551,14 @@ export default function BudgetManagement() {
   const isFiltered = filters.department || filters.status || globalFY !== getCurrentFY();
 
   return (
-    <div style={{ padding: 20, background: '#f8f7ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="Budget Management"
+        subtitle="Finance budget controls and approval actions"
+      />
+    }>
 
       {readOnly && <ReadOnlyBanner />}
 
@@ -583,10 +592,6 @@ export default function BudgetManagement() {
         </div>
       )}
 
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: 0, fontSize: 22, color: '#1f2937', fontWeight: 800 }}>Budget Management</h1>
-        <p style={{ margin: '6px 0 0', fontSize: 13, color: '#6b7280' }}>Finance budget controls and approval actions</p>
-      </div>
 
       <div style={{ display: 'flex', gap: 6, background: '#fff', border: '1px solid #e9e4ff', borderRadius: 10, padding: 4, width: 'fit-content', marginBottom: 16 }}>
         {TAB_LIST.map((tab, index) => (
@@ -870,7 +875,7 @@ export default function BudgetManagement() {
                   <div style={{ display: 'grid', gap: 8 }}>
                     {actualsData.alerts.map((a, idx) => (
                       <div key={`alert-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 10px', background: '#fff7f7', border: '1px solid #fecaca', borderRadius: 8 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: a.severity === 'critical' ? '#b91c1c' : '#b45309' }}>{String(a.severity || 'warning').toUpperCase()}</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: a.severity === 'critical' ? '#b91c1c' : '#6d28d9' }}>{String(a.severity || 'warning').toUpperCase()}</span>
                         <span style={{ fontSize: 13, color: '#111827', flex: 1 }}>{a.department || 'Unknown'}</span>
                         <span style={{ fontSize: 13, fontWeight: 700, color: utilizationColor(Number(a.utilization_pct)) }}>{Number(a.utilization_pct ?? 0).toFixed(1)}% utilized</span>
                       </div>
@@ -994,7 +999,7 @@ export default function BudgetManagement() {
                   const rootBadge = root.includes('price')
                     ? { bg: '#dbeafe', color: '#1d4ed8', label: 'Price Variance' }
                     : root.includes('volume')
-                      ? { bg: '#fef3c7', color: '#b45309', label: 'Volume Variance' }
+                      ? { bg: '#ede9fe', color: '#6d28d9', label: 'Volume Variance' }
                       : { bg: '#f5f3ff', color: '#6d28d9', label: 'Timing Variance' };
                   return (
                     <tr
@@ -1102,12 +1107,12 @@ export default function BudgetManagement() {
                       <td style={{ padding: '10px 12px', fontSize: 13, textAlign: 'right', whiteSpace: 'nowrap' }}>{formatINR(row.inflow)}</td>
                       <td style={{ padding: '10px 12px', fontSize: 13, textAlign: 'right', whiteSpace: 'nowrap' }}>{formatINR(row.outflow)}</td>
                       <td style={{ padding: '10px 12px', fontSize: 13, color: row.net_movement >= 0 ? '#15803d' : '#b91c1c', textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 700 }}>{formatINR(row.net_movement)}</td>
-                      <td style={{ padding: '10px 12px', fontSize: 13, color: belowZero ? '#b91c1c' : (belowMinimum ? '#b45309' : '#111827'), textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 700 }}>{formatINR(row.net_cash_position)}</td>
+                      <td style={{ padding: '10px 12px', fontSize: 13, color: belowZero ? '#b91c1c' : (belowMinimum ? '#6d28d9' : '#111827'), textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 700 }}>{formatINR(row.net_cash_position)}</td>
                       <td style={{ padding: '10px 12px' }}>
                         {belowZero
                           ? <span style={{ background: '#fee2e2', color: '#b91c1c', borderRadius: 999, fontSize: 12, fontWeight: 700, padding: '4px 10px' }}>Negative Cash</span>
                           : belowMinimum
-                            ? <span style={{ background: '#fef3c7', color: '#b45309', borderRadius: 999, fontSize: 12, fontWeight: 700, padding: '4px 10px' }}>Below Minimum</span>
+                            ? <span style={{ background: '#ede9fe', color: '#6d28d9', borderRadius: 999, fontSize: 12, fontWeight: 700, padding: '4px 10px' }}>Below Minimum</span>
                             : <span style={{ background: '#dcfce7', color: '#15803d', borderRadius: 999, fontSize: 12, fontWeight: 700, padding: '4px 10px' }}>Healthy</span>
                         }
                       </td>
@@ -1134,7 +1139,7 @@ export default function BudgetManagement() {
                 : <div style={{ display: 'grid', gap: 8 }}>
                     {cashflowData.alerts.map((alert, idx) => (
                       <div key={`alert-${alert.month_label}-${idx}`} style={{ border: '1px solid #fee2e2', background: '#fff7f7', borderRadius: 8, padding: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: alert.severity === 'critical' ? '#b91c1c' : '#b45309' }}>{alert.month_label} - {String(alert.severity || 'warning').toUpperCase()}</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: alert.severity === 'critical' ? '#b91c1c' : '#6d28d9' }}>{alert.month_label} - {String(alert.severity || 'warning').toUpperCase()}</div>
                         <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>Net: {formatINR(alert.net_cash_position)} | Shortfall: {formatINR(alert.shortfall)}</div>
                       </div>
                     ))}
@@ -1144,7 +1149,7 @@ export default function BudgetManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

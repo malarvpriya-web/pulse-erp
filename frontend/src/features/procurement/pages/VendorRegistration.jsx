@@ -4,7 +4,9 @@
  * Steps: Company Info → Business Details → Contacts → Bank → Documents → Review → OTP
  */
 import { useState, useCallback } from 'react';
+import { Building2 } from 'lucide-react';
 import axios from 'axios';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const API = import.meta.env.VITE_API_URL || '';
 const api = axios.create({ baseURL: `${API}/api/v1` });
@@ -179,14 +181,14 @@ export default function VendorRegistration() {
   );
 
   return (
-    <div style={styles.root}>
-      {/* Header */}
-      <div style={styles.header}>
-        <div style={styles.headerInner}>
-          <h1 style={styles.title}>Vendor Registration Portal</h1>
-          <p style={styles.subtitle}>Register as an approved supplier. All information is kept confidential.</p>
-        </div>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Building2}
+        eyebrow="Procurement"
+        title="Vendor Registration Portal"
+        subtitle="Register as an approved supplier. All information is kept confidential."
+      />
+    }>
 
       {/* Stepper */}
       <div style={styles.stepper}>
@@ -212,7 +214,7 @@ export default function VendorRegistration() {
             {dupWarning.map((d, i) => (
               <div key={i}>· {d.field} matches existing vendor: <strong>{d.existing}</strong></div>
             ))}
-            <div style={{ marginTop: 8, fontSize: 13, color: '#92400e' }}>
+            <div style={{ marginTop: 8, fontSize: 13, color: '#5b21b6' }}>
               If this is a different entity, please continue. Otherwise contact our procurement team.
             </div>
           </div>
@@ -473,7 +475,7 @@ export default function VendorRegistration() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }
 
@@ -531,7 +533,7 @@ const styles = {
   btnDanger: { padding: '4px 12px', background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 13 },
   linkBtn: { background: 'none', border: 'none', color: '#6B3FDB', cursor: 'pointer', fontSize: 13, textDecoration: 'underline', marginTop: 4, display: 'block' },
   errorBox: { background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '10px 14px', color: '#dc2626', marginBottom: 16, fontSize: 14 },
-  warnBox: { background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '10px 14px', color: '#92400e', marginBottom: 16, fontSize: 14 },
+  warnBox: { background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 6, padding: '10px 14px', color: '#5b21b6', marginBottom: 16, fontSize: 14 },
   infoBox: { background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '10px 14px', color: '#1d4ed8', fontSize: 13 },
   contactCard: { background: '#f9fafb', borderRadius: 8, padding: '16px', marginBottom: 16, border: '1px solid #e5e7eb' },
   otpGroup: { marginBottom: 20, textAlign: 'left' },

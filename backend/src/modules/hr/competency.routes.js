@@ -1,6 +1,7 @@
 // backend/src/modules/hr/competency.routes.js
 import express from 'express';
 import pool from '../../config/db.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid  = req => { const n = Number.parseInt(req.scope?.company_id, 10); return Number.isInteger(n) ? n : null; };
@@ -45,7 +46,7 @@ router.post('/', async (req, res) => {
 });
 
 /* ── PUT /competencies/:id ─────────────────────────────────── */
-router.put('/:id', async (req, res) => {
+router.put('/:id', captureBefore('competency_framework'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { name,category,description,level_1_descriptor,level_2_descriptor,
           level_3_descriptor,level_4_descriptor,level_5_descriptor } = req.body;
@@ -69,7 +70,7 @@ router.put('/:id', async (req, res) => {
 });
 
 /* ── DELETE /competencies/:id ──────────────────────────────── */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', captureBefore('competency_framework'), async (req, res) => {
   if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     await pool.query(`DELETE FROM competency_framework WHERE id=$1`, [req.params.id]);

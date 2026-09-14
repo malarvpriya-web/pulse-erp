@@ -6,6 +6,7 @@ import {
 import api from "@/services/api/client";
 import ResultDialog from "@/components/ResultDialog";
 import "./Probation.css";
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ── helpers ── */
 const DEFAULT_PROBATION_DAYS = 180;
@@ -24,8 +25,8 @@ function probationDaysForEmp(emp = {}) {
 
 const AVATAR_PALETTE = [
   ['#6d28d9','#ede9fe'],['#0369a1','#e0f2fe'],['#047857','#d1fae5'],
-  ['#b45309','#fef3c7'],['#be123c','#ffe4e6'],['#0f766e','#ccfbf1'],
-  ['#7c2d12','#ffedd5'],['#1e40af','#dbeafe'],
+  ['#6d28d9','#ede9fe'],['#be123c','#ffe4e6'],['#0f766e','#ccfbf1'],
+  ['#7c2d12','#ede9fe'],['#1e40af','#dbeafe'],
 ];
 function avatarColor(name = '') {
   let h = 0;
@@ -55,7 +56,7 @@ function calcProbation(joining_date, totalDays = DEFAULT_PROBATION_DAYS) {
 
 const STATUS_CFG = {
   safe     : { label: 'On Track',   color: '#15803d', bg: '#dcfce7', barColor: '#22c55e' },
-  warning  : { label: 'Due Soon',   color: '#b45309', bg: '#fef3c7', barColor: '#f59e0b' },
+  warning  : { label: 'Due Soon',   color: '#6d28d9', bg: '#ede9fe', barColor: '#7c5cf0' },
   critical : { label: 'Critical',   color: '#b91c1c', bg: '#fee2e2', barColor: '#ef4444' },
   overdue  : { label: 'Overdue',    color: '#9d174d', bg: '#fce7f3', barColor: '#ec4899' },
 };
@@ -264,30 +265,31 @@ export default function Probation() {
 
   /* ── render ── */
   return (
-    <div className="prob-page">
-      <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
-
-      {/* Header */}
-      <div className="prob-header">
-        <div className="prob-header-left">
-          <h1>Probation Management</h1>
-          <p>Track, notify, and close probation periods for all employees</p>
-        </div>
-        <div className="prob-header-right">
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Probation Management"
+        subtitle="Track, notify, and close probation periods for all employees"
+        actions={<>
           <button
-            className={`prob-refresh-btn${refreshing ? ' spinning' : ''}`}
-            onClick={() => load(true)}
-          >
+            className="plh-cta plh-cta--ghost"
+            onClick={() => load(true)}>
             <RefreshCw size={14} />
             Refresh
           </button>
-          <button className="prob-hist-toggle" onClick={() => setShowHistory(v => !v)}>
+          <button className="plh-cta" onClick={() => setShowHistory(v => !v)}>
             <History size={14} />
             Notification Log
             {showHistory ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
+
+      {/* Header */}
+
 
       {/* KPI */}
       <div className="prob-kpi-row">
@@ -310,11 +312,11 @@ export default function Probation() {
           </div>
         </div>
         <div className="prob-kpi">
-          <div className="prob-kpi-icon" style={{ background: '#fef3c7' }}>
-            <Clock size={20} color="#d97706" />
+          <div className="prob-kpi-icon" style={{ background: '#ede9fe' }}>
+            <Clock size={20} color="#6d28d9" />
           </div>
           <div className="prob-kpi-body">
-            <div className="prob-kpi-val" style={{ color: '#d97706' }}>{kpi.warning}</div>
+            <div className="prob-kpi-val" style={{ color: '#6d28d9' }}>{kpi.warning}</div>
             <div className="prob-kpi-label">Due in 30 Days</div>
           </div>
         </div>
@@ -528,7 +530,7 @@ export default function Probation() {
                     }
                   </div>
                   {last && (Date.now() - new Date(last.created_at).getTime()) < (1000 * 60 * 60 * 24) && (
-                    <span style={{ fontSize: 11, color: '#b45309', marginRight: 8 }}>Reminder sent today</span>
+                    <span style={{ fontSize: 11, color: '#6d28d9', marginRight: 8 }}>Reminder sent today</span>
                   )}
                   <button
                     className={`prob-notify-btn ${btnClass}`}
@@ -730,7 +732,7 @@ export default function Probation() {
                       className={`prob-star${rating >= n ? ' active' : ''}`}
                       onClick={() => setRating(n)}
                     >
-                      <Star size={16} fill={rating >= n ? '#f59e0b' : 'none'} color={rating >= n ? '#f59e0b' : '#d1d5db'} />
+                      <Star size={16} fill={rating >= n ? '#7c5cf0' : 'none'} color={rating >= n ? '#7c5cf0' : '#d1d5db'} />
                     </button>
                   ))}
                   <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 6, alignSelf: 'center' }}>
@@ -761,7 +763,7 @@ export default function Probation() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

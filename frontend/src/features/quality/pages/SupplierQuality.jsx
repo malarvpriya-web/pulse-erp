@@ -1,10 +1,14 @@
 // frontend/src/features/quality/pages/SupplierQuality.jsx
 import { useState, useEffect, useCallback } from 'react';
+import {
+  Factory, RefreshCw, Users, Gauge, Award, AlertTriangle, Sigma,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell, StatBand, Stat } from '@/components/pulse-ui';
 
 function ScoreGauge({ score }) {
-  const color = score >= 90 ? '#16a34a' : score >= 70 ? '#d97706' : '#dc2626';
+  const color = score >= 90 ? '#16a34a' : score >= 70 ? '#6d28d9' : '#dc2626';
   const grade = score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : 'D';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -61,7 +65,7 @@ function VendorDetail({ vendor_id, vendor_name, onClose }) {
                       <tr key={n.id} style={{ borderTop: '1px solid #f3f4f6' }}>
                         <td style={{ padding: '7px 10px', fontWeight: 600, color: '#6B3FDB' }}>{n.ncr_number}</td>
                         <td style={{ padding: '7px 10px' }}>{n.title}</td>
-                        <td style={{ padding: '7px 10px', color: n.severity === 'critical' ? '#dc2626' : n.severity === 'major' ? '#d97706' : '#16a34a', fontWeight: 700, fontSize: 11, textTransform: 'uppercase' }}>{n.severity}</td>
+                        <td style={{ padding: '7px 10px', color: n.severity === 'critical' ? '#dc2626' : n.severity === 'major' ? '#6d28d9' : '#16a34a', fontWeight: 700, fontSize: 11, textTransform: 'uppercase' }}>{n.severity}</td>
                         <td style={{ padding: '7px 10px' }}>{n.status}</td>
                         <td style={{ padding: '7px 10px', color: '#9ca3af' }}>{n.created_at ? new Date(n.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                       </tr>
@@ -118,12 +122,45 @@ export default function SupplierQuality() {
 
   const filtered = suppliers.filter(s => !search || s.vendor_name?.toLowerCase().includes(search.toLowerCase()));
 
+  const scoreOf   = s => Math.round(parseFloat(s.quality_score) || 0);
+  const avgScore  = suppliers.length
+    ? Math.round(suppliers.reduce((a, s) => a + scoreOf(s), 0) / suppliers.length)
+    : 0;
+  const gradeA    = suppliers.filter(s => scoreOf(s) >= 90).length;
+  const atRisk    = suppliers.filter(s => scoreOf(s) < 70).length;
+  const openNcrs  = suppliers.reduce((a, s) => a + (Number(s.open_ncrs) || 0), 0);
+  const avgPpm    = suppliers.length
+    ? Math.round(suppliers.reduce((a, s) => a + (parseFloat(s.ppm) || 0), 0) / suppliers.length)
+    : 0;
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Supplier Quality Scorecards</h2>
-        <button onClick={load} style={{ background: '#f3f4f6', border: 'none', borderRadius: 8, padding: '9px 16px', cursor: 'pointer', fontSize: 13 }}>↻ Refresh</button>
-      </div>
+    <PageShell dock={
+        <PageHero
+          icon={Factory}
+          eyebrow="Quality"
+          title="Supplier Quality Scorecards"
+          subtitle="Vendor quality score, defect rate, PPM and non-conformance history"
+          meta={[
+            { value: suppliers.length, label: 'suppliers rated' },
+            { value: `${avgScore}%`, label: 'avg score', tone: avgScore >= 90 ? 'good' : avgScore >= 70 ? 'warn' : 'bad' },
+            { value: atRisk, label: 'at risk', tone: atRisk ? 'bad' : 'good' },
+          ]}
+          actions={
+            <button className="plh-cta" onClick={load} disabled={loading}>
+              <RefreshCw size={14} className={loading ? 'plh-spin' : undefined} />
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          }
+        />
+    }>
+
+      <StatBand cols={5}>
+        <Stat index={0} icon={Users}         tone="primary" label="Suppliers"    value={suppliers.length} sub="with quality data" />
+        <Stat index={1} icon={Gauge}         tone={avgScore >= 90 ? 'success' : avgScore >= 70 ? 'warning' : 'danger'} label="Avg Score" value={`${avgScore}%`} sub="quality score" />
+        <Stat index={2} icon={Award}         tone="success" label="Grade A"      value={gradeA}   sub="score ≥ 90%" />
+        <Stat index={3} icon={AlertTriangle} tone={atRisk ? 'danger' : 'success'} label="At Risk" value={atRisk} sub="score < 70%" />
+        <Stat index={4} icon={Sigma}         tone="info"    label="Avg PPM"      value={avgPpm.toLocaleString()} sub={`${openNcrs} open NCRs`} />
+      </StatBand>
 
       <div style={{ marginBottom: 16 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search supplier…" style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, width: 280 }} />
@@ -166,6 +203,6 @@ export default function SupplierQuality() {
       )}
 
       {selected && <VendorDetail vendor_id={selected.vendor_id} vendor_name={selected.vendor_name} onClose={() => setSelected(null)} />}
-    </div>
+    </PageShell>
   );
 }

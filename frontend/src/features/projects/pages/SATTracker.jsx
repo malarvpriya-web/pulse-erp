@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { MapPin, Plus, X, RefreshCw, CheckCircle } from 'lucide-react';
+import { MapPin, Plus, X, RefreshCw, CheckCircle, ShieldCheck } from 'lucide-react';
 import { getProjectSAT, createSATRecord, updateSATRecord, getProjects } from '../services/projectsService';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   scheduled:        { bg: '#dbeafe', color: '#1d4ed8', label: 'Scheduled' },
-  in_progress:      { bg: '#fef3c7', color: '#92400e', label: 'In Progress' },
+  in_progress:      { bg: '#ede9fe', color: '#5b21b6', label: 'In Progress' },
   passed:           { bg: '#dcfce7', color: '#15803d', label: 'PASSED' },
   failed:           { bg: '#fee2e2', color: '#dc2626', label: 'FAILED' },
-  conditional_pass: { bg: '#fef9c3', color: '#a16207', label: 'Conditional Pass' },
+  conditional_pass: { bg: '#ede9fe', color: '#6d28d9', label: 'Conditional Pass' },
 };
 
 const DEFAULT_SAT_PARAMS = [
@@ -83,21 +84,22 @@ export default function SATTracker({ setPage, urlParams }) {
   const signedOff = records.filter(r => r.client_signed_off).length;
 
   return (
-    <div style={{ padding: '20px 24px' }}>
-      {toast && <div style={{ position: 'fixed', top: 16, right: 16, padding: '10px 16px', borderRadius: 8, zIndex: 9999, background: toast.type === 'error' ? '#fef2f2' : '#f0fdf4', color: toast.type === 'error' ? '#dc2626' : '#15803d', border: `1px solid ${toast.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{toast.msg}</div>}
-
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>SAT Tracker — Site Acceptance Tests</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Conduct and record customer-witnessed site acceptance testing with formal sign-off</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{ padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', cursor: 'pointer' }}><RefreshCw size={14} /></button>
-          <button onClick={openCreate} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: '#059669', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Projects"
+        title="SAT Tracker — Site Acceptance Tests"
+        subtitle="Conduct and record customer-witnessed site acceptance testing with formal sign-off"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          <button className="plh-cta" onClick={openCreate}>
             <Plus size={14} /> Schedule SAT
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {toast && <div style={{ position: 'fixed', top: 16, right: 16, padding: '10px 16px', borderRadius: 8, zIndex: 9999, background: toast.type === 'error' ? '#fef2f2' : '#f0fdf4', color: toast.type === 'error' ? '#dc2626' : '#15803d', border: `1px solid ${toast.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{toast.msg}</div>}
+
 
       <div style={{ marginBottom: 16 }}>
         <select value={selectedPid} onChange={e => setSelectedPid(e.target.value)} style={{ padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 6, minWidth: 280, background: 'var(--color-background)', color: 'var(--color-text-primary)' }}>
@@ -111,7 +113,7 @@ export default function SATTracker({ setPage, urlParams }) {
           { label: 'Total SATs', value: records.length, color: '#6366f1', bg: '#eef2ff' },
           { label: 'Passed', value: passed, color: '#15803d', bg: '#f0fdf4' },
           { label: 'Client Sign-Off', value: signedOff, color: '#0369a1', bg: '#e0f2fe' },
-          { label: 'Pending', value: records.filter(r => r.status === 'scheduled').length, color: '#92400e', bg: '#fef3c7' },
+          { label: 'Pending', value: records.filter(r => r.status === 'scheduled').length, color: '#5b21b6', bg: '#ede9fe' },
         ].map(k => (
           <div key={k.label} style={{ background: k.bg, borderRadius: 8, padding: '14px 16px', border: `1px solid ${k.color}22` }}>
             <div style={{ fontSize: 22, fontWeight: 700, color: k.color }}>{k.value}</div>
@@ -274,6 +276,6 @@ export default function SATTracker({ setPage, urlParams }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

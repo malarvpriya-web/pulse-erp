@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  ArrowLeft, Calendar, Users, IndianRupee, Clock,
-  Plus, X, CheckSquare, RefreshCw, AlertTriangle, FileText,
-  Shield, Target, Trash2, Edit3, Check, Flag
+  ArrowLeft, Calendar, Users, IndianRupee, Clock, Plus, X, CheckSquare,
+  RefreshCw, AlertTriangle, FileText, Shield, Target, Trash2, Edit3,
+  Check, Flag, FolderKanban,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import './ProjectDetail.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = n => {
   const v = parseFloat(n || 0);
@@ -19,28 +20,28 @@ const fmt = n => {
 const STATUS_META = {
   active:    { bg: '#dcfce7', color: '#15803d', label: 'Active' },
   planning:  { bg: '#dbeafe', color: '#1d4ed8', label: 'Planning' },
-  on_hold:   { bg: '#fef3c7', color: '#92400e', label: 'On Hold' },
+  on_hold:   { bg: '#ede9fe', color: '#5b21b6', label: 'On Hold' },
   completed: { bg: '#f3f4f6', color: '#6b7280', label: 'Completed' },
   cancelled: { bg: '#fee2e2', color: '#dc2626', label: 'Cancelled' },
 };
 
 const TASK_COLS = [
   { key: 'todo',        label: 'To Do',       color: '#6b7280', bg: '#f3f4f6' },
-  { key: 'in_progress', label: 'In Progress',  color: '#f59e0b', bg: '#fef3c7' },
+  { key: 'in_progress', label: 'In Progress',  color: '#7c5cf0', bg: '#ede9fe' },
   { key: 'review',      label: 'Review',       color: '#3b82f6', bg: '#dbeafe' },
   { key: 'done',        label: 'Done',         color: '#10b981', bg: '#dcfce7' },
 ];
 
 const PRIORITY_COLORS = {
   high:     { bg: '#fee2e2', color: '#dc2626' },
-  medium:   { bg: '#fef3c7', color: '#92400e' },
+  medium:   { bg: '#ede9fe', color: '#5b21b6' },
   low:      { bg: '#f3f4f6', color: '#6b7280' },
   critical: { bg: '#ffd4d4', color: '#b91c1c' },
 };
 
-const AVATAR_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#3b82f6', '#8b5cf6'];
+const AVATAR_COLORS = ['#6366f1', '#10b981', '#7c5cf0', '#ef4444', '#3b82f6', '#8b5cf6'];
 
-const RISK_COLORS = { high: '#dc2626', medium: '#ea580c', low: '#15803d' };
+const RISK_COLORS = { high: '#dc2626', medium: '#6d28d9', low: '#15803d' };
 const riskLevel = (score) => score >= 15 ? 'high' : score >= 6 ? 'medium' : 'low';
 
 const emptyTask = () => ({ task_title: '', description: '', priority: 'medium', status: 'todo', due_date: '', assignee_name: '' });
@@ -102,6 +103,16 @@ export default function ProjectDetail({ setPage, urlParams }) {
 
   const [toast,              setToast]              = useState(null);
   const [submitting,         setSubmitting]         = useState(false);
+  // Close Project — PUT /projects/:id's status='completed' transition (with
+  // its closure-blocker gate and cost-rollup trigger) has existed since this
+  // was audited, but no page anywhere ever called it: updateProject() sat in
+  // projectsService.js with zero callers. Same "wired but unreachable" gap
+  // this audit keeps finding elsewhere, just in the frontend this time.
+  const [closeModal,    setCloseModal]    = useState(false);
+  const [closeBlockers, setCloseBlockers] = useState(null);
+  const [closeRating,   setCloseRating]   = useState(0);
+  const [closeFeedback, setCloseFeedback] = useState('');
+  const [closing,       setClosing]       = useState(false);
   const [pendingDeleteTask,  setPendingDeleteTask]  = useState(null);
   const [pendingCompleteMile, setPendingCompleteMile] = useState(null);
   const [pendingDeleteMile,  setPendingDeleteMile]  = useState(null);
@@ -159,6 +170,32 @@ export default function ProjectDetail({ setPage, urlParams }) {
 
   useEffect(() => { load(); }, [load]);
 
+  const handleCloseProject = async () => {
+    setClosing(true);
+    setCloseBlockers(null);
+    try {
+      await api.put(`/projects/projects/${pid}`, {
+        status: 'completed',
+        customer_rating: closeRating || null,
+        customer_feedback: closeFeedback || null,
+      });
+      showToast('Project closed');
+      setCloseModal(false);
+      setCloseRating(0);
+      setCloseFeedback('');
+      load();
+    } catch (err) {
+      const body = err.response?.data;
+      if (body?.code === 'CLOSURE_NOT_READY') {
+        setCloseBlockers(body.blockers || []);
+      } else {
+        showToast(body?.error || 'Failed to close project', 'error');
+      }
+    } finally {
+      setClosing(false);
+    }
+  };
+
   /* ── TASK CRUD ── */
   const handleSaveTask = async () => {
     if (!taskForm.task_title) return showToast('Task title required', 'error');
@@ -200,7 +237,7 @@ export default function ProjectDetail({ setPage, urlParams }) {
     setSubmitting(true);
     try {
       if (editMileId) {
-        await api.put(`/projects/milestones/${editMileId}`, { ...mileForm, project_id: pid });
+        await api.put(`/projects/projects/milestones/${editMileId}`, { ...mileForm, project_id: pid });
       } else {
         await api.post(`/projects/projects/${pid}/milestones`, { ...mileForm, project_id: pid });
       }
@@ -217,7 +254,7 @@ export default function ProjectDetail({ setPage, urlParams }) {
     setPendingCompleteMile(null);
     setCompleting(m.id);
     try {
-      const res = await api.put(`/projects/milestones/${m.id}/complete`);
+      const res = await api.put(`/projects/projects/milestones/${m.id}/complete`);
       const { invoice_created } = res.data || {};
       showToast(invoice_created ? 'Milestone completed + invoice created!' : 'Milestone completed');
       load();
@@ -230,7 +267,7 @@ export default function ProjectDetail({ setPage, urlParams }) {
     const id = pendingDeleteMile;
     setPendingDeleteMile(null);
     try {
-      await api.delete(`/projects/milestones/${id}`);
+      await api.delete(`/projects/projects/milestones/${id}`);
       showToast('Milestone deleted');
       load();
     } catch { showToast('Delete failed', 'error'); }
@@ -242,7 +279,7 @@ export default function ProjectDetail({ setPage, urlParams }) {
     setSubmitting(true);
     try {
       if (editRiskId) {
-        await api.put(`/projects/risks/${editRiskId}`, { ...riskForm, project_id: pid });
+        await api.put(`/projects/projects/risks/${editRiskId}`, { ...riskForm, project_id: pid });
       } else {
         await api.post(`/projects/projects/${pid}/risks`, { ...riskForm, project_id: pid });
       }
@@ -257,7 +294,7 @@ export default function ProjectDetail({ setPage, urlParams }) {
     if (!pendingDeleteRisk) return;
     const id = pendingDeleteRisk;
     setPendingDeleteRisk(null);
-    try { await api.delete(`/projects/risks/${id}`); showToast('Risk deleted'); load(); }
+    try { await api.delete(`/projects/projects/risks/${id}`); showToast('Risk deleted'); load(); }
     catch { showToast('Delete failed', 'error'); }
   };
 
@@ -286,7 +323,27 @@ export default function ProjectDetail({ setPage, urlParams }) {
   const byCol   = TASK_COLS.reduce((acc, c) => { acc[c.key] = tasks.filter(t => t.status === c.key); return acc; }, {});
 
   return (
-    <div className="pdt-root">
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Projects"
+        title={project.project_name}
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('ProjectsDashboard')}>
+            <ArrowLeft size={15} /> Projects
+          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          {!['completed', 'cancelled'].includes(project.status) && (
+            <button className="plh-cta plh-cta--ghost" onClick={() => { setCloseBlockers(null); setCloseModal(true); }}>
+              <CheckSquare size={14} /> Close Project
+            </button>
+          )}
+          <button className="plh-cta" onClick={() => { setTaskForm(emptyTask()); setEditTaskId(null); setTaskDrawer(true); }}>
+            <Plus size={14} /> Add Task
+          </button>
+        </>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeleteTask}
         title="Delete Task"
@@ -326,38 +383,13 @@ export default function ProjectDetail({ setPage, urlParams }) {
       {toast && <div className={`pdt-toast pdt-toast-${toast.type}`}>{toast.msg}</div>}
 
       {/* HEADER */}
-      <div className="pdt-header">
-        <div className="pdt-header-l">
-          <button className="pdt-back-btn" onClick={() => setPage?.('ProjectsDashboard')}>
-            <ArrowLeft size={15} /> Projects
-          </button>
-          <div>
-            <div className="pdt-title-row">
-              <span className="pdt-code">{project.project_code}</span>
-              <span className="pdt-badge" style={{ background: sm.bg, color: sm.color }}>{sm.label}</span>
-              {project.current_stage && <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, background: '#e0f2fe', color: '#0369a1', fontWeight: 600 }}>{project.current_stage.toUpperCase()}</span>}
-            </div>
-            <h2 className="pdt-title">{project.project_name}</h2>
-            <p className="pdt-sub">
-              {project.customer_name || project.client_name || ''}
-              {project.manager_name ? ` · PM: ${project.manager_name}` : ''}
-            </p>
-          </div>
-        </div>
-        <div className="pdt-header-r">
-          <button className="pdt-icon-btn" onClick={load}><RefreshCw size={14} /></button>
-          <button className="pdt-btn-primary" onClick={() => { setTaskForm(emptyTask()); setEditTaskId(null); setTaskDrawer(true); }}>
-            <Plus size={14} /> Add Task
-          </button>
-        </div>
-      </div>
 
       {/* KPI STRIP */}
       <div className="pdt-kpis">
         <div className="pdt-kpi"><Calendar size={15} color="#6366f1" /><div><div className="pdt-kpi-label">Start</div><div className="pdt-kpi-val">{project.start_date ? new Date(project.start_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</div></div></div>
         <div className="pdt-kpi"><Calendar size={15} color="#ef4444" /><div><div className="pdt-kpi-label">Due</div><div className="pdt-kpi-val">{project.end_date ? new Date(project.end_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</div></div></div>
         <div className="pdt-kpi"><CheckSquare size={15} color="#10b981" /><div><div className="pdt-kpi-label">Tasks</div><div className="pdt-kpi-val">{project.completed_tasks || 0}/{project.total_tasks || tasks.length}<span className="pdt-kpi-pct"> ({taskPct}%)</span></div></div></div>
-        <div className="pdt-kpi"><IndianRupee size={15} color="#f59e0b" /><div><div className="pdt-kpi-label">Budget</div><div className="pdt-kpi-val">{fmt(project.actual_cost)}<span className="pdt-kpi-pct"> / {fmt(project.budget_amount)}</span></div></div></div>
+        <div className="pdt-kpi"><IndianRupee size={15} color="#7c5cf0" /><div><div className="pdt-kpi-label">Budget</div><div className="pdt-kpi-val">{fmt(project.actual_cost)}<span className="pdt-kpi-pct"> / {fmt(project.budget_amount)}</span></div></div></div>
         <div className="pdt-kpi"><Flag size={15} color="#6B3FDB" /><div><div className="pdt-kpi-label">Milestones</div><div className="pdt-kpi-val">{milestones.filter(m => m.status === 'completed').length}/{milestones.length}</div></div></div>
         <div className="pdt-kpi"><AlertTriangle size={15} color="#dc2626" /><div><div className="pdt-kpi-label">Open Risks</div><div className="pdt-kpi-val">{risks.filter(r => r.status === 'open').length}</div></div></div>
         <div className="pdt-kpi"><Users size={15} color="#8b5cf6" /><div><div className="pdt-kpi-label">Team</div><div className="pdt-kpi-val">{project.team_size || team.length}</div></div></div>
@@ -494,7 +526,7 @@ export default function ProjectDetail({ setPage, urlParams }) {
                           <span style={{ fontSize: 11, fontFamily: 'monospace', color: '#9ca3af' }}>{r.risk_code}</span>
                           <span style={{ padding: '2px 7px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: rc + '22', color: rc }}>{level.toUpperCase()} — Score: {score}</span>
                           <span style={{ padding: '2px 7px', borderRadius: 12, fontSize: 11, background: '#f3f4f6', color: '#6b7280' }}>{r.category}</span>
-                          <span style={{ padding: '2px 7px', borderRadius: 12, fontSize: 11, background: r.status === 'open' ? '#fef3c7' : '#f0fdf4', color: r.status === 'open' ? '#92400e' : '#15803d', fontWeight: 600 }}>{r.status}</span>
+                          <span style={{ padding: '2px 7px', borderRadius: 12, fontSize: 11, background: r.status === 'open' ? '#ede9fe' : '#f0fdf4', color: r.status === 'open' ? '#5b21b6' : '#15803d', fontWeight: 600 }}>{r.status}</span>
                         </div>
                         <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{r.description}</div>
                         {r.contingency_plan && <div style={{ fontSize: 12, color: '#6b7280' }}>Mitigation: {r.contingency_plan}</div>}
@@ -535,7 +567,7 @@ export default function ProjectDetail({ setPage, urlParams }) {
           {issues.length === 0 ? <EmptyState icon={AlertTriangle} title="No issues logged" sub="Log issues, NCRs, and blockers" /> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {issues.slice(0, 10).map(i => {
-                const svrColor = i.severity === 'critical' ? '#dc2626' : i.severity === 'high' ? '#ea580c' : i.severity === 'medium' ? '#ca8a04' : '#6b7280';
+                const svrColor = i.severity === 'critical' ? '#dc2626' : i.severity === 'high' ? '#6d28d9' : i.severity === 'medium' ? '#7c5cf0' : '#6b7280';
                 return (
                   <div key={i.id} style={{ background: 'var(--color-background-secondary)', border: '1px solid var(--color-border-tertiary)', borderRadius: 8, padding: '12px 16px', borderLeft: `4px solid ${svrColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <div>
@@ -674,6 +706,65 @@ export default function ProjectDetail({ setPage, urlParams }) {
         </div>
       )}
 
+      {/* ══ CLOSE PROJECT MODAL ══ */}
+      {closeModal && (
+        <div className="pdt-overlay" onClick={() => !closing && setCloseModal(false)}>
+          <div className="pdt-drawer" onClick={e => e.stopPropagation()}>
+            <div className="pdt-drawer-hd">
+              <h3>Close Project</h3>
+              <button className="pdt-icon-btn" onClick={() => setCloseModal(false)}><X size={16} /></button>
+            </div>
+            <div className="pdt-drawer-body">
+              {closeBlockers && closeBlockers.length > 0 ? (
+                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, marginBottom: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#b91c1c', fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+                    <AlertTriangle size={14} /> Not ready to close
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#7f1d1d' }}>
+                    {closeBlockers.map((b, i) => (
+                      <li key={i}>{b.count} {String(b.type).replace(/_/g, ' ')}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 4px' }}>
+                  This marks the project as completed and rolls up its final cost. Optionally record the client's satisfaction — feeds the Voice-of-Customer dashboard.
+                </p>
+              )}
+
+              <div className="pdt-field">
+                <label>Customer Satisfaction (optional)</label>
+                <div style={{ display: 'flex', gap: 6, margin: '4px 0 8px' }}>
+                  {[1, 2, 3, 4, 5].map(n => (
+                    <button key={n} type="button"
+                      onClick={() => setCloseRating(r => r === n ? 0 : n)}
+                      title={`${n} star${n > 1 ? 's' : ''}`}
+                      style={{
+                        width: 34, height: 34, borderRadius: '50%', cursor: 'pointer', fontSize: 15,
+                        border: `2px solid ${closeRating >= n ? '#6d28d9' : '#e5e7eb'}`,
+                        background: closeRating >= n ? '#ede9fe' : '#fff',
+                      }}>
+                      ⭐
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="pdt-field">
+                <label>Client Feedback</label>
+                <textarea rows={2} value={closeFeedback} onChange={e => setCloseFeedback(e.target.value)}
+                  placeholder="Any closing comments from the client…" />
+              </div>
+            </div>
+            <div className="pdt-drawer-ft">
+              <button className="pdt-btn-outline" onClick={() => setCloseModal(false)} disabled={closing}>Cancel</button>
+              <button className="pdt-btn-primary" onClick={handleCloseProject} disabled={closing}>
+                {closing ? 'Closing…' : 'Close Project'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ══ MILESTONE DRAWER ══ */}
       {mileDrawer && (
         <div className="pdt-overlay" onClick={() => setMileDrawer(false)}>
@@ -722,7 +813,7 @@ export default function ProjectDetail({ setPage, urlParams }) {
                 <div className="pdt-field"><label>Probability (1-5)</label><input type="number" min={1} max={5} value={riskForm.probability} onChange={e => setRiskForm(f => ({ ...f, probability: e.target.value }))} /></div>
                 <div className="pdt-field"><label>Impact (1-5)</label><input type="number" min={1} max={5} value={riskForm.impact} onChange={e => setRiskForm(f => ({ ...f, impact: e.target.value }))} /></div>
               </div>
-              <div style={{ padding: '8px 12px', background: '#fef9c3', borderRadius: 6, fontSize: 13, color: '#92400e', marginBottom: 12 }}>
+              <div style={{ padding: '8px 12px', background: '#ede9fe', borderRadius: 6, fontSize: 13, color: '#5b21b6', marginBottom: 12 }}>
                 Risk Score: <b>{(riskForm.probability || 0) * (riskForm.impact || 0)}</b> — Level: <b>{riskLevel((riskForm.probability || 0) * (riskForm.impact || 0)).toUpperCase()}</b>
               </div>
               <div className="pdt-field"><label>Contingency / Mitigation Plan</label><textarea rows={3} value={riskForm.contingency_plan} onChange={e => setRiskForm(f => ({ ...f, contingency_plan: e.target.value }))} placeholder="How will this risk be mitigated…" /></div>
@@ -759,6 +850,6 @@ export default function ProjectDetail({ setPage, urlParams }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

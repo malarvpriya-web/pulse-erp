@@ -13,13 +13,13 @@ const fmtL = (n) => {
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
-  amber: '#d97706', blue: '#2563eb', border: '#e9e4ff',
+  amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff',
 };
 
 const RISK_CFG = {
   Critical: { bg: '#fef2f2', border: '#fca5a5', color: '#dc2626', dot: '#dc2626' },
-  High:     { bg: '#fffbeb', border: '#fcd34d', color: '#92400e', dot: '#d97706' },
-  Medium:   { bg: '#fefce8', border: '#fde68a', color: '#78350f', dot: '#f59e0b' },
+  High:     { bg: '#f5f3ff', border: '#c4b5fd', color: '#5b21b6', dot: '#6d28d9' },
+  Medium:   { bg: '#f5f3ff', border: '#ddd6fe', color: '#4c1d95', dot: '#7c5cf0' },
   Low:      { bg: '#f0fdf4', border: '#bbf7d0', color: '#15803d', dot: '#16a34a' },
 };
 

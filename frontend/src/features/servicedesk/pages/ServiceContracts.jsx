@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, FileText, Search, Pencil, Trash2 } from 'lucide-react';
+import { Plus, X, FileText, Search, Pencil, Trash2, LifeBuoy } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_COLOR = {
   Active:  { bg: '#d1fae5', color: '#065f46' },
   Expired: { bg: '#fee2e2', color: '#991b1b' },
-  Pending: { bg: '#fef3c7', color: '#92400e' },
+  Pending: { bg: '#ede9fe', color: '#5b21b6' },
 };
 const EMPTY = {
   customer_name: '', contract_type: 'AMC', start_date: '', end_date: '',
@@ -84,7 +85,17 @@ export default function ServiceContracts() {
   const fmt = n => `₹${Number(n || 0).toLocaleString('en-IN')}`;
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="Service Contracts"
+        subtitle="SLA & support coverage agreements · separate from Operations → AMC Contracts (equipment lifecycle)"
+        actions={<button className="plh-cta" onClick={openCreate}>
+          <Plus size={15} /> New Contract
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeleteContract}
         title="Delete Contract"
@@ -94,21 +105,6 @@ export default function ServiceContracts() {
         onConfirm={handleDelete}
         onCancel={() => setPendingDeleteContract(null)}
       />
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Service Contracts</h1>
-          <p style={{ color: '#6b7280', margin: '2px 0 0', fontSize: 12 }}>
-            SLA &amp; support coverage agreements · separate from Operations → AMC Contracts (equipment lifecycle)
-          </p>
-          <p style={{ color: '#6b7280', margin: '2px 0 0', fontSize: 13 }}>
-            {contracts.length} contracts · {enriched.filter(c => c.status === 'Active').length} active
-          </p>
-        </div>
-        <button onClick={openCreate}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          <Plus size={15} /> New Contract
-        </button>
-      </div>
 
       <div style={{ position: 'relative', marginBottom: 16, maxWidth: 340 }}>
         <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af' }} />
@@ -230,6 +226,6 @@ export default function ServiceContracts() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

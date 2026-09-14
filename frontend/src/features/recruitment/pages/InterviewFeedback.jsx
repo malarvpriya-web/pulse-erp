@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Star, Plus, X, MessageSquare, ThumbsUp, ThumbsDown, Minus } from 'lucide-react';
+import { Star, Plus, X, MessageSquare, ThumbsUp, ThumbsDown, Minus, UserPlus } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const RATING_LABELS = { 1:'Poor', 2:'Below Average', 3:'Average', 4:'Good', 5:'Excellent' };
 const RECOMMENDATION_META = {
   hire:        { label:'Hire',         bg:'#d1fae5', color:'#065f46', icon: ThumbsUp },
   no_hire:     { label:'No Hire',      bg:'#fee2e2', color:'#991b1b', icon: ThumbsDown },
-  hold:        { label:'Hold',         bg:'#fef3c7', color:'#92400e', icon: Minus },
+  hold:        { label:'Hold',         bg:'#ede9fe', color:'#5b21b6', icon: Minus },
 };
 
 const ROUNDS = ['HR Round', '1st Technical', '2nd Technical', 'Final Round', 'Management Round'];
@@ -22,7 +23,7 @@ function StarRating({ value, onChange }) {
           onMouseEnter={() => setHover(n)} onMouseLeave={() => setHover(0)}
           onClick={() => onChange(n)}
           style={{ background:'none', border:'none', cursor:'pointer', padding:2 }}>
-          <Star size={22} fill={(hover||value) >= n ? '#f59e0b' : 'none'} color={(hover||value) >= n ? '#f59e0b' : '#d1d5db'} />
+          <Star size={22} fill={(hover||value) >= n ? '#7c5cf0' : 'none'} color={(hover||value) >= n ? '#7c5cf0' : '#d1d5db'} />
         </button>
       ))}
       {value > 0 && <span style={{ fontSize:12, color:'#6b7280', alignSelf:'center', marginLeft:4 }}>{RATING_LABELS[value]}</span>}
@@ -134,7 +135,7 @@ function FeedbackCard({ note }) {
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>
           <div style={{ display:'flex', gap:2 }}>
-            {[1,2,3,4,5].map(n => <Star key={n} size={14} fill={note.rating >= n ? '#f59e0b' : 'none'} color={note.rating >= n ? '#f59e0b' : '#d1d5db'} />)}
+            {[1,2,3,4,5].map(n => <Star key={n} size={14} fill={note.rating >= n ? '#7c5cf0' : 'none'} color={note.rating >= n ? '#7c5cf0' : '#d1d5db'} />)}
           </div>
           <span style={{ padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:700, background:rec.bg, color:rec.color, display:'flex', alignItems:'center', gap:4 }}>
             <RecIcon size={10} /> {rec.label}
@@ -174,27 +175,22 @@ export default function InterviewFeedback({ candidateId, candidateName, onClose 
     : null;
 
   return (
-    <div style={{ padding:'20px 24px', maxWidth:720 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h2 style={{ fontSize:18, fontWeight:800, color:'#111827', margin:0 }}>Interview Feedback</h2>
-          {candidateName && <p style={{ color:'#6b7280', margin:'3px 0 0', fontSize:13 }}>{candidateName}</p>}
-        </div>
-        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-          {avgRating && (
-            <div style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 12px', borderRadius:20, background:'#fef3c7', color:'#92400e' }}>
-              <Star size={13} fill="#f59e0b" color="#f59e0b" />
-              <span style={{ fontWeight:700, fontSize:13 }}>{avgRating} avg</span>
-            </div>
-          )}
-          <button onClick={() => setShowForm(true)} style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 16px', background:'#4B2DCE', color:'#fff', border:'none', borderRadius:9, cursor:'pointer', fontWeight:700, fontSize:13 }}>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Interview Feedback"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setShowForm(true)}>
             <Plus size={13} /> Add Feedback
           </button>
           {onClose && (
-            <button onClick={onClose} style={{ background:'#f3f4f6', border:'none', borderRadius:8, padding:7, cursor:'pointer', display:'flex' }}><X size={15} color="#6b7280"/></button>
+            <button className="plh-cta" onClick={onClose}><X size={15} color="#6b7280"/></button>
           )}
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
 
       {showForm && (
         <FeedbackForm
@@ -219,6 +215,6 @@ export default function InterviewFeedback({ candidateId, candidateName, onClose 
           {notes.map(n => <FeedbackCard key={n.id} note={n} />)}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { BarChart3 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line,
 } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const COLORS = ['#0d6efd', '#20c997', '#fd7e14', '#6f42c1', '#e83e8c', '#6c757d'];
 
@@ -75,7 +77,7 @@ export default function CRMReports() {
         topCustomers:   g(9) || [],
         pursuitList:    g(10) || [],
       });
-    } catch (e) {
+    } catch {
       if (isMounted.current) setError('Failed to load reports');
     } finally {
       if (isMounted.current) setLoading(false);
@@ -96,32 +98,30 @@ export default function CRMReports() {
   const { crmStats, leadStats, oppStats, leadsBySource, pipelineByStage, userPerformance, winLoss, forecastSummary, forecastMonthly, topCustomers, pursuitList } = data;
 
   return (
-    <div style={{ padding: '24px', margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>CRM Reports</h2>
-          <p style={{ margin: 0, color: '#6c757d', fontSize: 13 }}>Live analytics across leads, opportunities, pipeline and sales performance</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => exportCSV('leads')}
-            style={{ border: '1px solid #dee2e6', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', background: '#fff', fontSize: 13 }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="CRM"
+        title="CRM Reports"
+        subtitle="Live analytics across leads, opportunities, pipeline and sales performance"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => exportCSV('leads')}>
             ⬇ Leads CSV
           </button>
-          <button onClick={() => exportCSV('opportunities')}
-            style={{ border: '1px solid #dee2e6', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', background: '#fff', fontSize: 13 }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => exportCSV('opportunities')}>
             ⬇ Opps CSV
           </button>
-          <button onClick={() => exportCSV('quotations')}
-            style={{ border: '1px solid #dee2e6', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', background: '#fff', fontSize: 13 }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => exportCSV('quotations')}>
             ⬇ Quotes CSV
           </button>
-          <button onClick={load}
-            style={{ background: '#0d6efd', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', cursor: 'pointer', fontSize: 13 }}>
+          <button className="plh-cta" onClick={load}>
             Refresh
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {/* Header */}
+
 
       {error && (
         <div style={{ background: '#fff3f3', border: '1px solid #f5c2c7', borderRadius: 6, padding: 12, marginBottom: 16, color: '#842029' }}>
@@ -399,6 +399,6 @@ export default function CRMReports() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

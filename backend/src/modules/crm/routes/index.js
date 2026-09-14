@@ -8,11 +8,18 @@ import proposalsRoutes from './proposals.routes.js';
 import ceo360Routes from './ceo360.routes.js';
 import customerHealthRoutes from './customerHealth.routes.js';
 import pursuitsRoutes from './pursuits.routes.js';
+import accountGraphRoutes from './accountGraph.routes.js';
+import { adminRouter as webLeadAdminRoutes } from './webToLead.routes.js';
 
 const router = express.Router();
 
 router.use(crmRoutes);
 router.use(pursuitsRoutes);
+// Account hierarchy + account/opportunity teams (brief S2, S12) and the
+// staff side of web-to-lead. The PUBLIC capture endpoint is mounted
+// separately in server.js, outside verifyToken.
+router.use(accountGraphRoutes);
+router.use(webLeadAdminRoutes);
 router.use(emailRoutes);
 router.use(pipelineRoutes);
 router.use(customer360Routes);

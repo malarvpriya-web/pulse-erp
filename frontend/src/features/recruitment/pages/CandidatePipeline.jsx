@@ -1,18 +1,19 @@
 import { useState, useCallback, useEffect } from 'react';
 import {
-  Plus, RefreshCw, X, ChevronRight, ChevronLeft,
-  User, Mail, Phone, Star, Award
+  Plus, RefreshCw, X, ChevronRight, ChevronLeft, User, Mail, Phone,
+  Star, Award, UserPlus,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import useAppStore from '@/store/useAppStore';
 import './CandidatePipeline.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STAGES = [
   { key: 'applied',    title: 'Applied',               color: '#E6F1FB', text: '#2563EB' },
   { key: 'screening',  title: 'Screening',             color: '#F5F3FF', text: '#6C47FF' },
-  { key: '1st_level',  title: '1st Level Interview',   color: '#FAEEDA', text: '#D97706' },
-  { key: '2nd_level',  title: '2nd Level Interview',   color: '#FFF3E0', text: '#EA580C' },
+  { key: '1st_level',  title: '1st Level Interview',   color: '#FAEEDA', text: '#6d28d9' },
+  { key: '2nd_level',  title: '2nd Level Interview',   color: '#FFF3E0', text: '#6d28d9' },
   { key: 'offer',      title: 'Offer',                 color: '#F0FDF4', text: '#059669' },
   { key: 'hired',      title: 'Hired',                 color: '#E8FBF0', text: '#047857' },
 ];
@@ -28,7 +29,7 @@ const SOURCE_META = {
   website:    { bg: '#dbeafe', color: '#1d4ed8' },
   linkedin:   { bg: '#e0e7ff', color: '#4338ca' },
   referral:   { bg: '#fce7f3', color: '#9d174d' },
-  job_portal: { bg: '#fef3c7', color: '#92400e' },
+  job_portal: { bg: '#ede9fe', color: '#5b21b6' },
   campus:     { bg: '#f3e8ff', color: '#6B3FDB' },
   manual:     { bg: '#f3f4f6', color: '#6b7280' },
 };
@@ -150,10 +151,16 @@ export default function CandidatePipeline({ setPage: _setPage }) {
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   return (
-    <div className="cp-root">
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Candidate Pipeline"
+      />
+    }>
       <div className="cp-header">
         <div>
-          <h2 className="cp-title">Candidate Pipeline</h2>
+
           <p className="cp-sub">{active} active · {deadEndCount} in dead-end stages</p>
         </div>
         <div className="cp-header-r">
@@ -222,8 +229,8 @@ export default function CandidatePipeline({ setPage: _setPage }) {
                         <span className="cp-src-badge" style={{ background: src.bg, color: src.color }}>{c.source}</span>
                         {score > 0 && (
                           <div className="cp-score">
-                            <Star size={11} color={score >= 80 ? '#f59e0b' : '#9ca3af'} />
-                            <span style={{ color: score >= 80 ? '#15803d' : score >= 60 ? '#92400e' : '#dc2626' }}>{score}</span>
+                            <Star size={11} color={score >= 80 ? '#7c5cf0' : '#9ca3af'} />
+                            <span style={{ color: score >= 80 ? '#15803d' : score >= 60 ? '#5b21b6' : '#dc2626' }}>{score}</span>
                           </div>
                         )}
                       </div>
@@ -325,6 +332,6 @@ export default function CandidatePipeline({ setPage: _setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -710,7 +710,7 @@ These tables have no seed data and are populated only through UI actions:
 ### "No data found" on a seeded table
 1. Check browser network tab for the API response
 2. Verify the JWT token is valid: `localStorage.getItem('token')`
-3. Try re-seeding: `node src/database/seeds/runMigrations.js`
+3. Apply schema: `npm run migrate` (the old `seeds/runMigrations.js` + `masterSeed.js` pair was deleted 2026-08-13 — it built table shapes that conflicted with the real migrations; see `MODULE_FEATURE_CONNECTION_MANUAL.md` §106)
 4. Check table exists: run `node src/database/seeds/testChecklist.js`
 
 ### Login fails

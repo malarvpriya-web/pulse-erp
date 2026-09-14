@@ -29,9 +29,11 @@ vi.mock('../components/dashboard/CelebrationsBoard', () => ({
   default: () => <div data-testid="celebrations-board" />,
 }));
 
-// FaceClockModal pulls in camera/geolocation APIs jsdom doesn't have.
-vi.mock('../components/attendance/FaceClockModal', () => ({
-  default: () => <div data-testid="face-clock-modal" />,
+// CameraClockModal pulls in camera/geolocation APIs jsdom doesn't have.
+vi.mock('../components/attendance/CameraClockModal', () => ({
+  default: () => <div data-testid="camera-clock-modal" />,
+}));
+vi.mock('../components/attendance/geo', () => ({
   getLocationString: () => Promise.resolve('12.97,77.59'),
 }));
 
@@ -67,9 +69,34 @@ const mockAnnouncements = [
   { id: 1, title: 'Office closed on Friday', message: 'Company holiday', created_at: new Date().toISOString() },
 ];
 
-function stubApi(data = summary()) {
+// GET /attendance/punch-mode - 'camera' for field staff (in-app punch allowed),
+// 'device' for everyone else (office face/biometric terminal only).
+const punchMode = (over = {}) => ({
+  employee_id: 7,
+  mode: 'camera',
+  is_field_employee: true,
+  can_punch_in_app: true,
+  selfie_required: true,
+  location_required: true,
+  reason: null,
+  message: null,
+  ...over,
+});
+
+const DEVICE_ONLY = punchMode({
+  mode: 'device',
+  is_field_employee: false,
+  can_punch_in_app: false,
+  selfie_required: false,
+  location_required: false,
+  reason: 'device_only',
+  message: 'In-app punching is for field employees only. Record your attendance at the office face / biometric device.',
+});
+
+function stubApi(data = summary(), punch = punchMode()) {
   api.get.mockImplementation((url) => {
     if (url === '/home/summary') return Promise.resolve({ data });
+    if (url === '/attendance/punch-mode') return Promise.resolve({ data: punch });
     return Promise.resolve({ data: [] });
   });
 }
@@ -256,20 +283,114 @@ describe('Home — smoke', () => {
     expect(document.querySelector('.hm-role-badge').textContent).toBe('Branch Auditor');
   });
 
-  it('renders the clock-in strip for a linked employee', async () => {
+  it('offers in-app clock-in to a FIELD employee', async () => {
     mockAuth = { user: { name: 'Ravi', email: 'ravi@manifest.in', employee_id: 7 }, role: 'employee' };
     stubApi();
     render(<Home setPage={() => {}} />);
     await waitFor(() => expect(screen.getByText('Not clocked in yet')).toBeDefined());
-    expect(screen.getByText('Clock In')).toBeDefined();
+    await waitFor(() => expect(screen.getByText('Clock In')).toBeDefined());
+    // The camera IS the punch: the strip advertises what the server will demand.
+    expect(screen.getByText('selfie & location required')).toBeDefined();
   });
 
-  it('disables clock-in when the login has no linked employee record', async () => {
-    mockAuth = { user: { name: 'Ghost', email: 'ghost@manifest.in' }, role: 'employee' };
-    stubApi();
+  it('sends a NON-field employee to the office device instead of a clock-in button', async () => {
+    mockAuth = { user: { name: 'Meena', email: 'meena@manifest.in', employee_id: 9 }, role: 'employee' };
+    stubApi(summary(), DEVICE_ONLY);
     render(<Home setPage={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Clock In')).toBeDefined());
-    expect(screen.getByText('Clock In').closest('button').disabled).toBe(true);
+    await waitFor(() =>
+      expect(screen.getByText(/office face . biometric device/i)).toBeDefined());
+    // No button at all - a disabled one reads as "broken", not "use the device".
+    expect(screen.queryByText('Clock In')).toBeNull();
+  });
+
+  it('explains the missing link when the login has no employee record', async () => {
+    mockAuth = { user: { name: 'Ghost', email: 'ghost@manifest.in' }, role: 'employee' };
+    stubApi(summary(), punchMode({
+      employee_id: null, mode: 'device', is_field_employee: false,
+      can_punch_in_app: false, selfie_required: false, location_required: false,
+      reason: 'employee_not_linked',
+      message: 'Your login is not linked to an employee record. Ask HR to link it before clocking in or out.',
+    }));
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/not linked to an employee record/i)).toBeDefined());
+    expect(screen.queryByText('Clock In')).toBeNull();
+  });
+
+  it('fails closed when the punch-mode check errors', async () => {
+    mockAuth = { user: { name: 'Ravi', email: 'ravi@manifest.in', employee_id: 7 }, role: 'employee' };
+    api.get.mockImplementation((url) => {
+      if (url === '/home/summary') return Promise.resolve({ data: summary() });
+      if (url === '/attendance/punch-mode') return Promise.reject(new Error('boom'));
+      return Promise.resolve({ data: [] });
+    });
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Not clocked in yet')).toBeDefined());
+    // A failed check must not hand out a button the server would 403.
+    await waitFor(() => expect(screen.queryByText('Clock In')).toBeNull());
+  });
+
+  // ── Load failures must not masquerade as empty data ────────────────────────
+  // Reported symptom: "sometimes when the home page is loading, Policies &
+  // Brand Vault show no data". Two distinct causes, one test each.
+
+  it('keeps the skeleton up when a superseded request is aborted mid-load', async () => {
+    // StrictMode's double effect (and any refresh landing mid-load) aborts the
+    // first request. Its rejection must not flip `loading` to false while the
+    // replacement is still in flight, or every panel flashes its empty state —
+    // Policies/Brand Vault reading as "no documents" when none had loaded yet.
+    const aborted = Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' });
+    let firstSignal;
+    let summaryCalls = 0;
+    // Keyed on the URL, not on call order: usePunchMode also calls api.get, so
+    // positional mockImplementationOnce chaining is no longer deterministic.
+    api.get.mockImplementation((url, cfg) => {
+      if (url === '/attendance/punch-mode') return Promise.resolve({ data: DEVICE_ONLY });
+      if (url === '/home/summary') {
+        summaryCalls += 1;
+        if (summaryCalls === 1) {
+          firstSignal = cfg.signal;
+          return new Promise((_res, rej) => cfg.signal.addEventListener('abort', () => rej(aborted)));
+        }
+        return new Promise(() => {});                        // replacement never settles
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(firstSignal).toBeDefined());
+
+    fireEvent.click(screen.getByLabelText('Refresh'));        // supersedes request #1
+    await waitFor(() => expect(summaryCalls).toBe(2));
+    await waitFor(() => expect(firstSignal.aborted).toBe(true));
+
+    expect(document.querySelector('.hm-skeleton-list')).not.toBeNull();
+    expect(screen.queryByText('No policy documents yet.')).toBeNull();
+    expect(screen.queryByText('No templates yet.')).toBeNull();
+  });
+
+  it('offers a retry instead of an empty state when the summary request fails', async () => {
+    api.get.mockRejectedValue(Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' }));
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText("Couldn't load policies.")).toBeDefined());
+    expect(screen.getByText("Couldn't load brand vault.")).toBeDefined();
+    expect(screen.queryByText('No policy documents yet.')).toBeNull();
+
+    stubApi();
+    const before = api.get.mock.calls.length;
+    fireEvent.click(screen.getAllByText('Retry')[0]);
+    await waitFor(() => expect(api.get.mock.calls.length).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByText('No policy documents yet.')).toBeDefined());
+  });
+
+  it('treats a server-side degraded slice as a failure, not as an empty list', async () => {
+    // /home/summary answers 200 with an empty `policies` because that query
+    // errored server-side; `degraded` says so, so the panel must not claim
+    // there are no policy documents.
+    stubApi(summary({ degraded: ['policies'] }));
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText("Couldn't load policies.")).toBeDefined());
+    expect(screen.queryByText('No policy documents yet.')).toBeNull();
+    expect(screen.getByText('No templates yet.')).toBeDefined();   // brandAssets is genuinely empty
   });
 
 });

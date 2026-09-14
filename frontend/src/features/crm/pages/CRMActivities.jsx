@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Contact } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const ACTIVITY_TYPES = [
   { value: 'call',    label: 'Call',    icon: '📞', color: '#0d6efd' },
@@ -124,7 +126,7 @@ export default function CRMActivities() {
     try {
       await api.delete(`/crm/activities/${id}`);
       load();
-    } catch (e) {
+    } catch {
       toast.error('Failed to delete activity');
     }
   };
@@ -132,7 +134,18 @@ export default function CRMActivities() {
   const typeInfo = val => ACTIVITY_TYPES.find(t => t.value === val) || ACTIVITY_TYPES[0];
 
   return (
-    <div style={{ padding: '24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="CRM"
+        title="Activities"
+        subtitle="Calls, meetings, emails and tasks across all CRM records"
+        actions={<button className="plh-cta"
+          onClick={() => { setForm(EMPTY_FORM); setEditId(null); setShowForm(true); }}>
+          + Log Activity
+        </button>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -144,18 +157,7 @@ export default function CRMActivities() {
         onCancel={() => setPendingHandleDelete(null)}
       />
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Activities</h2>
-          <p style={{ margin: 0, color: '#6c757d', fontSize: 13 }}>Calls, meetings, emails and tasks across all CRM records</p>
-        </div>
-        <button
-          onClick={() => { setForm(EMPTY_FORM); setEditId(null); setShowForm(true); }}
-          style={{ background: '#0d6efd', color: '#fff', border: 'none', borderRadius: 6, padding: '9px 18px', cursor: 'pointer', fontWeight: 600 }}
-        >
-          + Log Activity
-        </button>
-      </div>
+
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -384,6 +386,6 @@ export default function CRMActivities() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -3,9 +3,10 @@ import { Plus, Target, RefreshCw, AlertCircle, X, ChevronDown, ChevronUp, Edit2,
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const LEVEL_COLOR = { company: '#8b5cf6', department: '#3b82f6', team: '#f59e0b', individual: '#10b981' };
-const STATUS_COLOR = { draft: '#6b7280', active: '#10b981', completed: '#3b82f6', cancelled: '#ef4444', at_risk: '#f59e0b' };
+const LEVEL_COLOR = { company: '#8b5cf6', department: '#3b82f6', team: '#7c5cf0', individual: '#10b981' };
+const STATUS_COLOR = { draft: '#6b7280', active: '#10b981', completed: '#3b82f6', cancelled: '#ef4444', at_risk: '#7c5cf0' };
 const inp = { background: 'var(--color-background)', border: '1px solid var(--color-border-tertiary)', borderRadius: 8, padding: '8px 12px', fontSize: 13, width: '100%', color: 'var(--color-text-primary)' };
 
 const BLANK_OBJ = { title: '', description: '', level: 'individual', department: '', start_date: '', end_date: '' };
@@ -13,19 +14,9 @@ const BLANK_KR  = { title: '', description: '', unit: '', start_value: 0, target
 
 function ProgressBar({ pct }) {
   const p = Math.min(100, Math.max(0, parseFloat(pct) || 0));
-  const color = p >= 70 ? '#10b981' : p >= 40 ? '#f59e0b' : '#ef4444';
+  const color = p >= 70 ? '#10b981' : p >= 40 ? '#7c5cf0' : '#ef4444';
   return (
     <div style={{ background: 'var(--color-border-tertiary)', borderRadius: 4, height: 6, overflow: 'hidden', width: '100%' }}>
-
-      <ConfirmDialog
-        open={!!pendingCancelObjective}
-        title="Cancel Objective"
-        message="Cancel this objective?"
-        confirmLabel="Cancel"
-        variant="warning"
-        onConfirm={cancelObjective}
-        onCancel={() => setPendingCancelObjective(null)}
-      />
       <div style={{ width: `${p}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.3s' }} />
     </div>
   );
@@ -135,7 +126,16 @@ export default function OKRManagement() {
   }
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Performance"
+        title="OKR Management"
+        actions={<button className="plh-cta" onClick={() => setShowObjForm(true)}>
+          <Plus size={15} /> New Objective
+        </button>}
+      />
+    }>
 
       {progressModal.open && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -159,14 +159,7 @@ export default function OKRManagement() {
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Target size={20} style={{ color: 'var(--color-primary)' }} /> OKR Management
-        </h1>
-        <button onClick={() => setShowObjForm(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: 'var(--color-primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          <Plus size={15} /> New Objective
-        </button>
-      </div>
+
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--color-border-tertiary)' }}>
@@ -314,7 +307,7 @@ export default function OKRManagement() {
                                 <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
                                   {kr.current_value}/{kr.target_value} {kr.unit}
                                 </span>
-                                <span style={{ fontSize: 12, fontWeight: 600, color: parseFloat(kr.progress_pct) >= 70 ? '#10b981' : '#f59e0b' }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: parseFloat(kr.progress_pct) >= 70 ? '#10b981' : '#7c5cf0' }}>
                                   {kr.progress_pct || 0}%
                                 </span>
                                 <button onClick={() => updateKRProgress(kr.id, o.id)} style={{ padding: '3px 8px', background: '#3b82f618', color: '#3b82f6', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>
@@ -358,6 +351,16 @@ export default function OKRManagement() {
           )}
         </>
       )}
-    </div>
+
+      <ConfirmDialog
+        open={!!pendingCancelObjective}
+        title="Cancel Objective"
+        message="Cancel this objective?"
+        confirmLabel="Cancel"
+        variant="warning"
+        onConfirm={cancelObjective}
+        onCancel={() => setPendingCancelObjective(null)}
+      />
+    </PageShell>
   );
 }

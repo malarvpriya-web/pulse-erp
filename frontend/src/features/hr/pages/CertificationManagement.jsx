@@ -1,24 +1,16 @@
 // frontend/src/features/hr/pages/CertificationManagement.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { GraduationCap } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const STATUS_COLORS = { active: '#16a34a', expired: '#dc2626', renewed: '#d97706' };
+const STATUS_COLORS = { active: '#16a34a', expired: '#dc2626', renewed: '#6d28d9' };
 
 function Modal({ title, onClose, children }) {
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
-
-      <ConfirmDialog
-        open={!!pendingDeleteMaster}
-        title="Delete Certification"
-        message="Delete this certification?"
-        confirmLabel="Delete"
-        variant="danger"
-        onConfirm={deleteMaster}
-        onCancel={() => setPendingDeleteMaster(null)}
-      />
       <div style={{ background:'#fff', borderRadius:12, padding:24, width:'100%', maxWidth:540, maxHeight:'85vh', overflowY:'auto' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
           <h3 style={{ margin:0, color:'#4c1d95', fontSize:16 }}>{title}</h3>
@@ -123,19 +115,23 @@ export default function CertificationManagement() {
   const tabStyle = (k) => ({ padding:'8px 18px', border:'none', cursor:'pointer', borderRadius:'6px 6px 0 0', fontWeight:600, fontSize:14, background: tab===k ? '#6B3FDB' : '#e9e4ff', color: tab===k ? '#fff' : '#6B3FDB' });
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
-      <div style={{ marginBottom:16 }}>
-        <h2 style={{ margin:0, color:'#4c1d95', fontSize:22 }}>📋 Certification Management</h2>
-        <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Manage compliance certs, expiry tracking, and renewal workflows</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={GraduationCap}
+        eyebrow="Human Resources"
+        title="📋 Certification Management"
+        subtitle="Manage compliance certs, expiry tracking, and renewal workflows"
+      />
+    }>
+
 
       {/* Expiry KPIs */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:12, marginBottom:20 }}>
         {[
           { label:'Active', value: expiry.active || 0, color:'#16a34a', icon:'✅' },
           { label:'Expiring 30d', value: expiry.expiring_30d || 0, color:'#dc2626', icon:'⏰' },
-          { label:'Expiring 60d', value: expiry.expiring_60d || 0, color:'#f97316', icon:'📅' },
-          { label:'Expiring 90d', value: expiry.expiring_90d || 0, color:'#d97706', icon:'📆' },
+          { label:'Expiring 60d', value: expiry.expiring_60d || 0, color:'#7c5cf0', icon:'📅' },
+          { label:'Expiring 90d', value: expiry.expiring_90d || 0, color:'#6d28d9', icon:'📆' },
           { label:'Expired', value: expiry.expired || 0, color:'#dc2626', icon:'❌' },
         ].map(k => (
           <div key={k.label} style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:10, padding:'14px 16px' }}>
@@ -229,7 +225,7 @@ export default function CertificationManagement() {
               <tbody>
                 {empCerts.map(ec => {
                   const days = parseInt(ec.days_until_expiry);
-                  const daysColor = days < 0 ? '#dc2626' : days < 30 ? '#f97316' : days < 90 ? '#d97706' : '#16a34a';
+                  const daysColor = days < 0 ? '#dc2626' : days < 30 ? '#7c5cf0' : days < 90 ? '#6d28d9' : '#16a34a';
                   return (
                     <tr key={ec.id} style={{ borderBottom:'1px solid #f0ebff' }}>
                       <td style={{ padding:'8px 12px', fontWeight:600 }}>{ec.employee_name}</td>
@@ -342,6 +338,16 @@ export default function CertificationManagement() {
           </div>
         </Modal>
       )}
-    </div>
+
+      <ConfirmDialog
+        open={!!pendingDeleteMaster}
+        title="Delete Certification"
+        message="Delete this certification?"
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={deleteMaster}
+        onCancel={() => setPendingDeleteMaster(null)}
+      />
+    </PageShell>
   );
 }

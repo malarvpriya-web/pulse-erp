@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, TrendingUp, ChevronDown } from 'lucide-react';
+import { RefreshCw, TrendingUp, ChevronDown, ShoppingCart } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PAGE_SIZE = 20;
 
@@ -15,7 +16,7 @@ const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-dig
 const STATUS_COLORS = {
   won:       { bg: '#d1fae5', color: '#16a34a' },
   lost:      { bg: '#fee2e2', color: '#dc2626' },
-  pending:   { bg: '#fef3c7', color: '#d97706' },
+  pending:   { bg: '#ede9fe', color: '#6d28d9' },
   confirmed: { bg: '#dbeafe', color: '#2563eb' },
 };
 
@@ -64,13 +65,20 @@ export default function OrdersWonLost() {
   const COLS = ['Order No', 'Customer', 'Campaign', 'Value', 'Status', 'Date'];
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Marketing"
+        title="Orders Won / Lost"
+        subtitle="Sales outcomes attributed to marketing campaigns"
+      />
+    }>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Orders Won / Lost</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Sales outcomes attributed to marketing campaigns</p>
+
+
         </div>
         <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search orders…"
           style={{ padding: '7px 12px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 7, fontSize: 13, background: 'var(--color-background-secondary)', color: 'var(--color-text-primary)', width: 180 }} />
@@ -174,6 +182,6 @@ export default function OrdersWonLost() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

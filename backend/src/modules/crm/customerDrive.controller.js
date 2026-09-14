@@ -2,6 +2,7 @@
 // Google Drive folder management for Customer 360
 import pool from '../../config/db.js';
 import { companyOf } from '../../shared/scope.js';
+import { respondError } from '../../shared/pgErrors.js';
 import {
   isDriveConfigured,
   ensureCustomerDocFolder,
@@ -38,7 +39,7 @@ export async function getDriveStatus(req, res) {
     const result = await ping();
     res.json({ configured: true, connected: result.ok, error: result.error || null });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 }
 
@@ -100,7 +101,7 @@ export async function provisionCustomerFolders(req, res) {
       folders:       results,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 }
 
@@ -155,7 +156,7 @@ export async function getCustomerFolders(req, res) {
       folders,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 }
 
@@ -206,7 +207,7 @@ export async function getCustomerFiles(req, res) {
       total:      rows.length,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 }
 
@@ -261,7 +262,7 @@ export async function uploadCustomerFile(req, res) {
 
     res.status(201).json({ file: fileRow, drive: result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 }
 
@@ -329,6 +330,6 @@ export async function autoRouteDocument(req, res) {
 
     res.status(201).json({ drive_link: result.drive_link, drive_file_id: result.drive_file_id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 }

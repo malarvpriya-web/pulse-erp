@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, X, RefreshCw, Search, CheckCircle, XCircle, ArrowRight, Wrench, FileText, AlertTriangle } from 'lucide-react';
+import {
+  Plus, X, RefreshCw, Search, CheckCircle, XCircle, ArrowRight, Wrench,
+  FileText, AlertTriangle, DraftingCompass,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   draft:       { label: 'Draft',       color: '#9ca3af', bg: '#f3f4f6' },
@@ -13,8 +17,8 @@ const STATUS_META = {
 
 const SEVERITY_META = {
   low:      { color: '#10b981', bg: '#ecfdf5' },
-  medium:   { color: '#f59e0b', bg: '#fffbeb' },
-  high:     { color: '#f97316', bg: '#fff7ed' },
+  medium:   { color: '#7c5cf0', bg: '#f5f3ff' },
+  high:     { color: '#7c5cf0', bg: '#fff7ed' },
   critical: { color: '#ef4444', bg: '#fef2f2' },
 };
 
@@ -278,24 +282,22 @@ export default function ECNManagement() {
   }, {});
 
   return (
-    <div style={{ padding: 24 }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Engineering Change Notices</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Manage ECNs, ECRs, and design deviations with full audit trail</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load}
-            style={{ padding: '8px 14px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}>
+    <PageShell dock={
+      <PageHero
+        icon={DraftingCompass}
+        eyebrow="Engineering"
+        title="Engineering Change Notices"
+        subtitle="Manage ECNs, ECRs, and design deviations with full audit trail"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
             <RefreshCw size={14} />
           </button>
-          <button onClick={() => setShowCreate(true)}
-            style={{ padding: '8px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
+          <button className="plh-cta" onClick={() => setShowCreate(true)}>
             <Plus size={14} /> New ECN
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       {/* Status pills */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -387,6 +389,6 @@ export default function ECNManagement() {
       {selected && (
         <ECNDetail ecn={selected} onClose={() => setSelected(null)} onRefresh={load} />
       )}
-    </div>
+    </PageShell>
   );
 }

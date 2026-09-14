@@ -3,18 +3,21 @@
  * Computes and displays risk across 5 dimensions: Financial, Quality, Delivery, Compliance, Dependency.
  */
 import { useState, useEffect, useCallback } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
   ResponsiveContainer, Legend,
 } from 'recharts';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import '@/components/dashboard/dashkit.css';
 
 const RISK_COLORS = {
   Low:      { bg: '#dcfce7', color: '#16a34a', bar: '#22c55e' },
-  Medium:   { bg: '#fef3c7', color: '#d97706', bar: '#f59e0b' },
+  Medium:   { bg: '#ede9fe', color: '#6d28d9', bar: '#7c5cf0' },
   High:     { bg: '#fee2e2', color: '#dc2626', bar: '#ef4444' },
   Critical: { bg: '#fce7f3', color: '#9d174d', bar: '#ec4899' },
 };
@@ -28,7 +31,7 @@ function RiskBadge({ rating }) {
 }
 
 function RiskMeter({ score, label }) {
-  const color = score >= 70 ? '#ec4899' : score >= 50 ? '#ef4444' : score >= 30 ? '#f59e0b' : '#22c55e';
+  const color = score >= 70 ? '#ec4899' : score >= 50 ? '#ef4444' : score >= 30 ? '#7c5cf0' : '#22c55e';
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -59,16 +62,39 @@ export default function VendorRiskDashboard() {
 
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(''), 3000); };
 
+  // Risk ratings are point-in-time assessments — dimensions, no period. The
+  // existing risk chips below still drive `filter`; the bar adds vendor type.
+  // Both now actually reach the query: /procurement/vendors previously ignored
+  // risk_rating entirely.
+  const filters = useDashboardFilters({
+    dimensions: { vendor_type: 'all' },
+    storageKey: 'vendor-risk-dashboard',
+  });
+  const { params } = filters;
+  const [vendorTypes, setVendorTypes] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/vendor-approval/dashboard/filter-options')
+      .then(r => { if (!cancelled) setVendorTypes(r.data?.vendor_types || []); })
+      .catch(() => { /* falls back to "All Types" only */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const loadVendors = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get('/procurement/vendors', {
-        params: { risk_rating: filter === 'all' ? undefined : filter, search: search || undefined },
+        params: {
+          ...params,
+          risk_rating: filter === 'all' ? undefined : filter,
+          search: search || undefined,
+        },
       });
       setVendors(data.vendors || data || []);
     } catch { setVendors([]); }
     setLoading(false);
-  }, [filter, search]);
+  }, [filter, search, params]);
 
   useEffect(() => { loadVendors(); }, [loadVendors]);
 
@@ -151,22 +177,34 @@ export default function VendorRiskDashboard() {
   );
 
   return (
-    <div style={styles.root}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Procurement"
+        title="Vendor Risk Engine"
+        subtitle="5-dimension risk model: Financial · Quality · Delivery · Compliance · Dependency"
+      />
+    }>
       {toast && <div style={styles.toast}>{toast}</div>}
 
-      {/* Header */}
-      <div style={styles.header}>
-        <div>
-          <h1 style={styles.title}>Vendor Risk Engine</h1>
-          <p style={styles.subtitle}>5-dimension risk model: Financial · Quality · Delivery · Compliance · Dependency</p>
-        </div>
-      </div>
+
+      {/* Point-in-time risk assessments — dimension only, no date range. */}
+      <DashboardFilterBar
+        filters={filters}
+        showPeriod={false}
+        dimensions={[{
+          key: 'vendor_type',
+          label: 'Vendor Type',
+          allLabel: 'All Types',
+          options: vendorTypes.map(v => ({ value: v, label: v })),
+        }]}
+      />
 
       {/* Summary cards */}
       <div style={styles.cards}>
         <StatCard index={0} label="Critical Risk" value={critical} color="#ec4899" icon="⚠" />
         <StatCard index={1} label="High Risk" value={high} color="#ef4444" icon="▲" />
-        <StatCard index={2} label="Single Source" value={singleSource} color="#f59e0b" icon="⛓" />
+        <StatCard index={2} label="Single Source" value={singleSource} color="#7c5cf0" icon="⛓" />
         <StatCard index={3} label="Total Assessed" value={vendors.length} color="#6B3FDB" icon="✓" />
       </div>
 
@@ -211,7 +249,7 @@ export default function VendorRiskDashboard() {
               {(v.is_critical_supplier || v.is_single_source || v.is_long_lead) && (
                 <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                   {v.is_critical_supplier && <span style={styles.tag}>Critical</span>}
-                  {v.is_single_source && <span style={{ ...styles.tag, background: '#fef3c7', color: '#92400e' }}>Single Source</span>}
+                  {v.is_single_source && <span style={{ ...styles.tag, background: '#ede9fe', color: '#5b21b6' }}>Single Source</span>}
                   {v.is_long_lead && <span style={{ ...styles.tag, background: '#ede9fe', color: '#6d28d9' }}>Long Lead</span>}
                 </div>
               )}
@@ -306,7 +344,7 @@ export default function VendorRiskDashboard() {
           )}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }
 

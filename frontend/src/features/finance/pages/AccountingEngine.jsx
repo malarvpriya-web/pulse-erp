@@ -1,5 +1,6 @@
 // frontend/src/features/finance/pages/AccountingEngine.jsx
 import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { Contact } from 'lucide-react';
 
 const FinancialRatios = lazy(() => import('./FinancialRatios'));
 import api from '@/services/api/client';
@@ -11,6 +12,7 @@ import { useToast } from '@/context/ToastContext';
 import { useFY } from '@/context/FYContext';
 import FYSelector from '@/components/core/FYSelector';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ─── Currency formatter ────────────────────────────────────────────────────────
 function formatINR(val) {
@@ -30,7 +32,7 @@ function StatusBadge({ status }) {
     reversed: { bg: '#fee2e2', color: '#dc2626', label: 'Reversed' },
     open: { bg: '#ede9fe', color: '#6B3FDB', label: 'Open' },
     closed: { bg: '#f3f4f6', color: '#6b7280', label: 'Closed' },
-    locked: { bg: '#fef3c7', color: '#d97706', label: 'Locked' },
+    locked: { bg: '#ede9fe', color: '#6d28d9', label: 'Locked' },
   };
   const c = colors[status] || { bg: '#f3f4f6', color: '#6b7280', label: status };
   return (
@@ -421,7 +423,14 @@ export default function AccountingEngine() {
 
   // ─── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div style={{ fontFamily: 'Inter, system-ui, sans-serif', background: '#f8f7ff', minHeight: '100vh', padding: '24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="Finance"
+        title="Accounting Engine"
+        subtitle="Journal entries, financial statements & ledger management"
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingReverseEntry}
@@ -432,14 +441,6 @@ export default function AccountingEngine() {
         onConfirm={reverseEntry}
         onCancel={() => setPendingReverseEntry(null)}
       />
-      {/* Header */}
-      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 26, fontWeight: 700, color: '#1e1b4b' }}>Accounting Engine</h1>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 14 }}>Journal entries, financial statements & ledger management</p>
-        </div>
-        <FYSelector showProgress />
-      </div>
 
       {/* Tab Bar */}
       <div style={{ display: 'flex', gap: 4, background: '#fff', borderRadius: 10, padding: 4, border: '1px solid #e9e4ff', marginBottom: 24, width: 'fit-content' }}>
@@ -1517,9 +1518,9 @@ export default function AccountingEngine() {
               <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
                 <div style={infoCard}><div style={{ fontSize: 12, color: '#6b7280' }}>Funds from Operations</div><div style={{ fontWeight: 700, color: fundsFlow.fundsFromOperations >= 0 ? '#16a34a' : '#dc2626' }}>{formatINR(fundsFlow.fundsFromOperations)}</div></div>
                 <div style={infoCard}><div style={{ fontSize: 12, color: '#6b7280' }}>Total Sources</div><div style={{ fontWeight: 700, color: '#6B3FDB' }}>{formatINR(fundsFlow.totalSources)}</div></div>
-                <div style={infoCard}><div style={{ fontSize: 12, color: '#6b7280' }}>Total Applications</div><div style={{ fontWeight: 700, color: '#d97706' }}>{formatINR(fundsFlow.totalApplications)}</div></div>
+                <div style={infoCard}><div style={{ fontSize: 12, color: '#6b7280' }}>Total Applications</div><div style={{ fontWeight: 700, color: '#6d28d9' }}>{formatINR(fundsFlow.totalApplications)}</div></div>
                 <div style={infoCard}><div style={{ fontSize: 12, color: '#6b7280' }}>Net Δ Working Capital</div><div style={{ fontWeight: 700 }}>{formatINR(fundsFlow.workingCapital?.netIncrease)}</div></div>
-                <div style={infoCard}><div style={{ fontSize: 12, color: '#6b7280' }}>Reconciled</div><div style={{ fontWeight: 700, color: fundsFlow.reconciliation?.reconciled ? '#16a34a' : '#d97706' }}>{fundsFlow.reconciliation?.reconciled ? '✓ Yes' : `Δ ${formatINR(fundsFlow.reconciliation?.difference)}`}</div></div>
+                <div style={infoCard}><div style={{ fontSize: 12, color: '#6b7280' }}>Reconciled</div><div style={{ fontWeight: 700, color: fundsFlow.reconciliation?.reconciled ? '#16a34a' : '#6d28d9' }}>{fundsFlow.reconciliation?.reconciled ? '✓ Yes' : `Δ ${formatINR(fundsFlow.reconciliation?.difference)}`}</div></div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
@@ -1535,14 +1536,14 @@ export default function AccountingEngine() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontWeight: 700, color: '#6B3FDB' }}><span>Total Sources</span><span>{formatINR(fundsFlow.totalSources)}</span></div>
                 </div>
                 <div style={{ ...tableWrap, padding: 16 }}>
-                  <div style={{ fontWeight: 700, color: '#d97706', marginBottom: 10 }}>Applications of Funds</div>
+                  <div style={{ fontWeight: 700, color: '#6d28d9', marginBottom: 10 }}>Applications of Funds</div>
                   {(fundsFlow.applications || []).length === 0 ? <div style={{ color: '#9ca3af', fontSize: 13 }}>No applications.</div> :
                     (fundsFlow.applications || []).map((a, i) => (
                       <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', fontSize: 13, borderBottom: '1px solid #f0f0f4' }}>
                         <span>{a.name}</span><span style={{ fontWeight: 600 }}>{formatINR(a.value)}</span>
                       </div>
                     ))}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontWeight: 700, color: '#d97706' }}><span>Total Applications</span><span>{formatINR(fundsFlow.totalApplications)}</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontWeight: 700, color: '#6d28d9' }}><span>Total Applications</span><span>{formatINR(fundsFlow.totalApplications)}</span></div>
                 </div>
               </div>
 
@@ -1591,7 +1592,7 @@ export default function AccountingEngine() {
           onReverse={() => reverseEntry(selectedEntry.id)}
         />
       )}
-    </div>
+    </PageShell>
   );
 }
 

@@ -10,7 +10,7 @@ import { ErrorState } from '../core/ErrorStates';
 
 const PRIORITY_CONFIG = {
   critical: { bg: '#fee2e2', color: '#991b1b', border: '#dc2626', label: 'Critical', dot: '#dc2626' },
-  high:     { bg: '#fef3c7', color: '#92400e', border: '#f59e0b', label: 'High',     dot: '#f59e0b' },
+  high:     { bg: '#ede9fe', color: '#5b21b6', border: '#7c5cf0', label: 'High',     dot: '#7c5cf0' },
   medium:   { bg: '#dbeafe', color: '#1e40af', border: '#3b82f6', label: 'Medium',   dot: '#3b82f6' },
   low:      { bg: '#dcfce7', color: '#14532d', border: '#10b981', label: 'Low',      dot: '#10b981' },
 };
@@ -115,8 +115,8 @@ function RecommendationCard({ rec, onAction }) {
       </div>
 
       {/* Problem box */}
-      <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '8px 12px', marginBottom: 8 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: '#c2410c', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>
+      <div style={{ background: '#fff7ed', border: '1px solid #ddd6fe', borderRadius: 8, padding: '8px 12px', marginBottom: 8 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: '#5b21b6', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>
           🔴 Problem
         </div>
         <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.5 }}>{rec.problem}</div>

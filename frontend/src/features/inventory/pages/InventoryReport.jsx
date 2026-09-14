@@ -3,7 +3,7 @@ import { BarChart3, Calendar, CheckCircle2 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { fmtL, fmtNum } from '@/utils/format';
-import { PageLayout, PageHeader, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 /*
  * Inventory Report — ₹-value view of the stock ledger, per store & financial year.
@@ -172,16 +172,19 @@ export default function InventoryReport() {
   const tdL = { ...td, textAlign: 'left' };
 
   return (
-    <PageLayout>
-      <PageHeader
-        description={`₹-value view of the stock ledger — ${storeName}${data?.fy ? ` · ${data.fy.label}` : ''}`}
-        actions={
-          <button className="pl-icon-btn" onClick={download} disabled={loading}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={BarChart3}
+          eyebrow="Inventory"
+          title="Inventory Report"
+          subtitle={`₹-value view of the stock ledger — ${storeName}${data?.fy ? ` · ${data.fy.label}` : ''}`}
+          actions={<button className="plh-cta" onClick={download} disabled={loading}>
             ⬇ Download
-          </button>
-        }
-        filters={
-          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+          </button>}
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
             <select value={storeId} onChange={e => setStoreId(e.target.value)} className="pl-icon-btn">
               <option value="all">All Stores</option>
               {stores.map(s => <option key={s.id} value={s.id}>{s.warehouse_name || s.name}</option>)}
@@ -204,9 +207,11 @@ export default function InventoryReport() {
                 </button>
               ))}
             </div>
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
 
       {error && (
         <div style={{ background: '#fee2e2', color: '#dc2626', borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13, fontWeight: 600 }}>{error}</div>
@@ -339,7 +344,7 @@ export default function InventoryReport() {
                         <td style={tdL}>{r.category}</td>
                         <td style={{ ...td, color: '#dc2626', fontWeight: 600 }}>{fmtNum(r.current_stock)}</td>
                         <td style={td}>{fmtNum(r.reorder_level)}</td>
-                        <td style={{ ...td, color: '#ea580c' }}>{fmtNum(r.shortfall)}</td>
+                        <td style={{ ...td, color: '#6d28d9' }}>{fmtNum(r.shortfall)}</td>
                         <td style={{ ...td, fontWeight: 600 }}>{fmtNum(r.suggested_qty)}</td>
                         <td style={{ ...tdL, color: r.preferred_vendor ? '#374151' : '#9ca3af' }}>{r.preferred_vendor || '—'}</td>
                       </tr>
@@ -354,6 +359,6 @@ export default function InventoryReport() {
           )}
         </>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

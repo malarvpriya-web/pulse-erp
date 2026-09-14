@@ -1,19 +1,21 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Factory } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { getShopFloor, startOperation, completeOperation, holdOperation } from '../services/productionService';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PRIORITY_COLOR = {
   critical: ['#fee2e2', '#dc2626'],
-  high:     ['#fef3c7', '#d97706'],
+  high:     ['#ede9fe', '#6d28d9'],
   medium:   ['#dbeafe', '#2563eb'],
   low:      ['#f3f4f6', '#6b7280'],
 };
 
 const STATUS_COLOR = {
-  pending:     ['#fef9c3', '#854d0e'],
+  pending:     ['#ede9fe', '#5b21b6'],
   ready:       ['#dbeafe', '#1e40af'],
   in_progress: ['#dcfce7', '#166534'],
-  on_hold:     ['#fef3c7', '#92400e'],
+  on_hold:     ['#ede9fe', '#5b21b6'],
   completed:   ['#f3f4f6', '#374151'],
   skipped:     ['#f3f4f6', '#9ca3af'],
 };
@@ -95,12 +97,18 @@ export default function ShopFloor({ setPage }) {
   });
 
   return (
-    <div style={{ padding: 24, background: '#f8f7ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="Shop Floor"
+      />
+    }>
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#1f2937' }}>Shop Floor</h2>
+
           <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
             {filteredOps.length} pending operations · {filteredOps.filter(o => o.status === 'in_progress').length} in progress
           </p>
@@ -262,7 +270,7 @@ export default function ShopFloor({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 
@@ -295,7 +303,7 @@ function ActionButtons({ op, setModal, setForm, small }) {
             Done
           </button>
           <button onClick={() => { setModal({ type: 'hold', op }); setForm({}); }}
-            style={{ padding: px, background: '#fef3c7', color: '#92400e', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: fs, fontWeight: 700 }}>
+            style={{ padding: px, background: '#ede9fe', color: '#5b21b6', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: fs, fontWeight: 700 }}>
             Hold
           </button>
         </>

@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { IndianRupee, Users, Download, Eye, X, CheckCircle, AlertCircle, FileText, TrendingUp, RefreshCw, Search, Lock, ThumbsUp, CreditCard, RotateCcw } from 'lucide-react';
+import {
+  IndianRupee, Users, Download, Eye, X, CheckCircle, AlertCircle,
+  FileText, TrendingUp, RefreshCw, Search, Lock, ThumbsUp, CreditCard,
+  RotateCcw, Wallet,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmtRupee = n => { if(n>=100000) return `₹${(n/100000).toFixed(1)}L`; if(n>=1000) return `₹${(n/1000).toFixed(0)}K`; return `₹${n||0}`; };
 const fmtN = n => Number(n||0).toLocaleString('en-IN');
@@ -28,7 +33,7 @@ const MONTHS = getCurrentFYMonths();
 
 const STATUS_COLOR = {
   paid:             { bg:'#d1fae5', color:'#065f46' },
-  pending:          { bg:'#fef3c7', color:'#92400e' },
+  pending:          { bg:'#ede9fe', color:'#5b21b6' },
   processing:       { bg:'#dbeafe', color:'#1e40af' },
   on_hold:          { bg:'#fee2e2', color:'#991b1b' },
   pending_approval: { bg:'#ede9fe', color:'#5b21b6' },
@@ -218,12 +223,19 @@ export default function Payroll({ setPage: _setPage }) {
   const kpis = [
     { label:'Total Employees',  value: summary.total_employees || payrolls.length,                                                                       icon:Users,       color:'#6366f1' },
     { label:'Total Gross',      value: fmtRupee(summary.total_gross      || payrolls.reduce((s,p)=>s+Number(p.gross||0),0)),                             icon:IndianRupee,  color:'#10b981', isText:true },
-    { label:'Total Deductions', value: fmtRupee(summary.total_deductions || payrolls.reduce((s,p)=>s+Number(p.total_deductions||0),0)),                  icon:TrendingUp,  color:'#f59e0b', isText:true },
+    { label:'Total Deductions', value: fmtRupee(summary.total_deductions || payrolls.reduce((s,p)=>s+Number(p.total_deductions||0),0)),                  icon:TrendingUp,  color:'#7c5cf0', isText:true },
     { label:'Net Payable',      value: fmtRupee(summary.total_net        || payrolls.reduce((s,p)=>s+Number(p.net_pay||0),0)),                           icon:CheckCircle, color:'#8b5cf6', isText:true },
   ];
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Wallet}
+        eyebrow="Human Resources"
+        title="Payroll"
+        subtitle="Manage and process employee payroll"
+      />
+    }>
 
       {/* Toast */}
       {toast && (
@@ -307,8 +319,8 @@ export default function Payroll({ setPage: _setPage }) {
       {/* Header */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, flexWrap:'wrap', gap:12 }}>
         <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Payroll</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Manage and process employee payroll</p>
+
+
         </div>
         <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
           {/* Month selector with lock indicator */}
@@ -492,7 +504,7 @@ export default function Payroll({ setPage: _setPage }) {
                             </button>
                           )}
                           <button onClick={()=>rerunEmployee(p.employee_id||p.id, p.name||p.employee_name)} title="Re-run payroll" disabled={isRerunning}
-                            style={{ padding:'5px 8px', background:'#fef3c7', color:'#92400e', border:'none',
+                            style={{ padding:'5px 8px', background:'#ede9fe', color:'#5b21b6', border:'none',
                               borderRadius:6, cursor:'pointer', display:'flex', alignItems:'center', gap:3, fontSize:11, fontWeight:600,
                               opacity:isRerunning?0.6:1 }}>
                             <RotateCcw size={12} style={{ animation:isRerunning?'spin 1s linear infinite':undefined }}/> Re-run
@@ -625,6 +637,6 @@ export default function Payroll({ setPage: _setPage }) {
       )}
 
       <style>{`@keyframes spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }`}</style>
-    </div>
+    </PageShell>
   );
 }

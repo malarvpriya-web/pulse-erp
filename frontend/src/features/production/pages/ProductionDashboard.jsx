@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
@@ -7,6 +8,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList,
 } from 'recharts';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ── formatting ── */
 const fmt = (n) => (parseInt(n) || 0).toLocaleString('en-IN');
@@ -16,24 +18,24 @@ const fmtNum = (n) => {
 };
 
 const STATUS_COLOR = {
-  planned:     { bg: '#fef9c3', color: '#854d0e' },
+  planned:     { bg: '#ede9fe', color: '#5b21b6' },
   released:    { bg: '#e0f2fe', color: '#0369a1' },
   in_progress: { bg: '#dbeafe', color: '#1e40af' },
-  on_hold:     { bg: '#fef3c7', color: '#d97706' },
+  on_hold:     { bg: '#ede9fe', color: '#6d28d9' },
   completed:   { bg: '#dcfce7', color: '#166534' },
   cancelled:   { bg: '#fee2e2', color: '#991b1b' },
 };
 // Donut slice colors per status (reserved semantic hues, fixed order)
 const STATUS_HUE = {
-  planned: '#eab308', released: '#0ea5e9', in_progress: '#2563eb',
-  on_hold: '#f59e0b', completed: '#10b981', cancelled: '#9ca3af',
+  planned: '#8b5cf6', released: '#0ea5e9', in_progress: '#2563eb',
+  on_hold: '#7c5cf0', completed: '#10b981', cancelled: '#9ca3af',
 };
 // Ordinal quality-rating ramp (best → worst)
 const RATING_META = [
   { key: 'excellent', label: 'Excellent',    color: '#16a34a' },
   { key: 'good',      label: 'Good',         color: '#84cc16' },
-  { key: 'fair',      label: 'Fair',         color: '#f59e0b' },
-  { key: 'poor',      label: 'Poor',         color: '#f97316' },
+  { key: 'fair',      label: 'Fair',         color: '#7c5cf0' },
+  { key: 'poor',      label: 'Poor',         color: '#7c5cf0' },
   { key: 'critical',  label: 'Critical',     color: '#ef4444' },
 ];
 
@@ -166,21 +168,19 @@ export default function ProductionDashboard({ setPage }) {
   const { kpis, delayed_orders = [], material_shortage = [], capacity_utilization = [], recent_orders = [] } = data;
 
   return (
-    <div style={{ padding: '16px 18px 24px', background: '#f8f7ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Production"
+        title="Advanced Production Dashboard"
+        subtitle="Live manufacturing status · each batch = one production order"
+        actions={<button className="plh-cta" onClick={() => setPage('ProductionOrders')}>
+          + New Order
+        </button>}
+      />
+    }>
 
       {/* ── Header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: '#1f2937' }}>Advanced Production Dashboard</h2>
-          <p style={{ margin: 0, fontSize: 12.5, color: '#6b7280' }}>
-            Live manufacturing status · each batch = one production order
-          </p>
-        </div>
-        <button onClick={() => setPage('ProductionOrders')}
-          style={{ padding: '7px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          + New Order
-        </button>
-      </div>
 
       {/* ── Delay Alert Banner (only when delayed batches exist) ── */}
       {delayed_orders.length > 0 && (
@@ -241,7 +241,7 @@ export default function ProductionDashboard({ setPage }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 14 }}>
         <KPICard index={0} label="Total Batches"    value={fmt(kpis.total)}          color="#6366f1" bg="#eef2ff" />
         <KPICard index={1} label="In Production"    value={fmt(kpis.in_production)}  color="#8b5cf6" bg="#f5f3ff" />
-        <KPICard index={2} label="Delayed"          value={fmt(kpis.delayed)}        color="#f59e0b" bg="#fffbeb" />
+        <KPICard index={2} label="Delayed"          value={fmt(kpis.delayed)}        color="#7c5cf0" bg="#f5f3ff" />
         <KPICard index={3} label={`Critical (>${criticalDays}d)`} value={fmt(kpis.critical)} color="#ef4444" bg="#fef2f2" />
         <KPICard index={4} label="Completion Rate"  value={`${kpis.completion_rate}%`} color="#10b981" bg="#ecfdf5" sub={`${fmt(kpis.completed)} completed`} />
         <KPICard index={5} label="On Schedule"      value={fmt(kpis.on_schedule)}    color="#2563eb" bg="#eff6ff" />
@@ -275,7 +275,7 @@ export default function ProductionDashboard({ setPage }) {
       {tab === 'Delay Analysis' && <DelayAnalysisTab delayed={delayed_orders} criticalDays={criticalDays} />}
       {tab === 'Performance Metrics' && <PerformanceTab perf={data.performance || {}} />}
       {tab === 'Detailed Status' && <DetailedStatusTab rows={data.detailed_status || []} criticalDays={criticalDays} setPage={setPage} />}
-    </div>
+    </PageShell>
   );
 }
 
@@ -366,7 +366,7 @@ function OverviewTab({ data, statusChart, ratingChart, capacity_utilization, mat
           <div style={{ display: 'grid', gap: 10 }}>
             {capacity_utilization.map(wc => {
               const pct = wc.utilization_pct || 0;
-              const barColor = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#10b981';
+              const barColor = pct >= 90 ? '#ef4444' : pct >= 70 ? '#7c5cf0' : '#10b981';
               return (
                 <div key={wc.id}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -451,12 +451,12 @@ function ProductionLinesTab({ data }) {
             {lines.map(l => {
               const c = capById[l.id] || {};
               const pct = c.utilization_pct || 0;
-              const barColor = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#10b981';
+              const barColor = pct >= 90 ? '#ef4444' : pct >= 70 ? '#7c5cf0' : '#10b981';
               return (
                 <tr key={l.id} style={{ borderBottom: '1px solid #f5f3ff' }}>
                   <td style={{ ...td, fontWeight: 600, color: '#1f2937' }}>{l.name}</td>
                   <td style={tdC}><Pill n={l.active_ops} color="#2563eb" bg="#eff6ff" /></td>
-                  <td style={tdC}><Pill n={l.queued_ops} color="#d97706" bg="#fffbeb" /></td>
+                  <td style={tdC}><Pill n={l.queued_ops} color="#6d28d9" bg="#f5f3ff" /></td>
                   <td style={tdC}><Pill n={l.done_ops} color="#166534" bg="#ecfdf5" /></td>
                   <td style={td}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -485,7 +485,7 @@ function DelayAnalysisTab({ delayed, criticalDays }) {
   return (
     <>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 12 }}>
-        <KPICard label="Delayed Batches" value={fmt(delayed.length)} color="#f59e0b" bg="#fffbeb" />
+        <KPICard label="Delayed Batches" value={fmt(delayed.length)} color="#7c5cf0" bg="#f5f3ff" />
         <KPICard label={`Critical (>${criticalDays}d)`} value={fmt(critical.length)} color="#ef4444" bg="#fef2f2" />
         <KPICard label="Worst Delay" value={`${delayed[0]?.days_delayed || 0}d`} color="#dc2626" bg="#fef2f2" />
       </div>
@@ -511,9 +511,9 @@ function DelayAnalysisTab({ delayed, criticalDays }) {
                     <td style={td}>{o.product_name}</td>
                     <td style={tdC}><StatusBadge status={o.status} /></td>
                     <td style={tdC}>{fmtDate(o.planned_end_date)}</td>
-                    <td style={{ ...tdC, fontWeight: 700, color: crit ? '#dc2626' : '#d97706' }}>{o.days_delayed}d</td>
+                    <td style={{ ...tdC, fontWeight: 700, color: crit ? '#dc2626' : '#6d28d9' }}>{o.days_delayed}d</td>
                     <td style={tdC}>
-                      <span style={{ background: crit ? '#dc2626' : '#fef3c7', color: crit ? '#fff' : '#d97706', borderRadius: 5, padding: '2px 9px', fontSize: 11, fontWeight: 700 }}>
+                      <span style={{ background: crit ? '#dc2626' : '#ede9fe', color: crit ? '#fff' : '#6d28d9', borderRadius: 5, padding: '2px 9px', fontSize: 11, fontWeight: 700 }}>
                         {crit ? 'CRITICAL' : 'Delayed'}
                       </span>
                     </td>
@@ -554,7 +554,7 @@ function PerformanceTab({ perf }) {
 }
 
 function Meter({ label, pct, good, detail }) {
-  const color = good ? (pct >= 90 ? '#10b981' : pct >= 70 ? '#f59e0b' : '#ef4444') : '#6B3FDB';
+  const color = good ? (pct >= 90 ? '#10b981' : pct >= 70 ? '#7c5cf0' : '#ef4444') : '#6B3FDB';
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
@@ -612,7 +612,7 @@ function DetailedStatusTab({ rows, criticalDays, setPage }) {
                   <td style={tdC}>{fmtDate(o.planned_end_date)}</td>
                   <td style={tdC}>
                     {o.days_delayed > 0
-                      ? <span style={{ color: crit ? '#dc2626' : '#d97706', fontWeight: 700 }}>{o.days_delayed}d</span>
+                      ? <span style={{ color: crit ? '#dc2626' : '#6d28d9', fontWeight: 700 }}>{o.days_delayed}d</span>
                       : <span style={{ color: '#16a34a' }}>—</span>}
                   </td>
                 </tr>

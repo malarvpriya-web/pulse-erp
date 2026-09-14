@@ -19,12 +19,16 @@ import api from '@/services/api/client';
 const STATUS_CONFIG = {
   Preferred: { color: '#16a34a', bg: '#dcfce7', icon: '★' },
   Approved:  { color: '#2563eb', bg: '#dbeafe', icon: '✓' },
-  Watchlist: { color: '#d97706', bg: '#fef3c7', icon: '⚠' },
+  Watchlist: { color: '#6d28d9', bg: '#ede9fe', icon: '⚠' },
   Critical:  { color: '#dc2626', bg: '#fee2e2', icon: '✕' },
+  // No PO, receipt, inspection or NCR on record — see classifyHealth() in
+  // vendorHealthEngine.js. Falling through to the Watchlist default below would
+  // have shown these as amber "Watchlist", which is a judgement, not a gap.
+  Unrated:   { color: '#6b7280', bg: '#f3f4f6', icon: '?' },
 };
 
 const WARN_COLORS = {
-  Critical: '#dc2626', High: '#ea580c', Medium: '#d97706', Low: '#6b7280',
+  Critical: '#dc2626', High: '#6d28d9', Medium: '#6d28d9', Low: '#6b7280',
 };
 
 const DIM_LABELS = {
@@ -198,17 +202,23 @@ export default function VendorHealthWidget({ vendorId, onRecalculate }) {
 
   if (!health) return null;
 
-  // Radar chart data
-  const radarData = Object.keys(DIM_LABELS).map(key => ({
+  // Radar chart data. An unmeasured dimension is null, not 0 — plotting it as 0
+  // pulls the polygon to the centre on the one axis we have no reading for, and
+  // the composite does not include it either (the engine renormalises over the
+  // measured weights). Dropped from the chart entirely instead.
+  const radarData = Object.keys(DIM_LABELS)
+    .filter(key => health[key] != null)
+    .map(key => ({
     dimension: DIM_LABELS[key],
-    score:     parseFloat(health[key] || 0),
+    score:     parseFloat(health[key]),
     fullMark:  100,
   }));
 
   const scoreColor =
+    health.health_status === 'Unrated' ? '#6b7280' :
     health.health_score >= 90 ? '#16a34a' :
     health.health_score >= 75 ? '#2563eb' :
-    health.health_score >= 50 ? '#d97706' : '#dc2626';
+    health.health_score >= 50 ? '#6d28d9' : '#dc2626';
 
   const strategicFlagDefs = [
     { key: 'is_critical_supplier',  label: 'Critical Supplier' },
@@ -244,8 +254,10 @@ export default function VendorHealthWidget({ vendorId, onRecalculate }) {
           </div>
           <div style={{ display: 'flex', gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: '#2563eb' }}>
-                {Math.round(health.otd_pct || 0)}%
+              {/* NULL means no goods receipt exists yet; `|| 0` showed that as
+                  a flat 0% on-time, the worst possible reading of no data. */}
+              <div style={{ fontSize: 18, fontWeight: 800, color: health.otd_pct == null ? '#9ca3af' : '#2563eb' }}>
+                {health.otd_pct == null ? '—' : `${Math.round(health.otd_pct)}%`}
               </div>
               <div style={{ fontSize: 10, color: '#6b7280', fontWeight: 600 }}>ON-TIME DELIVERY</div>
             </div>

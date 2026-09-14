@@ -1,7 +1,11 @@
 // frontend/src/features/quality/pages/FATManagement.jsx
 import { useState, useEffect, useCallback } from 'react';
+import {
+  ClipboardCheck, Plus, CheckCircle2, XCircle, Hourglass, Ban,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell, StatBand, Stat } from '@/components/pulse-ui';
 
 function Badge({ label }) {
   const map = { passed: ['#d1fae5','#16a34a'], failed: ['#fee2e2','#dc2626'], 'in-progress': ['#dbeafe','#2563eb'], pending: ['#f3f4f6','#6b7280'], 'customer-accepted': ['#ede9fe','#6B3FDB'] };
@@ -84,7 +88,7 @@ function TestRunDetail({ run, onClose, onRefresh }) {
       toast.success('Punch point added');
       setNewPunch({ description: '', severity: 'minor', due_date: '' });
       onRefresh();
-    } catch (e) { toast.error('Failed to add punch point'); }
+    } catch { toast.error('Failed to add punch point'); }
   };
 
   const closePunch = async (ppId) => {
@@ -100,7 +104,7 @@ function TestRunDetail({ run, onClose, onRefresh }) {
       await api.put(`/quality/test-runs/${run.id}`, { customer_accepted: true, customer_accepted_at: new Date().toISOString() });
       toast.success('Customer acceptance recorded');
       onRefresh(); onClose();
-    } catch (e) { toast.error('Failed'); }
+    } catch { toast.error('Failed'); }
   };
 
   const inp = { padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' };
@@ -172,7 +176,7 @@ function TestRunDetail({ run, onClose, onRefresh }) {
                 <div key={pp.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f3f4f6' }}>
                   <div>
                     <div style={{ fontWeight: 500, fontSize: 13 }}>{pp.description}</div>
-                    <div style={{ fontSize: 11, color: '#6b7280' }}>Due: {pp.due_date ? new Date(pp.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'N/A'} · <span style={{ textTransform: 'capitalize', color: pp.severity === 'critical' ? '#dc2626' : pp.severity === 'major' ? '#d97706' : '#6b7280' }}>{pp.severity}</span></div>
+                    <div style={{ fontSize: 11, color: '#6b7280' }}>Due: {pp.due_date ? new Date(pp.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'N/A'} · <span style={{ textTransform: 'capitalize', color: pp.severity === 'critical' ? '#dc2626' : pp.severity === 'major' ? '#6d28d9' : '#6b7280' }}>{pp.severity}</span></div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <Badge label={pp.status} />
@@ -211,12 +215,45 @@ export default function FATManagement() {
 
   const sel = { padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, background: '#fff' };
 
+  const passed  = runs.filter(r => r.result === 'pass').length;
+  const failed  = runs.filter(r => r.result === 'fail').length;
+  const pending = runs.filter(r => r.status !== 'completed').length;
+  const blocked = runs.filter(r => r.dispatch_blocked).length;
+  const decided = passed + failed;
+  const passRate = decided ? Math.round((passed / decided) * 100) : 0;
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>FAT / SAT Management</h2>
-        <button onClick={() => setShowNew(true)} style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 20px', cursor: 'pointer', fontWeight: 600 }}>+ New Test Run</button>
-      </div>
+    <PageShell dock={
+        <PageHero
+          icon={ClipboardCheck}
+          eyebrow="Quality"
+          title="FAT / SAT Management"
+          subtitle="Factory & site acceptance test runs, customer witness sign-off and dispatch clearance"
+          meta={[
+            { value: runs.length, label: 'test runs' },
+            { value: `${passRate}%`, label: 'pass rate', tone: passRate >= 95 ? 'good' : passRate >= 80 ? 'warn' : 'bad' },
+            { value: blocked, label: 'dispatch blocked', tone: blocked ? 'bad' : 'good' },
+          ]}
+          tiles={[
+            { label: 'Passed',  value: passed },
+            { label: 'Failed',  value: failed },
+            { label: 'Pending', value: pending },
+          ]}
+          actions={
+            <button className="plh-cta" onClick={() => setShowNew(true)}>
+              <Plus size={14} /> New Test Run
+            </button>
+          }
+        />
+    }>
+
+      <StatBand cols={5}>
+        <Stat index={0} icon={ClipboardCheck} tone="primary" label="Test Runs"       value={runs.length} sub="in view" />
+        <Stat index={1} icon={CheckCircle2}   tone="success" label="Passed"          value={passed}      sub={`${passRate}% of decided`} />
+        <Stat index={2} icon={XCircle}        tone="danger"  label="Failed"          value={failed}      sub="re-test required" />
+        <Stat index={3} icon={Hourglass}      tone="warning" label="In Progress"     value={pending}     sub="not yet completed" />
+        <Stat index={4} icon={Ban}            tone={blocked ? 'danger' : 'success'} label="Dispatch Blocked" value={blocked} sub="held at gate" />
+      </StatBand>
 
       <div style={{ marginBottom: 16 }}>
         <select style={sel} value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
@@ -261,6 +298,6 @@ export default function FATManagement() {
 
       {showNew && <NewTestRunForm onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); load(); }} />}
       {selectedRun && <TestRunDetail run={selectedRun} onClose={() => setSelectedRun(null)} onRefresh={load} />}
-    </div>
+    </PageShell>
   );
 }

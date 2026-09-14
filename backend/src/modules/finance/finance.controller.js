@@ -1,5 +1,8 @@
 import pool from "../../config/db.js";
 import { logAudit } from '../../services/AuditService.js';
+import {
+  notIn, INVOICE_VOID, INVOICE_PAID, BILL_VOID, BILL_PAID,
+} from '../../shared/statusSets.js';
 
 // ── Safe query helper — returns [] instead of throwing on missing tables ──────
 async function safeRows(sql, params = []) {
@@ -24,6 +27,20 @@ export const getFinanceDashboard = async (req, res) => {
     const nextMonth  = new Date(now.getFullYear(), now.getMonth() + 1, 1)
                          .toISOString().slice(0, 10);
 
+    // Every query below ran unscoped, so this dashboard's AR, AP, revenue,
+    // expenses, overdue and bank figures were cross-tenant totals -- while
+    // getCFODashboard immediately below computes the same quantities scoped.
+    // Two dashboards over the same numbers have to agree, and the scoped one is
+    // the correct half.
+    const companyId = req.scope?.company_id ?? null;
+    // Each query gets its own params array: a shared one would leave the
+    // company placeholder unreferenced in some statements, which Postgres
+    // rejects outright rather than ignoring.
+    const cid1 = companyId != null ? ' AND company_id = $1' : '';
+    const p1   = companyId != null ? [companyId] : [];
+    const cid3 = companyId != null ? ' AND company_id = $3' : '';
+    const p3   = (a, b) => (companyId != null ? [a, b, companyId] : [a, b]);
+
     const [
       arRow, apRow, revRow, expRow,
       overdueInvoicesRow, overdueInvoicesCount,
@@ -31,32 +48,32 @@ export const getFinanceDashboard = async (req, res) => {
     ] = await Promise.all([
       // Accounts receivable — open invoices
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
-                FROM invoices WHERE LOWER(status) NOT IN ('paid','cancelled')`),
+                FROM invoices WHERE LOWER(status) NOT IN ('paid','cancelled')${cid1}`, p1),
       // Accounts payable — open bills
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
-                FROM bills WHERE LOWER(status) NOT IN ('paid','cancelled')`),
+                FROM bills WHERE LOWER(status) NOT IN ('paid','cancelled')${cid1}`, p1),
       // Month revenue — invoices issued this month
       safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM invoices
-                WHERE invoice_date >= $1 AND invoice_date < $2`, [monthStart, nextMonth]),
+                WHERE invoice_date >= $1 AND invoice_date < $2${cid3}`, p3(monthStart, nextMonth)),
       // Month expenses — bills issued this month
       safeRows(`SELECT COALESCE(SUM(total_amount), 0) AS value FROM bills
-                WHERE bill_date >= $1 AND bill_date < $2`, [monthStart, nextMonth]),
+                WHERE bill_date >= $1 AND bill_date < $2${cid3}`, p3(monthStart, nextMonth)),
       // Overdue invoices count (due_date < today and not paid)
       safeRows(`SELECT COUNT(*) AS value FROM invoices
-                WHERE due_date < NOW() AND LOWER(status) NOT IN ('paid','cancelled')`),
+                WHERE due_date < NOW() AND LOWER(status) NOT IN ('paid','cancelled')${cid1}`, p1),
       // Overdue invoices total
       safeRows(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)), 0) AS value
-                FROM invoices WHERE due_date < NOW() AND LOWER(status) NOT IN ('paid','cancelled')`),
+                FROM invoices WHERE due_date < NOW() AND LOWER(status) NOT IN ('paid','cancelled')${cid1}`, p1),
       // Bills due in next 7 days
       safeRows(`SELECT COUNT(*) AS value FROM bills
                 WHERE due_date BETWEEN NOW() AND NOW() + INTERVAL '7 days'
-                  AND LOWER(status) NOT IN ('paid','cancelled')`),
+                  AND LOWER(status) NOT IN ('paid','cancelled')${cid1}`, p1),
     ]);
 
     // Cash/bank balance — primary: bank_accounts.current_balance; fallback: journal_lines
     const bankAccountsBalance = await safeValue(
       `SELECT COALESCE(SUM(current_balance), 0) AS value
-       FROM bank_accounts WHERE is_active = true AND deleted_at IS NULL`
+       FROM bank_accounts WHERE is_active = true AND deleted_at IS NULL${cid1}`, p1
     );
     const cashBankBalance = bankAccountsBalance > 0
       ? bankAccountsBalance
@@ -65,7 +82,8 @@ export const getFinanceDashboard = async (req, res) => {
            FROM journal_lines jl
            JOIN chart_of_accounts coa ON coa.id = jl.account_id
            JOIN journal_entries   je  ON je.id  = jl.entry_id
-           WHERE coa.code IN ('1001','1002') AND je.status = 'posted'`
+           WHERE coa.code IN ('1001','1002') AND je.status = 'posted'
+             ${companyId != null ? 'AND je.company_id = $1' : ''}`, p1
         );
 
     const ar            = parseFloat(arRow[0]?.value) || 0;
@@ -523,5 +541,139 @@ export const getBills = async (req, res) => {
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * GET /finance/periods/:id/summary
+ *
+ * The figures a period close is decided on: what the period earned and spent,
+ * what is still owed in and out, how many journals it contains, and how many
+ * bank lines are still unreconciled.
+ *
+ * This exists because PeriodClosing.jsx rendered all of it from a hardcoded
+ * `CURRENT_SUMMARY` object -- a Finance Manager was deciding whether to close an
+ * accounting period against invented figures, including a fixed
+ * "3 unreconciled transactions" warning that never reflected the bank at all.
+ *
+ * Metric definitions are deliberately the same ones getCFODashboard and
+ * getInvoiceStats/getBillStats use (revenue = invoices.total_amount,
+ * expenses = bills.total_amount, receivable/payable net of what is already
+ * paid), so the close screen and the CFO dashboard cannot disagree. The window
+ * is the period's own start_date..end_date rather than a fiscal-year-to-date,
+ * because that is the span being closed.
+ *
+ * Deliberately NOT using the safeRows() helper the older handlers in this file
+ * use: it turns a failing query into an empty array, which here would silently
+ * become a confident "0 unreconciled, safe to close".
+ */
+export const getPeriodSummary = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.scope?.company_id ?? null;
+
+    const { rows: periods } = await pool.query(
+      `SELECT id, name, start_date, end_date, status
+         FROM accounting_periods
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [id, companyId]
+    );
+    if (!periods.length) return res.status(404).json({ error: 'Period not found.' });
+    const period = periods[0];
+
+    // Each query gets its OWN parameter array. Sharing one fixed-position array
+    // across sibling queries leaves $1 unreferenced in the two "as at end_date"
+    // ones, and Postgres rejects the whole statement with "could not determine
+    // data type of parameter $1" rather than ignoring the spare.
+    const win   = [period.start_date, period.end_date, companyId];
+    const asAt  = [period.end_date, companyId];
+
+    const [revRow, expRow, arRow, apRow, jvRow, bankRow, gstRow] = await Promise.all([
+      // Billed revenue in the window.
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount),0) AS v
+           FROM invoices
+          WHERE invoice_date BETWEEN $1 AND $2
+            AND deleted_at IS NULL
+            AND ${notIn('status', INVOICE_VOID)}
+            AND ($3::int IS NULL OR company_id = $3)`, win),
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount),0) AS v
+           FROM bills
+          WHERE bill_date BETWEEN $1 AND $2
+            AND deleted_at IS NULL
+            AND ${notIn('status', BILL_VOID)}
+            AND ($3::int IS NULL OR company_id = $3)`, win),
+      // Outstanding is a position as at the period end, not a flow inside it,
+      // so these two are bounded by end_date only.
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0) AS v
+           FROM invoices
+          WHERE invoice_date <= $1
+            AND deleted_at IS NULL
+            AND ${notIn('status', [...INVOICE_VOID, ...INVOICE_PAID])}
+            AND ($2::int IS NULL OR company_id = $2)`, asAt),
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0) AS v
+           FROM bills
+          WHERE bill_date <= $1
+            AND deleted_at IS NULL
+            AND ${notIn('status', [...BILL_VOID, ...BILL_PAID])}
+            AND ($2::int IS NULL OR company_id = $2)`, asAt),
+      pool.query(
+        `SELECT COUNT(*)::int AS n,
+                COUNT(*) FILTER (WHERE status='draft')::int AS drafts
+           FROM journal_entries
+          WHERE entry_date BETWEEN $1 AND $2
+            AND ($3::int IS NULL OR company_id = $3)`, win),
+      // bank_transactions carries no company_id of its own; it scopes through
+      // the account it belongs to.
+      pool.query(
+        `SELECT COUNT(*) FILTER (WHERE bt.reconciled IS NOT TRUE)::int AS unreconciled
+           FROM bank_transactions bt
+           JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+          WHERE bt.transaction_date BETWEEN $1 AND $2
+            AND ($3::int IS NULL OR ba.company_id = $3)`, win),
+      // Net GST = output tax charged on sales less input credit actually
+      // eligible on purchases. Neither gst table carries company_id, so both
+      // scope through the invoice/bill they were raised against.
+      pool.query(
+        `SELECT
+           COALESCE((SELECT SUM(gi.total_gst)
+                       FROM gst_invoices gi
+                       JOIN invoices i ON i.id = gi.invoice_id
+                      WHERE gi.invoice_date BETWEEN $1 AND $2
+                        AND ($3::int IS NULL OR i.company_id = $3)), 0) AS output_tax,
+           COALESCE((SELECT SUM(COALESCE(gp.igst,0) + COALESCE(gp.cgst,0) + COALESCE(gp.sgst,0))
+                       FROM gst_purchase_invoices gp
+                       JOIN bills b ON b.id = gp.bill_id
+                      WHERE gp.invoice_date BETWEEN $1 AND $2
+                        AND gp.itc_eligible IS TRUE
+                        AND ($3::int IS NULL OR b.company_id = $3)), 0) AS input_credit`, win),
+    ]);
+
+    const revenue  = parseFloat(revRow.rows[0].v) || 0;
+    const expenses = parseFloat(expRow.rows[0].v) || 0;
+
+    res.json({
+      period_id:   period.id,
+      period_name: period.name,
+      start_date:  period.start_date,
+      end_date:    period.end_date,
+      status:      period.status,
+      revenue,
+      expenses,
+      netProfit:        revenue - expenses,
+      arOutstanding:    parseFloat(arRow.rows[0].v) || 0,
+      apOutstanding:    parseFloat(apRow.rows[0].v) || 0,
+      taxPayable:       (parseFloat(gstRow.rows[0].output_tax) || 0)
+                        - (parseFloat(gstRow.rows[0].input_credit) || 0),
+      jvCount:          jvRow.rows[0].n,
+      draftJvCount:     jvRow.rows[0].drafts,
+      unreconciledTxns: bankRow.rows[0].unreconciled,
+    });
+  } catch (err) {
+    console.error('[GET /finance/periods/:id/summary]', err.message);
+    res.status(500).json({ error: 'Failed to compute period summary.' });
   }
 };

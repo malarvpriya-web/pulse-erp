@@ -4,6 +4,7 @@ import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { postStock } from '../production/subcontracting.routes.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const cid = (req) => req.scope?.company_id ?? null;
@@ -120,7 +121,7 @@ router.put('/assets/:id', requirePermission('maintenance', 'edit'), async (req, 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/assets/:id', requirePermission('maintenance', 'delete'), async (req, res) => {
+router.delete('/assets/:id', requirePermission('maintenance', 'delete'), captureBefore('assets_register'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -181,7 +182,7 @@ router.post('/schedule', requirePermission('maintenance', 'add'), async (req, re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/schedule/:id', requirePermission('maintenance', 'edit'), async (req, res) => {
+router.put('/schedule/:id', requirePermission('maintenance', 'edit'), captureBefore('maintenance_schedules'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { maintenance_type, frequency_days, next_due_date, assigned_to, checklist_items, standard_ref, is_active } = req.body;
@@ -205,7 +206,7 @@ router.put('/schedule/:id', requirePermission('maintenance', 'edit'), async (req
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/schedule/:id', requirePermission('maintenance', 'delete'), async (req, res) => {
+router.delete('/schedule/:id', requirePermission('maintenance', 'delete'), captureBefore('maintenance_schedules'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -269,7 +270,7 @@ router.post('/logs', requirePermission('maintenance', 'add'), async (req, res) =
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/logs/:id', requirePermission('maintenance', 'edit'), async (req, res) => {
+router.put('/logs/:id', requirePermission('maintenance', 'edit'), captureBefore('maintenance_logs'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { description, done_by, priority, ticket_id, root_cause, failure_mode, resolution_notes, corrective_action, preventive_action } = req.body;
@@ -397,7 +398,7 @@ router.post('/spare-parts', requirePermission('maintenance', 'add'), async (req,
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/spare-parts/:id', requirePermission('maintenance', 'edit'), async (req, res) => {
+router.put('/spare-parts/:id', requirePermission('maintenance', 'edit'), captureBefore('spare_parts'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { name, category, unit, unit_cost, reorder_level, part_number,
@@ -703,7 +704,7 @@ router.get('/notifications', requirePermission('maintenance', 'view'), async (re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/notifications/:id/read', requirePermission('maintenance', 'view'), async (req, res) => {
+router.put('/notifications/:id/read', requirePermission('maintenance', 'view'), captureBefore('service_notifications'), async (req, res) => {
   try {
     await pool.query(`UPDATE service_notifications SET is_read=TRUE WHERE id=$1`, [req.params.id]);
     res.json({ success: true });

@@ -29,7 +29,7 @@
  * ₹150k PO demanded CFO-level authority despite the setting saying otherwise.
  * The band between l2 and cfo_approval_above is now its own 'l3' tier.
  */
-import { rolesOf } from '../../middlewares/auth.middleware.js';
+import { rolesOf, hasRole, permissionFor, permissionColumn } from '../../middlewares/auth.middleware.js';
 
 /** Numeric authority per role. Higher clears everything below it. */
 export const ROLE_LEVEL = {
@@ -95,4 +95,61 @@ export function assertCanDecideAmount(req, amount, settings, action = 'approve')
     required_level: band,
     message: `This ₹${amt} item requires ${band.toUpperCase()} authority to ${action}. Your roles do not carry it.`,
   } };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Route-level permission gate
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `requireProcurement(action, ...alsoAllowRoles)`
+ *
+ * Until this existed, `/api/procurement` was gated by verifyToken alone: the
+ * mount required a valid session and nothing more. Every write in the module —
+ * create PR, create/send/approve/cancel PO, create GRN, raise and award an RFQ,
+ * create and edit vendors — was reachable by ANY authenticated account. Probed
+ * live before the fix: `pilot.hr@manifest.in` (role `hr`, whose procurement row
+ * is can_view=false on every action) and `pilot.salesexec@manifest.in` both
+ * created vendors and purchase requests and pulled the GRN export, all 2xx.
+ * Only PUT /settings, which had its own hasRole check, said no. Injecting a row
+ * into the vendor master is the first half of an invoice-fraud path, so this is
+ * the gap that mattered most in the module.
+ *
+ * Why not plain `requirePermission('procurement', action)`: several routes here
+ * are legitimately worked by roles that hold NO procurement grant at all, and
+ * the module already encoded that with allowRoles —
+ *   - three-way-match approval is finance's call (`finance`, `finance_manager`)
+ *   - NCR close and AVL delist are Quality's (`qc_manager`)
+ *   - goods receipt is the store keeper's, and `store_keeper` is deliberately
+ *     can_view-only on procurement so it cannot also raise POs or vendors
+ * Gating those on the matrix alone would have locked out exactly the people
+ * whose job they are, so the matrix grant and the named roles are ORed. Passing
+ * no extra roles gives plain matrix behaviour.
+ *
+ * Fails closed: an unconfigured (module, role) pair is a 403, same as
+ * requirePermission, and the role escape hatch is the only way past it.
+ */
+export function requireProcurement(action, ...alsoAllowRoles) {
+  return async (req, res, next) => {
+    const col = permissionColumn(action);
+    if (!col) return res.status(400).json({ error: `Unknown permission action: ${action}` });
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+    if (alsoAllowRoles.length && hasRole(req, ...alsoAllowRoles)) return next();
+
+    try {
+      const perm = await permissionFor(req, 'procurement');
+      if (perm && perm[col]) return next();
+      return res.status(403).json({
+        error: 'Forbidden',
+        code: perm ? 'PERMISSION_DENIED' : 'PERMISSION_NOT_CONFIGURED',
+        module: 'procurement',
+        action: col,
+        message: `You do not have permission to ${action} in procurement.`,
+      });
+    } catch (err) {
+      console.error('[requireProcurement]', err.message);
+      return res.status(500).json({ error: 'Permission check failed' });
+    }
+  };
 }

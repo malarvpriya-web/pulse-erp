@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Network } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const ROLE_OPTIONS = ['head', 'member'];
 
@@ -141,7 +143,14 @@ export default function OrganizationSetup() {
   };
 
   return (
-    <div className="pulse-page" style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Network}
+        eyebrow="Organisation"
+        title="Organization Setup"
+        subtitle="Build the organization structure that drives the Org Chart."
+      />
+    }>
       {msg && (
         <div style={{
           position: 'fixed', top: 20, right: 24, zIndex: 9999,
@@ -153,13 +162,6 @@ export default function OrganizationSetup() {
         }}>{msg.text}</div>
       )}
 
-      {/* Header */}
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: '#111827' }}>Organization Setup</h1>
-        <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0 0' }}>
-          Build the organization structure that drives the Org Chart.
-        </p>
-      </div>
 
       {/* Workflow helper text */}
       <div style={{
@@ -291,7 +293,7 @@ export default function OrganizationSetup() {
                       <td style={td}>
                         {m.unresolved ? (
                           <span
-                            style={{ color: '#92400e', fontStyle: 'italic' }}
+                            style={{ color: '#5b21b6', fontStyle: 'italic' }}
                             title="This member has no matching record in the employee master yet — not a data error."
                           >
                             Not yet resolved to employee master
@@ -386,7 +388,7 @@ export default function OrganizationSetup() {
           </div>
         </Modal>
       )}
-    </div>
+    </PageShell>
   );
 }
 

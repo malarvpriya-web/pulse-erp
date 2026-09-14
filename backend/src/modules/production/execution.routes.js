@@ -4,6 +4,9 @@ import { logAudit } from '../../services/AuditService.js';
 import { nextProdOrderNumber } from '../../shared/docNumber.js';
 import { requirePermission, hasRole } from '../../middlewares/auth.middleware.js';
 import { postStock } from './subcontracting.routes.js';
+import prRepo from '../procurement/repositories/purchaseRequest.repository.js';
+import { employeeOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -52,9 +55,29 @@ async function logOpEvent(client, operationId, orderId, eventType, req, payload 
   );
 }
 
-/* ── Compute standard cost from BOM for a production order ── */
-async function computeStdCost(client, bomId, quantity) {
-  if (!bomId) return { material: 0, machine: 0, total: 0 };
+/* ── Overhead absorption rate: company-wide % of prime cost (material+labour+
+   machine), stored in company_settings (module='production',
+   settings.overhead_absorption_pct) — same table/pattern already used there
+   for delay thresholds (see /dashboard) and allow_partial_issue (see
+   /orders/:id/release). Defaults to 0 (no absorption) until a company sets it,
+   so existing orders' totals don't jump on their own. ── */
+async function getOverheadPct(client, companyId) {
+  const { rows } = await client.query(
+    `SELECT settings FROM company_settings WHERE company_id=$1 AND module='production' LIMIT 1`, [companyId]
+  ).catch(() => ({ rows: [] }));
+  const pct = Number(rows[0]?.settings?.overhead_absorption_pct);
+  return Number.isFinite(pct) && pct >= 0 ? pct : 0;
+}
+
+/* ── Compute standard cost from BOM for a production order ──
+   Labour mirrors machine cost exactly (std_time_hrs * a per-work-centre rate)
+   using work_centres.labour_rate_per_hour alongside the existing cost_per_hour.
+   Overhead is applied as a % of prime cost (material+labour+machine) — this
+   used to only ever total material+machine; std_labor_cost/std_overhead_cost
+   have existed on production_order_costs since 20260615000002 but nothing
+   populated them. ── */
+async function computeStdCost(client, bomId, quantity, companyId) {
+  if (!bomId) return { material: 0, labour: 0, machine: 0, overhead: 0, total: 0 };
 
   const { rows: lines } = await client.query(
     `SELECT bl.qty, bl.unit_cost FROM bom_lines bl WHERE bl.bom_id = $1`, [bomId]
@@ -62,28 +85,69 @@ async function computeStdCost(client, bomId, quantity) {
   const material = lines.reduce((s, l) => s + parseFloat(l.qty || 0) * parseFloat(l.unit_cost || 0) * quantity, 0);
 
   const { rows: steps } = await client.query(
-    `SELECT rs.std_time_hrs, COALESCE(wc.cost_per_hour, 0) AS cost_per_hour
+    `SELECT rs.std_time_hrs, COALESCE(wc.cost_per_hour, 0) AS cost_per_hour,
+            COALESCE(wc.labour_rate_per_hour, 0) AS labour_rate_per_hour
      FROM routing_steps rs
      LEFT JOIN work_centres wc ON wc.id = rs.work_centre_id
      WHERE rs.bom_id = $1`, [bomId]
   );
   const machine = steps.reduce((s, r) => s + parseFloat(r.std_time_hrs || 0) * parseFloat(r.cost_per_hour || 0) * quantity, 0);
+  const labour  = steps.reduce((s, r) => s + parseFloat(r.std_time_hrs || 0) * parseFloat(r.labour_rate_per_hour || 0) * quantity, 0);
 
-  return { material: parseFloat(material.toFixed(4)), machine: parseFloat(machine.toFixed(4)), total: parseFloat((material + machine).toFixed(4)) };
+  const overheadPct = await getOverheadPct(client, companyId);
+  const overhead = (material + labour + machine) * overheadPct / 100;
+  const total = material + labour + machine + overhead;
+
+  return {
+    material: parseFloat(material.toFixed(4)), labour: parseFloat(labour.toFixed(4)),
+    machine: parseFloat(machine.toFixed(4)), overhead: parseFloat(overhead.toFixed(4)),
+    total: parseFloat(total.toFixed(4)),
+  };
 }
 
 /* ── Upsert production_order_costs ── */
 async function upsertOrderCosts(client, orderId, companyId, bomId, quantity) {
-  const c = await computeStdCost(client, bomId, quantity);
+  const c = await computeStdCost(client, bomId, quantity, companyId);
   await client.query(`
     INSERT INTO production_order_costs
-      (production_order_id, company_id, std_material_cost, std_machine_cost, std_total_cost,
-       actual_material_cost, actual_machine_cost, actual_total_cost, quantity_produced, last_computed_at)
-    VALUES ($1,$2,$3,$4,$5,0,0,0,0,NOW())
+      (production_order_id, company_id, std_material_cost, std_labor_cost, std_machine_cost, std_overhead_cost, std_total_cost,
+       actual_material_cost, actual_labor_cost, actual_machine_cost, actual_overhead_cost, actual_total_cost, quantity_produced, last_computed_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,0,0,0,0,0,0,NOW())
     ON CONFLICT (production_order_id) DO UPDATE
-      SET std_material_cost=$3, std_machine_cost=$4, std_total_cost=$5,
+      SET std_material_cost=$3, std_labor_cost=$4, std_machine_cost=$5, std_overhead_cost=$6, std_total_cost=$7,
           last_computed_at=NOW(), updated_at=NOW()
-  `, [orderId, companyId, c.material, c.machine, c.total]);
+  `, [orderId, companyId, c.material, c.labour, c.machine, c.overhead, c.total]);
+}
+
+/* ── Recompute actual overhead + total + variances from current actual
+   material/labour/machine cost. Overhead is a % of prime cost, so it's
+   recomputed fresh from the current actuals each time one of the three
+   changes, rather than incrementally accumulated — incremental += would
+   compound overhead-on-overhead. Call after any actual_material_cost /
+   actual_labor_cost / actual_machine_cost write. ── */
+async function recomputeActualCosts(client, orderId, companyId, quantityProduced = null) {
+  const pct = await getOverheadPct(client, companyId);
+  const { rows: [c] } = await client.query(
+    `SELECT actual_material_cost, actual_labor_cost, actual_machine_cost, quantity_produced
+     FROM production_order_costs WHERE production_order_id=$1`, [orderId]
+  );
+  if (!c) return;
+  const prime = parseFloat(c.actual_material_cost || 0) + parseFloat(c.actual_labor_cost || 0) + parseFloat(c.actual_machine_cost || 0);
+  const overhead = prime * pct / 100;
+  const total = prime + overhead;
+  const qty = quantityProduced != null ? quantityProduced : parseFloat(c.quantity_produced || 0);
+  await client.query(`
+    UPDATE production_order_costs
+    SET actual_overhead_cost=$1, actual_total_cost=$2,
+        material_variance = actual_material_cost - std_material_cost,
+        labor_variance    = actual_labor_cost - std_labor_cost,
+        machine_variance  = actual_machine_cost - std_machine_cost,
+        total_variance    = $2 - std_total_cost,
+        cost_per_unit     = CASE WHEN $3 > 0 THEN $2 / $3 ELSE cost_per_unit END,
+        quantity_produced = $3,
+        updated_at = NOW()
+    WHERE production_order_id=$4
+  `, [overhead, total, qty, orderId]);
 }
 
 /* ── Auto-reserve BOM materials for a production order ── */
@@ -188,23 +252,9 @@ async function receiveFG(client, order, actorId, actorName, employeeId) {
   `, [order.company_id, order.id, productId, order.product_name,
       fgQty, actorId, actorName]);
 
-  // Update actual cost
-  const { rows: [costRow] } = await client.query(
-    `SELECT actual_material_cost, actual_machine_cost FROM production_order_costs WHERE production_order_id=$1`, [order.id]
-  );
-  if (costRow) {
-    const total = parseFloat(costRow.actual_material_cost || 0) + parseFloat(costRow.actual_machine_cost || 0);
-    const qty   = parseFloat(order.quantity_completed || order.quantity_planned) || 1;
-    await client.query(`
-      UPDATE production_order_costs
-      SET actual_total_cost=$1, cost_per_unit=$2,
-          material_variance=actual_material_cost-std_material_cost,
-          machine_variance=actual_machine_cost-std_machine_cost,
-          total_variance=(actual_material_cost+actual_machine_cost)-std_total_cost,
-          quantity_produced=$3, updated_at=NOW()
-      WHERE production_order_id=$4
-    `, [total, total / qty, qty, order.id]);
-  }
+  // Update actual cost — labour + overhead included (see recomputeActualCosts).
+  const qty = parseFloat(order.quantity_completed || order.quantity_planned) || 1;
+  await recomputeActualCosts(client, order.id, order.company_id, qty);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -633,10 +683,20 @@ router.post('/orders', requirePermission('production', 'add'), async (req, res) 
 });
 
 /* ── PATCH /orders/:id/plan — move new order to planned ── */
-router.patch('/orders/:id/plan', requirePermission('production', 'edit'), async (req, res) => {
+router.patch('/orders/:id/plan', requirePermission('production', 'edit'), captureBefore('production_orders'), async (req, res) => {
   try {
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
     const cid = req.scope?.company_id;
+    // A third unguarded way to clear an on_hold QC stop-ship — see hasOpenNcr's
+    // comment. Its WHERE clause never excluded 'on_hold', so this could demote
+    // a held order straight back to 'planned' with zero NCR check; worse,
+    // /start's own guard only fires when the CURRENT status is 'on_hold', so
+    // routing through here first ('on_hold' -> 'planned') let a second call to
+    // /start bypass that gate entirely.
+    const { rows: curRows } = await pool.query('SELECT status FROM production_orders WHERE id=$1', [req.params.id]);
+    if (curRows[0]?.status === 'on_hold' && await hasOpenNcr(pool, req.params.id)) {
+      return res.status(400).json({ error: 'Order is on hold with an open NCR — resolve/close it before re-planning' });
+    }
     const { rows } = await pool.query(
       `UPDATE production_orders SET status = 'planned', updated_at = NOW()
        WHERE id = $1 AND company_id = $2 AND status NOT IN ('completed','cancelled','in_progress','released')
@@ -721,6 +781,40 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
       VALUES ($1,$2,'complete',$3,$4,$5,'pcs',$6,$7,'Finished Goods Store')
     `, [cid, order.id, order.product_id, order.product_name, qty, a.id, a.name]).catch(() => {});
 
+    // ── Report completion back to the master schedule ───────────────────────
+    // master_production_schedule.quantity_produced was written ONLY by a manual
+    // PUT, so "MPS vs actual production" compared a planned figure against a
+    // hand-typed one and could never be true. Worse, somebody had typed it equal
+    // to quantity on every row, which nets MPS demand to zero and is the direct
+    // cause of fourteen MRP runs planning nothing.
+    //
+    // Completion now reports itself. An order linked to an MPS line updates that
+    // line; an unlinked order falls back to the oldest open MPS line for the same
+    // product, which is how a planner would attribute it by hand.
+    try {
+      let mpsId = order.mps_id;
+      if (!mpsId && order.product_id) {
+        const { rows: [open] } = await client.query(`
+          SELECT id FROM master_production_schedule
+           WHERE product_id = $1 AND ($2::int IS NULL OR company_id = $2)
+             AND COALESCE(quantity,0) - COALESCE(quantity_produced,0) > 0
+             AND LOWER(COALESCE(status,'')) NOT IN ('cancelled','closed')
+           ORDER BY due_date NULLS LAST, id LIMIT 1`, [order.product_id, cid]);
+        mpsId = open?.id ?? null;
+      }
+      if (mpsId) {
+        await client.query(`
+          UPDATE master_production_schedule
+             SET quantity_produced = LEAST(COALESCE(quantity_produced,0) + $2, COALESCE(quantity,0)),
+                 status = CASE WHEN COALESCE(quantity_produced,0) + $2 >= COALESCE(quantity,0)
+                               THEN 'closed' ELSE status END,
+                 updated_at = NOW()
+           WHERE id = $1`, [mpsId, qty]);
+        await client.query(
+          `UPDATE production_orders SET mps_id = $2 WHERE id = $1 AND mps_id IS NULL`, [order.id, mpsId]);
+      }
+    } catch (e) { console.warn('[production/complete] MPS report-back skipped:', e.message); }
+
     // Co-/by-products: stock in the additional outputs of this BOM at completion.
     if (order.bom_id) {
       try {
@@ -784,7 +878,7 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
 });
 
 /* ── PATCH /orders/:id/issue-materials — issue all pending materials at once ── */
-router.patch('/orders/:id/issue-materials', requirePermission('production', 'edit'), async (req, res) => {
+router.patch('/orders/:id/issue-materials', requirePermission('production', 'edit'), captureBefore('material_reservations'), async (req, res) => {
   const client = await pool.connect();
   try {
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
@@ -831,7 +925,7 @@ router.patch('/orders/:id/issue-materials', requirePermission('production', 'edi
 });
 
 // FIX: Lock edit when status is released/in_progress/completed unless supervisor
-router.put('/orders/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.put('/orders/:id', requirePermission('production', 'edit'), captureBefore('production_orders'), async (req, res) => {
   try {
     if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
     const cid = req.scope?.company_id;
@@ -890,10 +984,16 @@ router.post('/orders/:id/release', requirePermission('production', 'approve'), a
     // ── GRN Gate: check material availability ──────────────────────────────
     if (order.bom_id) {
       // Check allow_partial_issue setting
+      // The canonical columns are module_name/settings_data (migration
+      // 20260819000008); this read used module/settings, which never existed,
+      // and the .catch() turned that into a silent false. Kept as a guarded
+      // read because a missing settings row legitimately means "not configured".
       const { rows: [setting] } = await client.query(
-        `SELECT settings FROM module_settings WHERE module='production' AND company_id=$1 LIMIT 1`, [cid]
-      ).catch(() => ({ rows: [null] }));
-      const allowPartial = setting?.settings?.allow_partial_issue === true;
+        `SELECT settings_data FROM module_settings
+          WHERE module_name='production' AND ($1::int IS NULL OR company_id=$1) LIMIT 1`,
+        [cid]
+      );
+      const allowPartial = setting?.settings_data?.allow_partial_issue === true;
 
       if (!allowPartial) {
         const { rows: shortages } = await client.query(`
@@ -1197,13 +1297,86 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
       }).catch(() => {});
     }
 
-    // Log material issue
-    await client.query(`
-      INSERT INTO material_issue_logs
-        (company_id, production_order_id, reservation_id, item_id, item_name, qty_issued, unit, unit_cost, total_cost, issued_by, issued_by_name, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-    `, [cid, req.params.id, reservation_id, res_row.item_id, res_row.item_name,
-        qty_issued, res_row.unit, unitCost, totalCost, a.id, a.name, remarks || null]);
+    // ── Lot selection: WHICH lot is leaving the store ───────────────────────
+    // This is the link the whole traceability chain hangs from. Until
+    // 20260911000010 there was no batch_id on the issue log, so the system
+    // recorded that material left without recording which lot — and genealogy
+    // had to guess by listing every batch of the item.
+    //
+    // An explicit batch_id is honoured; otherwise lots are drawn in FEFO order
+    // where the item carries expiry dates and FIFO where it does not, which is
+    // the correct default for both perishable and non-perishable stock. One
+    // issue can legitimately span several lots, so each lot consumed is its own
+    // log row — a single row averaging two lots would destroy the trace it
+    // exists to record.
+    const { batch_id, work_centre_id, operation_id } = req.body;
+    let remainingToIssue = parseFloat(qty_issued);
+    const lots = [];
+
+    if (batch_id) {
+      const { rows: [b] } = await client.query(
+        `SELECT id, batch_number, quantity_available, status FROM inventory_batches
+          WHERE id = $1 AND item_id = $2 AND deleted_at IS NULL`, [batch_id, res_row.item_id]);
+      if (!b) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Batch not found for this item' }); }
+      lots.push(b);
+    } else {
+      const { rows } = await client.query(`
+        SELECT id, batch_number, quantity_available, status, expiry_date
+          FROM inventory_batches
+         WHERE item_id = $1 AND deleted_at IS NULL
+           AND COALESCE(quantity_available,0) > 0
+           AND LOWER(COALESCE(status,'available')) NOT IN ('rejected','quarantine','hold','blocked')
+         ORDER BY (expiry_date IS NULL), expiry_date ASC, received_date ASC, id ASC`,
+        [res_row.item_id]);
+      lots.push(...rows);
+    }
+
+    // Quality gate: a lot that failed inspection must not reach the shop floor.
+    // Rejected and quarantined stock was previously issuable — the QC status was
+    // recorded and then ignored at the point it mattered.
+    const blocked = lots.find(b => ['rejected', 'quarantine', 'hold', 'blocked']
+      .includes(String(b.status || '').toLowerCase()));
+    if (blocked) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `Lot ${blocked.batch_number || blocked.id} is ${blocked.status} and cannot be issued to production.`,
+        code: 'QC_BLOCKED',
+      });
+    }
+
+    const issuedLots = [];
+    for (const b of lots) {
+      if (remainingToIssue <= 0.000001) break;
+      const take = Math.min(parseFloat(b.quantity_available || 0), remainingToIssue);
+      if (take <= 0) continue;
+      await client.query(`
+        UPDATE inventory_batches
+           SET quantity_available = COALESCE(quantity_available,0) - $2,
+               quantity_consumed  = COALESCE(quantity_consumed,0)  + $2,
+               updated_at = NOW()
+         WHERE id = $1`, [b.id, take]);
+      issuedLots.push({ batch_id: b.id, batch_number: b.batch_number, qty: take });
+      remainingToIssue -= take;
+    }
+
+    // Whatever no lot could cover is still issued and still logged, with a NULL
+    // batch_id that says plainly the lot is unknown. Refusing the issue would
+    // block the shop floor over a stock-record gap; silently attributing it to
+    // an arbitrary lot would corrupt the trace. Neither is acceptable.
+    if (remainingToIssue > 0.000001) issuedLots.push({ batch_id: null, batch_number: null, qty: remainingToIssue });
+
+    for (const lot of issuedLots) {
+      await client.query(`
+        INSERT INTO material_issue_logs
+          (company_id, production_order_id, reservation_id, item_id, item_name, batch_id,
+           work_centre_id, operation_id, qty_issued, unit, unit_cost, total_cost,
+           issued_by, issued_by_name, notes)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      `, [cid, req.params.id, reservation_id, res_row.item_id, res_row.item_name, lot.batch_id,
+          work_centre_id ?? null, operation_id ?? null, lot.qty, res_row.unit, unitCost,
+          unitCost * lot.qty, a.id, a.name,
+          lot.batch_id ? (remarks || null) : `${remarks ? remarks + ' — ' : ''}lot not identified`]);
+    }
 
     // WIP transaction
     await client.query(`
@@ -1213,13 +1386,15 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
     `, [cid, req.params.id, res_row.item_id, res_row.item_name,
         qty_issued, res_row.unit, unitCost, totalCost, reservation_id, a.id, a.name]);
 
-    // Update actual material cost
+    // Update actual material cost — recompute overhead off the new total too
+    // (overhead is a % of prime cost, so a material-only bump still moves it).
     await client.query(`
       INSERT INTO production_order_costs (production_order_id, company_id, actual_material_cost, updated_at)
       VALUES ($1,$2,$3,NOW())
       ON CONFLICT (production_order_id) DO UPDATE
         SET actual_material_cost = production_order_costs.actual_material_cost + $3, updated_at=NOW()
     `, [req.params.id, cid, totalCost]);
+    await recomputeActualCosts(client, req.params.id, cid);
 
     await client.query('COMMIT');
     res.json({ success: true, qty_issued: newIssued, status: newStatus });
@@ -1313,6 +1488,7 @@ router.post('/orders/:id/return-material', requirePermission('production', 'edit
       ON CONFLICT (production_order_id) DO UPDATE
         SET actual_material_cost = production_order_costs.actual_material_cost - $3, updated_at=NOW()
     `, [req.params.id, cid, totalCost]);
+    await recomputeActualCosts(client, req.params.id, cid);
 
     await client.query('COMMIT');
     logAudit({ userId: a.id, module: 'production', recordId: req.params.id, recordType: 'production_order',
@@ -1390,6 +1566,30 @@ router.post('/operations/:id/start', requirePermission('production', 'edit'), as
        WHERE id = $1`,
       [row.production_order_id]
     );
+
+    // Real handoff to Quality: an inspection-flagged step previously had no
+    // footprint in the Quality module at all — /operations/:id/complete only
+    // ever checked the shop floor's own self-reported quantity_scrap, and
+    // nothing dispatched into the quality_tests/checklist system GRN->IQC
+    // already uses (quality_status rollup, QC worklist, auto-NCR-on-fail).
+    // Create the checklist row here so QC actually has something to act on;
+    // non-blocking, so it doesn't change existing shop-floor behavior.
+    if (opRow.is_inspection) {
+      const { rows: existingTest } = await client.query(
+        `SELECT id FROM quality_tests WHERE operation_id=$1 LIMIT 1`, [row.id]
+      );
+      if (!existingTest.length) {
+        const a = actor(req);
+        await client.query(
+          `INSERT INTO quality_tests
+             (company_id, source_type, source_id, production_order_id, operation_id,
+              stage, test_name, is_mandatory, created_by)
+           VALUES ($1,'production_operation',$2,$3,$4,'IPQC',$5,true,$6)`,
+          [cid, row.id, row.production_order_id, row.id, `In-process inspection — ${row.operation}`, a.id]
+        ).catch(() => {});
+      }
+    }
+
     await logOpEvent(client, row.id, row.production_order_id, 'start', req, { quantity_delta: quantity_in, remarks: remarks || null });
     await client.query('COMMIT');
     res.json(row);
@@ -1495,21 +1695,49 @@ router.post('/operations/:id/complete', requirePermission('production', 'edit'),
       [op.production_order_id]
     );
 
-    // Compute actual machine cost for this operation
+    // Compute actual machine cost for this operation, net of any on_hold time.
+    // /operations/:id/hold logs a 'pause' event and /operations/:id/start logs
+    // a 'start' event each time it's called (including re-starting after a
+    // hold) without resetting started_at (it's COALESCE'd) — so raw wall-clock
+    // from started_at to now previously counted idle hold time (e.g. a shift
+    // change) as billable machine-hours. Net it out using the same log table
+    // hold/resume already write to.
+    let heldMs = 0;
+    if (op.started_at) {
+      const { rows: logRows } = await client.query(
+        `SELECT event_type, created_at FROM production_operation_logs
+         WHERE production_operation_id=$1 AND event_type IN ('pause','start')
+         ORDER BY created_at ASC`,
+        [op.id]
+      );
+      let pausedAt = null;
+      for (const l of logRows) {
+        if (l.event_type === 'pause') pausedAt = new Date(l.created_at).getTime();
+        else if (l.event_type === 'start' && pausedAt) {
+          heldMs += new Date(l.created_at).getTime() - pausedAt;
+          pausedAt = null;
+        }
+      }
+      if (pausedAt) heldMs += Date.now() - pausedAt;
+    }
     const durationHrs = op.started_at
-      ? (Date.now() - new Date(op.started_at).getTime()) / 3600000
+      ? Math.max(0, (Date.now() - new Date(op.started_at).getTime()) - heldMs) / 3600000
       : parseFloat(op.std_time_hrs || 0);
     const { rows: [wc] } = await client.query(
-      `SELECT cost_per_hour FROM work_centres WHERE id=$1`, [op.work_centre_id]
+      `SELECT cost_per_hour, labour_rate_per_hour FROM work_centres WHERE id=$1`, [op.work_centre_id]
     ).catch(() => ({ rows: [null] }));
     const machineCost = durationHrs * parseFloat(wc?.cost_per_hour || 0);
-    if (machineCost > 0) {
+    const labourCost  = durationHrs * parseFloat(wc?.labour_rate_per_hour || 0);
+    if (machineCost > 0 || labourCost > 0) {
       await client.query(`
-        INSERT INTO production_order_costs (production_order_id, company_id, actual_machine_cost, updated_at)
-        VALUES ($1,$2,$3,NOW())
+        INSERT INTO production_order_costs (production_order_id, company_id, actual_machine_cost, actual_labor_cost, updated_at)
+        VALUES ($1,$2,$3,$4,NOW())
         ON CONFLICT (production_order_id) DO UPDATE
-          SET actual_machine_cost = production_order_costs.actual_machine_cost + $3, updated_at=NOW()
-      `, [op.production_order_id, cid, machineCost]);
+          SET actual_machine_cost = production_order_costs.actual_machine_cost + $3,
+              actual_labor_cost   = production_order_costs.actual_labor_cost + $4,
+              updated_at=NOW()
+      `, [op.production_order_id, cid, machineCost, labourCost]);
+      await recomputeActualCosts(client, op.production_order_id, cid);
     }
 
     // Check if all operations complete → close order. Gated on no open NCRs —
@@ -1848,15 +2076,26 @@ router.post('/mrp/requirements/generate-prs', requirePermission('production', 'a
     if (!shortages.length) return res.json({ created: 0, prs: [] });
 
     const prs = [];
+    // Resolved once outside the loop — one DB round trip, not one per shortage.
+    const requesterEmpId = await employeeOf(req, pool);
     for (const item of shortages) {
       try {
-        const { rows: [pr] } = await pool.query(
-          `INSERT INTO purchase_requests (company_id, item_name, qty_requested, unit, estimated_cost, status, raised_by, notes)
-           VALUES ($1,$2,$3,$4,$5,'draft',$6,$7) RETURNING id`,
-          [cid, item.item_name, item.suggested_po_qty, item.unit,
-           item.suggested_po_qty * item.unit_cost, a.id,
-           `MRP requirement: ${item.required_qty} ${item.unit} needed${from_date ? ` from ${from_date}` : ''}${to_date ? ` to ${to_date}` : ''}`]
-        );
+        // `a.id` is a users.id and requested_by_employee_id FKs employees(id):
+        // this INSERT raised a foreign key violation for every account whose
+        // users.id was not coincidentally a valid employees.id — 55 of the 62 in
+        // this database — and the bare catch below swallowed it, so the action
+        // reported success and raised nothing. employeeOf() returns the caller's
+        // real employees.id, or NULL when they have no employee record.
+        // It also minted no request_number, leaving the row blank in the register.
+        const pr = await prRepo.createSystemRequest(pool, {
+          company_id: cid,
+          item_name: item.item_name,
+          quantity: item.suggested_po_qty,
+          unit: item.unit,
+          estimated_cost: item.suggested_po_qty * item.unit_cost,
+          requested_by_employee_id: requesterEmpId,
+          notes: `MRP requirement: ${item.required_qty} ${item.unit} needed${from_date ? ` from ${from_date}` : ''}${to_date ? ` to ${to_date}` : ''}`,
+        });
         prs.push({ pr_id: pr.id, item: item.item_name, qty: item.suggested_po_qty });
       } catch { /* non-fatal: skip item */ }
     }

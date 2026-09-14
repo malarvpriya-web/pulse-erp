@@ -1,4 +1,5 @@
 import * as homeService from "./home.service.js";
+import { companyOf } from "../shared/scope.js";
 
 export const getAnnouncements = async (req, res) => {
   try {
@@ -12,7 +13,7 @@ export const getAnnouncements = async (req, res) => {
 
 export const getUpcomingEvents = async (req, res) => {
   try {
-    const events = await homeService.getUpcomingEvents();
+    const events = await homeService.getUpcomingEvents(companyOf(req));
     res.json(events);
   } catch (err) {
     console.error(err);
@@ -32,7 +33,7 @@ export const getCelebrations = async (req, res) => {
 
 export const getPolicies = async (req, res) => {
   try {
-    const policies = await homeService.getActivePolicies();
+    const policies = await homeService.getActivePolicies(companyOf(req));
     res.json(policies);
   } catch (err) {
     console.error(err);
@@ -42,7 +43,7 @@ export const getPolicies = async (req, res) => {
 
 export const getResources = async (req, res) => {
   try {
-    const resources = await homeService.getResources();
+    const resources = await homeService.getResources(companyOf(req));
     res.json(resources);
   } catch (err) {
     console.error(err);

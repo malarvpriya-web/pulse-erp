@@ -8,8 +8,10 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { FileText } from 'lucide-react';
 import api from '@/services/api/client';
 import SignatureDesigner from '../components/SignatureDesigner';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* Download an authenticated file (signed PDF / certificate) via the api client */
 async function downloadAuthed(url, filename, onError) {
@@ -46,7 +48,7 @@ const DOC_TYPES = [
 ];
 
 const STATUS_META = {
-  pending:  { bg: '#fef3c7', color: '#b45309', label: 'Pending' },
+  pending:  { bg: '#ede9fe', color: '#6d28d9', label: 'Pending' },
   sent:     { bg: '#dbeafe', color: '#1d4ed8', label: 'Awaiting' },
   signed:   { bg: '#dcfce7', color: '#15803d', label: 'Signed' },
   declined: { bg: '#fee2e2', color: '#dc2626', label: 'Declined' },
@@ -625,10 +627,10 @@ function WebhooksModal({ onClose, notify }) {
         </div>
 
         {secret && (
-          <div style={{ background:'#fef9c3', border:'1px solid #fde047', borderRadius:8, padding:'10px 12px', marginBottom:14, fontSize:12 }}>
+          <div style={{ background:'#ede9fe', border:'1px solid #c4b5fd', borderRadius:8, padding:'10px 12px', marginBottom:14, fontSize:12 }}>
             <strong>Signing secret (shown once):</strong>
             <div style={{ fontFamily:'monospace', wordBreak:'break-all', marginTop:4 }}>{secret}</div>
-            <div style={{ color:'#854d0e', marginTop:4 }}>Verify the <code>X-Pulse-Signature</code> HMAC-SHA256 header with this secret.</div>
+            <div style={{ color:'#5b21b6', marginTop:4 }}>Verify the <code>X-Pulse-Signature</code> HMAC-SHA256 header with this secret.</div>
           </div>
         )}
 
@@ -761,7 +763,31 @@ export default function DocumentSigning() {
   );
 
   return (
-    <div style={{ padding:24, margin:'0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={FileText}
+        eyebrow="Documents"
+        title="Document Signing"
+        subtitle="Native e-signatures — typed, drawn, or uploaded · Multi-signer with OTP · Immutable audit trail"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load} disabled={loading}>
+            {loading ? '…' : '↻ Refresh'}
+          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={()=>setShowWebhooks(true)}>
+            ⚡ Webhooks
+          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={()=>setShowBulk(true)}>
+            ⇉ Bulk Send
+          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={()=>setShowTemplates(true)}>
+            ▤ Templates
+          </button>
+          <button className="plh-cta" onClick={()=>setShowCreate(true)}>
+            + New Request
+          </button>
+        </>}
+      />
+    }>
 
       {/* Toast */}
       {toast && (
@@ -777,36 +803,7 @@ export default function DocumentSigning() {
       )}
 
       {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:24 }}>
-        <div>
-          <h2 style={{ fontWeight:800, fontSize:22, color:'#1f2937', margin:0 }}>Document Signing</h2>
-          <p style={{ color:'#6b7280', fontSize:13, marginTop:4 }}>
-            Native e-signatures — typed, drawn, or uploaded · Multi-signer with OTP · Immutable audit trail
-          </p>
-        </div>
-        <div style={{ display:'flex', gap:10 }}>
-          <button onClick={load} disabled={loading}
-            style={{ padding:'9px 16px', borderRadius:8, border:`1px solid ${BORDER}`, background:'#fff', color:'#374151', fontWeight:600, fontSize:13, cursor:'pointer' }}>
-            {loading ? '…' : '↻ Refresh'}
-          </button>
-          <button onClick={()=>setShowWebhooks(true)}
-            style={{ padding:'9px 14px', borderRadius:8, border:`1px solid ${BORDER}`, background:'#fff', color:'#374151', fontWeight:600, fontSize:13, cursor:'pointer' }}>
-            ⚡ Webhooks
-          </button>
-          <button onClick={()=>setShowBulk(true)}
-            style={{ padding:'9px 14px', borderRadius:8, border:`1px solid ${BORDER}`, background:'#fff', color:'#374151', fontWeight:600, fontSize:13, cursor:'pointer' }}>
-            ⇉ Bulk Send
-          </button>
-          <button onClick={()=>setShowTemplates(true)}
-            style={{ padding:'9px 16px', borderRadius:8, border:`1px solid ${BORDER}`, background:'#fff', color:PURPLE, fontWeight:600, fontSize:13, cursor:'pointer' }}>
-            ▤ Templates
-          </button>
-          <button onClick={()=>setShowCreate(true)}
-            style={{ padding:'9px 20px', borderRadius:8, background:PURPLE, color:'#fff', fontWeight:700, fontSize:13, border:'none', cursor:'pointer' }}>
-            + New Request
-          </button>
-        </div>
-      </div>
+
 
       {/* Stats */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:24 }}>
@@ -899,7 +896,7 @@ export default function DocumentSigning() {
                       )}
                       {!doc.is_locked && !['signed','declined'].includes(doc.status) && (
                         <button onClick={()=>signInPerson(doc)}
-                          style={{ padding:'4px 10px', borderRadius:6, background:'#fef3c7', color:'#b45309', fontWeight:600, fontSize:11, border:'none', cursor:'pointer' }}>In-Person</button>
+                          style={{ padding:'4px 10px', borderRadius:6, background:'#ede9fe', color:'#6d28d9', fontWeight:600, fontSize:11, border:'none', cursor:'pointer' }}>In-Person</button>
                       )}
                       {doc.status==='sent' && !doc.is_locked && (
                         <button onClick={()=>remind(doc.id)}
@@ -936,6 +933,6 @@ export default function DocumentSigning() {
       {showTemplates && <TemplatesModal notify={notify} onClose={()=>setShowTemplates(false)} onUse={useTemplate} />}
       {showBulk && <BulkSendModal notify={notify} onClose={()=>setShowBulk(false)} onSent={()=>{setShowBulk(false);notify('Bulk send complete');load();}} />}
       {showWebhooks && <WebhooksModal notify={notify} onClose={()=>setShowWebhooks(false)} />}
-    </div>
+    </PageShell>
   );
 }

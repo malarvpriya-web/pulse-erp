@@ -9,8 +9,16 @@
  * pool cannot see that. These tests run the real statements against the real
  * schema, so a column rename breaks them.
  *
- * They are self-cleaning: every row created is removed in afterAll, keyed off the
- * TAG below so a crashed run cannot leave debris behind.
+ * They are self-cleaning in BOTH directions: afterAll removes the ids this run
+ * created, and beforeAll sweeps any ZZTEST_ rows an earlier run left behind.
+ * The sweep is not belt-and-braces — it is load-bearing. afterAll deletes by
+ * tracked id, so a run that is interrupted (or whose worker is killed) never
+ * cleans up. TAG makes the *names* unique per run, but GSTIN_MH below is a
+ * fixed constant and `uq_sales_partners_gstin` is UNIQUE on
+ * (company_id, upper(gstin)) — so exactly one abandoned Beta row permanently
+ * 409s the "persists every checklist column" test on every future run, on this
+ * machine and in CI alike. That happened on 2026-08-13 and cost a debugging
+ * session; the sweep is what makes the "self-cleaning" claim actually true.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -68,15 +76,27 @@ const created = { partners: [], leads: [] };
 const GSTIN_MH = '27AAPCA0000A1Z5'; // Maharashtra
 const GSTIN_KA = '29AAPCA0000A1Z5'; // Karnataka
 
+// Removes ZZTEST_ debris. Leads go first — they FK sales_partners.
+async function sweepDebris() {
+  await pool.query(`DELETE FROM leads           WHERE company_name LIKE 'ZZTEST\\_%'`).catch(() => {});
+  await pool.query(`DELETE FROM sales_partners  WHERE name         LIKE 'ZZTEST\\_%'`).catch(() => {});
+}
+
 beforeAll(async () => {
+  // Clear anything an interrupted earlier run abandoned, before this run starts
+  // creating rows that would collide with it (see the header note on GSTIN).
+  await sweepDebris();
+
   // An active admin WITH a company scope: company_id must be non-null or the
   // scope-guarded routes read as global and the tenancy assertions prove nothing.
-  // logout_at must be null too — a token minted now would otherwise read as
-  // revoked (verifyToken compares iat against it).
+  // The logout_at guard is about revocation: verifyToken rejects a token whose
+  // iat predates logout_at. A token minted now is only revoked by a FUTURE
+  // logout_at, so a past logout is fine. Requiring IS NULL outright made this
+  // suite fail whenever someone had simply logged out of the seeded admin.
   const { rows } = await pool.query(
     `SELECT u.id FROM users u
        JOIN user_scope us ON us.user_id = u.id AND us.is_primary = true
-      WHERE u.is_active = true AND u.logout_at IS NULL AND us.company_id = 1
+      WHERE u.is_active = true AND (u.logout_at IS NULL OR u.logout_at <= NOW()) AND us.company_id = 1
         AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
                      WHERE ur.user_id = u.id AND LOWER(r.code) IN ('admin','super_admin'))
       ORDER BY u.id LIMIT 1`
@@ -86,12 +106,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (created.partners.length) {
-    await pool.query(`DELETE FROM sales_partners WHERE id = ANY($1::int[])`, [created.partners]);
-  }
   if (created.leads.length) {
     await pool.query(`DELETE FROM leads WHERE id = ANY($1::int[])`, [created.leads]);
   }
+  if (created.partners.length) {
+    await pool.query(`DELETE FROM sales_partners WHERE id = ANY($1::int[])`, [created.partners]);
+  }
+  // Catches rows whose POST succeeded but whose id never made it into `created`
+  // (an assertion that threw mid-helper), which the id-keyed deletes above miss.
+  await sweepDebris();
   await pool.end();
 });
 

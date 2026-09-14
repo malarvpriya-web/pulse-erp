@@ -4,21 +4,23 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import {
-  Ticket, CheckCircle, Clock, AlertTriangle, TrendingUp,
-  Users, RefreshCw, ChevronRight, ArrowUpRight, X,
+  Ticket, CheckCircle, Clock, AlertTriangle, TrendingUp, Users,
+  RefreshCw, ChevronRight, ArrowUpRight, X, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import './SupportDashboard.css';
 
-const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899'];
+const COLORS = ['#6366f1','#10b981','#7c5cf0','#ef4444','#3b82f6','#8b5cf6','#ec4899'];
 
 const priorityColor = p => {
   if (!p) return '#9ca3af';
   const m = p.toLowerCase();
   if (m === 'critical') return '#7f1d1d';
   if (m === 'high')     return '#ef4444';
-  if (m === 'medium')   return '#f59e0b';
+  if (m === 'medium')   return '#7c5cf0';
   return '#10b981';
 };
 
@@ -26,7 +28,7 @@ const statusColor = s => {
   if (!s) return '#9ca3af';
   const m = s.toLowerCase();
   if (m === 'open')        return '#6366f1';
-  if (m === 'in progress') return '#f59e0b';
+  if (m === 'in progress') return '#7c5cf0';
   if (m === 'resolved')    return '#10b981';
   if (m === 'pending')     return '#3b82f6';
   return '#9ca3af';
@@ -53,6 +55,24 @@ export default function SupportDashboard({ setPage }) {
   const [ticketForm,  setTicketForm]  = useState(EMPTY_TICKET);
   const [submitting,  setSubmitting]  = useState(false);
   const [toast,       setToast]       = useState(null);
+  const [options,     setOptions]     = useState({ categories: [], priorities: [] });
+
+  // Tickets are activity; 'all' by default so the open backlog isn't hidden on
+  // first load, with the period available to narrow to a reporting window.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'all',
+    dimensions: { category: 'all', priority: 'all' },
+    storageKey: 'support-dashboard',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/servicedesk/stats/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -63,7 +83,7 @@ export default function SupportDashboard({ setPage }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/servicedesk/stats');
+      const res = await api.get('/servicedesk/stats', { params });
       setStats(res.data);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || 'Failed to load dashboard');
@@ -71,9 +91,14 @@ export default function SupportDashboard({ setPage }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const filterDimensions = [
+    { key: 'category', label: 'Category', allLabel: 'All Categories', options: options.categories.map(v => ({ value: v, label: v })) },
+    { key: 'priority', label: 'Priority', allLabel: 'All Priorities', options: options.priorities.map(v => ({ value: v, label: v })) },
+  ];
 
   const submitTicket = async (e) => {
     e.preventDefault();
@@ -125,30 +150,31 @@ export default function SupportDashboard({ setPage }) {
   );
 
   return (
-    <div className="sd-root">
-      {/* header */}
-      <div className="sd-header">
-        <div>
-          <h2 className="sd-title">Service Desk</h2>
-          <p className="sd-sub">Support ticket overview &amp; SLA metrics</p>
-        </div>
-        <div className="sd-header-r">
-          <button className="sd-btn-outline" onClick={() => setPage && setPage('AllTickets')}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Service Desk"
+        title="Service Desk"
+        subtitle="Support ticket overview & SLA metrics"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage && setPage('AllTickets')}>
             All Tickets <ChevronRight size={14} />
           </button>
-          <button className="sd-btn-primary" onClick={() => setNewTicket(true)}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setNewTicket(true)}>
             + New Ticket
           </button>
-          <button className="sd-icon-btn" onClick={load} disabled={loading}><RefreshCw size={14} className={loading ? 'spin' : ''} /></button>
-          <button
+          <button className="plh-cta plh-cta--ghost" onClick={load} disabled={loading}><RefreshCw size={14} className={loading ? 'spin' : ''} /></button>
+          <button className="plh-cta"
             onClick={() => setPage && setPage('ServiceDeskSettings')}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: '1px solid #e5e7eb', borderRadius: 7, padding: '6px 12px', cursor: 'pointer', color: '#6b7280', fontSize: 13, fontWeight: 500 }}
-            title="Service Desk Settings"
-          >
+            
+            title="Service Desk Settings">
             ⚙ Settings
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {/* header */}
+
 
       {/* Error state */}
       {error && (
@@ -161,6 +187,8 @@ export default function SupportDashboard({ setPage }) {
         </div>
       )}
 
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} />
+
       {loading && !stats && (
         <div style={{ textAlign: 'center', padding: '60px 0', color: '#9ca3af' }}>Loading dashboard…</div>
       )}
@@ -169,7 +197,7 @@ export default function SupportDashboard({ setPage }) {
       <div className="sd-kpis">
         <KPI icon={Ticket}       label="Total Tickets"   value={s.total || 0}           color="#6366f1" sub={`${s.thisWeek||0} this week`} />
         <KPI icon={AlertTriangle}label="Open"            value={s.open || 0}            color="#ef4444" alert={(s.open||0)>3} sub="Needs attention" />
-        <KPI icon={Clock}        label="In Progress"     value={s.inProgress || 0}      color="#f59e0b" sub="Being worked on" />
+        <KPI icon={Clock}        label="In Progress"     value={s.inProgress || 0}      color="#7c5cf0" sub="Being worked on" />
         <KPI icon={CheckCircle}  label="Resolved"        value={s.resolved || 0}        color="#10b981" sub={`${s.resolutionRate||0}% rate`} />
         <KPI icon={TrendingUp}   label="High Priority"   value={s.highPriority || 0}    color="#ef4444" alert={(s.highPriority||0)>0} sub="Urgent items" />
         <KPI icon={Users}        label="This Month"      value={s.thisMonth || 0}        color="#3b82f6" sub="Tickets raised" />
@@ -245,7 +273,7 @@ export default function SupportDashboard({ setPage }) {
             {[
               { label: 'Within SLA',     value: sla.within_sla     || 0, color: '#10b981' },
               { label: 'SLA Breached',   value: sla.breached       || 0, color: '#ef4444' },
-              { label: 'At Risk',        value: sla.at_risk        || 0, color: '#f59e0b' },
+              { label: 'At Risk',        value: sla.at_risk        || 0, color: '#7c5cf0' },
               { label: 'Not Applicable', value: sla.not_applicable || 0, color: '#9ca3af' },
             ].map((item, i) => (
               <div key={i} className="sd-sla-row">
@@ -370,6 +398,6 @@ export default function SupportDashboard({ setPage }) {
           {toast.msg}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

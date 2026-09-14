@@ -1,6 +1,10 @@
 import { useState, useRef } from 'react';
-import { FileText, Download, RefreshCw, AlertCircle, CheckCircle, X, ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  FileText, Download, RefreshCw, AlertCircle, CheckCircle, X,
+  ChevronDown, ChevronRight, Wallet,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const currentFY = () => {
   const now = new Date();
@@ -80,7 +84,14 @@ export default function PayrollForm24Q({ setPage: _setPage }) {
     fontSize: 11, fontWeight: 600, color, background: bg });
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Wallet}
+        eyebrow="Human Resources"
+        title="Form 24Q"
+        subtitle="Quarterly TDS return — Salary (Section 192)"
+      />
+    }>
 
       {toast && (
         <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', alignItems: 'center', gap: 8,
@@ -98,18 +109,7 @@ export default function PayrollForm24Q({ setPage: _setPage }) {
       )}
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'linear-gradient(135deg,#0891b2,#0e7490)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <FileText size={22} color="#fff" />
-          </div>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Form 24Q</h1>
-            <p style={{ fontSize: 13, color: '#6b7280', margin: 0 }}>Quarterly TDS return — Salary (Section 192)</p>
-          </div>
-        </div>
-      </div>
+
 
       {/* Controls */}
       <div style={{ ...card, marginBottom: 20 }}>
@@ -153,7 +153,7 @@ export default function PayrollForm24Q({ setPage: _setPage }) {
             { label: 'Financial Year', value: data.financial_year, color: '#6366f1' },
             { label: 'Quarters with Data', value: data.quarters?.length || 0, color: '#0891b2' },
             { label: 'Total Salary Paid', value: fmtRupee(data.grand_total?.salary), color: '#10b981', isText: true },
-            { label: 'Total TDS Deducted', value: fmtRupee(data.grand_total?.tds), color: '#f59e0b', isText: true },
+            { label: 'Total TDS Deducted', value: fmtRupee(data.grand_total?.tds), color: '#7c5cf0', isText: true },
           ].map(k => (
             <div key={k.label} style={{ ...card, borderTop: `3px solid ${k.color}` }}>
               <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>{k.label}</div>
@@ -199,7 +199,7 @@ export default function PayrollForm24Q({ setPage: _setPage }) {
                         <div style={{ fontSize: 11, color: '#9ca3af' }}>{d.employee_code}</div>
                       </td>
                       <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: '#374151' }}>
-                        {d.employee_pan === 'PANNOTAVBL' ? <span style={{ color: '#f59e0b' }}>MISSING</span> : d.employee_pan}
+                        {d.employee_pan === 'PANNOTAVBL' ? <span style={{ color: '#7c5cf0' }}>MISSING</span> : d.employee_pan}
                       </td>
                       <td style={{ padding: '8px 12px' }}><span style={badge('#374151', '#f3f4f6')}>{d.section}</span></td>
                       <td style={{ padding: '8px 12px', color: '#1f2937', fontWeight: 500 }}>{fmtRupee(d.total_salary)}</td>
@@ -220,6 +220,6 @@ export default function PayrollForm24Q({ setPage: _setPage }) {
           <div style={{ fontSize: 13, marginTop: 6 }}>Generate and mark payroll as paid to see Form 24Q data.</div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

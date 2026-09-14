@@ -2,6 +2,7 @@ import express from 'express';
 import pool from '../../shared/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -193,7 +194,7 @@ router.post('/:id/events', requirePermission('inventory', 'add'), async (req, re
 });
 
 // ── DELETE /inventory/serials/:id (soft delete) ───────────────────────────────
-router.delete('/:id', requirePermission('inventory', 'delete'), async (req, res) => {
+router.delete('/:id', requirePermission('inventory', 'delete'), captureBefore('serial_numbers'), async (req, res) => {
   const companyId = req.scope?.company_id ?? null;
   try {
     const params = [req.params.id];

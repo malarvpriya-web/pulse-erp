@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Package, IndianRupee, TrendingUp, Archive, Settings, Wallet } from 'lucide-react';
 import api from '@/services/api/client';
-import { PageLayout, PageHeader, KPICardGrid, KPICard, ContentCard, TableContainer, EmptyState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, KPICardGrid, KPICard, ContentCard, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 
 const COLUMNS = [
   'item_code', 'item_name', 'unit_of_measure', 'abc_category',
@@ -29,7 +29,7 @@ const HEADERS = {
 const NUMERIC_COLS = new Set(COLUMNS.filter(c =>
   !['item_code', 'item_name', 'unit_of_measure', 'abc_category'].includes(c)));
 
-const ABC_COLORS = { A: ['#d1fae5', '#16a34a'], B: ['#fef3c7', '#d97706'], C: ['#f3f4f6', '#6b7280'] };
+const ABC_COLORS = { A: ['#d1fae5', '#16a34a'], B: ['#ede9fe', '#6d28d9'], C: ['#f3f4f6', '#6b7280'] };
 
 function fmtNum(v) {
   const n = parseFloat(v);
@@ -167,14 +167,19 @@ export default function StoresCostAnalysis() {
     : departments.find(d => d.department === activeTab) || { label: '', items: [], totals: null, warehouses: [] };
 
   return (
-    <PageLayout>
-      <PageHeader
-        description="EOQ · ROP · ABC · holding & setup cost — per department store and consolidated (12-month consumption)"
-        actions={active.items.length > 0 && (
-          <button onClick={() => exportCSV(active.items, active.label)} className="pl-icon-btn">⬇ Export CSV</button>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={IndianRupee}
+          eyebrow="Inventory"
+          title="Stores Cost Analysis"
+          subtitle="EOQ · ROP · ABC · holding & setup cost — per department store and consolidated (12-month consumption)"
+          actions={active.items.length > 0 && (
+          <button onClick={() => exportCSV(active.items, active.label)} className="plh-cta">⬇ Export CSV</button>
         )}
-        filters={
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {tabs.map(t => (
               <button
                 key={t.key}
@@ -185,9 +190,11 @@ export default function StoresCostAnalysis() {
                 {t.label}
               </button>
             ))}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
 
       {error && (
         <div style={{ background: '#fee2e2', color: '#dc2626', borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13, fontWeight: 600 }}>
@@ -210,6 +217,6 @@ export default function StoresCostAnalysis() {
           <ItemsTable items={active.items} />
         </>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

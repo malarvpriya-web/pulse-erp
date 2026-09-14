@@ -1,13 +1,17 @@
 import { useState, useEffect } from 'react';
-import { Plus, RefreshCw, AlertCircle, X, BarChart2, Sliders, CheckCircle } from 'lucide-react';
+import {
+  Plus, RefreshCw, AlertCircle, X, BarChart2, Sliders, CheckCircle,
+  ShieldCheck,
+} from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
   ResponsiveContainer, Cell, ReferenceLine
 } from 'recharts';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6'];
+const COLORS = ['#ef4444', '#7c5cf0', '#10b981', '#3b82f6', '#8b5cf6'];
 const inp = { background: 'var(--color-background)', border: '1px solid var(--color-border-tertiary)', borderRadius: 8, padding: '8px 12px', fontSize: 13, width: '100%', color: 'var(--color-text-primary)' };
 
 export default function CalibrationCenter() {
@@ -77,15 +81,18 @@ export default function CalibrationCenter() {
   const avgVal = bellData.weighted_avg || 0;
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Calibration Center</h1>
-        {isHR && tab === 'sessions' && (
-          <button onClick={() => setShowForm(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: 'var(--color-primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Performance"
+        title="Calibration Center"
+        actions={isHR && tab === 'sessions' && (
+          <button className="plh-cta" onClick={() => setShowForm(true)}>
             <Plus size={15} /> New Session
           </button>
         )}
-      </div>
+      />
+    }>
 
       <div style={{ display: 'flex', gap: 0, marginBottom: 24, borderBottom: '1px solid var(--color-border-tertiary)' }}>
         {[{ key: 'bell-curve', label: 'Bell Curve' }, { key: 'sessions', label: 'Sessions' }].map(t => (
@@ -202,7 +209,7 @@ export default function CalibrationCenter() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {sessions.map(s => {
-                const statusColor = s.status === 'completed' ? '#10b981' : s.status === 'in_progress' ? '#3b82f6' : '#f59e0b';
+                const statusColor = s.status === 'completed' ? '#10b981' : s.status === 'in_progress' ? '#3b82f6' : '#7c5cf0';
                 return (
                   <div key={s.id} style={{ background: 'var(--color-background-secondary)', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 12, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16 }}>
                     <div style={{ flex: 1 }}>
@@ -227,6 +234,6 @@ export default function CalibrationCenter() {
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

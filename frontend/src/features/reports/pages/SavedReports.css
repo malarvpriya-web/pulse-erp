@@ -30,3 +30,28 @@
 .srp-loading { display: flex; justify-content: center; padding: 48px; }
 .srp-spinner { width: 28px; height: 28px; border: 3px solid #e5e7eb; border-top-color: #6B3FDB; border-radius: 50%; animation: srp-spin .8s linear infinite; }
 @keyframes srp-spin { to { transform: rotate(360deg); } }
+
+/* ── Alerts ─────────────────────────────────────────────────────────────────
+   Delete and Export failures were previously swallowed by an empty catch block,
+   so a rejected delete was indistinguishable from a successful one. */
+.srp-root .srp-alert {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 14px; padding: 12px 14px; border-radius: 10px;
+  font-size: 13px; border: 1px solid transparent;
+}
+.srp-root .srp-alert span { flex: 1; }
+.srp-root .srp-alert-error  { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+.srp-root .srp-alert-notice { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+
+.srp-root .srp-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.srp-root .srp-blank { padding: 60px 24px; text-align: center; color: #9ca3af; }
+.srp-root .srp-blank p { margin: 12px 0 0; font-size: 13px; }
+.srp-root .srp-muted { color: #6b7280; font-size: 13px; }
+.srp-root .srp-shared {
+  display: inline-flex; align-items: center; gap: 3px; margin-left: 8px;
+  padding: 1px 7px; border-radius: 10px;
+  background: #f5f3ff; color: #6B3FDB; font-size: 10px; font-weight: 600;
+}
+.srp-root .srp-action-btn:disabled { opacity: .55; cursor: not-allowed; }
+@keyframes srp-spin { to { transform: rotate(360deg); } }
+.srp-root .srp-spin { animation: srp-spin 1s linear infinite; }

@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
-import { Plus, X, Search, Users, Pencil, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
+import { Plus, X, Search, Users, Pencil, Trash2, ArrowUp, ArrowDown, Target } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { formatDateTime } from '@/utils/dateFormatter';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Customers are CRM contacts (person) under accounts (company) — see migration
 // 20260717000001. The old service_customers table is no longer read.
@@ -25,7 +26,7 @@ const isMobileValid = (v) => /^[6-9][0-9]{9}$/.test(normalizeMobile(v));
 const initials = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
 
 // Deterministic avatar tint so a row keeps the same colour between loads.
-const AVATAR_BG = ['#ede9fe', '#dbeafe', '#dcfce7', '#fef3c7', '#fce7f3', '#e0e7ff'];
+const AVATAR_BG = ['#ede9fe', '#dbeafe', '#dcfce7', '#ede9fe', '#fce7f3', '#e0e7ff'];
 const avatarBg = (id, name) => {
   const key = Number(id) || String(name || '').length;
   return AVATAR_BG[key % AVATAR_BG.length];
@@ -142,7 +143,16 @@ export default function ReviewCustomers() {
   const cell = { padding: '10px 16px' };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Service Desk"
+        title="Service Customers"
+        actions={<button className="plh-cta" onClick={openNew}>
+          <Plus size={15}/> New
+        </button>}
+      />
+    }>
       {toast && (
         <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 9999, padding: '10px 18px', borderRadius: 8, fontWeight: 600, fontSize: 13,
           background: toast.type === 'success' ? '#d1fae5' : '#fee2e2', color: toast.type === 'success' ? '#065f46' : '#991b1b' }}>
@@ -150,16 +160,6 @@ export default function ReviewCustomers() {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Service Customers</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>{customers.length} customers</p>
-        </div>
-        <button onClick={openNew}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          <Plus size={15}/> New
-        </button>
-      </div>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
@@ -299,6 +299,6 @@ export default function ReviewCustomers() {
         onConfirm={handleDelete}
         onCancel={() => setConfirm(null)}
       />
-    </div>
+    </PageShell>
   );
 }

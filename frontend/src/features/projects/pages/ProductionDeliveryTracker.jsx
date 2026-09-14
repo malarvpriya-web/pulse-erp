@@ -7,6 +7,7 @@ import api from '@/services/api/client';
 import { fmtDate } from '@/utils/dateFormatter';
 import { useAuth } from '@/context/AuthContext';
 import { getProject } from '../services/projectsService';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Canonical Manifest SST/HVDC production pipeline, full lifecycle order. Mirrors
 // PRODUCTION_STAGES in the backend deliveryTracker.routes.js and STAGES in
@@ -37,14 +38,14 @@ const STAGE_COLORS = {
   created:     { bg: '#f3f4f6', color: '#6b7280' },
   handover:    { bg: '#dbeafe', color: '#2563eb' },
   dr_approval: { bg: '#ede9fe', color: '#7c3aed' },
-  procurement: { bg: '#fef3c7', color: '#d97706' },
+  procurement: { bg: '#ede9fe', color: '#6d28d9' },
   production:  { bg: '#e0e7ff', color: '#4338ca' },
   clearing:    { bg: '#e0f2fe', color: '#0891b2' },
   dispatched:  { bg: '#d1fae5', color: '#16a34a' },
 };
 const STATUS_COLORS = {
   'Won':         { bg: '#dbeafe', color: '#2563eb' },
-  'In Progress': { bg: '#fef3c7', color: '#d97706' },
+  'In Progress': { bg: '#ede9fe', color: '#6d28d9' },
   'Delivered':   { bg: '#d1fae5', color: '#16a34a' },
 };
 
@@ -391,7 +392,24 @@ export default function ProductionDeliveryTracker({ setPage }) {
   const fieldInput = { width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 7, fontSize: 13, background: 'var(--color-background-secondary)', color: 'var(--color-text-primary)' };
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Truck}
+        eyebrow="Projects"
+        title="Project Master"
+        subtitle="Pursuit (IPM) to production (IPP) — single source of truth for the delivery record"
+        actions={<>
+          {canAdd
+          ? <button className="plh-cta plh-cta--ghost" onClick={openNew}><Plus size={14} /> New</button>
+          : <button className="plh-cta plh-cta--ghost" disabled title="You don't have permission to create projects"><Lock size={13} /> New</button>}
+          {canEdit
+          ? <button className="plh-cta plh-cta--ghost" onClick={() => openEdit(activeRowData)} disabled={!activeRowData} title={activeRowData ? 'Edit selected project' : 'Select a row to edit'}><Pencil size={14} /> Edit</button>
+          : <button className="plh-cta plh-cta--ghost" disabled title="You don't have permission to edit projects"><Lock size={13} /> Edit</button>}
+          <button className="plh-cta plh-cta--ghost" onClick={openActivity} disabled={!activeRowData} title={activeRowData ? 'View activity log' : 'Select a row to view activity'}><Activity size={14} /> Activity</button>
+          <button className="plh-cta" onClick={() => setHelpOpen(true)} title="Help"><HelpCircle size={14} /> Help</button>
+        </>}
+      />
+    }>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} } @keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {toast && (
@@ -400,22 +418,6 @@ export default function ProductionDeliveryTracker({ setPage }) {
         </div>
       )}
 
-      {/* Header + primary actions */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 240 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Project Master</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Pursuit (IPM) to production (IPP) — single source of truth for the delivery record</p>
-        </div>
-
-        {canAdd
-          ? <button onClick={openNew} style={primaryBtn}><Plus size={14} /> New</button>
-          : <button disabled title="You don't have permission to create projects" style={disBtn(primaryBtn)}><Lock size={13} /> New</button>}
-        {canEdit
-          ? <button onClick={() => openEdit(activeRowData)} disabled={!activeRowData} title={activeRowData ? 'Edit selected project' : 'Select a row to edit'} style={activeRowData ? { ...primaryBtn, background: 'var(--color-background-secondary)', color: 'var(--color-text-primary)', border: '0.5px solid var(--color-border-tertiary)' } : disBtn(toolBtn)}><Pencil size={14} /> Edit</button>
-          : <button disabled title="You don't have permission to edit projects" style={disBtn(toolBtn)}><Lock size={13} /> Edit</button>}
-        <button onClick={openActivity} disabled={!activeRowData} title={activeRowData ? 'View activity log' : 'Select a row to view activity'} style={activeRowData ? toolBtn : disBtn(toolBtn)}><Activity size={14} /> Activity</button>
-        <button onClick={() => setHelpOpen(true)} title="Help" style={toolBtn}><HelpCircle size={14} /> Help</button>
-      </div>
 
       {/* Filter panel */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -771,7 +773,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }
 

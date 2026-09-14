@@ -1,18 +1,30 @@
 import express from "express";
 import { addEmployee, getEmployees, getEmployee, updateEmployee, deleteEmployee, getNextEmployeeCode, getEmployeeAnalytics, getExEmployees } from "./employee.controller.js";
-import { verifyToken, allowRoles } from "../middlewares/auth.middleware.js";
+import { verifyToken, allowRoles, hasRole } from "../middlewares/auth.middleware.js";
 import { logAudit } from "../services/AuditService.js";
 import pool from "../config/db.js";
+import { companyOf, callerIdentity } from "../shared/scope.js";
+import { presenceOf } from "../shared/presence.js";
+import { captureBefore } from '../middlewares/captureBefore.js';
 
 const HR_ROLES = [
   "admin", "super_admin", "hr", "hr_manager", "hr_exec", "payroll_admin",
   // legacy mixed-case variants stored in older user records
   "Admin", "SuperAdmin", "HR",
 ];
+
+// Roles that reach the Employees section in the sidebar (ROLE_SECTION_ALLOWLIST
+// in the frontend's menuCatalog.js). Offboarding records — separation type,
+// exit reason, F&F status — are not phonebook data: this list was
+// verifyToken-only, so any authenticated caller could read every ex-employee's
+// full row, salary and bank block included. maskPII in getExEmployees redacts
+// what the non-HR roles here must not see.
+const EX_EMPLOYEE_ROLES = [...HR_ROLES, "manager", "department_head"];
+
 const router = express.Router();
 
 router.get("/analytics", verifyToken, getEmployeeAnalytics);
-router.get("/ex", verifyToken, getExEmployees);
+router.get("/ex", verifyToken, allowRoles(...EX_EMPLOYEE_ROLES), getExEmployees);
 router.get("/", verifyToken, getEmployees);
 router.get("/next-code", verifyToken, allowRoles(...HR_ROLES), getNextEmployeeCode);
 
@@ -77,10 +89,14 @@ router.post("/:id/offboard", verifyToken, allowRoles(...HR_ROLES), async (req, r
       [empId]
     );
 
-    // Update employee status
-    const newStatus = separation_type === 'termination' ? 'terminated'
-                    : separation_type === 'retirement'  ? 'left'
-                    : 'resigned';
+    // Move employee into notice period — NOT straight to the terminal status.
+    // exitStatusSync.cron.js flips to resigned/terminated/left once
+    // last_working_date actually arrives; 'notice' keeps them counted as
+    // active for payroll/attendance in the meantime (mirrors exit.routes.js
+    // POST /initiate, the other entry point into the same flow).
+    // Capitalized to match live employees.status convention and the
+    // frontend's STATUS_STYLE.Notice badge (EmployeeProfile.jsx).
+    const newStatus = 'Notice';
     await client.query(`UPDATE employees SET status=$1 WHERE id=$2`, [newStatus, empId]);
 
     await client.query('COMMIT');
@@ -228,13 +244,18 @@ router.post("/ex/:id/rehire", verifyToken, allowRoles(...HR_ROLES), async (req, 
 // ── Employee Directory — company phonebook (active staff only, safe fields) ──────
 // Managers and above can see personal phone. Regular employees cannot.
 // birthday (MM-DD only, no year) and on_leave_today are included for card badges.
-const DIRECTORY_PHONE_ROLES = new Set([
-  'admin', 'super_admin', 'hr', 'HR', 'Admin', 'SuperAdmin',
-  'hr_manager', 'hr_exec', 'payroll_admin', 'manager', 'Manager',
-]);
+const DIRECTORY_PHONE_ROLES = [
+  'admin', 'super_admin', 'hr',
+  'hr_manager', 'hr_exec', 'payroll_admin', 'manager',
+];
 router.get("/directory", verifyToken, async (req, res) => {
-  const companyId  = req.scope?.company_id ?? null;
-  const canSeePhone = DIRECTORY_PHONE_ROLES.has(req.user?.role || '');
+  const companyId = companyOf(req);
+  // hasRole() over the whole user_roles set, lower-cased on both sides. The
+  // previous Set membership test read req.user.role — the primary claim only —
+  // so a manager or HR user holding that grant as a secondary role had the
+  // phone column redacted, and the mixed-case legacy variants were carried in
+  // the Set purely to work around the missing case fold.
+  const canSeePhone = hasRole(req, DIRECTORY_PHONE_ROLES);
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -285,11 +306,140 @@ router.get("/list", verifyToken, allowRoles(...HR_ROLES), async (req, res) => {
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+/**
+ * GET /employees/direct-reports — the caller's own reporting line.
+ *
+ * MUST stay above `GET /:id`: Express matches in registration order, so a
+ * literal path registered after a `/:id` route is unreachable ("direct-reports"
+ * would bind as :id and 400 on the integer cast).
+ *
+ * Not HR-gated — every employee is entitled to see who reports to them, and the
+ * query is anchored to the caller's own employee id, so there is nothing to
+ * escalate. The Manager dashboard's "Direct Reports" card reads this.
+ *
+ * `status` is today's attendance state, not the employment status: the card
+ * renders it as a presence dot. It is 'unknown' when no record exists for today,
+ * so an unmarked team does not silently render as fully present.
+ */
+router.get("/direct-reports", verifyToken, async (req, res) => {
+  try {
+    const companyId = companyOf(req);
+    const me = await callerIdentity(req, pool, companyId);
+
+    // Admin / service accounts have no employees row, so there is no personal
+    // reporting line to walk — and they are the ONLY roles that can open the
+    // Ops Command Center, so returning [] here left the card permanently empty.
+    //
+    // Their remit is the whole org, so answer the org-level version of the same
+    // question: who manages whom. Reported under a distinct `source` so the card
+    // can relabel itself rather than pass this off as the caller's own reports.
+    if (!me.employee_id) {
+      const { rows } = await pool.query(
+        `SELECT m.id,
+                m.name,
+                m.department,
+                m.designation,
+                m.status        AS employment_status,
+                cnt.n::int      AS reports_count,
+                ar.status       AS att_status,
+                ar.work_mode    AS att_work_mode,
+                COALESCE(ar.late_minutes, 0)::int AS att_late_minutes
+           FROM employees m
+           JOIN LATERAL (
+                SELECT COUNT(*) AS n
+                  FROM employees c
+                 WHERE c.deleted_at IS NULL
+                   AND c.id <> m.id
+                   AND LOWER(COALESCE(c.status, 'active')) NOT IN ('inactive','resigned','terminated','exited','left')
+                   AND ($1::int IS NULL OR c.company_id = $1)
+                   AND ( c.reporting_manager_id = m.id
+                         OR ( c.reporting_manager_id IS NULL
+                              AND NULLIF(TRIM(m.name), '') IS NOT NULL
+                              AND LOWER(TRIM(c.reporting_manager)) = LOWER(TRIM(m.name)) ) )
+           ) cnt ON cnt.n > 0
+           LEFT JOIN attendance_records ar
+                  ON ar.employee_id     = m.id
+                 AND ar.attendance_date = CURRENT_DATE
+                 AND ar.deleted_at IS NULL
+          WHERE m.deleted_at IS NULL
+            AND LOWER(COALESCE(m.status, 'active')) NOT IN ('inactive','resigned','terminated','exited','left')
+            AND ($1::int IS NULL OR m.company_id = $1)
+          ORDER BY cnt.n DESC, m.name
+          LIMIT 25`,
+        [companyId]
+      );
+      return res.json({
+        data: rows.map(r => ({
+          id:                r.id,
+          name:              r.name,
+          department:        r.department,
+          designation:       r.designation,
+          employment_status: r.employment_status,
+          reports_count:     r.reports_count,
+          status:            presenceOf(r),
+        })),
+        source: "org_reporting_lines",
+        reason: rows.length
+          ? null
+          : "No reporting lines are recorded yet — set a reporting manager on the employee records.",
+      });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT e.id,
+              e.name,
+              e.department,
+              e.designation,
+              e.status                              AS employment_status,
+              (SELECT COUNT(*) FROM employees c
+                WHERE c.reporting_manager_id = e.id
+                  AND c.id <> e.id
+                  AND c.deleted_at IS NULL)::int    AS reports_count,
+              ar.status                             AS att_status,
+              ar.work_mode                          AS att_work_mode,
+              COALESCE(ar.late_minutes, 0)::int     AS att_late_minutes
+         FROM employees e
+         LEFT JOIN attendance_records ar
+                ON ar.employee_id     = e.id
+               AND ar.attendance_date = CURRENT_DATE
+               AND ar.deleted_at IS NULL
+        WHERE e.deleted_at IS NULL
+          AND e.id <> $1
+          AND LOWER(COALESCE(e.status, 'active')) NOT IN ('inactive','resigned','terminated','exited','left')
+          AND ($3::int IS NULL OR e.company_id = $3)
+          AND ( e.reporting_manager_id = $1
+                OR ( e.reporting_manager_id IS NULL
+                     AND $2::text IS NOT NULL
+                     AND LOWER(TRIM(e.reporting_manager)) = LOWER(TRIM($2::text)) ) )
+        ORDER BY e.name`,
+      [me.employee_id, me.name ?? null, companyId]
+    );
+
+    res.json({
+      data: rows.map(r => ({
+        id:                r.id,
+        name:              r.name,
+        department:        r.department,
+        designation:       r.designation,
+        employment_status: r.employment_status,
+        reports_count:     r.reports_count,
+        status:            presenceOf(r),
+      })),
+      source: "reporting_hierarchy",
+      manager: { employee_id: me.employee_id, name: me.name },
+      reason:  rows.length ? null : "No one currently reports to you in the org hierarchy.",
+    });
+  } catch (err) {
+    console.error("[GET /employees/direct-reports]", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get("/:id", verifyToken, getEmployee);
 router.post("/", verifyToken, allowRoles(...HR_ROLES), addEmployee);
 router.put("/:id", verifyToken, allowRoles(...HR_ROLES), updateEmployee);
 // Lightweight status-only patch — auto-sets confirmation_date when status → Active
-router.patch("/:id/status", verifyToken, allowRoles(...HR_ROLES, "hr_manager"), async (req, res) => {
+router.patch("/:id/status", verifyToken, allowRoles(...HR_ROLES, "hr_manager"), captureBefore('employees'), async (req, res) => {
   const empId = Number(req.params.id);
   if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   const { status } = req.body;

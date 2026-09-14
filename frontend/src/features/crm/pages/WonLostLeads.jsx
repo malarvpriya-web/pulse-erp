@@ -6,6 +6,7 @@ import {
 import { fmtDate } from '@/utils/dateFormatter';
 import { fmtL } from '@/utils/format';
 import { getWonLostLeads, getWonLostLeadsFilters, exportWonLostLeads } from '../services/crmService';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Full ₹ with Indian thousands separators — e.g. ₹12,34,567 (per report spec).
 // Kept local: this is the grid's own full-precision cell format, distinct from
@@ -189,16 +190,18 @@ export default function WonLostLeads() {
   ];
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-bg-page)', minHeight: '100%' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Filter}
+        eyebrow="CRM"
+        title="IEM Won / Lost Leads"
+        subtitle="Closed enquiries — won and lost — with value, contact and channel."
+      />
+    }>
       <style>{`@keyframes wl-pulse { 0%,100%{opacity:1} 50%{opacity:.4} } @keyframes wl-spin { to { transform: rotate(360deg) } } .wl-spin { animation: wl-spin 0.8s linear infinite; }`}</style>
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
-        <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>IEM Won / Lost Leads</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Closed enquiries — won and lost — with value, contact and channel.</p>
-        </div>
-      </div>
+
 
       {/* Filter panel */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap', background: 'var(--color-background-secondary)', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 10, padding: '14px 16px', marginBottom: 18 }}>
@@ -392,7 +395,7 @@ export default function WonLostLeads() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

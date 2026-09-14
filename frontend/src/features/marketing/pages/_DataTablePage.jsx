@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { Megaphone } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 export default function DataTablePage({ title, endpoint }) {
   const [data, setData] = useState([]);
@@ -14,8 +16,14 @@ export default function DataTablePage({ title, endpoint }) {
   }, [endpoint]);
 
   return (
-    <div style={{padding: 24}}>
-      <h1 style={{fontSize: 22, fontWeight: 700, marginBottom: 20}}>{title}</h1>
+    <PageShell dock={
+      <PageHero
+        icon={Megaphone}
+        eyebrow="Marketing"
+        title={title}
+      />
+    }>
+
       {loading && <div style={{textAlign:'center',padding:40,color:'#9ca3af'}}>Loading...</div>}
       {!loading && data.length === 0 && (
         <div style={{background:'#fff',borderRadius:12,padding:40,textAlign:'center',color:'#9ca3af',boxShadow:'0 1px 4px rgba(0,0,0,.08)'}}>
@@ -46,6 +54,6 @@ export default function DataTablePage({ title, endpoint }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

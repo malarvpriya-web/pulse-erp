@@ -44,15 +44,6 @@ export const updateInvoice = async (id, data) => {
   }
 };
 
-export const deleteInvoice = async (id) => {
-  try {
-    const res = await api.delete(`/finance/invoices/${id}`);
-    return res.data;
-  } catch (err) {
-    console.error('deleteInvoice failed:', err.message);
-    throw err;
-  }
-};
 
 // ── Parties ────────────────────────────────────────────────────────────────
 
@@ -86,15 +77,6 @@ export const updateParty = async (id, data) => {
   }
 };
 
-export const togglePartyStatus = async (id, isActive) => {
-  try {
-    const res = await api.patch(`/finance/parties/${id}/status`, { is_active: isActive });
-    return res.data;
-  } catch (err) {
-    console.error('togglePartyStatus failed:', err.message);
-    throw err;
-  }
-};
 
 export const getPartyTransactions = async (id) => {
   try {

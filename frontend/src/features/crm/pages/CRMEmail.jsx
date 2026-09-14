@@ -1,5 +1,6 @@
 // frontend/src/features/crm/pages/CRMEmail.jsx
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { Megaphone } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { useToast } from '@/context/ToastContext';
@@ -7,14 +8,15 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 const STAGE_COLORS = {
-  Prospecting: '#6366f1', Qualification: '#3b82f6', Proposal: '#f59e0b',
+  Prospecting: '#6366f1', Qualification: '#3b82f6', Proposal: '#7c5cf0',
   Negotiation: '#ef4444', Won: '#10b981', Lost: '#6b7280',
 };
 const CATEGORY_COLORS = {
-  prospect: '#6B3FDB', 'follow-up': '#3b82f6', proposal: '#f59e0b', closing: '#10b981',
+  prospect: '#6B3FDB', 'follow-up': '#3b82f6', proposal: '#7c5cf0', closing: '#10b981',
 };
 const PROVIDER_COLORS = { gmail: '#ea4335', outlook: '#0078d4', smtp: '#6b7280' };
 
@@ -109,13 +111,14 @@ function ProviderBadge({ provider }) {
 }
 
 function KpiCard({ label, value, suffix = '', color = '#6B3FDB' }) {
+  // Delegates to the design-system card. `suffix` has no <Stat> prop, so it is
+  // folded into the value — the only prop that needed adapting.
   return (
-    <div style={{
-      background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, padding: '20px 24px', flex: 1, minWidth: 0,
-    }}>
-      <div style={{ fontSize: 12, color: '#888', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-      <div style={{ fontSize: 28, fontWeight: 800, color }}>{value}<span style={{ fontSize: 16, fontWeight: 500, color: '#999', marginLeft: 2 }}>{suffix}</span></div>
-    </div>
+    <Stat
+      label={label}
+      value={suffix ? <>{value}<span style={{ fontSize: 13, fontWeight: 600, opacity: .55 }}>{suffix}</span></> : value}
+      color={color}
+    />
   );
 }
 
@@ -903,7 +906,14 @@ export default function CRMEmail() {
   const hasNoAccounts = accounts.length === 0;
 
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#f5f3ff', fontFamily: "'Inter', -apple-system, sans-serif" }}>
+    <PageShell dock={
+      <PageHero
+        icon={Megaphone}
+        eyebrow="CRM"
+        title="Email Templates"
+        subtitle="No templates yet"
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDisconnect}
         title="Disconnect Email Account"
@@ -981,7 +991,7 @@ export default function CRMEmail() {
             <div style={{ fontSize: 12, color: '#bbb', padding: '6px 4px', fontStyle: 'italic' }}>No accounts connected</div>
           ) : (
             accounts.map(acc => {
-              const syncColor = acc.sync_status === 'synced' ? '#10b981' : acc.sync_status === 'error' ? '#ef4444' : '#f59e0b';
+              const syncColor = acc.sync_status === 'synced' ? '#10b981' : acc.sync_status === 'error' ? '#ef4444' : '#7c5cf0';
               return (
                 <div key={acc.id} style={{ padding: '8px 8px', borderRadius: 8, marginBottom: 4, background: '#fafafd', border: '1px solid #f0f0f4' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
@@ -1075,7 +1085,7 @@ export default function CRMEmail() {
           <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
               <div>
-                <h2 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 800, color: '#1e1e2e' }}>Email Templates</h2>
+
                 <p style={{ margin: 0, fontSize: 13, color: '#888' }}>{templates.length} templates available</p>
               </div>
               <button onClick={() => { setEditingTemplate(null); setShowTemplateModal(true); }}
@@ -1086,7 +1096,7 @@ export default function CRMEmail() {
             {templates.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '60px 0', color: '#bbb' }}>
                 <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
-                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>No templates yet</div>
+
                 <div style={{ fontSize: 13 }}>Create reusable email templates for your sales team</div>
               </div>
             ) : (
@@ -1209,7 +1219,7 @@ export default function CRMEmail() {
                   <KpiCard label="Total Sent" value={analytics.total_sent.toLocaleString('en-IN')} color="#6B3FDB" />
                   <KpiCard label="Open Rate" value={analytics.open_rate} suffix="%" color="#10b981" />
                   <KpiCard label="Click Rate" value={analytics.click_rate} suffix="%" color="#3b82f6" />
-                  <KpiCard label="Reply Rate" value={analytics.reply_rate} suffix="%" color="#f59e0b" />
+                  <KpiCard label="Reply Rate" value={analytics.reply_rate} suffix="%" color="#7c5cf0" />
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
                   <div style={{ background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, padding: '20px 20px 12px' }}>
@@ -1246,8 +1256,8 @@ export default function CRMEmail() {
                             <td style={{ padding: '11px 10px', fontSize: 13, color: '#444', textAlign: 'center' }}>{tpl.clicks}</td>
                             <td style={{ padding: '11px 10px', textAlign: 'center' }}>
                               <span style={{
-                                background: tpl.open_rate >= 60 ? '#d1fae5' : tpl.open_rate >= 40 ? '#fef9c3' : '#fee2e2',
-                                color: tpl.open_rate >= 60 ? '#065f46' : tpl.open_rate >= 40 ? '#854d0e' : '#991b1b',
+                                background: tpl.open_rate >= 60 ? '#d1fae5' : tpl.open_rate >= 40 ? '#ede9fe' : '#fee2e2',
+                                color: tpl.open_rate >= 60 ? '#065f46' : tpl.open_rate >= 40 ? '#5b21b6' : '#991b1b',
                                 padding: '2px 10px', borderRadius: 12, fontSize: 12, fontWeight: 700,
                               }}>
                                 {tpl.open_rate}%
@@ -1310,6 +1320,6 @@ export default function CRMEmail() {
           onClose={() => { setShowCompose(false); setForwardEmail(null); }}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

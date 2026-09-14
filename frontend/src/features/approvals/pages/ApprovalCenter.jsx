@@ -1,20 +1,22 @@
 import { useState, useEffect, useRef } from "react";
+import { CheckSquare } from 'lucide-react';
 import api from "@/services/api/client";
 import "./ApprovalCenter.css";
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TYPE_META = {
   leave:            { bg: '#eef2ff', color: '#4338ca' },
-  expense:          { bg: '#fef3c7', color: '#92400e' },
+  expense:          { bg: '#ede9fe', color: '#5b21b6' },
   travel:           { bg: '#f0fdf4', color: '#166534' },
   purchase:         { bg: '#fce7f3', color: '#9d174d' },
   purchase_request: { bg: '#fce7f3', color: '#9d174d' },
   payment:          { bg: '#dcfce7', color: '#15803d' },
-  timesheet:        { bg: '#fed7aa', color: '#9a3412' },
+  timesheet:        { bg: '#ddd6fe', color: '#4c1d95' },
   access:           { bg: '#f3e8ff', color: '#7e22ce' },
   recruitment:      { bg: '#cffafe', color: '#155e75' },
   discount:         { bg: '#fdf2f8', color: '#be185d' },
-  regularization:   { bg: '#fff7ed', color: '#c2410c' },
-  ot:               { bg: '#fef9c3', color: '#854d0e' },
+  regularization:   { bg: '#fff7ed', color: '#5b21b6' },
+  ot:               { bg: '#ede9fe', color: '#5b21b6' },
   ecn:              { bg: '#f0f9ff', color: '#0369a1' },
   ncr:              { bg: '#fef2f2', color: '#dc2626' },
   capa:             { bg: '#fdf4ff', color: '#7e22ce' },
@@ -25,7 +27,7 @@ const typeMeta = t => TYPE_META[(t || '').toLowerCase()] || { bg: '#f3f4f6', col
 
 const PRIORITY_META = {
   high:   { bg: '#fee2e2', color: '#dc2626' },
-  medium: { bg: '#fef3c7', color: '#92400e' },
+  medium: { bg: '#ede9fe', color: '#5b21b6' },
   low:    { bg: '#f3f4f6', color: '#6b7280' },
 };
 const prioMeta = p => PRIORITY_META[(p || '').toLowerCase()] || PRIORITY_META.medium;
@@ -244,7 +246,13 @@ export default function ApprovalCenter() {
   const setF = (k, v) => setFilters(p => ({ ...p, [k]: v }));
 
   return (
-    <div className="approval-center">
+    <PageShell dock={
+      <PageHero
+        icon={CheckSquare}
+        eyebrow="Approvals"
+        title="Approval Center"
+      />
+    }>
 
       {/* Toast */}
       {toast && (
@@ -253,7 +261,7 @@ export default function ApprovalCenter() {
         </div>
       )}
 
-      <h1>Approval Center</h1>
+
 
       {/* Stats — 5 cards */}
       <div className="stats-grid">
@@ -627,6 +635,6 @@ export default function ApprovalCenter() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

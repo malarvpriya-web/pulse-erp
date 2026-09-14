@@ -1,7 +1,7 @@
 import { Megaphone, ChevronRight } from 'lucide-react';
 import { useAnnouncements } from '@/hooks/useAnnouncements';
 
-const PRIORITY_DOT = { Urgent: '#ef4444', Important: '#f59e0b', Normal: '#9ca3af' };
+const PRIORITY_DOT = { Urgent: '#ef4444', Important: '#7c5cf0', Normal: '#9ca3af' };
 
 /**
  * AnnouncementsPanel — compact widget for Home / dashboard pages.

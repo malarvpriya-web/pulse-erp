@@ -137,7 +137,7 @@
   flex-shrink: 0; align-self: flex-start; margin-top: 2px;
 }
 .prob-status-safe     { background: #dcfce7; color: #15803d; }
-.prob-status-warning  { background: #fef3c7; color: #b45309; }
+.prob-status-warning  { background: #ede9fe; color: #6d28d9; }
 .prob-status-critical { background: #fee2e2; color: #b91c1c; }
 .prob-status-overdue  { background: #fce7f3; color: #9d174d; }
 
@@ -185,7 +185,7 @@
 }
 .prob-notify-btn:hover { opacity: .86; transform: translateY(-1px); }
 .prob-notify-btn-primary { background: #6B3FDB; color: #fff; }
-.prob-notify-btn-warn    { background: #d97706; color: #fff; }
+.prob-notify-btn-warn    { background: #6d28d9; color: #fff; }
 .prob-notify-btn-danger  { background: #dc2626; color: #fff; }
 
 /* ── Notify Modal ─────────────────────────────────────────────────────────── */
@@ -337,14 +337,14 @@
   display: inline-block;
 }
 .prob-hist-type-approval  { background: #f5f3ff; color: #6d28d9; }
-.prob-hist-type-probation_warning { background: #fef3c7; color: #b45309; }
+.prob-hist-type-probation_warning { background: #ede9fe; color: #6d28d9; }
 .prob-hist-type-probation_due     { background: #fee2e2; color: #b91c1c; }
 .prob-hist-date { color: #9ca3af; }
 .prob-hist-decision {
   padding: 2px 9px; border-radius: 10px; font-size: 10px; font-weight: 700;
 }
 .prob-hist-decision-confirmed { background: #dcfce7; color: #15803d; }
-.prob-hist-decision-extended  { background: #fef3c7; color: #b45309; }
+.prob-hist-decision-extended  { background: #ede9fe; color: #6d28d9; }
 .prob-hist-decision-terminated { background: #fee2e2; color: #b91c1c; }
 .prob-hist-decision-pending   { background: #f3f4f6; color: #6b7280; }
 
@@ -376,5 +376,5 @@
   display: flex; align-items: center; justify-content: center;
   transition: all .15s;
 }
-.prob-star.active { border-color: #f59e0b; background: #fef3c7; }
-.prob-star:hover  { border-color: #f59e0b; }
+.prob-star.active { border-color: #7c5cf0; background: #ede9fe; }
+.prob-star:hover  { border-color: #7c5cf0; }

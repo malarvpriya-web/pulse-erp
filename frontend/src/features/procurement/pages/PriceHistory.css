@@ -132,7 +132,7 @@
 .ph-kpi-val { font-size: 20px; font-weight: 800; color: #111827; }
 .ph-kpi-val.green  { color: #15803d; }
 .ph-kpi-val.red    { color: #dc2626; }
-.ph-kpi-val.amber  { color: #d97706; }
+.ph-kpi-val.amber  { color: #6d28d9; }
 .ph-kpi-sub { font-size: 11px; color: #9ca3af; margin-top: 4px; }
 .ph-kpi-change {
   display: inline-flex; align-items: center; gap: 3px;
@@ -228,7 +228,7 @@
   background: #f3f4f6; color: #6b7280; font-size: 11px; font-weight: 600;
 }
 .ph-ref-badge.po { background: #eff6ff; color: #2563eb; }
-.ph-ref-badge.manual { background: #fef9c3; color: #92400e; }
+.ph-ref-badge.manual { background: #ede9fe; color: #5b21b6; }
 .ph-price-delta {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 6px;

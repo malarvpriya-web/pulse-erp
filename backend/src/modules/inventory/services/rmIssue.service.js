@@ -1,4 +1,5 @@
 import pool from '../../shared/db.js';
+import { authorizeIssue } from './stockAvailability.service.js';
 import rmIssueRepo from '../repositories/rmIssue.repository.js';
 import stockLedgerRepo from '../repositories/stockLedger.repository.js';
 
@@ -16,15 +17,16 @@ class RMIssueService {
       });
 
       for (const item of data.items) {
-        // Check stock availability within the transaction to prevent race conditions
-        const balRes = await client.query(
-          `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-          [item.item_id, data.warehouse_id]
-        );
-        const balance = parseFloat(balRes.rows[0].balance);
-        if (balance < item.quantity) {
-          throw new Error(`Insufficient stock for item ${item.item_id}. Available: ${balance}, Required: ${item.quantity}`);
-        }
+        // Availability within the transaction, and reservations respected: a
+        // raw-material issue draws on free stock unless the line names the
+        // reservation it is spending. This used to read the bare ledger
+        // balance, so an issue could take stock another order had claimed.
+        await authorizeIssue(client, {
+          itemId: item.item_id,
+          warehouseId: data.warehouse_id,
+          qty: item.quantity,
+          reservationId: item.reservation_id ?? null,
+        });
 
         await rmIssueRepo.createItem(client, {
           issue_id: issue.id,

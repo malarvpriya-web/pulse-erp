@@ -7,11 +7,12 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pool from '../../../config/db.js';
-import { verifyToken } from '../../../middlewares/auth.middleware.js';
+import { requirePermission, verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { nextTicketNumber } from '../../../shared/docNumber.js';
 import { sendNotificationEmail } from '../../../utils/mailer.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -246,11 +247,31 @@ router.post('/portal/tickets/:id/rate', verifyPortalToken, async (req, res) => {
       `UPDATE customer_portal_tickets
           SET customer_rating = $1, customer_feedback = $2, updated_at = NOW()
         WHERE id = $3 AND customer_portal_user_id = $4
-        RETURNING id, ticket_number, status`,
+        RETURNING id, ticket_number, status, subject, internal_ticket_id, assigned_engineer_name, company_id`,
       [rating, feedback, req.params.id, req.portal.portalUserId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
-    res.json(rows[0]);
+
+    // customer_portal_tickets.customer_rating never reached the CSAT dashboard,
+    // NPS score, or agent leaderboards — those all read csat_responses only,
+    // which was staff-entered exclusively. Mirroring the portal rating into
+    // csat_responses (linked via internal_ticket_id, the FK this table already
+    // maintains back to support_tickets) gets it into every one of those
+    // existing reads for free, instead of duplicating the aggregation logic.
+    // Best-effort: a customer's rating confirmation must not fail on this.
+    try {
+      await pool.query(
+        `INSERT INTO csat_responses
+           (ticket_id, ticket_subject, rating, feedback, agent_name, customer_name, company_id, responded_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
+        [rows[0].internal_ticket_id || null, rows[0].subject || null, rating, feedback || null,
+         rows[0].assigned_engineer_name || null, req.portal.customer_name || null, rows[0].company_id || null]
+      );
+    } catch (e) {
+      console.error('[portal/tickets/:id/rate] csat_responses mirror failed:', e.message);
+    }
+
+    res.json({ id: rows[0].id, ticket_number: rows[0].ticket_number, status: rows[0].status });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -297,7 +318,7 @@ router.get('/portal/amc-visits', verifyPortalToken, async (req, res) => {
 // =============================================================================
 
 // GET /customer-portal/accounts — list portal accounts
-router.get('/accounts', verifyToken, async (req, res) => {
+router.get('/accounts', verifyToken, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT u.id, u.customer_name, u.contact_person, u.email, u.phone, u.is_active,
@@ -317,7 +338,7 @@ router.get('/accounts', verifyToken, async (req, res) => {
 });
 
 // POST /customer-portal/accounts — create portal account
-router.post('/accounts', verifyToken, async (req, res) => {
+router.post('/accounts', verifyToken, requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const { customer_name, contact_person, email, phone, password, crm_account_id, project_ids } = req.body;
     if (!customer_name || !email || !password) {
@@ -339,7 +360,7 @@ router.post('/accounts', verifyToken, async (req, res) => {
 });
 
 // PUT /customer-portal/accounts/:id — update account
-router.put('/accounts/:id', verifyToken, async (req, res) => {
+router.put('/accounts/:id', verifyToken, requirePermission('servicedesk', 'edit'), captureBefore('customer_portal_users'), async (req, res) => {
   try {
     const { customer_name, contact_person, phone, is_active, project_ids } = req.body;
     const { rows } = await pool.query(
@@ -359,7 +380,7 @@ router.put('/accounts/:id', verifyToken, async (req, res) => {
 });
 
 // POST /customer-portal/accounts/:id/reset-password
-router.post('/accounts/:id/reset-password', verifyToken, async (req, res) => {
+router.post('/accounts/:id/reset-password', verifyToken, requirePermission('servicedesk', 'approve'), async (req, res) => {
   try {
     const { new_password } = req.body;
     if (!new_password || new_password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
@@ -370,7 +391,7 @@ router.post('/accounts/:id/reset-password', verifyToken, async (req, res) => {
 });
 
 // DELETE /customer-portal/accounts/:id
-router.delete('/accounts/:id', verifyToken, async (req, res) => {
+router.delete('/accounts/:id', verifyToken, requirePermission('servicedesk', 'approve'), captureBefore('customer_portal_users'), async (req, res) => {
   try {
     await pool.query(`UPDATE customer_portal_users SET is_active = false WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
     res.json({ message: 'Account deactivated' });
@@ -380,7 +401,7 @@ router.delete('/accounts/:id', verifyToken, async (req, res) => {
 // ── Equipment management (internal) ──────────────────────────────────────────
 
 // GET /customer-portal/equipment
-router.get('/equipment', verifyToken, async (req, res) => {
+router.get('/equipment', verifyToken, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const { customer_portal_user_id } = req.query;
     const { rows } = await pool.query(
@@ -396,7 +417,7 @@ router.get('/equipment', verifyToken, async (req, res) => {
 });
 
 // POST /customer-portal/equipment
-router.post('/equipment', verifyToken, async (req, res) => {
+router.post('/equipment', verifyToken, requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const {
       customer_portal_user_id, crm_account_id, project_id, equipment_tag,
@@ -423,7 +444,7 @@ router.post('/equipment', verifyToken, async (req, res) => {
 });
 
 // PUT /customer-portal/equipment/:id
-router.put('/equipment/:id', verifyToken, async (req, res) => {
+router.put('/equipment/:id', verifyToken, requirePermission('servicedesk', 'edit'), captureBefore('customer_equipment'), async (req, res) => {
   try {
     const fields = ['equipment_tag','equipment_name','model_number','serial_number','rating',
       'installation_date','site_location','gps_lat','gps_lng','warranty_status','warranty_expiry',
@@ -440,7 +461,7 @@ router.put('/equipment/:id', verifyToken, async (req, res) => {
 });
 
 // DELETE /customer-portal/equipment/:id
-router.delete('/equipment/:id', verifyToken, async (req, res) => {
+router.delete('/equipment/:id', verifyToken, requirePermission('servicedesk', 'delete'), captureBefore('customer_equipment'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM customer_equipment WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
     res.json({ message: 'Deleted' });
@@ -450,7 +471,7 @@ router.delete('/equipment/:id', verifyToken, async (req, res) => {
 // ── Portal tickets (internal management) ─────────────────────────────────────
 
 // GET /customer-portal/tickets
-router.get('/tickets', verifyToken, async (req, res) => {
+router.get('/tickets', verifyToken, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const { status, equipment_id } = req.query;
     let q = `SELECT t.*, u.customer_name, e.equipment_name, e.equipment_tag
@@ -486,7 +507,7 @@ async function notifyCustomerOfStatusChange(ticket) {
 }
 
 // PUT /customer-portal/tickets/:id — update status/assignment
-router.put('/tickets/:id', verifyToken, async (req, res) => {
+router.put('/tickets/:id', verifyToken, requirePermission('servicedesk', 'edit'), captureBefore('customer_portal_tickets'), async (req, res) => {
   try {
     const { status, assigned_engineer_id, assigned_engineer_name, resolution_notes } = req.body;
     const resolved_at = status === 'closed' ? new Date().toISOString() : null;
@@ -523,7 +544,7 @@ router.put('/tickets/:id', verifyToken, async (req, res) => {
 // ── Documents (internal) ──────────────────────────────────────────────────────
 
 // POST /customer-portal/documents
-router.post('/documents', verifyToken, async (req, res) => {
+router.post('/documents', verifyToken, requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const { customer_portal_user_id, equipment_id, document_type, document_name, file_path, external_url } = req.body;
     if (!document_name) return res.status(400).json({ error: 'document_name is required' });
@@ -538,7 +559,7 @@ router.post('/documents', verifyToken, async (req, res) => {
 });
 
 // DELETE /customer-portal/documents/:id
-router.delete('/documents/:id', verifyToken, async (req, res) => {
+router.delete('/documents/:id', verifyToken, requirePermission('servicedesk', 'delete'), captureBefore('customer_portal_documents'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM customer_portal_documents WHERE id = $1 AND company_id = $2`, [req.params.id, cid(req)]);
     res.json({ message: 'Deleted' });
@@ -546,7 +567,7 @@ router.delete('/documents/:id', verifyToken, async (req, res) => {
 });
 
 // ── Dashboard summary (internal) ──────────────────────────────────────────────
-router.get('/dashboard', verifyToken, async (req, res) => {
+router.get('/dashboard', verifyToken, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const [accounts, tickets, equipment] = await Promise.all([
       pool.query(`SELECT COUNT(*) AS total, SUM(CASE WHEN is_active THEN 1 ELSE 0 END) AS active FROM customer_portal_users WHERE company_id = $1`, [cid(req)]),

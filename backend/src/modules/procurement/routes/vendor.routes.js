@@ -1,32 +1,97 @@
+/**
+ * vendor.routes.js — the vendor COMPARISON reads.
+ *
+ * WHAT THIS FILE USED TO BE, AND WHY IT WAS DANGEROUS
+ * ---------------------------------------------------
+ * It was a complete, unhardened SHADOW of the procurement core. Mounted at
+ * `v1Router.use("/", vendorRoutes)` behind `verifyToken` and NOTHING ELSE, it
+ * offered a second implementation of the same controls the procurement module
+ * spent two remediation passes hardening — with none of the hardening:
+ *
+ *   PATCH /api/three-way-match/:id/resolve
+ *       Clears a flagged invoice discrepancy — the control that releases an
+ *       invoice for payment. No permission check, no company predicate, and it
+ *       set `discrepancy_reason = NULL`, destroying the record of what the
+ *       discrepancy had been. ANY authenticated account — employee, hr,
+ *       sales_exec — could clear ANY tenant's flagged invoice.
+ *   PUT /api/rfqs/:id/quotes/:quoteId/winner
+ *       Awards a sourcing event. No permission check, no company predicate, and
+ *       `quoteId` was never checked to belong to the RFQ being closed.
+ *   PUT /api/vendors/:id
+ *       Rewrites the vendor master INCLUDING bank_name / account_number / ifsc,
+ *       with NO company predicate at all. Changing a supplier's bank details is
+ *       the destination of an invoice-fraud attempt, and this was the widest
+ *       open door in the module.
+ *   POST /api/vendors
+ *       A second vendor-create path: no tax-id validation, no finance-party
+ *       binding (so the vendor is unpayable — see vendorIdentity.service.js),
+ *       and it accepted quality_rating / delivery_rating / price_rating straight
+ *       from the body, which the hardened path deliberately whitelists OUT
+ *       because they are computed scorecard columns.
+ *   POST /api/rfqs, PUT /api/rfqs/:id, POST /api/rfqs/:id/quotes,
+ *   GET /api/rfqs, GET /api/three-way-match
+ *       Duplicates of endpoints that exist, gated and scoped, under
+ *       /api/procurement.
+ *
+ * NO CLIENT CALLED ANY OF THEM. A repo-wide search for callers of the write
+ * paths found none — the frontend uses the `/procurement`-prefixed routes for
+ * every one of these actions. They were dead code that was nevertheless live
+ * and reachable over HTTP, shadowing the hardened equivalents.
+ *
+ * They are therefore REMOVED rather than re-gated. Re-gating would leave two
+ * implementations of "award an RFQ" and "clear an invoice for payment" to keep
+ * in step, which is the drift that produced this file in the first place. The
+ * removed paths answer 410 naming the canonical route, so a caller nobody knew
+ * about gets told where to go instead of a silent 404.
+ *
+ * WHAT REMAINS are the four comparison READS that the Vendor Comparison and
+ * Vendor Management screens actually call. Each was also unscoped —
+ * `WHERE id IN (...)` over vendors, `WHERE po.supplier_id IN (...)` over orders
+ * — so any authenticated caller could read another tenant's supplier list,
+ * spend history and negotiated unit prices by walking ids. They are now gated
+ * on the procurement view grant, and the id list is narrowed to the caller's
+ * own company before it reaches any query.
+ */
 import express from 'express';
 import pool from '../../../config/db.js';
-import { nextRfqNumber } from '../../../shared/docNumber.js';
 import { companyOf } from '../../../shared/scope.js';
+import { requireProcurement } from '../procurement.authz.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
 
-
-// ─── Helper: compute match status and variance from amounts ──────────────────
-function computeMatch(poAmt, invAmt, grnVal) {
-  const po = Number(poAmt);
-  const inv = Number(invAmt);
-  const grn = Number(grnVal);
-  const variance = Math.max(Math.abs(po - inv), Math.abs(po - grn));
-  const pct = po > 0 ? variance / po : 0;
-  let match_status;
-  if (pct <= 0.01) match_status = 'matched';
-  else if (pct <= 0.05) match_status = 'partial';
-  else match_status = 'mismatch';
-  return { match_status, variance: parseFloat(variance.toFixed(2)) };
+/**
+ * The subset of `?ids=` the caller is actually allowed to see.
+ *
+ * Every read below interpolates the id list into an `IN (...)` clause across
+ * vendors, purchase orders, PO lines, RFQ quotes and price history. Narrowing
+ * ONCE, here, is what makes all of them tenant-safe: an id belonging to another
+ * company is dropped before it reaches any of those queries, so there is no
+ * per-query predicate left to forget. Returns [] when nothing survives, which
+ * the callers render as an empty comparison rather than as a leak.
+ */
+async function ownedVendorIds(req, raw) {
+  const ids = String(raw || '').split(',').map(Number).filter(Boolean);
+  if (!ids.length) return [];
+  const companyId = cid(req);
+  const { rows } = await pool.query(
+    `SELECT id FROM vendors
+      WHERE id = ANY($1::int[]) AND deleted_at IS NULL
+        AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)`,
+    [ids, companyId]
+  );
+  return rows.map(r => r.id);
 }
 
 // ─── GET /vendors ─────────────────────────────────────────────────────────────
-router.get('/vendors', async (req, res) => {
+// The picker list. Read-only, company-scoped, and the only one of the original
+// /vendors verbs that survives — creating and editing a vendor go through
+// /api/procurement/vendors, which validates tax ids and binds the finance party.
+router.get('/vendors', requireProcurement('view'), async (req, res) => {
   try {
     const { category, status, search } = req.query;
     const companyId = cid(req);
-    const conditions = [];
+    const conditions = ['deleted_at IS NULL'];
     const params = [];
     let idx = 1;
 
@@ -39,9 +104,8 @@ router.get('/vendors', async (req, res) => {
       idx++;
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const result = await pool.query(
-      `SELECT * FROM vendors ${where} ORDER BY vendor_name ASC`,
+      `SELECT * FROM vendors WHERE ${conditions.join(' AND ')} ORDER BY vendor_name ASC`,
       params
     );
     res.json({ vendors: result.rows });
@@ -51,219 +115,39 @@ router.get('/vendors', async (req, res) => {
   }
 });
 
-// ─── POST /vendors ────────────────────────────────────────────────────────────
-router.post('/vendors', async (req, res) => {
+/**
+ * The removed writes, and where each one now lives.
+ *
+ * 410 rather than a silent 404: if some caller nobody knew about is still
+ * reaching for one of these, it is told exactly which endpoint to use instead
+ * of failing in a way that looks like a routing bug.
+ */
+const MOVED = [
+  ['post',  '/vendors',                         'POST /api/procurement/vendors'],
+  ['put',   '/vendors/:id',                     'PUT /api/procurement/vendors/:id'],
+  ['get',   '/rfqs',                            'GET /api/procurement/rfqs'],
+  ['post',  '/rfqs',                            'POST /api/procurement/rfqs'],
+  ['put',   '/rfqs/:id',                        'PATCH /api/procurement/rfqs/:id/send-to-vendors'],
+  ['post',  '/rfqs/:id/quotes',                 'POST /api/procurement/rfqs/:rfqId/responses/:vendorId'],
+  ['put',   '/rfqs/:id/quotes/:quoteId/winner', 'PATCH /api/procurement/rfqs/:rfqId/award/:vendorId'],
+  ['get',   '/three-way-match',                 'GET /api/procurement/three-way-match'],
+  ['patch', '/three-way-match/:id/resolve',     'PATCH /api/procurement/three-way-match/:id/resolve'],
+];
+for (const [verb, path, canonical] of MOVED) {
+  router[verb](path, (_req, res) => res.status(410).json({
+    error: 'This endpoint has been removed.',
+    code: 'ENDPOINT_REMOVED',
+    use: canonical,
+    reason: 'It was an ungated, unscoped duplicate of the endpoint named above, which enforces permissions, tenant scope and the business rules of the module.',
+  }));
+}
+
+router.get('/vendors/compare', requireProcurement('view'), async (req, res) => {
   try {
-    const { vendor_name, category, gstin, pan, bank_name, account_number, ifsc, contact_person, email, phone, city, state, address, quality_rating, delivery_rating, price_rating, status } = req.body;
-    const companyId = cid(req);
-    const result = await pool.query(
-      `INSERT INTO vendors (vendor_name, category, gstin, pan, bank_name, account_number, ifsc, contact_person, email, phone, city, state, address, quality_rating, delivery_rating, price_rating, status, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-       RETURNING *`,
-      [vendor_name, category, gstin, pan, bank_name, account_number, ifsc, contact_person, email, phone, city, state, address, quality_rating || 0, delivery_rating || 0, price_rating || 0, status || 'active', companyId]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('[POST /vendors]', err.message);
-    res.status(500).json({ error: 'Failed to create vendor', detail: err.message });
-  }
-});
-
-// ─── PUT /vendors/:id ─────────────────────────────────────────────────────────
-router.put('/vendors/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { vendor_name, category, gstin, pan, bank_name, account_number, ifsc, contact_person, email, phone, city, state, address, quality_rating, delivery_rating, price_rating, status } = req.body;
-    const result = await pool.query(
-      `UPDATE vendors SET vendor_name=$1, category=$2, gstin=$3, pan=$4, bank_name=$5, account_number=$6, ifsc=$7, contact_person=$8, email=$9, phone=$10, city=$11, state=$12, address=$13, quality_rating=$14, delivery_rating=$15, price_rating=$16, status=$17, updated_at=NOW()
-       WHERE id=$18 RETURNING *`,
-      [vendor_name, category, gstin, pan, bank_name, account_number, ifsc, contact_person, email, phone, city, state, address, quality_rating, delivery_rating, price_rating, status, id]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Vendor not found' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('[PUT /vendors/:id]', err.message);
-    res.status(500).json({ error: 'Failed to update vendor', detail: err.message });
-  }
-});
-
-// ─── GET /rfqs ────────────────────────────────────────────────────────────────
-router.get('/rfqs', async (req, res) => {
-  try {
-    const companyId = cid(req);
-    const conditions = ['1=1'];
-    const params = [];
-    let idx = 1;
-    if (companyId) { conditions.push(`r.company_id = $${idx++}`); params.push(companyId); }
-
-    const rfqResult = await pool.query(
-      `SELECT r.*, COUNT(q.id)::INT AS response_count, MIN(q.unit_price) AS lowest_quote
-       FROM rfqs r
-       LEFT JOIN rfq_quotes q ON q.rfq_id = r.id
-       WHERE ${conditions.join(' AND ')}
-       GROUP BY r.id
-       ORDER BY r.created_at DESC`, params
-    );
-    const rfqs = rfqResult.rows;
-
-    const quoteIds = rfqs.map(r => r.id);
-    let quotesByRfq = {};
-    if (quoteIds.length) {
-      const ph = quoteIds.map((_, i) => `$${i + 1}`).join(',');
-      const quotesResult = await pool.query(
-        `SELECT q.*, v.vendor_name FROM rfq_quotes q LEFT JOIN vendors v ON v.id = q.vendor_id WHERE q.rfq_id IN (${ph}) ORDER BY q.unit_price ASC`,
-        quoteIds
-      );
-      for (const quote of quotesResult.rows) {
-        if (!quotesByRfq[quote.rfq_id]) quotesByRfq[quote.rfq_id] = [];
-        quotesByRfq[quote.rfq_id].push(quote);
-      }
-    }
-
-    const merged = rfqs.map(r => ({ ...r, quotes: quotesByRfq[r.id] || [] }));
-    res.json({ rfqs: merged });
-  } catch (err) {
-    console.error('[GET /rfqs]', err.message);
-    res.status(500).json({ error: 'Failed to fetch RFQs', detail: err.message });
-  }
-});
-
-// ─── POST /rfqs ───────────────────────────────────────────────────────────────
-router.post('/rfqs', async (req, res) => {
-  try {
-    const { linked_pr_id, item_description, quantity, unit, required_by, vendor_ids } = req.body;
-
-    const rfq_number = await nextRfqNumber();
-
-    const result = await pool.query(
-      `INSERT INTO rfqs (rfq_number, pr_id, item_description, quantity, unit, required_by, vendor_ids, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'draft') RETURNING *`,
-      [rfq_number, linked_pr_id || null, item_description, quantity, unit, required_by || null, JSON.stringify(vendor_ids || [])]
-    );
-    res.status(201).json({ ...result.rows[0], quotes: [] });
-  } catch (err) {
-    console.error('[POST /rfqs]', err.message);
-    res.status(500).json({ error: 'Failed to create RFQ', detail: err.message });
-  }
-});
-
-// ─── PUT /rfqs/:id ────────────────────────────────────────────────────────────
-router.put('/rfqs/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status, vendor_ids } = req.body;
-
-    const setClauses = [];
-    const params = [];
-    let idx = 1;
-
-    if (status) { setClauses.push(`status = $${idx++}`); params.push(status); }
-    if (vendor_ids !== undefined) { setClauses.push(`vendor_ids = $${idx++}`); params.push(JSON.stringify(vendor_ids)); }
-    if (setClauses.length === 0) return res.status(400).json({ error: 'No fields to update' });
-
-    params.push(id);
-    const result = await pool.query(
-      `UPDATE rfqs SET ${setClauses.join(', ')} WHERE id=$${idx} RETURNING *`,
-      params
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'RFQ not found' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('[PUT /rfqs/:id]', err.message);
-    res.status(500).json({ error: 'Failed to update RFQ', detail: err.message });
-  }
-});
-
-// ─── POST /rfqs/:id/quotes ────────────────────────────────────────────────────
-router.post('/rfqs/:id/quotes', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { vendor_id, unit_price, total_amount, delivery_days, payment_terms, notes } = req.body;
-
-    const rfqCheck = await pool.query('SELECT id FROM rfqs WHERE id=$1', [id]);
-    if (rfqCheck.rows.length === 0) return res.status(404).json({ error: 'RFQ not found' });
-
-    const result = await pool.query(
-      `INSERT INTO rfq_quotes (rfq_id, vendor_id, unit_price, total_amount, delivery_days, payment_terms, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [id, vendor_id, unit_price, total_amount, delivery_days, payment_terms, notes]
-    );
-
-    // fetch vendor name to return in response
-    const vendorRes = await pool.query('SELECT vendor_name FROM vendors WHERE id=$1', [vendor_id]);
-    const vendor_name = vendorRes.rows[0]?.vendor_name || '';
-    res.status(201).json({ ...result.rows[0], vendor_name });
-  } catch (err) {
-    console.error('[POST /rfqs/:id/quotes]', err.message);
-    res.status(500).json({ error: 'Failed to add quote', detail: err.message });
-  }
-});
-
-// ─── PUT /rfqs/:id/quotes/:quoteId/winner ─────────────────────────────────────
-router.put('/rfqs/:id/quotes/:quoteId/winner', async (req, res) => {
-  try {
-    const { id, quoteId } = req.params;
-
-    // clear existing winners for this RFQ
-    await pool.query('UPDATE rfq_quotes SET is_winner=false WHERE rfq_id=$1', [id]);
-    // mark new winner
-    await pool.query('UPDATE rfq_quotes SET is_winner=true WHERE id=$1', [quoteId]);
-    // close the RFQ
-    const rfqResult = await pool.query(`UPDATE rfqs SET status='closed' WHERE id=$1 RETURNING *`, [id]);
-    if (rfqResult.rows.length === 0) return res.status(404).json({ error: 'RFQ not found' });
-
-    res.json({ success: true, rfq: rfqResult.rows[0] });
-  } catch (err) {
-    console.error('[PUT /rfqs/:id/quotes/:quoteId/winner]', err.message);
-    res.status(500).json({ error: 'Failed to select winner', detail: err.message });
-  }
-});
-
-// ─── GET /three-way-match ─────────────────────────────────────────────────────
-router.get('/three-way-match', async (req, res) => {
-  try {
-    const companyId = cid(req);
-    const conditions = ['1=1'];
-    const params = [];
-    let idx = 1;
-    if (companyId) { conditions.push(`twm.company_id = $${idx++}`); params.push(companyId); }
-    const { rows } = await pool.query(`
-      SELECT twm.*, po.po_number, v.vendor_name
-      FROM three_way_matches twm
-      JOIN purchase_orders po ON po.id = twm.po_id
-      LEFT JOIN vendors v ON v.id = po.supplier_id
-      WHERE ${conditions.join(' AND ')}
-      ORDER BY twm.created_at DESC
-    `, params);
-    res.json({ matches: rows });
-  } catch (err) {
-    console.error('[GET /three-way-match]', err.message);
-    res.status(500).json({ error: 'Failed to fetch match records', detail: err.message });
-  }
-});
-
-// ─── PATCH /three-way-match/:id/resolve ───────────────────────────────────────
-router.patch('/three-way-match/:id/resolve', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { rows } = await pool.query(
-      `UPDATE three_way_matches SET match_status='matched', discrepancy_reason=NULL WHERE id=$1 RETURNING *`,
-      [id]
-    );
-    if (!rows[0]) return res.status(404).json({ error: 'Match record not found' });
-    res.json(rows[0]);
-  } catch (err) {
-    console.error('[PATCH /three-way-match/:id/resolve]', err.message);
-    res.status(500).json({ error: 'Failed to resolve match', detail: err.message });
-  }
-});
-
-// ─── GET /vendors/compare?ids=1,2,3 ──────────────────────────────────────────
-// Returns enriched profile + PO stats + RFQ stats for each vendor ID
-router.get('/vendors/compare', async (req, res) => {
-  try {
-    const ids = (req.query.ids || '').split(',').map(Number).filter(Boolean);
-    if (ids.length < 1) return res.status(400).json({ error: 'Provide at least one vendor id in ?ids=' });
+    // Narrowed to the caller's own company before any query sees it — this read
+    // returns a supplier's spend history and negotiated unit prices.
+    const ids = await ownedVendorIds(req, req.query.ids);
+    if (ids.length < 1) return res.status(400).json({ error: 'Provide at least one vendor id in ?ids= that belongs to your company' });
 
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
 
@@ -388,10 +272,10 @@ router.get('/vendors/compare', async (req, res) => {
 
 // ─── GET /vendors/compare/items?ids=1,2&item_id= ─────────────────────────────
 // Returns per-item price breakdown for each selected vendor
-router.get('/vendors/compare/items', async (req, res) => {
+router.get('/vendors/compare/items', requireProcurement('view'), async (req, res) => {
   try {
-    const ids = (req.query.ids || '').split(',').map(Number).filter(Boolean);
-    if (ids.length < 1) return res.status(400).json({ error: 'Provide vendor ids' });
+    const ids = await ownedVendorIds(req, req.query.ids);
+    if (ids.length < 1) return res.status(400).json({ error: 'Provide vendor ids that belong to your company' });
 
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
 
@@ -452,10 +336,10 @@ router.get('/vendors/compare/items', async (req, res) => {
 
 // ─── GET /vendors/price-history?ids=1,2,3 ────────────────────────────────────
 // Monthly average price per vendor, merged from RFQ quotes + PO items + price_history
-router.get('/vendors/price-history', async (req, res) => {
+router.get('/vendors/price-history', requireProcurement('view'), async (req, res) => {
   try {
-    const ids = (req.query.ids || '').split(',').map(Number).filter(Boolean);
-    if (!ids.length) return res.status(400).json({ error: 'Provide vendor ids in ?ids=' });
+    const ids = await ownedVendorIds(req, req.query.ids);
+    if (!ids.length) return res.status(400).json({ error: 'Provide vendor ids in ?ids= that belong to your company' });
 
     const ph = ids.map((_, i) => `$${i + 1}`).join(',');
 

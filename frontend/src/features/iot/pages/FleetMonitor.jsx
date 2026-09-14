@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
-  Radio, Wifi, WifiOff, AlertTriangle, RefreshCw, KeyRound, Copy, Check,
-  Activity, MapPin, ShieldCheck, Gauge, TrendingUp,
+  Radio, Wifi, WifiOff, AlertTriangle, RefreshCw, KeyRound, Copy,
+  Check, Activity, MapPin, ShieldCheck, Gauge, TrendingUp, Cpu,
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -10,17 +10,18 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import api from '@/services/api/client';
 import { VizCard, TrendArea, ProgressRing } from '@/components/charts/PulseViz';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const RISK_COLOR = { high: '#dc2626', medium: '#d97706', low: '#059669' };
+const RISK_COLOR = { high: '#dc2626', medium: '#6d28d9', low: '#059669' };
 
 // ── connection-state + severity vocab ─────────────────────────────────────────
 const STATE_META = {
   online:  { label: 'Online',  color: '#059669', bg: '#dcfce7', Icon: Wifi },
-  stale:   { label: 'Stale',   color: '#d97706', bg: '#fef3c7', Icon: Activity },
+  stale:   { label: 'Stale',   color: '#6d28d9', bg: '#ede9fe', Icon: Activity },
   offline: { label: 'Offline', color: '#6b7280', bg: '#f3f4f6', Icon: WifiOff },
   never:   { label: 'Never seen', color: '#9ca3af', bg: '#f3f4f6', Icon: WifiOff },
 };
-const SEV_COLOR = { critical: '#dc2626', warning: '#d97706', info: '#2563eb' };
+const SEV_COLOR = { critical: '#dc2626', warning: '#6d28d9', info: '#2563eb' };
 const stateMeta = (s) => STATE_META[s] || STATE_META.never;
 
 const fmtWhen = (v) => {
@@ -203,7 +204,7 @@ function DeviceDetail({ id, onChanged }) {
             <div style={{ marginTop: 12, borderTop: '1px solid #f3f4f6', paddingTop: 10 }}>
               {health.trends.filter((t) => t.days_to_threshold != null).map((t) => (
                 <div key={t.metric} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#6b7280', padding: '2px 0' }}>
-                  <TrendingUp size={12} color="#d97706" />
+                  <TrendingUp size={12} color="#6d28d9" />
                   <b style={{ color: '#111827' }}>{t.metric}</b> rising — reaches {t.threshold} in ~<b style={{ color: '#111827' }}>{t.days_to_threshold}d</b>
                 </div>
               ))}
@@ -260,14 +261,14 @@ function DeviceDetail({ id, onChanged }) {
       {/* provisioning */}
       <div style={CARD}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          {d.provisioned ? <ShieldCheck size={15} color="#059669" /> : <KeyRound size={15} color="#d97706" />}
+          {d.provisioned ? <ShieldCheck size={15} color="#059669" /> : <KeyRound size={15} color="#6d28d9" />}
           <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>
             {d.provisioned ? 'Provisioned for telemetry' : 'Not provisioned'}
           </span>
         </div>
         {token ? (
-          <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 9, padding: 12 }}>
-            <div style={{ fontSize: 12, color: '#92400e', marginBottom: 6 }}>
+          <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 9, padding: 12 }}>
+            <div style={{ fontSize: 12, color: '#5b21b6', marginBottom: 6 }}>
               Store this token now — it cannot be retrieved again. device_uid: <b>{token.device_uid}</b>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -320,14 +321,17 @@ export default function FleetMonitor() {
   }, [devices]);
 
   return (
-    <div className="pulse-page">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <Radio size={22} color="#6B3FDB" />
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>Fleet Monitor</h1>
-        <button onClick={load} title="Refresh" style={{ ...btnSm, marginLeft: 'auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Cpu}
+        eyebrow="IoT"
+        title="Fleet Monitor"
+        actions={<button className="plh-cta" onClick={load} title="Refresh">
           <RefreshCw size={13} className={loading ? 'spin' : ''} /> Refresh
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
       <p style={{ margin: '0 0 16px', color: '#6b7280', fontSize: 13 }}>
         Live status of deployed AHF / SVG / STATCOM units, their latest readings, and open alerts.
       </p>
@@ -389,6 +393,6 @@ export default function FleetMonitor() {
           {selected ? <DeviceDetail id={selected} onChanged={load} /> : <div style={{ ...CARD, color: '#9ca3af', fontSize: 13 }}>Select a device on the map or list to inspect its readings, alerts, and provisioning.</div>}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

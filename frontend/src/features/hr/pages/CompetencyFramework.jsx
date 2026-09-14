@@ -1,27 +1,19 @@
 // frontend/src/features/hr/pages/CompetencyFramework.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { Target } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, Cell } from 'recharts';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const inputStyle = { width:'100%', boxSizing:'border-box', padding:'8px 10px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 };
 const LEVEL_LABELS = { 1:'Novice', 2:'Developing', 3:'Proficient', 4:'Advanced', 5:'Expert' };
-const LEVEL_COLORS = { 1:'#dc2626', 2:'#f97316', 3:'#eab308', 4:'#86efac', 5:'#16a34a' };
+const LEVEL_COLORS = { 1:'#dc2626', 2:'#7c5cf0', 3:'#8b5cf6', 4:'#86efac', 5:'#16a34a' };
 
 function Modal({ title, onClose, children, wide }) {
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
-
-      <ConfirmDialog
-        open={!!pendingDeleteComp}
-        title="Delete Competency"
-        message="Delete this competency?"
-        confirmLabel="Delete"
-        variant="danger"
-        onConfirm={deleteComp}
-        onCancel={() => setPendingDeleteComp(null)}
-      />
       <div style={{ background:'#fff', borderRadius:12, padding:24, width:'100%', maxWidth: wide ? 760 : 560, maxHeight:'90vh', overflowY:'auto' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
           <h3 style={{ margin:0, color:'#4c1d95', fontSize:16 }}>{title}</h3>
@@ -113,11 +105,15 @@ export default function CompetencyFramework() {
   const categories = [...new Set(competencies.map(c => c.category).filter(Boolean))];
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
-      <div style={{ marginBottom:16 }}>
-        <h2 style={{ margin:0, color:'#4c1d95', fontSize:22 }}>🧠 Competency Framework</h2>
-        <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Define competencies, assess employees, and identify gaps</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Human Resources"
+        title="🧠 Competency Framework"
+        subtitle="Define competencies, assess employees, and identify gaps"
+      />
+    }>
+
 
       <div style={{ display:'flex', gap:4, borderBottom:'2px solid #e9e4ff', flexWrap:'wrap' }}>
         {[['library','Competency Library'],['assess','Employee Assessment'],['gaps','Gap Analysis']].map(([k,l]) => (
@@ -174,7 +170,7 @@ export default function CompetencyFramework() {
                       <span style={{ fontWeight:600, color:'#1f2937', fontSize:13 }}>{c.name}</span>
                       <div style={{ display:'flex', gap:6 }}>
                         <button onClick={() => { setEditComp(c); setShowForm(true); }} style={{ background:'none', border:'none', cursor:'pointer', color:'#6B3FDB', fontSize:13 }}>✎</button>
-                        <button onClick={() => deleteComp(c.id)} style={{ background:'none', border:'none', cursor:'pointer', color:'#dc2626', fontSize:13 }}>✕</button>
+                        <button onClick={() => setPendingDeleteComp(c.id)} style={{ background:'none', border:'none', cursor:'pointer', color:'#dc2626', fontSize:13 }}>✕</button>
                       </div>
                     </div>
                   ))}
@@ -246,7 +242,7 @@ export default function CompetencyFramework() {
                       <YAxis type="category" dataKey="competency" tick={{ fontSize:10 }} width={160} />
                       <Tooltip formatter={(v,n) => [v, n.replace(/_/g,' ')]} />
                       <Bar dataKey="avg_assessed" name="Avg Assessed" radius={[0,4,4,0]}>
-                        {gaps.slice(0,15).map((g,i) => <Cell key={i} fill={g.avg_gap > 1 ? '#dc2626' : g.avg_gap > 0 ? '#f97316' : '#16a34a'} />)}
+                        {gaps.slice(0,15).map((g,i) => <Cell key={i} fill={g.avg_gap > 1 ? '#dc2626' : g.avg_gap > 0 ? '#7c5cf0' : '#16a34a'} />)}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -265,7 +261,7 @@ export default function CompetencyFramework() {
                         <td style={{ padding:'8px 12px' }}>{g.department}</td>
                         <td style={{ padding:'8px 12px', fontWeight:700, color:LEVEL_COLORS[Math.round(g.avg_assessed)] }}>{g.avg_assessed}</td>
                         <td style={{ padding:'8px 12px', color:'#6b7280' }}>{g.avg_required}</td>
-                        <td style={{ padding:'8px 12px', fontWeight:700, color: g.avg_gap > 1 ? '#dc2626' : '#f97316' }}>{g.avg_gap}</td>
+                        <td style={{ padding:'8px 12px', fontWeight:700, color: g.avg_gap > 1 ? '#dc2626' : '#7c5cf0' }}>{g.avg_gap}</td>
                         <td style={{ padding:'8px 12px' }}>{g.employee_count}</td>
                       </tr>
                     ))}
@@ -314,6 +310,16 @@ export default function CompetencyFramework() {
           </form>
         </Modal>
       )}
-    </div>
+
+      <ConfirmDialog
+        open={!!pendingDeleteComp}
+        title="Delete Competency"
+        message="Delete this competency?"
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={deleteComp}
+        onCancel={() => setPendingDeleteComp(null)}
+      />
+    </PageShell>
   );
 }

@@ -617,8 +617,8 @@
 }
 
 .atd-location-acquiring {
-  background: #fef3c7;
-  color: #92400e;
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 .atd-location-acquired {
@@ -639,8 +639,8 @@
   gap: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: #92400e;
-  background: #fef3c7;
+  color: #5b21b6;
+  background: #ede9fe;
   border-radius: 8px;
   padding: 6px 12px;
   margin-bottom: 12px;
@@ -651,7 +651,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #f59e0b;
+  background: #7c5cf0;
   margin-left: 4px;
   vertical-align: middle;
 }
@@ -663,8 +663,8 @@
   gap: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: #92400e;
-  background: #fef3c7;
+  color: #5b21b6;
+  background: #ede9fe;
   border-radius: 8px;
   padding: 7px 11px;
   margin-bottom: 10px;

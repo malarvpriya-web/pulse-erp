@@ -27,6 +27,7 @@ import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import { fmtL } from '@/utils/format';
 import { fmtDate } from '@/utils/dateFormatter';
 import './Leads.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // Includes Direct / Phone / IndiaMart, which live enquiries already carry but the
 // form never offered — the same drift as the status list below. Without them those
@@ -46,9 +47,9 @@ const STATUSES = [
 
 const STATUS_META = {
   new:         { bg: '#eef2ff', color: '#4338ca', label: 'New' },
-  contacted:   { bg: '#fef3c7', color: '#92400e', label: 'Contacted' },
+  contacted:   { bg: '#ede9fe', color: '#5b21b6', label: 'Contacted' },
   qualified:   { bg: '#f0fdf4', color: '#15803d', label: 'Qualified' },
-  negotiation: { bg: '#ffedd5', color: '#c2410c', label: 'Negotiation' },
+  negotiation: { bg: '#ede9fe', color: '#5b21b6', label: 'Negotiation' },
   won:         { bg: '#dcfce7', color: '#15803d', label: 'Won' },
   lost:        { bg: '#fef2f2', color: '#dc2626', label: 'Lost' },
   shelved:     { bg: '#f1f5f9', color: '#475569', label: 'Shelved' },
@@ -61,12 +62,12 @@ const SOURCE_META = {
   website:         { bg: '#dbeafe', color: '#1d4ed8' },
   linkedin:        { bg: '#e0e7ff', color: '#4338ca' },
   referral:        { bg: '#fce7f3', color: '#9d174d' },
-  campaign:        { bg: '#fef3c7', color: '#92400e' },
+  campaign:        { bg: '#ede9fe', color: '#5b21b6' },
   'cold call':     { bg: '#f3e8ff', color: '#6B3FDB' },
   exhibition:      { bg: '#ccfbf1', color: '#0f766e' },
   'tender portal': { bg: '#ffe4e6', color: '#be123c' },
   direct:          { bg: '#e0f2fe', color: '#075985' },
-  phone:           { bg: '#fef9c3', color: '#854d0e' },
+  phone:           { bg: '#ede9fe', color: '#5b21b6' },
   indiamart:       { bg: '#ede9fe', color: '#5b21b6' },
   manual:          { bg: '#f3f4f6', color: '#6b7280' },
 };
@@ -75,7 +76,7 @@ const srcm = s => SOURCE_META[(s || '').toLowerCase()] || SOURCE_META.manual;
 // Zone hues match SalesDashboard exactly so a zone keeps one identity across the
 // app. "Unassigned" stays neutral — it is an absence, not a region.
 const ZONE_COLORS = {
-  North: '#6B3FDB', South: '#d97706', East: '#0d9488',
+  North: '#6B3FDB', South: '#6d28d9', East: '#0d9488',
   West: '#db2777', Central: '#0284c7', Unassigned: '#9ca3af',
 };
 const ZONES = ['North', 'South', 'East', 'West', 'Central'];
@@ -90,7 +91,7 @@ const fmtLac = n => toLac(n).toLocaleString('en-IN', { minimumFractionDigits: 2,
 const scoreColor = n => {
   if (n >= 81) return { text: '#15803d', bar: '#10b981' };
   if (n >= 61) return { text: '#4d7c0f', bar: '#84cc16' };
-  if (n >= 31) return { text: '#92400e', bar: '#f59e0b' };
+  if (n >= 31) return { text: '#5b21b6', bar: '#7c5cf0' };
   return { text: '#dc2626', bar: '#ef4444' };
 };
 
@@ -465,30 +466,31 @@ export default function Leads({ setPage }) {
   );
 
   return (
-    <div className="ld-root">
+    <PageShell dock={
+      <PageHero
+        icon={Filter}
+        eyebrow="CRM"
+        title="IEM — Enquiry Management"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
+          {!readOnly && (
+            <>
+              <button className="plh-cta" onClick={() => fileRef.current?.click()} disabled={importing}>
+                <Upload size={13} /> {importing ? 'Importing…' : 'Import CSV'}
+              </button>
+              <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImport} />
+              <button className="plh-cta" onClick={openCreate}><Plus size={14} /> New Enquiry</button>
+            </>
+          )}
+        </>}
+      />
+    }>
 
       {toast && <div className={`ld-toast ld-toast-${toast.type}`}>{toast.msg}</div>}
       {readOnly && <ReadOnlyBanner />}
 
       {/* Header */}
-      <div className="ld-header">
-        <div>
-          <h2 className="ld-title">IEM — Enquiry Management</h2>
-          <p className="ld-sub">{sorted.length} enquir{sorted.length !== 1 ? 'ies' : 'y'}</p>
-        </div>
-        <div className="ld-header-r">
-          <button className="ld-icon-btn" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
-          {!readOnly && (
-            <>
-              <button className="ld-btn-outline" onClick={() => fileRef.current?.click()} disabled={importing}>
-                <Upload size={13} /> {importing ? 'Importing…' : 'Import CSV'}
-              </button>
-              <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImport} />
-              <button className="ld-btn-primary" onClick={openCreate}><Plus size={14} /> New Enquiry</button>
-            </>
-          )}
-        </div>
-      </div>
+
 
       {/* ── Toolbar: Set Filter + applied chips ─────────────────────────── */}
       <div className="ld-toolbar">
@@ -1153,6 +1155,6 @@ export default function Leads({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

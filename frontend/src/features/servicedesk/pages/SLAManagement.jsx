@@ -1,9 +1,13 @@
 // frontend/src/features/servicedesk/pages/SLAManagement.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Shield, AlertTriangle, Download, Pencil, Trash2, MessageSquare, Zap } from 'lucide-react';
+import {
+  Shield, AlertTriangle, Download, Pencil, Trash2, MessageSquare, Zap,
+  LifeBuoy,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell } from 'recharts';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function EmptyState({ icon: Icon, title, sub }) {
   return (
@@ -21,8 +25,8 @@ function EmptyState({ icon: Icon, title, sub }) {
   );
 }
 
-const PRIORITY_COLORS = { critical: '#dc2626', high: '#d97706', medium: '#0891b2', low: '#6b7280' };
-const PRIORITY_BG = { critical: '#fee2e2', high: '#fef3c7', medium: '#dbeafe', low: '#f5f5f5' };
+const PRIORITY_COLORS = { critical: '#dc2626', high: '#6d28d9', medium: '#0891b2', low: '#6b7280' };
+const PRIORITY_BG = { critical: '#fee2e2', high: '#ede9fe', medium: '#dbeafe', low: '#f5f5f5' };
 const RATING_EMOJIS = { 5: '😊', 4: '😊', 3: '😐', 2: '😞', 1: '😞' };
 
 const tabStyle = (a) => ({ padding: '8px 20px', border: 'none', background: a ? '#6B3FDB' : 'transparent', color: a ? '#fff' : '#6b7280', cursor: 'pointer', borderRadius: 8, fontWeight: a ? 600 : 400, fontSize: 14 });
@@ -168,7 +172,14 @@ export default function SLAManagement() {
   const ratingEmoji = avgRating >= 4 ? '😊' : avgRating >= 3 ? '😐' : '😞';
 
   return (
-    <div style={{ padding: '24px', background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="SLA & CSAT Management"
+        subtitle="SLA policies, breach tracking, CSAT analytics, auto-assignment"
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeletePolicy}
         title="Delete SLA Policy"
@@ -194,10 +205,6 @@ export default function SLAManagement() {
           {toast.msg}
         </div>
       )}
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: '#111827', margin: 0 }}>SLA & CSAT Management</h1>
-        <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 14 }}>SLA policies, breach tracking, CSAT analytics, auto-assignment</p>
-      </div>
 
       <div style={{ display: 'flex', gap: 4, background: '#f0ebff', padding: 4, borderRadius: 10, marginBottom: 24, width: 'fit-content' }}>
         {['SLA Policies', 'SLA Dashboard', 'CSAT', 'Auto Assignment'].map((t, i) => (
@@ -350,8 +357,8 @@ export default function SLAManagement() {
                         </div>
                         <div style={{ display: 'flex', gap: 8 }}>
                           {b.first_response_breached_now && <span style={{ padding: '4px 10px', background: '#fee2e2', color: '#dc2626', borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Response Breached</span>}
-                          {b.resolution_breached_now && <span style={{ padding: '4px 10px', background: '#fef3c7', color: '#92400e', borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Resolution Breached</span>}
-                          {!b.first_response_breached_now && !b.resolution_breached_now && <span style={{ padding: '4px 10px', background: '#fef3c7', color: '#92400e', borderRadius: 6, fontSize: 12 }}>
+                          {b.resolution_breached_now && <span style={{ padding: '4px 10px', background: '#ede9fe', color: '#5b21b6', borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Resolution Breached</span>}
+                          {!b.first_response_breached_now && !b.resolution_breached_now && <span style={{ padding: '4px 10px', background: '#ede9fe', color: '#5b21b6', borderRadius: 6, fontSize: 12 }}>
                             Breaching in {Math.min(Math.abs(b.first_response_hours_remaining), Math.abs(b.resolution_hours_remaining)).toFixed(1)}h
                           </span>}
                         </div>
@@ -385,7 +392,7 @@ export default function SLAManagement() {
                             <td style={{ ...tdStyle, width: 120 }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                 <div style={{ flex: 1, background: '#f0f0f4', borderRadius: 4, height: 8 }}>
-                                  <div style={{ width: `${c.met_pct}%`, height: '100%', background: parseFloat(c.met_pct) >= 90 ? '#059669' : parseFloat(c.met_pct) >= 80 ? '#d97706' : '#dc2626', borderRadius: 4 }} />
+                                  <div style={{ width: `${c.met_pct}%`, height: '100%', background: parseFloat(c.met_pct) >= 90 ? '#059669' : parseFloat(c.met_pct) >= 80 ? '#6d28d9' : '#dc2626', borderRadius: 4 }} />
                                 </div>
                                 <span style={{ fontSize: 12, fontWeight: 600, minWidth: 38 }}>{c.met_pct}%</span>
                               </div>
@@ -436,9 +443,9 @@ export default function SLAManagement() {
             </div>
             <div style={{ background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, padding: '24px 20px', textAlign: 'center' }}>
               <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4 }}>NPS Score</div>
-              <div style={{ fontSize: 40, fontWeight: 800, color: csat.nps_score >= 50 ? '#059669' : csat.nps_score >= 0 ? '#d97706' : '#dc2626' }}>{csat.nps_score}</div>
+              <div style={{ fontSize: 40, fontWeight: 800, color: csat.nps_score >= 50 ? '#059669' : csat.nps_score >= 0 ? '#6d28d9' : '#dc2626' }}>{csat.nps_score}</div>
               <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>Net Promoter Score</div>
-              <div style={{ fontSize: 11, color: csat.nps_score >= 50 ? '#059669' : '#d97706', marginTop: 4 }}>{csat.nps_score >= 50 ? 'Excellent' : csat.nps_score >= 0 ? 'Good' : 'Needs Improvement'}</div>
+              <div style={{ fontSize: 11, color: csat.nps_score >= 50 ? '#059669' : '#6d28d9', marginTop: 4 }}>{csat.nps_score >= 50 ? 'Excellent' : csat.nps_score >= 0 ? 'Good' : 'Needs Improvement'}</div>
             </div>
             <div style={{ background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 10 }}>Rating Distribution</div>
@@ -448,7 +455,7 @@ export default function SLAManagement() {
                   <div key={d.rating} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
                     <span style={{ fontSize: 12, width: 20, textAlign: 'right' }}>{'⭐'.repeat(d.rating)}</span>
                     <div style={{ flex: 1, background: '#f0f0f4', borderRadius: 4, height: 16 }}>
-                      <div style={{ width: `${(parseInt(d.count) / max) * 100}%`, height: '100%', background: d.rating >= 4 ? '#6B3FDB' : d.rating === 3 ? '#d97706' : '#dc2626', borderRadius: 4 }} />
+                      <div style={{ width: `${(parseInt(d.count) / max) * 100}%`, height: '100%', background: d.rating >= 4 ? '#6B3FDB' : d.rating === 3 ? '#6d28d9' : '#dc2626', borderRadius: 4 }} />
                     </div>
                     <span style={{ fontSize: 12, width: 24, color: '#6b7280' }}>{d.count}</span>
                   </div>
@@ -471,7 +478,7 @@ export default function SLAManagement() {
                       <td style={tdStyle}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <span style={{ fontSize: 16 }}>{parseFloat(a.avg_rating) >= 4 ? '😊' : parseFloat(a.avg_rating) >= 3 ? '😐' : '😞'}</span>
-                          <span style={{ fontWeight: 700, color: parseFloat(a.avg_rating) >= 4 ? '#059669' : parseFloat(a.avg_rating) >= 3 ? '#d97706' : '#dc2626' }}>{parseFloat(a.avg_rating).toFixed(1)}</span>
+                          <span style={{ fontWeight: 700, color: parseFloat(a.avg_rating) >= 4 ? '#059669' : parseFloat(a.avg_rating) >= 3 ? '#6d28d9' : '#dc2626' }}>{parseFloat(a.avg_rating).toFixed(1)}</span>
                         </div>
                       </td>
                       <td style={tdStyle}>{a.response_count}</td>
@@ -656,6 +663,6 @@ export default function SLAManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

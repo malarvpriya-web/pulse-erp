@@ -1,23 +1,24 @@
 import { useState, useEffect } from 'react';
 import {
-  CheckCircle, AlertTriangle,
-  XCircle, RefreshCw, ChevronDown, ChevronRight, MinusCircle
+  CheckCircle, AlertTriangle, XCircle, RefreshCw, ChevronDown,
+  ChevronRight, MinusCircle, IndianRupee,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useFY } from '@/context/FYContext';
 import './FinancialRatios.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const getRatingColor = (rating) => {
   if (rating === 'good')     return { bg:'#dcfce7', color:'#16a34a', border:'#86efac' };
-  if (rating === 'warning')  return { bg:'#fef3c7', color:'#d97706', border:'#fcd34d' };
+  if (rating === 'warning')  return { bg:'#ede9fe', color:'#6d28d9', border:'#c4b5fd' };
   if (rating === 'critical') return { bg:'#fee2e2', color:'#dc2626', border:'#fca5a5' };
   return                            { bg:'#f3f4f6', color:'#9ca3af', border:'#e5e7eb' }; // neutral
 };
 
 const RatingIcon = ({ rating }) => {
   if (rating==='good')     return <CheckCircle   size={14} color="#16a34a"/>;
-  if (rating==='warning')  return <AlertTriangle  size={14} color="#d97706"/>;
+  if (rating==='warning')  return <AlertTriangle  size={14} color="#6d28d9"/>;
   if (rating==='critical') return <XCircle        size={14} color="#dc2626"/>;
   return                          <MinusCircle    size={14} color="#9ca3af"/>;
 };
@@ -47,7 +48,7 @@ const RATIO_META = {
 const SECTION_META = {
   liquidity:     { label: 'Liquidity Ratios',     desc: 'Ability to meet short-term obligations',                     color: '#3b82f6' },
   profitability: { label: 'Profitability Ratios', desc: 'Ability to generate profit relative to revenue and assets', color: '#10b981' },
-  efficiency:    { label: 'Efficiency Ratios',    desc: 'How effectively assets and liabilities are managed',        color: '#f59e0b' },
+  efficiency:    { label: 'Efficiency Ratios',    desc: 'How effectively assets and liabilities are managed',        color: '#7c5cf0' },
   leverage:      { label: 'Solvency Ratios',      desc: 'Ability to meet long-term financial obligations',           color: '#8b5cf6' },
 };
 
@@ -104,7 +105,7 @@ const Gauge = ({ value, max, rating, size=80 }) => {
   const cy      = size / 2;
   const circ    = Math.PI * r;
   const dash    = (pct / 100) * circ;
-  const colors  = { good:'#10b981', warning:'#f59e0b', critical:'#ef4444', neutral:'#9ca3af' };
+  const colors  = { good:'#10b981', warning:'#7c5cf0', critical:'#ef4444', neutral:'#9ca3af' };
   const color   = colors[rating] || '#6366f1';
 
   return (
@@ -303,35 +304,29 @@ export default function FinancialRatios() {
   }
 
   return (
-    <div className="fr-root">
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Finance"
+        title="Financial Ratios"
+        actions={<button className="plh-cta" onClick={fetchRatios}>
+            <RefreshCw size={14}/> Recalculate
+          </button>}
+      />
+    }>
 
       {/* No-data banner */}
       {apiData._noData && (
         <div style={{
-          background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8,
+          background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: 8,
           padding: '10px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
-          fontSize: 13, color: '#92400e',
+          fontSize: 13, color: '#5b21b6',
         }}>
-          <AlertTriangle size={15} color="#d97706" style={{ flexShrink: 0 }} />
+          <AlertTriangle size={15} color="#6d28d9" style={{ flexShrink: 0 }} />
           Ratios show N/A — post balance sheet and income transactions for {fyLabel} to calculate live values.
         </div>
       )}
 
-      {/* Header */}
-      <div className="fr-header">
-        <div>
-          <h2 className="fr-title">Financial Ratios</h2>
-          <p className="fr-sub">
-            {allRatios.length} ratios across {sections.length} categories ·
-            {fyLabel}
-          </p>
-        </div>
-        <div className="fr-header-r">
-          <button className="fr-btn-outline" onClick={fetchRatios}>
-            <RefreshCw size={14}/> Recalculate
-          </button>
-        </div>
-      </div>
 
       {/* Health summary */}
       <div className="fr-health">
@@ -457,6 +452,6 @@ export default function FinancialRatios() {
         <span className="fr-chip fr-chip-warn"><AlertTriangle size={11}/> Warning — within 30% of threshold</span>
         <span className="fr-chip fr-chip-bad"><XCircle size={11}/> Critical — below safe level</span>
       </div>
-    </div>
+    </PageShell>
   );
 }

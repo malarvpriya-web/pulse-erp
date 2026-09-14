@@ -26,6 +26,7 @@
  */
 
 import pool from '../../shared/db.js';
+import { resolveTerritoryAssignment } from './territoryAssignment.service.js';
 
 const ELIGIBLE_ROLES = ['sales_exec', 'sales_manager'];
 
@@ -101,21 +102,72 @@ async function roundRobinAssignee(eligibleIds) {
 }
 
 /**
+ * Resolve an owner AND the territory the record falls in.
+ *
+ * Order of precedence, most deliberate first:
+ *   1. crm_assignment_rules — explicit named-employee rules someone configured.
+ *   2. TERRITORY — sales_territories matched on zone/city/state/industry.
+ *      Added 2026-09-03: territories existed as a CRUD screen whose table no
+ *      assignment path had ever read, so "territory" influenced nothing.
+ *   3. round_robin / load_balanced rotation over the eligible sales pool.
+ *
+ * Territory sits ABOVE rotation because a territory is a standing statement
+ * about who covers a region; rotation is what you fall back to when nobody has
+ * said. It sits BELOW crm_assignment_rules because those name a person outright.
+ *
+ * The territory is returned even when it has no owner, so the record is still
+ * STAMPED with where it landed — territory performance reporting needs the
+ * stamp regardless of whether the territory was staffed at the time.
+ *
  * @param {number|null} companyId
  * @param {string} method - 'manual' | 'round_robin' | 'load_balanced' (crm_settings.lead_assignment_method)
- * @param {object} payload - the incoming lead/opportunity body, for rule condition matching (zone, lead_source, etc.)
- * @returns {Promise<number|null>} an employees.id, or null if nothing resolved (caller keeps its own fallback)
+ * @param {object} payload - the incoming lead/opportunity body (zone, location, industry, lead_source, ...)
+ * @returns {Promise<{ assigned_to: number|null, territory_id: number|null, source: string }>}
+ */
+export async function resolveAssignment(companyId, method, payload = {}) {
+  const none = { assigned_to: null, territory_id: null, source: 'none' };
+  if (!companyId) return none;
+
+  // Territory is resolved even under 'manual' — a manually-assigned lead still
+  // belongs to a territory, and stamping it costs nothing.
+  const territory = await resolveTerritoryAssignment(pool, companyId, payload);
+
+  if (!method || method === 'manual') {
+    return territory.territory_id
+      ? { assigned_to: null, territory_id: territory.territory_id, source: 'territory_stamp_only' }
+      : none;
+  }
+
+  const ruleMatch = await ruleBasedAssignee(companyId, payload);
+  if (ruleMatch) {
+    return { assigned_to: ruleMatch, territory_id: territory.territory_id, source: 'assignment_rule' };
+  }
+
+  if (territory.assigned_to) {
+    return { assigned_to: territory.assigned_to, territory_id: territory.territory_id, source: 'territory' };
+  }
+
+  const eligibleIds = await getEligiblePool(companyId);
+  if (!eligibleIds.length) {
+    return { assigned_to: null, territory_id: territory.territory_id, source: 'no_eligible_pool' };
+  }
+
+  let rotated = null;
+  if (method === 'load_balanced') rotated = await loadBalancedAssignee(eligibleIds);
+  else if (method === 'round_robin') rotated = await roundRobinAssignee(eligibleIds);
+
+  return { assigned_to: rotated, territory_id: territory.territory_id, source: rotated ? method : 'unresolved' };
+}
+
+/**
+ * Back-compatible wrapper. Four call sites depended on the employees.id-or-null
+ * return shape before territories existed; they keep working unchanged, and
+ * callers that also want the territory stamp use resolveAssignment() above.
+ *
+ * @returns {Promise<number|null>} an employees.id, or null if nothing resolved
  */
 export async function resolveAutoAssignee(companyId, method, payload = {}) {
   if (!companyId || !method || method === 'manual') return null;
-
-  const ruleMatch = await ruleBasedAssignee(companyId, payload);
-  if (ruleMatch) return ruleMatch;
-
-  const eligibleIds = await getEligiblePool(companyId);
-  if (!eligibleIds.length) return null;
-
-  if (method === 'load_balanced') return loadBalancedAssignee(eligibleIds);
-  if (method === 'round_robin') return roundRobinAssignee(eligibleIds);
-  return null;
+  const { assigned_to } = await resolveAssignment(companyId, method, payload);
+  return assigned_to;
 }

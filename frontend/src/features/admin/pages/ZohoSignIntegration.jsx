@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
-import { PenLine, FileCheck, Clock, AlertCircle, RefreshCw, Send, ArrowLeft, CheckCircle, RotateCcw, Eye, EyeOff, Plug } from 'lucide-react';
+import {
+  PenLine, FileCheck, Clock, AlertCircle, RefreshCw, Send, ArrowLeft,
+  CheckCircle, RotateCcw, Eye, EyeOff, Plug, SlidersHorizontal,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import './ZohoSignIntegration.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_MAP = {
   inprogress: { label: 'In Progress', bg: '#dbeafe', color: '#1d4ed8' },
   completed:  { label: 'Completed',   bg: '#dcfce7', color: '#15803d' },
   recalled:   { label: 'Recalled',    bg: '#fee2e2', color: '#dc2626' },
-  expired:    { label: 'Expired',     bg: '#fef3c7', color: '#d97706' },
+  expired:    { label: 'Expired',     bg: '#ede9fe', color: '#6d28d9' },
   draft:      { label: 'Draft',       bg: '#f3f4f6', color: '#6b7280' },
 };
 
@@ -180,47 +184,38 @@ export default function ZohoSignIntegration({ setPage }) {
   ];
 
   return (
-    <div className="zsi-root">
-      {toast && (
-        <div className={`zsi-toast zsi-toast-${toast.type}`}>{toast.msg}</div>
-      )}
-
-      {/* Header — standard white/light theme */}
-      <div className="zsi-header">
-        <div className="zsi-header-left">
-          <button className="zsi-back-btn" onClick={() => setPage?.('IntegrationsHub')}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Administration"
+        title="Zoho Sign Integration"
+        subtitle="E-signature workflow management via Zoho Sign API"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('IntegrationsHub')}>
             <ArrowLeft size={16} />
           </button>
-          <div className="zsi-header-icon">
-            <PenLine size={20} />
-          </div>
-          <div>
-            <h1 className="zsi-title">Zoho Sign Integration</h1>
-            <p className="zsi-sub">E-signature workflow management via Zoho Sign API</p>
-          </div>
-        </div>
-        <div className="zsi-header-right">
-          <div className={`zsi-conn-dot ${isConnected ? 'connected' : ''}`} />
-          <span className="zsi-conn-label">{isConnected ? `Connected · ${status.dc}` : 'Not Connected'}</span>
           <button
-            className="zsi-hdr-btn"
+            className="plh-cta plh-cta--ghost"
             onClick={handleSync}
             disabled={syncing || !isConnected}
-            title={!isConnected ? 'Complete configuration to enable' : undefined}
-          >
+            title={!isConnected ? 'Complete configuration to enable' : undefined}>
             <RefreshCw size={14} className={syncing ? 'zsi-spin' : ''} />
             {syncing ? 'Syncing…' : 'Sync Status'}
           </button>
           <button
-            className="zsi-hdr-btn primary"
+            className="plh-cta"
             onClick={() => setSendForm({ title: '', recipient_name: '', recipient_email: '', message: '', expiry_days: 7 })}
             disabled={!isConnected}
-            title={!isConnected ? 'Complete configuration to enable' : undefined}
-          >
+            title={!isConnected ? 'Complete configuration to enable' : undefined}>
             <Send size={14} /> Send for Signing
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {toast && (
+        <div className={`zsi-toast zsi-toast-${toast.type}`}>{toast.msg}</div>
+      )}
+
 
       <div className="zsi-body">
         {/* KPI row */}
@@ -229,7 +224,7 @@ export default function ZohoSignIntegration({ setPage }) {
             { icon: <FileCheck size={20} />, val: total,     label: 'Total Requests', color: '#4f46e5', bg: '#eef2ff' },
             { icon: <CheckCircle size={20} />, val: completed, label: 'Completed',     color: '#15803d', bg: '#dcfce7' },
             { icon: <Clock size={20} />,      val: pending,   label: 'In Progress',   color: '#1d4ed8', bg: '#dbeafe' },
-            { icon: <AlertCircle size={20} />, val: expired,  label: 'Expired',       color: '#d97706', bg: '#fef3c7' },
+            { icon: <AlertCircle size={20} />, val: expired,  label: 'Expired',       color: '#6d28d9', bg: '#ede9fe' },
           ].map(k => (
             <div key={k.label} className="zsi-kpi">
               <div className="zsi-kpi-icon" style={{ background: k.bg, color: k.color }}>{k.icon}</div>
@@ -459,6 +454,6 @@ export default function ZohoSignIntegration({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

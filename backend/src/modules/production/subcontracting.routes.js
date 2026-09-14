@@ -9,30 +9,121 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { checkAndCreateAlerts } from '../../services/stockAlerts.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const actor = (req) => ({ id: req.user?.userId || req.user?.id || null, name: req.user?.name || req.user?.email || 'System' });
 const cidOf = (req) => (req.scope?.company_id != null ? req.scope.company_id : null);
 const num = (v) => (v === null || v === undefined || v === '' ? 0 : parseFloat(v)) || 0;
 
+// Several postStock callers have no warehouse concept anywhere in their own
+// schema — there's no warehouse_id column on production_orders or
+// material_reservations, so production consumption/backflush, service-desk
+// field issues, and maintenance consumption all call this with warehouseId
+// unset. Left null, that both (a) silently no-op'd checkAndCreateAlerts,
+// which requires a warehouseId to scope its balance/alert lookup, and (b)
+// permanently hid those stock_ledger rows from any per-warehouse report —
+// an equality filter on warehouse_id never matches NULL, so e.g. the
+// monthwise ₹ report's store tab dropped all production activity even
+// though the company-wide "All Warehouses" view summed it correctly. Falls
+// back to the company's main warehouse (or its first active one) so those
+// movements get a real, queryable warehouse attribution instead of none.
+async function resolveDefaultWarehouseId(companyId) {
+  const { rows } = await pool.query(
+    `SELECT id FROM warehouses
+      WHERE deleted_at IS NULL AND status = 'active'
+        AND ($1::int IS NULL OR company_id = $1)
+      ORDER BY (type = 'main') DESC, id ASC
+      LIMIT 1`,
+    [companyId ?? null]
+  );
+  return rows[0]?.id ?? null;
+}
+
 /** Post a stock movement to the ledger and keep inventory_items.current_stock in sync. */
-export async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId, transactionDate = null }) {
+export async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId, transactionDate = null, batchId = null }) {
   if (!itemId) return;
+  const resolvedWarehouseId = warehouseId ?? await resolveDefaultWarehouseId(companyId).catch(() => null);
+  let layerId = null, ledgerId = null;
   const { rows: [bal] } = await client.query(
     `SELECT COALESCE(SUM(quantity_in - quantity_out),0) AS balance
        FROM stock_ledger WHERE item_id = $1 AND ($2::int IS NULL OR warehouse_id = $2)`,
-    [itemId, warehouseId]);
+    [itemId, resolvedWarehouseId]);
   const newBalance = num(bal.balance) + inQty - outQty;
-  await client.query(
+  const { rows: [ledgerRow] } = await client.query(
     `INSERT INTO stock_ledger
        (item_id, warehouse_id, transaction_type, quantity_in, quantity_out, balance_qty,
         rate, value, reference_type, reference_id, transaction_date, remarks, created_by, company_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($14::date, CURRENT_DATE),$11,$12,$13)`,
-    [itemId, warehouseId, txnType, inQty, outQty, newBalance, rate,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($14::date, CURRENT_DATE),$11,$12,$13) RETURNING id`,
+    [itemId, resolvedWarehouseId, txnType, inQty, outQty, newBalance, rate,
      Math.round((inQty + outQty) * rate * 100) / 100, refType, refId, remarks, createdBy, companyId, transactionDate]);
-  await client.query(
-    `UPDATE inventory_items SET current_stock = COALESCE(current_stock,0) + $2, updated_at = NOW() WHERE id = $1`,
-    [itemId, inQty - outQty]);
+  ledgerId = ledgerRow?.id ?? null;
+  // ── FIFO / FEFO layers ────────────────────────────────────────────────────
+  // A receipt opens a cost layer; an issue depletes layers in order. Without
+  // these, stockLedger.repository.getInventoryValuation ACCEPTED a 'FIFO'
+  // request and silently returned weighted average — a wrong number presented as
+  // the method that was asked for, which is worse than refusing.
+  //
+  // Layer depletion order is FEFO where the stock carries expiry dates and FIFO
+  // where it does not: for perishable stock, first-expired is the correct
+  // physical policy and first-in is merely a proxy for it.
+  try {
+    if (inQty > 0) {
+      const { rows: [layer] } = await client.query(`
+        INSERT INTO inventory_fifo_layers
+          (company_id, item_id, warehouse_id, batch_id, received_date, expiry_date,
+           qty_received, qty_remaining, unit_cost, source_type, source_id)
+        VALUES ($1,$2,$3,$4,COALESCE($5::date, CURRENT_DATE),
+                (SELECT expiry_date FROM inventory_batches WHERE id = $4),
+                $6,$6,$7,$8,$9) RETURNING id`,
+        [companyId, itemId, resolvedWarehouseId, batchId ?? null, transactionDate,
+         inQty, rate || 0, refType, refId]);
+      layerId = layer.id;
+    } else if (outQty > 0) {
+      const { rows: layers } = await client.query(`
+        SELECT id, qty_remaining, unit_cost FROM inventory_fifo_layers
+         WHERE item_id = $1 AND qty_remaining > 0
+           AND ($2::int IS NULL OR warehouse_id = $2 OR warehouse_id IS NULL)
+         ORDER BY (expiry_date IS NULL), expiry_date ASC, received_date ASC, id ASC
+         FOR UPDATE`, [itemId, resolvedWarehouseId]);
+      let left = outQty;
+      for (const l of layers) {
+        if (left <= 0.000001) break;
+        const take = Math.min(num(l.qty_remaining), left);
+        if (take <= 0) continue;
+        await client.query(`
+          UPDATE inventory_fifo_layers
+             SET qty_remaining = qty_remaining - $2,
+                 depleted_at = CASE WHEN qty_remaining - $2 <= 0 THEN NOW() ELSE depleted_at END
+           WHERE id = $1`, [l.id, take]);
+        await client.query(`
+          INSERT INTO inventory_fifo_consumption
+            (layer_id, company_id, item_id, qty, unit_cost, value, reference_type, reference_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [l.id, companyId, itemId, take, num(l.unit_cost), take * num(l.unit_cost), refType, refId]);
+        if (layerId == null) layerId = l.id;
+        left -= take;
+      }
+      // An issue with no layer to draw from is a real condition (stock that
+      // predates layering), not an error. It is left unlayered rather than
+      // invented, and valuation reports the uncovered quantity.
+    }
+    if (layerId != null) {
+      await client.query(`UPDATE stock_ledger SET fifo_layer_id = $2 WHERE id = $1`, [ledgerId, layerId]);
+    }
+  } catch (e) {
+    console.warn('[postStock] FIFO layering skipped:', e.message);
+  }
+
+  // current_stock is NOT maintained here any more. Migration
+  // 20260911000016 made it derived: a trigger on stock_ledger recomputes it from
+  // SUM(quantity_in - quantity_out) after every insert, update and delete.
+  // Adding the delta here as well would double-count every movement.
+  //
+  // The column drifted from the ledger twice — once to 100% divergence, and
+  // again by 208 units during the verification run for that fix — because it was
+  // a second independently-writable copy of a number the ledger already
+  // determines. Writing the ledger row IS now the whole operation.
 
   // Reorder-breach detection previously only ran off two legacy call sites
   // (manual inventory adjustment, GRN receipt) — every other stock-decreasing
@@ -42,7 +133,7 @@ export async function postStock(client, { itemId, warehouseId = null, inQty = 0,
   // on the pool, not this transaction's client, so it never blocks or risks
   // this write; self-corrects on the next movement if this one rolls back).
   if (outQty > inQty) {
-    checkAndCreateAlerts(itemId, warehouseId).catch(() => {});
+    checkAndCreateAlerts(itemId, resolvedWarehouseId).catch(() => {});
   }
 }
 
@@ -148,7 +239,7 @@ router.post('/orders', requirePermission('production', 'edit'), async (req, res)
   finally { client.release(); }
 });
 
-router.put('/orders/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.put('/orders/:id', requirePermission('production', 'edit'), captureBefore('subcontract_orders'), async (req, res) => {
   try {
     const f = req.body || {};
     const { rows: [existing] } = await pool.query(`SELECT status FROM subcontract_orders WHERE id = $1`, [req.params.id]);
@@ -259,7 +350,7 @@ router.post('/orders/:id/cancel', requirePermission('production', 'edit'), async
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/orders/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.delete('/orders/:id', requirePermission('production', 'edit'), captureBefore('subcontract_orders'), async (req, res) => {
   try {
     const { rowCount } = await pool.query(`DELETE FROM subcontract_orders WHERE id=$1 AND status='draft'`, [req.params.id]);
     if (!rowCount) return res.status(409).json({ error: 'Only draft orders can be deleted' });

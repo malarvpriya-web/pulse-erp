@@ -10,7 +10,15 @@
   padding: 0 20px;
   gap: 12px;
   box-shadow: 0 1px 4px rgba(0,0,0,.05);
-  z-index: 20;
+  /* MUST outrank every in-page sticky. `.page-content` creates no stacking
+     context, so a page's frozen dock (`.plh-dock`, z-index 20) and sticky
+     table headers compete with the topbar in the SAME context — at a tie the
+     later DOM node wins, and the page painted over the topbar, burying the
+     bell / search / user dropdowns (which are trapped inside this element's
+     stacking context no matter how high their own z-index is).
+     300 clears every in-page sticky (highest is 201) and still sits under
+     every modal / drawer overlay (lowest is 500), which must cover the topbar. */
+  z-index: 300;
   position: sticky;
   top: 0;
 }

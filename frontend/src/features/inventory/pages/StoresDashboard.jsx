@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import api from '@/services/api/client';
 import { getVendorPriceComparison } from '../services/inventoryService';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
 
 const fmtVal = n => {
@@ -30,33 +33,64 @@ export default function StoresDashboard({ setPage }) {
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState(null);
   const [pricing, setPricing] = useState(null);
+  const [options, setOptions] = useState({ warehouses: [], categories: [] });
+
+  // Stock balances plus a same-day activity strip — dimensions, no period.
+  const filters = useDashboardFilters({
+    dimensions: { warehouse_id: 'all', category_id: 'all' },
+    storageKey: 'stores-dashboard',
+  });
+  const { params } = filters;
 
   useEffect(() => {
+    let cancelled = false;
+    api.get('/inventory/dashboard/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    getVendorPriceComparison().then(p => { if (!cancelled) setPricing(p); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     const fetchStores = async () => {
       try {
         setLoading(true);
         setError(null);
-        const res = await api.get('/inventory/stores-dashboard');
-        setData(res.data?.data ?? { warehouses: [], today: {} });
+        const res = await api.get('/inventory/stores-dashboard', { params });
+        if (!cancelled) setData(res.data?.data ?? { warehouses: [], today: {} });
       } catch {
-        setError('Failed to load stores data');
+        if (!cancelled) setError('Failed to load stores data');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     fetchStores();
-    getVendorPriceComparison().then(setPricing).catch(() => {});
-  }, []);
+    return () => { cancelled = true; };
+  }, [params]);
+
+  const filterDimensions = [
+    { key: 'warehouse_id', label: 'Warehouse', allLabel: 'All Warehouses', options: options.warehouses },
+    { key: 'category_id',  label: 'Category',  allLabel: 'All Categories', options: options.categories },
+  ];
 
   const warehouses = data.warehouses ?? [];
   const today      = data.today      ?? {};
 
   return (
-    <div style={{ padding: '16px 18px 20px' }}>
-      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 3 }}>Stores Dashboard</h1>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Inventory"
+        title="Stores Dashboard"
+      />
+    }>
+
       <p style={{ color: '#6b7280', fontSize: 12.5, marginBottom: 14 }}>
         Stock summary per warehouse — {warehouses.reduce((s, w) => s + (w.total_skus || 0), 0)} total SKUs across {warehouses.length} stores
       </p>
+
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} showPeriod={false} />
 
       {loading && (
         <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading...</div>
@@ -81,7 +115,7 @@ export default function StoresDashboard({ setPage }) {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))', gap: 10 }}>
               <TodayCard label="Receipts"    value={today.receipts_count    ?? 0} color="#0891b2" index={0} />
               <TodayCard label="Issues"      value={today.issues_count      ?? 0} color="#6B3FDB" index={1} />
-              <TodayCard label="Adjustments" value={today.adjustments_count ?? 0} color="#d97706" index={2} />
+              <TodayCard label="Adjustments" value={today.adjustments_count ?? 0} color="#6d28d9" index={2} />
               <TodayCard label="Pending QC"  value={today.pending_qc_count  ?? 0} color="#dc2626" index={3} />
             </div>
           </div>
@@ -106,7 +140,7 @@ export default function StoresDashboard({ setPage }) {
                 <TodayCard label="Priced Components" value={`${pricing.summary.priced_components ?? 0} / ${pricing.summary.total_components ?? 0}`} color="#4c1d95" index={0} />
                 <TodayCard label="Multi-Vendor Items" value={pricing.summary.multi_vendor_components ?? 0} color="#0891b2" index={1} />
                 <TodayCard label="Potential Savings" value={fmtVal(pricing.summary.total_potential_savings)} color="#16a34a" index={2} />
-                <TodayCard label="Avg Price Spread" value={`${pricing.summary.avg_spread_pct ?? 0}%`} color="#d97706" index={3} />
+                <TodayCard label="Avg Price Spread" value={`${pricing.summary.avg_spread_pct ?? 0}%`} color="#6d28d9" index={3} />
               </div>
 
               {(() => {
@@ -182,7 +216,7 @@ export default function StoresDashboard({ setPage }) {
                       </div>
                       <div>
                         <div style={{ fontSize: 11, color: '#6b7280' }}>Low Stock</div>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: wh.low_stock_count > 0 ? '#d97706' : '#16a34a' }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: wh.low_stock_count > 0 ? '#6d28d9' : '#16a34a' }}>
                           {wh.low_stock_count}
                         </div>
                       </div>
@@ -220,7 +254,7 @@ export default function StoresDashboard({ setPage }) {
                           <td style={{ padding: '9px 14px', color: '#6b7280' }}>{wh.code || '—'}</td>
                           <td style={{ padding: '9px 14px' }}>{wh.total_skus}</td>
                           <td style={{ padding: '9px 14px', fontWeight: 600, color: '#0891b2' }}>{fmtVal(wh.total_value)}</td>
-                          <td style={{ padding: '9px 14px', color: wh.low_stock_count > 0 ? '#d97706' : '#6b7280', fontWeight: wh.low_stock_count > 0 ? 700 : 400 }}>{wh.low_stock_count}</td>
+                          <td style={{ padding: '9px 14px', color: wh.low_stock_count > 0 ? '#6d28d9' : '#6b7280', fontWeight: wh.low_stock_count > 0 ? 700 : 400 }}>{wh.low_stock_count}</td>
                           <td style={{ padding: '9px 14px', color: wh.out_of_stock_count > 0 ? '#dc2626' : '#6b7280', fontWeight: wh.out_of_stock_count > 0 ? 700 : 400 }}>{wh.out_of_stock_count}</td>
                         </tr>
                       ))}
@@ -232,6 +266,6 @@ export default function StoresDashboard({ setPage }) {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

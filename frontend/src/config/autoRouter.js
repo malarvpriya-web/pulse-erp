@@ -90,7 +90,6 @@ const PAGE_DISPLAY_NAMES = {
   PRManagement:           'PR Management',
   MTTRReport:             'MTTR Report',
   MTBFReport:             'MTBF Report',
-  CeoDashboard:           'CEO Dashboard',
   FinanceDashboard:       'Finance Dashboard',
   FinanceDashboardNew:    'Finance Dashboard',
   BudgetVsActuals:        'Budget vs Actuals',
@@ -204,7 +203,6 @@ const NON_PAGE_FILES = new Set([
   'SetupMaster',       // admin — generic master template, needs {config}
   'MenuPermissions',   // admin — embedded tab inside AccessControl
   'VendorProjectImpact', // procurement — embedded panel inside Vendor360
-  'InterviewFeedback', // recruitment — modal, needs {candidateId,onClose}
   'PublicSigning',     // documents — public fullscreen route (App.jsx), not a menu page
 ]);
 

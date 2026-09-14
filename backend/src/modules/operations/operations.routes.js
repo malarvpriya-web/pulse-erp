@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import pool from '../shared/db.js';
+import { dimension } from '../../shared/dashboardFilters.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -29,10 +31,11 @@ router.get('/bottlenecks', async (req, res) => {
       LEFT JOIN employees e ON t.assigned_to = e.id
       WHERE t.status NOT IN ('completed','done','Completed','Done')
         AND ($1::int IS NULL OR e.company_id = $1)
+        AND ($2::text IS NULL OR e.department = $2)
       GROUP BY e.department
       ORDER BY queue_depth DESC
       LIMIT 10
-    `, [companyId]);
+    `, [companyId, dimension(req.query, 'department')]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -47,14 +50,15 @@ router.get('/department-workload', async (req, res) => {
         d.name AS department,
         COUNT(DISTINCT e.id) AS employee_count,
         COUNT(t.id) AS active_tasks,
-        ROUND(COUNT(t.id)::float / NULLIF(COUNT(DISTINCT e.id), 0), 1) AS avg_tasks_per_employee,
-        LEAST(100, ROUND(COUNT(t.id)::float / NULLIF(COUNT(DISTINCT e.id), 0) / 5.0 * 100, 1)) AS utilization_pct
-      FROM departments d
-      LEFT JOIN employees e ON e.department_id = d.id
-        AND e.status IN ('active', 'probation', 'notice')
-      LEFT JOIN project_tasks t ON t.assignee_id = e.id
-        AND t.status NOT IN ('done', 'completed', 'Completed', 'Done')
-      WHERE ($1::int IS NULL OR d.company_id = $1)
+        ROUND((COUNT(t.id)::numeric / NULLIF(COUNT(DISTINCT e.id), 0)), 1) AS avg_tasks_per_employee,
+        LEAST(100, ROUND((COUNT(t.id)::numeric / NULLIF(COUNT(DISTINCT e.id), 0) / 5.0 * 100), 1)) AS utilization_pct
+      FROM master_departments d
+      LEFT JOIN employees e ON e.department = d.name
+        AND LOWER(e.status) IN ('active', 'probation', 'notice')
+        AND ($1::int IS NULL OR e.company_id = $1)
+      LEFT JOIN tasks t ON t.assigned_to = e.id AND t.deleted_at IS NULL
+        AND LOWER(t.status) NOT IN ('done', 'completed')
+      WHERE d.is_active
       GROUP BY d.id, d.name
       ORDER BY d.name
     `, [companyId]);
@@ -74,10 +78,23 @@ router.get('/workload-chart', async (req, res) => {
       LEFT JOIN tasks t ON t.assigned_to = e.id
       WHERE e.status = 'active'
         AND ($1::int IS NULL OR e.company_id = $1)
+        AND ($2::text IS NULL OR e.department = $2)
       GROUP BY e.department ORDER BY task_count DESC
-    `, [companyId]);
+    `, [companyId, dimension(req.query, 'department')]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/operations/filter-options — departments for the bottleneck filter bar
+router.get('/filter-options', async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT DISTINCT department AS v FROM employees
+        WHERE department IS NOT NULL AND TRIM(department) <> '' AND deleted_at IS NULL
+          AND ($1::int IS NULL OR company_id = $1)
+        ORDER BY v`, [cid(req)]);
+    res.json({ departments: r.rows.map(x => x.v) });
+  } catch { res.json({ departments: [] }); }
 });
 
 // GET /api/operations/project-tracker
@@ -136,7 +153,7 @@ router.post('/workflows', async (req, res) => {
 });
 
 // PUT /api/operations/workflows/:id
-router.put('/workflows/:id', async (req, res) => {
+router.put('/workflows/:id', captureBefore('workflows'), async (req, res) => {
   try {
     const { name, description, trigger_module, trigger_event, is_active } = req.body;
     const companyId = cid(req);
@@ -150,7 +167,7 @@ router.put('/workflows/:id', async (req, res) => {
 });
 
 // PUT /api/operations/workflows/:id/toggle
-router.put('/workflows/:id/toggle', async (req, res) => {
+router.put('/workflows/:id/toggle', captureBefore('workflows'), async (req, res) => {
   try {
     const companyId = cid(req);
     const r = await pool.query(

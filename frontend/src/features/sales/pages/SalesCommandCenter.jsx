@@ -6,19 +6,24 @@ import {
 import {
   TrendingUp, TrendingDown, Target, Users, ShoppingCart, AlertTriangle,
   Award, Clock, IndianRupee, Activity, ChevronRight, Bell, Filter,
-  RefreshCw, Download,
+  RefreshCw, Download, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
+// null/undefined means the figure was never measured — an em dash, not zero.
+// A real, measured 0 still renders as ₹0 / 0.0%.
+const unmeasured = (n) => n === null || n === undefined || n === '';
 const fmtCr = (n) => {
+  if (unmeasured(n)) return '—';
   const v = parseFloat(n || 0);
   if (v >= 10000000) return `₹${(v / 10000000).toFixed(2)} Cr`;
   if (v >= 100000)   return `₹${(v / 100000).toFixed(1)} L`;
   if (v >= 1000)     return `₹${(v / 1000).toFixed(0)}K`;
   return `₹${v.toLocaleString('en-IN')}`;
 };
-const fmtPct = (n) => `${parseFloat(n || 0).toFixed(1)}%`;
+const fmtPct = (n) => (unmeasured(n) ? '—' : `${parseFloat(n || 0).toFixed(1)}%`);
 
 const getFYStart = () => {
   const m = new Date().getMonth();
@@ -29,39 +34,17 @@ const fyLabel = (y) => `FY ${y}-${String(y + 1).slice(2)}`;
 // ── Colours ───────────────────────────────────────────────────────────────────
 const C = {
   primary: '#6B3FDB', light: '#f5f3ff', border: '#e9e4ff',
-  green: '#16a34a', red: '#dc2626', amber: '#d97706', blue: '#2563eb',
+  green: '#16a34a', red: '#dc2626', amber: '#6d28d9', blue: '#2563eb',
   card: { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12 },
 };
 
-const PRODUCT_COLORS = ['#6B3FDB','#2563eb','#16a34a','#d97706','#ef4444','#06b6d4','#8b5cf6'];
+const PRODUCT_COLORS = ['#6B3FDB','#2563eb','#16a34a','#6d28d9','#ef4444','#06b6d4','#8b5cf6'];
 
 // ── KPI Card ──────────────────────────────────────────────────────────────────
 function KpiCard({ label, value, sub, color = C.primary, icon: Icon, trend }) {
-  return (
-    <div style={{ ...C.card, padding: '18px 20px', position: 'relative', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div>
-          <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{label}</div>
-          <div style={{ fontSize: 26, fontWeight: 700, color, lineHeight: 1 }}>{value}</div>
-          {sub && <div style={{ fontSize: 12, color: '#6b7280', marginTop: 5 }}>{sub}</div>}
-        </div>
-        {Icon && (
-          <div style={{ width: 40, height: 40, borderRadius: 10, background: `${color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            <Icon size={20} color={color} />
-          </div>
-        )}
-      </div>
-      {trend !== undefined && (
-        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-          {trend >= 0
-            ? <TrendingUp size={13} color={C.green} />
-            : <TrendingDown size={13} color={C.red} />}
-          <span style={{ color: trend >= 0 ? C.green : C.red, fontWeight: 600 }}>{Math.abs(trend).toFixed(1)}%</span>
-          <span style={{ color: '#9ca3af' }}>vs last period</span>
-        </div>
-      )}
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} sub={sub} color={color} icon={Icon} trend={trend} />;
 }
 
 // ── Achievement Gauge ─────────────────────────────────────────────────────────
@@ -97,7 +80,7 @@ function ProgressBar({ value, max = 100, color = C.primary, height = 8 }) {
 
 // ── Severity Badge ────────────────────────────────────────────────────────────
 function AlertBadge({ severity }) {
-  const map = { critical: [C.red, '#fee2e2'], warning: [C.amber, '#fef3c7'], info: [C.blue, '#dbeafe'] };
+  const map = { critical: [C.red, '#fee2e2'], warning: [C.amber, '#ede9fe'], info: [C.blue, '#dbeafe'] };
   const [col, bg] = map[severity] || map.info;
   return (
     <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: bg, color: col, textTransform: 'uppercase' }}>
@@ -159,9 +142,9 @@ export default function SalesCommandCenter() {
     try {
       const [scRes, cRes, pRes, ldRes, trRes, alRes, clRes, ttRes, mRes] = await Promise.allSettled([
         api.get(`/sales-command-center/salesperson-scorecard?fy_year=${fyYear}`, { signal: ctrl.signal }),
-        api.get('/sales-command-center/customer-analytics',                 { signal: ctrl.signal }),
-        api.get('/sales-command-center/product-analytics',                  { signal: ctrl.signal }),
-        api.get('/sales-command-center/lost-deal-analysis',                 { signal: ctrl.signal }),
+        api.get(`/sales-command-center/customer-analytics?fy_year=${fyYear}`, { signal: ctrl.signal }),
+        api.get(`/sales-command-center/product-analytics?fy_year=${fyYear}`,  { signal: ctrl.signal }),
+        api.get(`/sales-command-center/lost-deal-analysis?fy_year=${fyYear}`, { signal: ctrl.signal }),
         api.get('/sales-command-center/traceability?limit=30',              { signal: ctrl.signal }),
         api.get('/sales-command-center/alerts',                             { signal: ctrl.signal }),
         api.get('/sales-command-center/upcoming-closures?days=30',          { signal: ctrl.signal }),
@@ -198,13 +181,23 @@ export default function SalesCommandCenter() {
   });
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh', fontFamily: 'inherit' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Sales"
+        title="Sales Command Center"
+      />
+    }>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Sales Command Center</h1>
+
           <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
             CEO · Sales Manager · Salesperson Intelligence — {fyLabel(fyYear)}
+          </p>
+          <p style={{ color: '#9ca3af', margin: '2px 0 0', fontSize: 11 }}>
+            {fyLabel(fyYear)} scopes Executive, Scorecards, Customers, Products and Lost Deals.
+            Traceability and Alerts are live queues and always show the current position.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -226,7 +219,7 @@ export default function SalesCommandCenter() {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 0, marginBottom: 24, borderBottom: `2px solid ${C.border}`, overflowX: 'auto' }}>
+      <div style={{ display: 'flex', gap: 0, marginBottom: 24, borderBottom: `2px solid ${C.border}`, flexWrap: 'wrap' }}>
         {TABS.map(t => (
           <button key={t} onClick={() => setTab(t)} style={{
             padding: '9px 18px', border: 'none', background: 'none', cursor: 'pointer',
@@ -540,9 +533,9 @@ export default function SalesCommandCenter() {
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: C.green }}>{fmtCr(c.total_revenue)}</td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#374151' }}>{fmtCr(c.total_margin)}</td>
-                      <td style={{ padding: '10px 14px', textAlign: 'right', color: parseFloat(c.margin_pct) >= 15 ? C.green : C.amber }}>{fmtPct(c.margin_pct)}</td>
+                      <td style={{ padding: '10px 14px', textAlign: 'right', color: c.margin_pct === null ? '#9ca3af' : c.margin_pct >= 15 ? C.green : C.amber }}>{fmtPct(c.margin_pct)}</td>
                       <td style={{ padding: '10px 14px', textAlign: 'right' }}>{c.total_orders}</td>
-                      <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: parseFloat(c.win_rate) >= 30 ? C.green : C.amber }}>{fmtPct(c.win_rate)}</td>
+                      <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: c.win_rate === null ? '#9ca3af' : c.win_rate >= 30 ? C.green : C.amber }}>{fmtPct(c.win_rate)}</td>
                       <td style={{ padding: '10px 14px', color: '#6b7280' }}>{c.last_order_date ? new Date(c.last_order_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                     </tr>
                   ))}
@@ -602,7 +595,7 @@ export default function SalesCommandCenter() {
                           </td>
                           <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: C.green }}>{fmtCr(p.revenue)}</td>
                           <td style={{ padding: '10px 14px', textAlign: 'right' }}>{fmtCr(p.margin)}</td>
-                          <td style={{ padding: '10px 14px', textAlign: 'right', color: parseFloat(p.margin_pct) >= 15 ? C.green : C.amber }}>{fmtPct(p.margin_pct)}</td>
+                          <td style={{ padding: '10px 14px', textAlign: 'right', color: p.margin_pct === null ? '#9ca3af' : p.margin_pct >= 15 ? C.green : C.amber }}>{fmtPct(p.margin_pct)}</td>
                           <td style={{ padding: '10px 14px', textAlign: 'right' }}>{p.orders}</td>
                           <td style={{ padding: '10px 14px', textAlign: 'right', color: C.green }}>{p.won}</td>
                           <td style={{ padding: '10px 14px', textAlign: 'right', color: C.red }}>{p.lost}</td>
@@ -662,6 +655,11 @@ export default function SalesCommandCenter() {
             {/* By reason */}
             <div style={{ ...C.card, padding: 20 }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: C.red, marginBottom: 14 }}>Lost Reasons</div>
+              {(lostDeals.by_reason || []).length === 0 ? (
+                <div style={{ color: '#9ca3af', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>
+                  No lost deals in this period.
+                </div>
+              ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {(lostDeals.by_reason || []).map((r, i) => (
                   <div key={r.reason}>
@@ -673,13 +671,17 @@ export default function SalesCommandCenter() {
                   </div>
                 ))}
               </div>
+              )}
             </div>
 
             {/* By competitor */}
             <div style={{ ...C.card, padding: 20 }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: '#374151', marginBottom: 14 }}>Top Competitors</div>
               {(lostDeals.by_competitor || []).length === 0 ? (
-                <div style={{ color: '#9ca3af', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>No competitor data. Tag lost opportunities with competitor names.</div>
+                <div style={{ color: '#9ca3af', textAlign: 'center', padding: '20px 0', fontSize: 13, lineHeight: 1.6 }}>
+                  No competitor data yet.<br />
+                  <span style={{ fontSize: 12 }}>Name the competitor in the close dialog when you move a deal to Lost on the Opportunities board.</span>
+                </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {lostDeals.by_competitor.map((c, i) => (
@@ -690,7 +692,17 @@ export default function SalesCommandCenter() {
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: C.red }}>{c.deals_lost} deals</div>
-                        <div style={{ fontSize: 11, color: '#9ca3af' }}>{fmtCr(c.value_lost)}</div>
+                        <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                          {fmtCr(c.value_lost)}
+                          {/* `competitors.win_rate` is range-checked to 0-100 at the
+                              database as of 20260902000002; the guard stays as
+                              defence in depth for a column that spent its whole
+                              life unconstrained and held 899 in every seeded row.
+                              NULL means never measured, and prints nothing. */}
+                          {c.competitor_win_rate != null && c.competitor_win_rate >= 0 && c.competitor_win_rate <= 100
+                            ? ` · ${c.competitor_win_rate}% win rate`
+                            : ''}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -777,7 +789,7 @@ export default function SalesCommandCenter() {
                       <div style={{ color: '#9ca3af' }}>{t.opp_owner} · {fmtCr(t.opportunity_value)}</div>
                     </div></>}
                     {t.quotation_id && <><ChevronRight size={14} color="#d1d5db" style={{ margin: '0 4px' }} />
-                    <div style={{ padding: '4px 10px', background: '#fef3c7', borderRadius: 6 }}>
+                    <div style={{ padding: '4px 10px', background: '#ede9fe', borderRadius: 6 }}>
                       <div style={{ fontSize: 10, color: C.amber, fontWeight: 600 }}>QUOTATION</div>
                       <div style={{ fontWeight: 600, color: '#374151' }}>{t.quotation_number}</div>
                       <div style={{ color: '#9ca3af' }}>{t.quotation_owner} · {fmtCr(t.quotation_value)}</div>
@@ -821,7 +833,7 @@ export default function SalesCommandCenter() {
             </div>
           ) : (
             alerts.map((a, i) => {
-              const bgMap = { critical: '#fff5f5', warning: '#fffbeb', info: '#eff6ff' };
+              const bgMap = { critical: '#fff5f5', warning: '#f5f3ff', info: '#eff6ff' };
               const borderMap = { critical: C.red, warning: C.amber, info: C.blue };
               return (
                 <div key={i} style={{ ...C.card, padding: 16, borderLeft: `4px solid ${borderMap[a.severity] || C.primary}`, background: bgMap[a.severity] || '#fff' }}>
@@ -844,6 +856,6 @@ export default function SalesCommandCenter() {
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

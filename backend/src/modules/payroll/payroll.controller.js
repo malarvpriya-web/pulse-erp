@@ -253,7 +253,7 @@ export const computeSlip = async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
     const empStatus = (rows[0].status || '').toLowerCase();
-    if (!['active', 'probation'].includes(empStatus)) {
+    if (!['active', 'probation', 'notice'].includes(empStatus)) {
       return res.status(422).json({ error: `Cannot generate payslip — employee status is "${rows[0].status || 'unknown'}"` });
     }
     const m = parseInt(month) || new Date().getMonth() + 1;
@@ -289,7 +289,7 @@ export const generatePdfData = async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
     const empStatus = (rows[0].status || '').toLowerCase();
-    if (!['active', 'probation'].includes(empStatus)) {
+    if (!['active', 'probation', 'notice'].includes(empStatus)) {
       return res.status(422).json({ error: `Cannot generate payslip — employee status is "${rows[0].status || 'unknown'}"` });
     }
     const emp = rows[0];
@@ -383,7 +383,7 @@ export const emailPayslip = async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
     const emp = rows[0];
     const empStatus = (emp.status || '').toLowerCase();
-    if (!['active', 'probation'].includes(empStatus)) {
+    if (!['active', 'probation', 'notice'].includes(empStatus)) {
       return res.status(422).json({ error: 'Cannot send payslip to an inactive or terminated employee' });
     }
     const recipient = emp.work_email || emp.email;
@@ -630,7 +630,7 @@ export const bulkGenerateSlips = async (req, res) => {
              basic_salary, email, work_email,
              EXTRACT(YEAR FROM AGE(NOW(), joining_date)) AS years_of_service
       FROM employees
-      WHERE LOWER(status) IN ('active','probation') AND deleted_at IS NULL ${cidFilter}
+      WHERE LOWER(status) IN ('active','probation','notice') AND deleted_at IS NULL ${cidFilter}
       ORDER BY first_name
     `, cidParams);
     if (!emps.length) return res.json({ processed: 0, total: 0, results: [] });
@@ -670,7 +670,7 @@ export const saveSlip = async (req, res) => {
     const cid = req.scope?.company_id ?? null;
     const empCidFilter = cid != null ? `AND company_id = $2` : '';
     const { rows } = await pool.query(
-      `SELECT * FROM employees WHERE id = $1 ${empCidFilter} AND LOWER(status) IN ('active','probation')`,
+      `SELECT * FROM employees WHERE id = $1 ${empCidFilter} AND LOWER(status) IN ('active','probation','notice')`,
       cid != null ? [employee_id, cid] : [employee_id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Employee not found or not active' });

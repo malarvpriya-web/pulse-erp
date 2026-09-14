@@ -51,7 +51,7 @@ export const SAMPLE_ACCOUNTS = [
     account_type:'cash', currency:'INR',
     balance:8500, book_balance:8500,
     unreconciled:0, last_reconciled:'2026-03-15',
-    is_active:true, color:'#d97706',
+    is_active:true, color:'#6d28d9',
     transactions:[
       {id:13, date:'2026-03-15', desc:'Stationery Purchase', ref:'PC001', debit:1200, credit:0,    balance:8500, type:'debit',  matched:true},
       {id:14, date:'2026-03-14', desc:'Cash Top-up',         ref:'PC002', debit:0,    credit:5000, balance:9700, type:'credit', matched:true},

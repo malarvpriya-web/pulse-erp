@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, Briefcase, Pencil, Trash2, ChevronRight } from 'lucide-react';
+import {
+  RefreshCw, Plus, X, Briefcase, Pencil, Trash2, ChevronRight,
+  Megaphone,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PAGE_SIZE = 20;
 
@@ -10,13 +14,13 @@ const PIPELINE = ['targeted','contacted','engaged','converted','dropped'];
 const STATUS_COLORS = {
   targeted:  { bg: '#f3f4f6', color: '#6b7280' },
   contacted: { bg: '#dbeafe', color: '#2563eb' },
-  engaged:   { bg: '#fef3c7', color: '#d97706' },
+  engaged:   { bg: '#ede9fe', color: '#6d28d9' },
   converted: { bg: '#d1fae5', color: '#16a34a' },
   dropped:   { bg: '#fee2e2', color: '#dc2626' },
 };
 const PRIORITY_COLORS = {
   low:    { bg: '#f3f4f6', color: '#6b7280' },
-  medium: { bg: '#fef3c7', color: '#d97706' },
+  medium: { bg: '#ede9fe', color: '#6d28d9' },
   high:   { bg: '#fee2e2', color: '#dc2626' },
 };
 
@@ -108,7 +112,14 @@ export default function PursuitList() {
   const COLS = ['Account', 'Campaign', 'Status', 'Priority', 'Assigned To', 'Notes', 'Actions'];
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Megaphone}
+        eyebrow="Marketing"
+        title="Pursuit List"
+        subtitle="Target accounts for marketing outreach"
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -123,8 +134,8 @@ export default function PursuitList() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>Pursuit List</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Target accounts for marketing outreach</p>
+
+
         </div>
         <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search…"
           style={{ padding: '7px 12px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 7, fontSize: 13, background: 'var(--color-background-secondary)', color: 'var(--color-text-primary)', width: 160 }} />
@@ -292,6 +303,6 @@ export default function PursuitList() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

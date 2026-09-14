@@ -6,7 +6,7 @@
  * in the Pulse project root.
  */
 
-import pool from '../../../config/db.js';
+import pool from '../../config/db.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -310,7 +310,7 @@ ${Object.entries(emptyByModule).map(([mod, tables]) => `### ${mod}\n${tables.map
 
 ${failList.length === 0
   ? '> All expected tables have data. 🎉'
-  : failList.map(r => `- \`${r.table}\` — ${r.count === 'MISSING' ? '**TABLE MISSING** — run runMigrations.js' : `only ${r.count} records (expected ${r.minExpected})`} [${r.module}]`).join('\n')
+  : failList.map(r => `- \`${r.table}\` — ${r.count === 'MISSING' ? '**TABLE MISSING** — run `npm run migrate`' : `only ${r.count} records (expected ${r.minExpected})`} [${r.module}]`).join('\n')
 }
 
 ---
@@ -413,7 +413,9 @@ ${API_ENDPOINTS.map(e => `| \`${e.method}\` | \`${e.url}\` | ${e.expectedData} |
 
   if (failCount > 0) {
     console.log('\n⚠️  Some tables are missing or have insufficient data.');
-    console.log('    Run: node src/database/seeds/runMigrations.js\n');
+    // Was: seeds/runMigrations.js, deleted 2026-08-13 — it created table shapes that
+    // conflicted with the real migrations (see MODULE_FEATURE_CONNECTION_MANUAL.md §106).
+    console.log('    Run: npm run migrate\n');
   } else {
     console.log('\n🎉 All seed checks passed! Your ERP is ready to test.\n');
   }

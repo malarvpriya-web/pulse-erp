@@ -63,7 +63,9 @@ class VendorRepository {
       pool.query(`SELECT * FROM vendor_bank_details WHERE vendor_id=$1 ORDER BY is_primary DESC`, [id]),
       pool.query(`SELECT * FROM vendor_scorecards WHERE vendor_id=$1 ORDER BY period_year DESC, period_quarter DESC LIMIT 8`, [id]),
       pool.query(`SELECT * FROM vendor_risk_assessments WHERE vendor_id=$1 ORDER BY assessment_date DESC LIMIT 4`, [id]),
-      pool.query(`SELECT * FROM vendor_ncr WHERE vendor_id=$1 ORDER BY ncr_date DESC LIMIT 10`, [id]),
+      // ncr_reports, not vendor_ncr: incoming QC writes the former and nothing
+      // writes the latter. `ncr_date` is aliased so the response shape is unchanged.
+      pool.query(`SELECT *, created_at AS ncr_date FROM ncr_reports WHERE vendor_id=$1 ORDER BY created_at DESC LIMIT 10`, [id]),
     ]);
 
     return { ...vendor, contacts, documents, banks, scorecards, risks, ncrs };
@@ -145,7 +147,10 @@ class VendorRepository {
   }
 
   async softDelete(id) {
-    await pool.query(`UPDATE vendors SET deleted_at=NOW(), status='Inactive', updated_at=NOW() WHERE id=$1`, [id]);
+    // 'inactive', lower case — the third spelling this column had ('active',
+    // 'Active', 'Inactive'). Canonical vendor states are lower case, matching the
+    // column default and shared/statusSets.js.
+    await pool.query(`UPDATE vendors SET deleted_at=NOW(), status='inactive', updated_at=NOW() WHERE id=$1`, [id]);
   }
 
   // ── STATS ─────────────────────────────────────────────────────────────────
@@ -156,10 +161,15 @@ class VendorRepository {
     const { rows: [stats] } = await pool.query(`
       SELECT
         COUNT(*) AS total,
-        COUNT(*) FILTER (WHERE status='Active') AS active,
+        -- LOWER(): this counted status='Active' while the column default, every
+        -- writer and the vendor list all use 'active'. It reported the number of
+        -- vendors created by the approval route and called it the active count.
+        -- classification stays Capitalised - that vocabulary is Capitalised
+        -- everywhere it is written (classifyHealth).
+        COUNT(*) FILTER (WHERE LOWER(status)='active') AS active,
         COUNT(*) FILTER (WHERE classification='Preferred') AS preferred,
         COUNT(*) FILTER (WHERE classification='Watchlist') AS watchlist,
-        COUNT(*) FILTER (WHERE classification='Blocked' OR status='Blocked') AS blocked,
+        COUNT(*) FILTER (WHERE classification='Blocked' OR LOWER(status)='blocked') AS blocked,
         COUNT(*) FILTER (WHERE risk_rating IN ('High','Critical')) AS high_risk,
         COUNT(*) FILTER (WHERE is_critical_supplier=true) AS critical_suppliers,
         COUNT(*) FILTER (WHERE is_single_source=true) AS single_source,

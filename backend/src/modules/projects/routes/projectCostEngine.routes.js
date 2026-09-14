@@ -9,6 +9,8 @@ import pool from '../../shared/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? companyOf(req);
@@ -134,6 +136,26 @@ function checkUnallocated(body) {
 }
 
 // ── Helper: build profitability object from cost summary row ─────────────────
+//
+// pcs is a `project_cost_summary` row. That table carries two overlapping
+// column sets that were never reconciled: the real one `recalculateProjectCost()`
+// (projectCostRollup.service.js) actually populates — labour_cost/material_cost/
+// travel_cost/manufacturing_cost/procurement_overhead/quality_cost/
+// installation_cost/commissioning_cost/service_cost/total_revenue — and a second,
+// finer-grained "Phase 46" set added later (sales_travel_cost/engineering_cost/
+// procurement_cost/production_cost/app_engineering_cost/inventory_cost/fat_cost/
+// transport_cost/amc_cost/other_cost) that nothing repo-wide ever writes, so it
+// permanently sits at its DEFAULT 0. This function used to prefer the second set
+// via `pcs?.ghost_column || pcs?.real_column`, which looks like a safe fallback
+// but isn't: a NUMERIC column's zero value comes back from pg as the *string*
+// '0.00', which is truthy in JS — so the `||` always short-circuited on the
+// always-zero ghost column and the real, populated value was never reached. Every
+// project computed here showed near-zero cost regardless of what
+// recalculateProjectCost() had actually rolled up. Reads only the confirmed-real
+// columns now. See MODULE_FEATURE_CONNECTION_MANUAL.md §95/§100 — the same ghost-
+// column shape was independently found again in project360.routes.js's cost
+// widget and a 4th unrelated cost computation in project-profitability.routes.js,
+// both flagged there, not fixed (out of scope for this pass).
 function buildProfitability(p, pcs, prs) {
   const budget   = parseFloat(p?.budget_amount || p?.budget || 0);
   const revenue  = parseFloat(prs?.order_value || pcs?.total_revenue || pcs?.revenue || budget);
@@ -142,26 +164,22 @@ function buildProfitability(p, pcs, prs) {
   const retention = parseFloat(prs?.retention_value || 0);
   const pending   = parseFloat(prs?.pending_collection || Math.max(0, invoiced - collected));
 
-  const salesTravel      = parseFloat(pcs?.sales_travel_cost || pcs?.travel_cost || 0);
-  const appEng           = parseFloat(pcs?.app_engineering_cost || 0);
-  const engineering      = parseFloat(pcs?.engineering_cost || pcs?.labour_cost || 0);
-  const procurement      = parseFloat(pcs?.procurement_cost || pcs?.procurement_overhead || 0);
-  const material         = parseFloat(pcs?.material_cost || 0);
-  const inventory        = parseFloat(pcs?.inventory_cost || 0);
-  const production       = parseFloat(pcs?.production_cost || pcs?.manufacturing_cost || 0);
-  const labour           = parseFloat(pcs?.labour_cost || 0);
-  const quality          = parseFloat(pcs?.quality_cost || 0);
-  const fat              = parseFloat(pcs?.fat_cost || 0);
-  const transport        = parseFloat(pcs?.transport_cost || 0);
-  const installation     = parseFloat(pcs?.installation_cost || 0);
-  const commissioning    = parseFloat(pcs?.commissioning_cost || 0);
-  const service          = parseFloat(pcs?.service_cost || 0);
-  const amc              = parseFloat(pcs?.amc_cost || pcs?.amc_revenue || 0);
-  const other            = parseFloat(pcs?.other_cost || 0);
+  // Sourced directly from the real rollup columns, named to match them (no
+  // inventory/FAT/"other"/transport/app-engineering equivalent exists in the
+  // real rollup, so those categories are simply gone rather than reading a
+  // column nothing populates).
+  const travel        = parseFloat(pcs?.travel_cost || 0);
+  const labour        = parseFloat(pcs?.labour_cost || 0);
+  const procurement   = parseFloat(pcs?.procurement_overhead || 0);
+  const material      = parseFloat(pcs?.material_cost || 0);
+  const manufacturing = parseFloat(pcs?.manufacturing_cost || 0);
+  const quality       = parseFloat(pcs?.quality_cost || 0);
+  const installation  = parseFloat(pcs?.installation_cost || 0);
+  const commissioning = parseFloat(pcs?.commissioning_cost || 0);
+  const service       = parseFloat(pcs?.service_cost || 0);
 
-  const totalCost = salesTravel + appEng + engineering + procurement + material +
-    inventory + production + quality + fat + transport + installation +
-    commissioning + service + amc + other;
+  const totalCost = travel + labour + procurement + material +
+    manufacturing + quality + installation + commissioning + service;
 
   const grossProfit = revenue - totalCost;
   const grossMarginPct = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
@@ -174,10 +192,8 @@ function buildProfitability(p, pcs, prs) {
     collection_value: collected, retention_value: retention,
     pending_collection: pending,
     cost_breakdown: {
-      sales_travel: salesTravel, app_engineering: appEng,
-      engineering, procurement, material, inventory, production,
-      labour, quality, fat, transport, installation,
-      commissioning, service, amc, other,
+      travel, labour, procurement, material, manufacturing,
+      quality, installation, commissioning, service,
     },
     total_cost: totalCost,
     gross_profit: grossProfit,
@@ -281,7 +297,7 @@ router.post('/transactions', requirePermission('projects', 'add'), async (req, r
 });
 
 // PUT /project-cost-engine/transactions/:id
-router.put('/transactions/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/transactions/:id', requirePermission('projects', 'edit'), captureBefore('project_cost_transactions'), async (req, res) => {
   try {
     const {
       customer_id, customer_name, project_id, project_code,
@@ -313,7 +329,7 @@ router.put('/transactions/:id', requirePermission('projects', 'edit'), async (re
 });
 
 // DELETE /project-cost-engine/transactions/:id
-router.delete('/transactions/:id', requirePermission('projects', 'delete'), async (req, res) => {
+router.delete('/transactions/:id', requirePermission('projects', 'delete'), captureBefore('project_cost_transactions'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `DELETE FROM project_cost_transactions WHERE id=$1 AND ($2::int IS NULL OR company_id=$2) RETURNING id`,
@@ -345,17 +361,44 @@ router.get('/revenue/:project_id', requirePermission('projects', 'view'), async 
          FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`,
         [pid, cid(req)]
       ),
+      // `sales_invoices` and `payment_receipts` never existed, and both calls
+      // swallowed the 42P01 into a zero — so project billing and collection have
+      // always read as ₹0 no matter how much was invoiced.
+      //
+      // There is no project_id on invoices or receipts, but there is now a
+      // complete key path, so nothing needs to be denormalised:
+      //   project -> opportunity -> quotation -> sales_order -> invoice
+      // and collections attach to those invoices through receipt_allocations.
       pool.query(
-        `SELECT COALESCE(SUM(total_amount),0) AS invoice_value, COUNT(*) AS invoice_count
-         FROM sales_invoices WHERE project_id=$1 AND ($2::int IS NULL OR company_id=$2)
-           AND status NOT IN ('cancelled','void')`,
+        `WITH project_invoices AS (
+           SELECT i.id, i.total_amount, i.status
+             FROM projects p
+             JOIN opportunities o ON o.id = p.opportunity_id
+             JOIN quotations    q ON q.id = o.quotation_id
+             JOIN sales_orders so ON so.quotation_id = q.id AND so.deleted_at IS NULL
+             JOIN invoices      i ON i.sales_order_id = so.id AND i.deleted_at IS NULL
+            WHERE p.id = $1 AND ($2::int IS NULL OR p.company_id = $2)
+         )
+         SELECT COALESCE(SUM(total_amount),0) AS invoice_value, COUNT(*) AS invoice_count
+           FROM project_invoices
+          WHERE LOWER(COALESCE(status,'')) NOT IN ('cancelled','void')`,
         [pid, cid(req)]
-      ).catch(() => ({ rows: [{ invoice_value: 0, invoice_count: 0 }] })),
+      ),
       pool.query(
-        `SELECT COALESCE(SUM(amount),0) AS collection_value
-         FROM payment_receipts WHERE project_id=$1 AND ($2::int IS NULL OR company_id=$2)`,
+        `WITH project_invoices AS (
+           SELECT i.id
+             FROM projects p
+             JOIN opportunities o ON o.id = p.opportunity_id
+             JOIN quotations    q ON q.id = o.quotation_id
+             JOIN sales_orders so ON so.quotation_id = q.id AND so.deleted_at IS NULL
+             JOIN invoices      i ON i.sales_order_id = so.id AND i.deleted_at IS NULL
+            WHERE p.id = $1 AND ($2::int IS NULL OR p.company_id = $2)
+         )
+         SELECT COALESCE(SUM(ra.allocated_amount),0) AS collection_value
+           FROM receipt_allocations ra
+           JOIN project_invoices pi ON pi.id = ra.invoice_id`,
         [pid, cid(req)]
-      ).catch(() => ({ rows: [{ collection_value: 0 }] })),
+      ),
     ]);
 
     const prs  = prsRes.status === 'fulfilled'  ? prsRes.value.rows[0]  : null;
@@ -442,11 +485,23 @@ router.get('/profitability/:project_id', requirePermission('projects', 'view'), 
          GROUP BY cost_type`,
         [pid, cid(req)]
       ).catch(() => ({ rows: [] })),
+      // Same phantom table as above: invoices reach a project through
+      // project -> opportunity -> quotation -> sales_order -> invoice.
       pool.query(
-        `SELECT COALESCE(SUM(total_amount),0) AS invoice_value
-         FROM sales_invoices WHERE project_id=$1 AND status NOT IN ('cancelled','void')`,
+        `WITH project_invoices AS (
+           SELECT i.*, p.id AS proj_id
+             FROM projects p
+             JOIN opportunities o ON o.id = p.opportunity_id
+             JOIN quotations    q ON q.id = o.quotation_id
+             JOIN sales_orders so ON so.quotation_id = q.id AND so.deleted_at IS NULL
+             JOIN invoices      i ON i.sales_order_id = so.id AND i.deleted_at IS NULL
+            WHERE p.id = $1
+         )
+         SELECT COALESCE(SUM(total_amount),0) AS invoice_value
+           FROM project_invoices
+          WHERE LOWER(COALESCE(status,'')) NOT IN ('cancelled','void')`,
         [pid]
-      ).catch(() => ({ rows: [{ invoice_value: 0 }] })),
+      ),
     ]);
 
     const proj = projRes.status === 'fulfilled' ? projRes.value.rows[0] : null;
@@ -457,35 +512,24 @@ router.get('/profitability/:project_id', requirePermission('projects', 'view'), 
     const txRows = txRes.status === 'fulfilled' ? txRes.value.rows : [];
     const invoicedTotal = parseFloat(invRes.status === 'fulfilled' ? invRes.value.rows[0]?.invoice_value || 0 : 0);
 
-    // Build cost from transactions if available (most accurate), else from summary
+    // project_cost_summary (recalculateProjectCost's 9-source rollup) is this
+    // codebase's single canonical cost total — every other consumer (CEO 360,
+    // Customer 360, the fleet dashboard 20 lines below this endpoint, the EVM
+    // dashboard, project.repository.js's list view) already reads it directly.
+    // This endpoint used to swap in a second, independently-computed total
+    // from project_cost_transactions whenever any transaction rows existed for
+    // the project, so the same project could show two different profitability
+    // numbers depending which screen you were on. project_cost_transactions
+    // remains a genuinely useful per-transaction ledger (manual entry, audit
+    // trail, `is_unallocated` tracking) — it's kept below as `tx_breakdown`
+    // detail, just no longer used to compute the headline numbers. See
+    // MODULE_FEATURE_CONNECTION_MANUAL.md §95/§100.
     const txMap = {};
     COST_TYPES.forEach(t => { txMap[t] = 0; });
     txRows.forEach(r => { txMap[r.cost_type] = parseFloat(r.total || 0); });
-
     const hasTxData = txRows.length > 0;
-    const pcsForCalc = hasTxData ? {
-      sales_travel_cost:    txMap['SALES_TRAVEL'],
-      app_engineering_cost: txMap['APPLICATION_ENGINEERING'],
-      engineering_cost:     txMap['ENGINEERING'],
-      procurement_cost:     txMap['PROCUREMENT'],
-      material_cost:        txMap['MATERIAL'],
-      inventory_cost:       txMap['INVENTORY'],
-      production_cost:      txMap['PRODUCTION'],
-      labour_cost:          txMap['LABOUR'],
-      quality_cost:         txMap['QUALITY'],
-      fat_cost:             txMap['FAT'],
-      transport_cost:       txMap['TRANSPORT'],
-      installation_cost:    txMap['INSTALLATION'],
-      commissioning_cost:   txMap['COMMISSIONING'],
-      service_cost:         txMap['SERVICE'],
-      amc_cost:             txMap['AMC'],
-      other_cost:           txMap['OTHER'],
-      cost_performance_index:      pcs?.cost_performance_index || 1,
-      schedule_performance_index:  pcs?.schedule_performance_index || 1,
-      total_revenue: prs?.order_value || proj.contract_value || 0,
-    } : pcs;
 
-    const profitability = buildProfitability(proj, pcsForCalc, {
+    const profitability = buildProfitability(proj, pcs, {
       ...prs,
       invoice_value: invoicedTotal || prs?.invoice_value,
     });
@@ -515,8 +559,38 @@ router.get('/profitability/:project_id', requirePermission('projects', 'view'), 
 router.get('/dashboard', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
-    const cWhere = companyId ? 'WHERE p.company_id=$1' : 'WHERE TRUE';
-    const params = companyId ? [companyId] : [];
+
+    // Dashboard filter bar: ?period / ?from / ?to / ?status / ?project_type.
+    // The project-level queries and the cost-transaction queries hit different
+    // tables, so each builds its own param list — sharing one array would hand a
+    // query placeholders it never references, which Postgres rejects outright.
+    const range = resolveRange(req.query, { defaultPeriod: 'all' });
+    const status = dimension(req.query, 'status');
+    const projectType = dimension(req.query, 'project_type');
+
+    // Projects: filter by overlap with the window, matching /projects/projects —
+    // a long-running job is still "in" a quarter it spans.
+    const projParams = [];
+    let projWhere = 'WHERE TRUE';
+    if (companyId)   { projParams.push(companyId);   projWhere += ` AND p.company_id=$${projParams.length}`; }
+    if (status)      { projParams.push(status);      projWhere += ` AND p.status=$${projParams.length}`; }
+    if (projectType) { projParams.push(projectType); projWhere += ` AND p.project_type=$${projParams.length}`; }
+    if (range.from)  { projParams.push(range.from);  projWhere += ` AND (p.end_date IS NULL OR p.end_date >= $${projParams.length}::date)`; }
+    if (range.to)    { projParams.push(range.to);    projWhere += ` AND (p.start_date IS NULL OR p.start_date <= $${projParams.length}::date)`; }
+    const cWhere = projWhere;
+    const params = projParams;
+
+    // Cost transactions: dated by transaction_date, so a straight range.
+    const txScope = () => {
+      const p = [];
+      let sql = 'WHERE TRUE';
+      if (companyId)  { p.push(companyId);  sql += ` AND company_id=$${p.length}`; }
+      if (range.from) { p.push(range.from); sql += ` AND transaction_date >= $${p.length}::date`; }
+      if (range.to)   { p.push(range.to);   sql += ` AND transaction_date <= $${p.length}::date`; }
+      return { sql, params: p };
+    };
+    const txCostType = txScope();
+    const txTrend = txScope();
 
     const [overviewRes, projectsRes, costTypeRes, monthlyTrendRes, overBudgetRes] = await Promise.allSettled([
       // Top-level KPIs
@@ -569,20 +643,20 @@ router.get('/dashboard', requirePermission('projects', 'view'), async (req, res)
       pool.query(`
         SELECT cost_type, SUM(amount) AS total
         FROM project_cost_transactions
-        ${companyId ? 'WHERE company_id=$1' : ''}
+        ${txCostType.sql}
         GROUP BY cost_type ORDER BY total DESC
-      `, companyId ? [companyId] : []).catch(() => ({ rows: [] })),
+      `, txCostType.params).catch(() => ({ rows: [] })),
 
-      // Monthly cost/revenue trend (last 12 months)
+      // Monthly cost/revenue trend — window was hardcoded to 12 months, now
+      // follows the selected period (period=all keeps the full history).
       pool.query(`
         SELECT
           TO_CHAR(transaction_date,'YYYY-MM') AS month,
           SUM(amount)                          AS total_cost
         FROM project_cost_transactions
-        WHERE transaction_date >= CURRENT_DATE - INTERVAL '12 months'
-          ${companyId ? 'AND company_id=$1' : ''}
+        ${txTrend.sql}
         GROUP BY month ORDER BY month ASC
-      `, companyId ? [companyId] : []).catch(() => ({ rows: [] })),
+      `, txTrend.params).catch(() => ({ rows: [] })),
 
       // Over-budget projects
       pool.query(`
@@ -667,10 +741,14 @@ router.get('/ceo-command-center', requirePermission('projects', 'view'), async (
           COALESCE(SUM(CASE WHEN TO_CHAR(si.invoice_date,'YYYY-MM')=TO_CHAR(NOW(),'YYYY-MM')
                        THEN si.total_amount ELSE 0 END),0) AS revenue_this_month,
           COALESCE(SUM(si.total_amount),0)                  AS total_invoiced,
-          COUNT(DISTINCT si.project_id)                     AS billed_projects
-        FROM sales_invoices si
-        JOIN projects p ON p.id=si.project_id
-        WHERE si.status NOT IN ('cancelled','void') ${cFilter}
+          COUNT(DISTINCT p.id)                              AS billed_projects
+        FROM invoices si
+        JOIN sales_orders so2 ON so2.id = si.sales_order_id AND so2.deleted_at IS NULL
+        JOIN quotations    q2 ON q2.id = so2.quotation_id
+        JOIN opportunities o2 ON o2.id = q2.opportunity_id
+        JOIN projects p ON p.opportunity_id = o2.id AND p.deleted_at IS NULL
+        WHERE si.deleted_at IS NULL
+          AND LOWER(COALESCE(si.status,'')) NOT IN ('cancelled','void') ${cFilter}
       `, params).catch(() => ({ rows: [{}] })),
 
       // Core profitability KPIs
@@ -737,9 +815,13 @@ router.get('/ceo-command-center', requirePermission('projects', 'view'), async (
           COALESCE(SUM(CASE WHEN si.status='paid' THEN si.total_amount ELSE 0 END),0) AS collected,
           COALESCE(SUM(CASE WHEN si.status<>'paid' THEN si.total_amount ELSE 0 END),0) AS outstanding,
           COUNT(CASE WHEN si.status<>'paid' AND si.due_date<CURRENT_DATE THEN 1 END)::int AS overdue_invoices
-        FROM sales_invoices si
-        JOIN projects p ON p.id=si.project_id
-        WHERE si.status NOT IN ('cancelled','void') ${cFilter}
+        FROM invoices si
+        JOIN sales_orders so3 ON so3.id = si.sales_order_id AND so3.deleted_at IS NULL
+        JOIN quotations    q3 ON q3.id = so3.quotation_id
+        JOIN opportunities o3 ON o3.id = q3.opportunity_id
+        JOIN projects p ON p.opportunity_id = o3.id AND p.deleted_at IS NULL
+        WHERE si.deleted_at IS NULL
+          AND LOWER(COALESCE(si.status,'')) NOT IN ('cancelled','void') ${cFilter}
       `, params).catch(() => ({ rows: [{}] })),
 
       // Cost type breakdown across portfolio
@@ -800,12 +882,12 @@ router.get('/cost-centers', requirePermission('projects', 'view'), async (req, r
     const { rows } = await pool.query(
       `SELECT cc.*,
               p.name AS parent_name,
-              d.department_name AS dept_name,
+              d.name AS dept_name,
               (SELECT COUNT(*) FROM project_cost_transactions pct WHERE pct.cost_center_id=cc.id) AS tx_count,
               (SELECT COALESCE(SUM(amount),0) FROM project_cost_transactions pct WHERE pct.cost_center_id=cc.id) AS total_spend
        FROM cost_centers cc
        LEFT JOIN cost_centers p  ON p.id=cc.parent_id
-       LEFT JOIN departments  d  ON d.id=cc.department_id
+       LEFT JOIN master_departments d ON d.id=cc.department_id
        WHERE ($1::int IS NULL OR cc.company_id=$1) AND cc.is_active=TRUE
        ORDER BY cc.code`,
       [cid(req)]
@@ -827,7 +909,7 @@ router.post('/cost-centers', requirePermission('projects', 'add'), async (req, r
 });
 
 // PUT /project-cost-engine/cost-centers/:id
-router.put('/cost-centers/:id', requirePermission('projects', 'edit'), async (req, res) => {
+router.put('/cost-centers/:id', requirePermission('projects', 'edit'), captureBefore('cost_centers'), async (req, res) => {
   try {
     const { code, name, department, department_id, parent_id, description, is_active } = req.body;
     const { rows: [cc] } = await pool.query(`
@@ -900,7 +982,7 @@ router.post('/capture-module-costs', requirePermission('projects', 'edit'), asyn
     // TRAVEL — sales travel costs
     if (captureAll || modules.includes('travel')) {
       const { rows: travelRows } = await pool.query(`
-        SELECT tr.id, tr.project_id, tr.total_amount AS amount,
+        SELECT tr.id, tr.project_id, tr.estimated_amount AS amount,
                tr.purpose AS description, tr.created_at::date AS transaction_date,
                COALESCE(p.customer_name, p.client_name) AS customer_name,
                p.project_code

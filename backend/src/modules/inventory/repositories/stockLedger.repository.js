@@ -161,15 +161,67 @@ class StockLedgerRepository {
     return result.rows;
   }
 
-  async getInventoryValuation(warehouseId = null, valuationMethod = 'Weighted Average') {
-    // All supported methods use weighted average on the stock_ledger for now;
-    // FIFO requires a FIFO-layer table (not yet implemented — tracked as future enhancement).
-    // Standard Cost uses item.standard_cost instead of ledger AVG(rate).
-    const useStandardCost = valuationMethod === 'Standard Cost';
+  async getInventoryValuation(warehouseId = null, valuationMethod = 'Weighted Average', companyId = null) {
+    // FIFO and FEFO are now REAL, and the method asked for is the method used.
+    //
+    // This used to accept 'FIFO' and silently return weighted average, with a
+    // comment explaining that a layer table did not exist. Returning a different
+    // number under the requested label is worse than refusing: the caller cannot
+    // tell, and inventory value is a reported financial figure.
+    //
+    // The layers exist as of migration 20260911000014 and are maintained by
+    // postStock(). Valuation prices the REMAINING layers, oldest first (FIFO) or
+    // nearest-expiry first (FEFO) — which is the point: the two differ only in
+    // which layers are left after issues have been drawn in that order.
+    const method = String(valuationMethod || 'Weighted Average');
+    const isLayered = method === 'FIFO' || method === 'FEFO';
 
+    if (isLayered) {
+      const params = [];
+      let whFilter = '';
+      if (warehouseId) { params.push(warehouseId); whFilter = ` AND l.warehouse_id = $${params.length}`; }
+      const { rows } = await pool.query(`
+        SELECT ii.id, ii.item_code, ii.item_name, ii.item_type, ii.hsn_code, ii.gst_rate,
+               w.warehouse_name,
+               SUM(l.qty_remaining)                        AS balance,
+               CASE WHEN SUM(l.qty_remaining) > 0
+                    THEN SUM(l.qty_remaining * l.unit_cost) / SUM(l.qty_remaining)
+                    ELSE 0 END                             AS avg_rate,
+               SUM(l.qty_remaining * l.unit_cost)          AS value,
+               COUNT(*)::int                               AS layer_count
+          FROM inventory_fifo_layers l
+          JOIN inventory_items ii ON ii.id = l.item_id
+          LEFT JOIN warehouses w  ON w.id = l.warehouse_id
+         WHERE l.qty_remaining > 0 AND ii.deleted_at IS NULL${whFilter}
+         GROUP BY ii.id, ii.item_code, ii.item_name, ii.item_type, ii.hsn_code, ii.gst_rate, w.warehouse_name
+         ORDER BY value DESC`, params);
+
+      const annualRate = this.getHoldingRate();
+      return rows.map((row) => {
+        const value = Number.parseFloat(row.value || 0);
+        return {
+          ...row,
+          balance: Number.parseFloat(row.balance || 0),
+          avg_rate: Number.parseFloat(row.avg_rate || 0),
+          value,
+          valuation_method: method,
+          annual_holding_cost: Math.round(value * annualRate * 100) / 100,
+        };
+      });
+    }
+
+    // Standard Cost uses item.standard_cost instead of ledger AVG(rate).
+    const useStandardCost = method === 'Standard Cost';
+
+    // A weighted average has to be weighted by QUANTITY. This was
+    // AVG(NULLIF(sl.rate, 0)) — the unweighted mean of the rates on the ledger
+    // rows — which prices a 1-unit receipt at 1,000 and a 1,000-unit receipt
+    // at 10 as 505/unit instead of the true 10.99. Receipts are the correct
+    // weight: issues leave at the running average, they do not reprice what
+    // remains.
     const rateExpr = useStandardCost
       ? 'COALESCE(ii.standard_cost, 0)'
-      : 'COALESCE(AVG(NULLIF(sl.rate, 0)), 0)';
+      : 'COALESCE(SUM(sl.quantity_in * sl.rate) / NULLIF(SUM(sl.quantity_in), 0), 0)';
 
     let query = `SELECT
                   ii.id, ii.item_code, ii.item_name, ii.item_type,
@@ -181,8 +233,11 @@ class StockLedgerRepository {
                  FROM inventory_items ii
                  CROSS JOIN warehouses w
                  LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
-                 WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL`;
-    const params = [];
+                 WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL
+                   AND ($1::INTEGER IS NULL OR ii.company_id = $1)`;
+    // Tenant predicate first, so every later $n stays positional. Without it
+    // this priced every company's stock into one caller's valuation.
+    const params = [companyId ?? null];
 
     if (warehouseId) {
       params.push(warehouseId);

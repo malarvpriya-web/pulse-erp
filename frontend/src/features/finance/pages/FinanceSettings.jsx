@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Landmark, ArrowLeft } from 'lucide-react';
+import { Landmark, ArrowLeft, SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -643,7 +644,23 @@ export default function FinanceSettings({ setPage }) {
   const goBack = () => setPage && setPage('SettingsCenter');
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f8f9fb', fontFamily: 'inherit', display: 'flex', flexDirection: 'column' }}>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Finance"
+        title="Finance Settings"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={goBack}>
+                Settings
+              </button>
+          <button className="plh-cta"
+          onClick={goBack}>
+          <ArrowLeft size={14} />
+          Back to Settings
+        </button>
+        </>}
+      />
+    }>
 
       {toast && (
         <div style={{
@@ -656,47 +673,6 @@ export default function FinanceSettings({ setPage }) {
         </div>
       )}
 
-      {/* Header */}
-      <div style={{
-        background: '#fff', borderBottom: '1px solid #f0f0f4',
-        padding: '16px 28px', display: 'flex', alignItems: 'center',
-        justifyContent: 'space-between', gap: 16, flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{
-            width: 40, height: 40, borderRadius: 10, background: '#f5f3ff',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-          }}>
-            <Landmark size={20} color="#6B3FDB" />
-          </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-              <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#111827', lineHeight: 1.3 }}>
-                Finance Settings
-              </h1>
-              {dirty && <span style={{ color: '#d97706', fontSize: 15 }} title="Unsaved changes">●</span>}
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
-              <button onClick={goBack} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#6B3FDB', fontSize: 12 }}>
-                Settings
-              </button>
-              <span style={{ color: '#d1d5db', fontSize: 12 }}>/</span>
-              <span style={{ fontSize: 12, color: '#6b7280' }}>Finance</span>
-            </div>
-          </div>
-        </div>
-        <button
-          onClick={goBack}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: 'none', border: '1px solid #e5e7eb', borderRadius: 7,
-            padding: '7px 14px', cursor: 'pointer', color: '#374151', fontSize: 13, fontWeight: 500,
-          }}
-        >
-          <ArrowLeft size={14} />
-          Back to Settings
-        </button>
-      </div>
 
       {/* Tab bar */}
       <div style={{
@@ -740,12 +716,12 @@ export default function FinanceSettings({ setPage }) {
       {!loading && (
         <div style={{
           position: 'sticky', bottom: 0, background: '#fff',
-          borderTop: dirty ? '2px solid #fbbf24' : '1px solid #f0f0f4',
+          borderTop: dirty ? '2px solid #8b5cf6' : '1px solid #f0f0f4',
           padding: '13px 28px',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           boxShadow: '0 -2px 8px rgba(0,0,0,0.04)', zIndex: 10,
         }}>
-          <span style={{ fontSize: 13, color: dirty ? '#d97706' : '#9ca3af' }}>
+          <span style={{ fontSize: 13, color: dirty ? '#6d28d9' : '#9ca3af' }}>
             {dirty ? 'You have unsaved changes' : hasSaved ? '✓ All changes saved' : null}
           </span>
           <div style={{ display: 'flex', gap: 10 }}>
@@ -775,6 +751,6 @@ export default function FinanceSettings({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

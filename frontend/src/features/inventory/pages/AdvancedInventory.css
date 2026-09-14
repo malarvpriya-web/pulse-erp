@@ -27,8 +27,8 @@
 
 .metric-card.red { border-left-color: #dc2626; }
 .metric-card.blue { border-left-color: #2563eb; }
-.metric-card.yellow { border-left-color: #f59e0b; }
-.metric-card.orange { border-left-color: #ea580c; }
+.metric-card.yellow { border-left-color: #7c5cf0; }
+.metric-card.orange { border-left-color: #6d28d9; }
 .metric-card.green { border-left-color: #16a34a; }
 .metric-card.purple { border-left-color: #9333ea; }
 
@@ -112,7 +112,7 @@
 }
 
 .bar-segment.reserved {
-  background: #f59e0b;
+  background: #7c5cf0;
 }
 
 .bar-segment.available {
@@ -135,7 +135,7 @@
 }
 
 .legend-box.reserved {
-  background: #f59e0b;
+  background: #7c5cf0;
 }
 
 .legend-box.available {
@@ -187,7 +187,7 @@
   background: white;
   padding: 15px 20px;
   border-radius: 10px;
-  border-left: 4px solid #f59e0b;
+  border-left: 4px solid #7c5cf0;
   display: flex;
   align-items: center;
   gap: 15px;
@@ -195,7 +195,7 @@
 }
 
 .alert-card.low_stock {
-  border-left-color: #f59e0b;
+  border-left-color: #7c5cf0;
 }
 
 .alert-card.out_of_stock {
@@ -203,7 +203,7 @@
 }
 
 .alert-card.expiring_soon {
-  border-left-color: #ea580c;
+  border-left-color: #6d28d9;
 }
 
 .alert-icon {
@@ -248,12 +248,12 @@
   background: white;
   border-radius: 12px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  border-left: 4px solid #f59e0b;
+  border-left: 4px solid #7c5cf0;
   overflow: hidden;
 }
 
 .alert-card-full.low_stock {
-  border-left-color: #f59e0b;
+  border-left-color: #7c5cf0;
 }
 
 .alert-card-full.out_of_stock {
@@ -261,7 +261,7 @@
 }
 
 .alert-card-full.expiring_soon {
-  border-left-color: #ea580c;
+  border-left-color: #6d28d9;
 }
 
 .alert-card-full.expired {
@@ -306,8 +306,8 @@
 }
 
 .alert-status.active {
-  background: #fef3c7;
-  color: #92400e;
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 .alert-status.acknowledged {
@@ -419,8 +419,8 @@
 }
 
 .priority-badge.medium {
-  background: #fef3c7;
-  color: #92400e;
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 .priority-badge.low {
@@ -550,8 +550,8 @@
 }
 
 .expiry-badge.warning {
-  background: #fef3c7;
-  color: #92400e;
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 .expiry-badge.ok {

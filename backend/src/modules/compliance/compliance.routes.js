@@ -13,6 +13,7 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { pickUpdatable } from '../../shared/safeUpdate.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const cid = (req) => req.scope?.company_id ?? null;
@@ -85,7 +86,7 @@ router.post('/standards', perm('add'), async (req, res) => {
   }
 });
 
-router.put('/standards/:id', perm('edit'), async (req, res) => {
+router.put('/standards/:id', perm('edit'), captureBefore('compliance_standards'), async (req, res) => {
   try {
     const companyId = cid(req);
     if (req.body.status && !STATUS.has(req.body.status)) return res.status(400).json({ error: `invalid status: ${req.body.status}` });
@@ -107,7 +108,7 @@ router.put('/standards/:id', perm('edit'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/standards/:id', perm('delete'), async (req, res) => {
+router.delete('/standards/:id', perm('delete'), captureBefore('compliance_standards'), async (req, res) => {
   try {
     const companyId = cid(req);
     const vals = [req.params.id];
@@ -140,7 +141,7 @@ router.post('/standards/:id/evidence', perm('add'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/evidence/:id', perm('delete'), async (req, res) => {
+router.delete('/evidence/:id', perm('delete'), captureBefore('compliance_evidence'), async (req, res) => {
   try {
     const { rowCount } = await pool.query(`DELETE FROM compliance_evidence WHERE id = $1`, [req.params.id]);
     if (!rowCount) return res.status(404).json({ error: 'evidence not found' });
@@ -183,7 +184,7 @@ router.post('/audits', perm('add'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/audits/:id', perm('edit'), async (req, res) => {
+router.put('/audits/:id', perm('edit'), captureBefore('compliance_audits'), async (req, res) => {
   try {
     const companyId = cid(req);
     if (req.body.audit_type && !AUDIT_TYPE.has(req.body.audit_type)) return res.status(400).json({ error: `invalid audit_type: ${req.body.audit_type}` });

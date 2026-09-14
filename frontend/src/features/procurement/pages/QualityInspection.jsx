@@ -1,15 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
-import { RefreshCw, Plus, X, CheckCircle, AlertOctagon, ClipboardList, Paperclip } from 'lucide-react';
+import {
+  RefreshCw, Plus, X, CheckCircle, AlertOctagon, ClipboardList,
+  Paperclip, ShieldCheck,
+} from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const RESULT_CFG = {
   pass:        { label: 'Pass',        bg: '#dcfce7', color: '#166534' },
   fail:        { label: 'Fail',        bg: '#fee2e2', color: '#991b1b' },
-  conditional: { label: 'Conditional', bg: '#fef3c7', color: '#92400e' },
+  conditional: { label: 'Conditional', bg: '#ede9fe', color: '#5b21b6' },
 };
 const SEV_CFG = {
-  minor:    { label: 'Minor',    bg: '#fef3c7', color: '#92400e' },
-  major:    { label: 'Major',    bg: '#ffedd5', color: '#c2410c' },
+  minor:    { label: 'Minor',    bg: '#ede9fe', color: '#5b21b6' },
+  major:    { label: 'Major',    bg: '#ede9fe', color: '#5b21b6' },
   critical: { label: 'Critical', bg: '#fee2e2', color: '#991b1b' },
 };
 
@@ -103,29 +107,28 @@ export default function QualityInspection() {
   const inp = { width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, boxSizing: 'border-box' };
 
   return (
-    <div style={{ padding: '24px 28px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Procurement"
+        title="Quality Inspection"
+        subtitle="Incoming quality control, NCR management, and CAPA tracking"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button className="plh-cta" onClick={() => { setNcrForm(EMPTY_NCR); setNcrModal(true); }}>
+            <Plus size={14} /> Raise NCR
+          </button>
+        </>}
+      />
+    }>
       {toast && (
         <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, padding: '10px 20px', borderRadius: 8, background: toast.type === 'error' ? '#fee2e2' : '#dcfce7', color: toast.type === 'error' ? '#991b1b' : '#166534', fontWeight: 600, fontSize: 14 }}>
           {toast.msg}
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: '#111' }}>Quality Inspection</h1>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 14 }}>Incoming quality control, NCR management, and CAPA tracking</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={load} style={{ background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-            <RefreshCw size={14} /> Refresh
-          </button>
-          <button onClick={() => { setNcrForm(EMPTY_NCR); setNcrModal(true); }}
-            style={{ background: '#ef4444', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', color: '#fff', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Plus size={14} /> Raise NCR
-          </button>
-        </div>
-      </div>
 
       {/* KPIs */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
@@ -217,8 +220,8 @@ export default function QualityInspection() {
                     <td style={{ padding: '10px 14px', textTransform: 'capitalize' }}>{(n.disposition || '').replace(/_/g, ' ')}</td>
                     <td style={{ padding: '10px 14px' }}>
                       <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700,
-                        color: n.status === 'closed' ? '#166534' : '#92400e',
-                        background: n.status === 'closed' ? '#dcfce7' : '#fef3c7' }}>
+                        color: n.status === 'closed' ? '#166534' : '#5b21b6',
+                        background: n.status === 'closed' ? '#dcfce7' : '#ede9fe' }}>
                         {n.status}
                       </span>
                     </td>
@@ -330,6 +333,6 @@ export default function QualityInspection() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

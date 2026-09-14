@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
+import { SlidersHorizontal } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -91,13 +93,14 @@ export default function ComplianceSettings({ setPage }) {
   const set = (key, val) => setSettings(s => ({ ...s, [key]: val }));
 
   return (
-    <div style={{ padding: 24, maxWidth: 820, margin: '0 auto' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontWeight: 800, fontSize: 22, color: '#1f2937', margin: 0 }}>Compliance Settings</h2>
-        <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-          Configure GST, TDS, PF/ESIC, and audit retention policies. These settings affect statutory filings.
-        </p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={SlidersHorizontal}
+        eyebrow="Finance"
+        title="Compliance Settings"
+        subtitle="Configure GST, TDS, PF/ESIC, and audit retention policies. These settings affect statutory filings."
+      />
+    }>
 
       {SECTIONS.map(section => (
         <div key={section.id} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20, marginBottom: 16 }}>
@@ -131,6 +134,6 @@ export default function ComplianceSettings({ setPage }) {
         <button onClick={() => setPage?.('GSTModule')} style={{ padding: '10px 24px', borderRadius: 8, border: `1px solid ${BORDER}`, background: '#fff', color: '#374151', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>Cancel</button>
         <button onClick={save} disabled={saving} style={{ padding: '10px 24px', borderRadius: 8, background: saving ? '#d1d5db' : PURPLE, color: '#fff', fontWeight: 700, fontSize: 14, border: 'none', cursor: saving ? 'not-allowed' : 'pointer' }}>{saving ? 'Saving…' : 'Save Settings'}</button>
       </div>
-    </div>
+    </PageShell>
   );
 }

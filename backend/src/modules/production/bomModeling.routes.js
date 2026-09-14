@@ -4,6 +4,7 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const cidOf = (req) => (req.scope?.company_id != null ? req.scope.company_id : null);
@@ -25,7 +26,7 @@ router.get('/boms', requirePermission('bom', 'view'), async (req, res) => {
 });
 
 /* PATCH /mfg/boms/:id/phantom { is_phantom } */
-router.patch('/boms/:id/phantom', requirePermission('bom', 'edit'), async (req, res) => {
+router.patch('/boms/:id/phantom', requirePermission('bom', 'edit'), captureBefore('bom_headers'), async (req, res) => {
   try {
     const { rows: [row] } = await pool.query(
       `UPDATE bom_headers SET is_phantom = $2, updated_at = NOW() WHERE id = $1 RETURNING id, product_name, is_phantom`,

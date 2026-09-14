@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   TrendingUp, TrendingDown, Users, IndianRupee, Briefcase, AlertTriangle,
-  CheckCircle, RefreshCw, ChevronRight, Bell, Target, Zap,
+  CheckCircle, RefreshCw, Bell, Target, Zap, Minus, Wallet, Gauge,
   Trophy, Truck, UserPlus, BarChart2, Inbox,
 } from 'lucide-react';
 import {
@@ -12,6 +12,10 @@ import {
 import api from '@/services/api/client';
 import RequireRole from '@/components/auth/RequireRole';
 import DashCard from '@/components/dashboard/DashCard';
+import useDashboardFilters, { PERIOD_OPTIONS } from '@/hooks/useDashboardFilters';
+import {
+  DashboardFilterBar, PageHero, PageShell, StatBand, Stat,
+} from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
 import './ExecutiveDashboard.css';
 
@@ -20,10 +24,12 @@ const P = '#6B3FDB';
 const fmt = n => {
   if (!n && n !== 0) return '₹0';
   const v = parseFloat(n);
-  if (v >= 10_000_000) return `₹${(v / 10_000_000).toFixed(1)}Cr`;
-  if (v >= 100_000)    return `₹${(v / 100_000).toFixed(1)}L`;
-  if (v >= 1_000)      return `₹${(v / 1_000).toFixed(0)}K`;
-  return `₹${v.toFixed(0)}`;
+  const sign = v < 0 ? '-' : '';
+  const a = Math.abs(v);
+  if (a >= 10_000_000) return `${sign}₹${(a / 10_000_000).toFixed(1)}Cr`;
+  if (a >= 100_000)    return `${sign}₹${(a / 100_000).toFixed(1)}L`;
+  if (a >= 1_000)      return `${sign}₹${(a / 1_000).toFixed(0)}K`;
+  return `${sign}₹${a.toFixed(0)}`;
 };
 
 // ── Rule-based AI insights ─────────────────────────────────────────────────
@@ -77,26 +83,29 @@ function generateInsights({ revTrend, attritionRate, pendingApprovals, pipelineV
 }
 
 // ── Style maps ─────────────────────────────────────────────────────────────
+// `warning` is the LAVENDER attention step, not amber — there is no orange
+// anywhere in the app since 2026-08-20 (see components/pulse-ui/pulse-hero.css).
 const INSIGHT_STYLE = {
   success: { bg: '#f0fdf4', border: '#bbf7d0', text: '#166534' },
-  warning: { bg: '#fffbeb', border: '#fde68a', text: '#92400e' },
+  warning: { bg: '#f5f3ff', border: '#ddd6fe', text: '#5b21b6' },
   danger:  { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' },
   info:    { bg: '#f5f3ff', border: '#e9e4ff', text: '#5b21b6' },
 };
 const ALERT_STYLE = {
   high:   { bg: '#fef2f2', border: '#fecaca', dot: '#dc2626' },
-  medium: { bg: '#fffbeb', border: '#fde68a', dot: '#d97706' },
+  medium: { bg: '#f5f3ff', border: '#ddd6fe', dot: '#6d28d9' },
   low:    { bg: '#eff6ff', border: '#bfdbfe', dot: '#2563eb' },
 };
-const STAGE_COLORS = [P, '#8b5cf6', '#f59e0b', '#ef4444', '#10b981'];
+const STAGE_COLORS = [P, '#8b5cf6', '#6d28d9', '#a78bfa', '#10b981'];
 const DEPT_COLORS  = [P, '#8b5cf6', '#6d28d9', '#a78bfa', '#c4b5fd', '#ddd6fe'];
 
-// Quick-nav chips shown in the page header (replaces the old Quick Navigation card)
+// Quick-nav chips — rendered into the filter bar's actions slot so they cost no
+// vertical band of their own.
 const QUICK_NAV = [
   { label: 'Finance',   page: 'FinanceDashboardNew', color: '#10b981' },
   { label: 'Sales',     page: 'SalesDashboard',      color: '#3b82f6' },
   { label: 'HR',        page: 'HRDashboard',         color: P },
-  { label: 'Projects',  page: 'ProjectsDashboard',   color: '#f59e0b' },
+  { label: 'Projects',  page: 'ProjectsDashboard',   color: '#8b5cf6' },
   { label: 'Approvals', page: 'ApprovalCenter',      color: '#ef4444' },
   { label: 'Reports',   page: 'Reports',             color: '#6b7280' },
 ];
@@ -105,12 +114,49 @@ const QUICK_NAV = [
 const RevTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 8, padding: '8px 12px', fontSize: 12 }}>
-      <div style={{ fontWeight: 600, color: '#374151', marginBottom: 3 }}>{label}</div>
-      <div style={{ color: P, fontWeight: 700 }}>{fmt(payload[0].value)}</div>
+    <div className="exd-tip">
+      <div className="exd-tip-lbl">{label}</div>
+      <div className="exd-tip-val">{fmt(payload[0].value)}</div>
     </div>
   );
 };
+
+/* Department axis tick. Recharts' default category tick is its own <Text>
+ * component, which WORD-WRAPS to the axis `width` — so "Human Resources"
+ * became two lines and collided with the rows above and below it in a 100px
+ * plot. A plain <text> never wraps; the full name stays in the tooltip. */
+const DeptTick = ({ x, y, payload }) => {
+  const v = String(payload?.value ?? '');
+  return (
+    <text x={x} y={y} dy={3} textAnchor="end" fontSize={10} fill="#6b7280">
+      {v.length > 13 ? `${v.slice(0, 12)}…` : v}
+    </text>
+  );
+};
+
+/* Delta chip. `inverse` flips good/bad for metrics where a fall is the win. */
+const Delta = ({ value, suffix = '%', inverse = false, flat = 0 }) => {
+  if (value == null || Number.isNaN(value)) return null;
+  const dir  = Math.abs(value) <= flat ? 0 : value > 0 ? 1 : -1;
+  const good = dir === 0 ? null : inverse ? dir < 0 : dir > 0;
+  const Icon = dir === 0 ? Minus : dir > 0 ? TrendingUp : TrendingDown;
+  const tone = good === null ? 'is-flat' : good ? 'is-good' : 'is-bad';
+  return (
+    <span className={`exd-delta ${tone}`}>
+      <Icon size={12} strokeWidth={2.5} />
+      {value > 0 ? '+' : ''}{value}{suffix}
+    </span>
+  );
+};
+
+/* Empty state that FILLS the card body instead of padding it out — a fixed
+ * 46px pad is what pushes a height-locked card past its grid row. */
+const Empty = ({ icon: Icon, text, color = '#d1d5db' }) => (
+  <div className="exd-empty">
+    <Icon size={22} color={color} />
+    <p>{text}</p>
+  </div>
+);
 
 export default function ExecutiveDashboard({ setPage }) {
   const [rev,      setRev]      = useState({ months: [], values: [], ytd: 0, thisMonth: 0, lastMonth: 0 });
@@ -124,15 +170,22 @@ export default function ExecutiveDashboard({ setPage }) {
   const [pl,           setPl]           = useState({ totalRevenue: 0, totalExpenses: 0, netProfit: 0 });
   // Roles that can open this page (e.g. `manager`) may not hold `finance:view` —
   // the P&L call 403s for them. Rather than show a permanently-stuck "—" tile
-  // forever, drop the Net Profit card entirely when we know it's a permission
+  // forever, drop the Net Profit stat entirely when we know it's a permission
   // denial (not a transient failure), same as the other tiles quietly degrade.
   const [plForbidden,  setPlForbidden]  = useState(false);
   const [topCustomers, setTopCustomers] = useState([]);
   const [topVendors,   setTopVendors]   = useState([]);
   const [hcTrend,      setHcTrend]      = useState([]);
   const [loading,      setLoading]      = useState(false);
+  // Named failures, so an outage is never rendered as an empty state.
+  const [failures,     setFailures]     = useState([]);
   const [lastSync,     setLastSync]     = useState(new Date());
   const abortRef = useRef(null);
+
+  // Revenue and P&L follow the period; alerts, approvals and headcount are
+  // point-in-time and stay unfiltered.
+  const filters = useDashboardFilters({ defaultPeriod: 'fytd', storageKey: 'executive-dashboard' });
+  const { params, bounds: periodBounds } = filters;
 
   const load = useCallback(async () => {
     // Cancel any in-flight request from a previous load
@@ -141,20 +194,24 @@ export default function ExecutiveDashboard({ setPage }) {
 
     setLoading(true);
 
+    const signal = abortRef.current.signal;
+    // P&L took a hardcoded calendar-YTD window; it now follows the period
+    // selector. Falls back to calendar YTD when the range is open-ended
+    // (period=all), since the P&L endpoint requires both bounds.
     const today = new Date();
-    const ytdStart = `${today.getFullYear()}-01-01`;
-    const ytdEnd   = today.toISOString().split('T')[0];
-    const signal   = abortRef.current.signal;
+    const plStart = periodBounds.from || `${today.getFullYear()}-01-01`;
+    const plEnd   = periodBounds.to   || today.toISOString().split('T')[0];
 
     const [dashR, revR, wfR, alertsR, salesR, crmR, attrR, plR, custR, vendR, hcR, opsR] = await Promise.allSettled([
       api.get('/dashboard/data',        { signal }),
-      api.get('/dashboard/revenue',     { signal }),
+      api.get('/dashboard/revenue',     { signal, params }),
       api.get('/dashboard/workforce',   { signal }),
+      // Alerts and approval queues are work-to-do, not period reporting.
       api.get('/dashboard/alerts',      { signal }),
       api.get('/dashboard/sales',       { signal }),
       api.get('/analytics/sales',       { signal }),
       api.get('/analytics/attrition',   { signal }),
-      api.get(`/finance/reports/profit-loss?start_date=${ytdStart}&end_date=${ytdEnd}`, { signal }),
+      api.get('/finance/reports/profit-loss', { signal, params: { start_date: plStart, end_date: plEnd } }),
       api.get('/dashboard/top-customers',   { signal }),
       api.get('/dashboard/top-vendors',     { signal }),
       api.get('/dashboard/headcount-trend', { signal }),
@@ -214,9 +271,21 @@ export default function ExecutiveDashboard({ setPage }) {
       setOpsActive(opsR.value.data?.active_projects ?? null);
     }
 
+    // Collect anything that did not come back, excluding the P&L 403 which is a
+    // known role limitation already handled by dropping that tile.
+    const named = [
+      ['Approvals', dashR], ['Revenue', revR], ['Workforce', wfR], ['Alerts', alertsR],
+      ['Sales pipeline', salesR], ['Sales KPIs', crmR], ['Attrition', attrR],
+      ['Top customers', custR], ['Top vendors', vendR], ['Headcount trend', hcR],
+      ['Operations', opsR],
+    ];
+    setFailures(named
+      .filter(([, r]) => r.status === 'rejected')
+      .map(([label, r]) => ({ label, status: r.reason?.response?.status ?? 0, forbidden: r.reason?.response?.status === 403 })));
+
     setLastSync(new Date());
     setLoading(false);
-  }, []);
+  }, [params, periodBounds]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -231,8 +300,18 @@ export default function ExecutiveDashboard({ setPage }) {
     ? Math.round(attrStats.rate)
     : (wf.total > 0 ? Math.round(((wf.attrition || 0) / wf.total) * 100) : 0);
   const pipeline   = sales.reduce((s, st) => s + (st.value || 0), 0);
+  const openDeals  = sales.reduce((s, x) => s + (x.count || 0), 0);
   const highAlerts = alerts.filter(a => a.priority === 'high').length;
   const netMargin  = pl.totalRevenue > 0 ? Math.round((pl.netProfit / pl.totalRevenue) * 100) : null;
+  const convRate   = crmStats.conversionRate;
+  const forecast   = pipeline > 0 ? pipeline * ((convRate != null ? convRate : 22) / 100) : null;
+  const totalHires = hcTrend.reduce((s, r) => s + (r.hires || 0), 0);
+  const totalExits = hcTrend.reduce((s, r) => s + (r.attrition || 0), 0);
+
+  const periodLabel = useMemo(
+    () => PERIOD_OPTIONS.find(o => o.value === filters.period)?.label || '',
+    [filters.period],
+  );
 
   const insights = useMemo(() => generateInsights({
     revTrend, attritionRate: attrition,
@@ -248,86 +327,93 @@ export default function ExecutiveDashboard({ setPage }) {
   };
   const userName = localStorage.getItem('name') || localStorage.getItem('userName') || 'Executive';
 
-  // KPI config
-  const kpis = [
+  // ── Stat band ────────────────────────────────────────────────────────────
+  // The numbers this page exists for, in one row. Each figure appears EXACTLY
+  // once on the page: the card footers that used to repeat Total/Active/New
+  // Hires, Hires/Exits and the pipeline total were dropped rather than left to
+  // disagree with these (the CFO Dashboard lesson, manual §113).
+  const stats = [
     {
-      icon: IndianRupee, label: 'Revenue YTD', tint: '#6B3FDB',
-      value: loading ? null : fmt(ytd),
-      sub: `${revTrend >= 0 ? '+' : ''}${revTrend}% vs last month`,
+      key: 'revenue', icon: IndianRupee, tone: 'primary', label: 'Revenue',
+      value: fmt(ytd), trend: revTrend, sub: 'vs last month',
       page: 'FinanceDashboardNew',
     },
-    {
-      icon: Users, label: 'Total Headcount', tint: '#10b981',
-      value: loading ? null : (wf.total || 0),
-      sub: `${wf.total || 0} active employees`,
-      page: 'EmployeesDashboard',
-    },
-    {
-      icon: Target, label: 'Sales Pipeline', tint: '#3b82f6',
-      value: loading ? null : fmt(pipeline),
-      sub: `${sales.reduce((s, x) => s + (x.count || 0), 0)} open deals`,
-      page: 'SalesDashboard',
-    },
-    {
-      icon: Briefcase, label: 'Active Projects', tint: '#f59e0b',
-      value: loading ? null : (opsActive !== null ? opsActive : '—'),
-      sub: 'Across departments',
-      page: 'ProjectsDashboard',
-    },
+    // Dropped entirely when the role cannot read P&L — a permanently stuck "—"
+    // is worse than an absent tile.
     ...(plForbidden ? [] : [{
-      icon: netMargin != null && netMargin >= 0 ? TrendingUp : TrendingDown,
-      label: 'Net Profit (YTD)',
-      tint: netMargin == null ? '#f59e0b' : netMargin >= 15 ? '#10b981' : netMargin >= 0 ? '#f59e0b' : '#ef4444',
-      value: loading ? null : (pl.totalRevenue > 0 ? fmt(pl.netProfit) : '—'),
-      sub: netMargin != null ? `${netMargin >= 0 ? '+' : ''}${netMargin}% net margin` : 'No P&L data yet',
+      key: 'profit', icon: Wallet,
+      tone: netMargin == null ? 'neutral' : netMargin >= 5 ? 'success' : 'danger',
+      label: 'Net Profit',
+      value: pl.totalRevenue > 0 ? fmt(pl.netProfit) : '—',
+      warn: pl.netProfit < 0,
+      sub: netMargin != null ? `${netMargin}% margin · spend ${fmt(pl.totalExpenses)}` : 'no P&L data this period',
       page: 'FinanceDashboardNew',
     }]),
     {
-      icon: attrition > 12 ? TrendingDown : TrendingUp,
-      label: 'Attrition Rate',
-      tint: attrition > 12 ? '#ef4444' : '#10b981',
-      value: loading ? null : `${attrition}%`,
-      sub: attrition > 12 ? 'Above 12% benchmark' : 'Within healthy range',
+      key: 'pipeline', icon: Target, tone: 'info', label: 'Pipeline',
+      value: fmt(pipeline),
+      sub: `${openDeals} open · forecast ${forecast != null ? fmt(forecast) : '—'}`,
+      page: 'SalesDashboard',
+    },
+    {
+      key: 'headcount', icon: Users, tone: 'success', label: 'Headcount',
+      value: wf.total || 0,
+      sub: `${wf.active || 0} active · ${wf.newHires || 0} new`,
       page: 'EmployeesDashboard',
     },
     {
-      icon: AlertTriangle, label: 'Open Alerts', tint: alerts.length > 3 ? '#ef4444' : '#f59e0b',
-      value: loading ? null : alerts.length,
-      sub: `${highAlerts} high priority`,
-      page: null,
+      key: 'projects', icon: Briefcase, tone: 'lavender', label: 'Active Projects',
+      value: opsActive !== null ? opsActive : '—',
+      sub: 'across departments',
+      page: 'ProjectsDashboard',
+    },
+    {
+      key: 'approvals', icon: CheckCircle,
+      tone: pendAppr > 10 ? 'warning' : 'neutral', label: 'Pending Approvals',
+      value: pendAppr,
+      sub: pendAppr > 10 ? 'queue is backing up' : 'queue is healthy',
+      page: 'ApprovalCenter',
     },
   ];
 
-  // Reusable chart renderers so the compact card and the expanded modal share markup
-  const revenueChart = (h = 200) => (
+  // Reusable chart renderers so the card and the expanded modal share markup.
+  // In-card charts take height="100%" and fill whatever the fit grid gives
+  // them; the modal copies pass a fixed pixel height and a longer window.
+  const revenueChart = (h = '100%') => (
     <ResponsiveContainer width="100%" height={h}>
-      <AreaChart data={revChart} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+      <AreaChart data={revChart} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="exdRevGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={P} stopOpacity={0.18} />
+            <stop offset="5%" stopColor={P} stopOpacity={0.2} />
             <stop offset="95%" stopColor={P} stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4" />
-        <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#9ca3af' }} />
-        <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: '#9ca3af' }} />
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4" vertical={false} />
+        <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#9ca3af' }} tickLine={false} axisLine={{ stroke: '#eceaf4' }} />
+        <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 10, fill: '#9ca3af' }} tickLine={false} axisLine={false} width={54} />
         <Tooltip content={<RevTooltip />} />
         <Area type="monotone" dataKey="revenue" stroke={P} strokeWidth={2.5}
-          fill="url(#exdRevGrad)" dot={{ r: 4, fill: P, strokeWidth: 0 }} />
+          fill="url(#exdRevGrad)" dot={{ r: 3, fill: P, strokeWidth: 0 }}
+          activeDot={{ r: 5, fill: P, stroke: '#fff', strokeWidth: 2 }} />
       </AreaChart>
     </ResponsiveContainer>
   );
 
-  const workforceChart = (h = 175) => (
+  const workforceChart = (h = '100%', limit = 6) => (
     <ResponsiveContainer width="100%" height={h}>
-      <BarChart data={wf.byDepartment?.slice(0, 6) || []} layout="vertical"
-        margin={{ top: 0, right: 24, left: 72, bottom: 0 }}>
+      <BarChart data={wf.byDepartment?.slice(0, limit) || []} layout="vertical"
+        margin={{ top: 0, right: 24, left: 2, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4" horizontal={false} />
-        <XAxis type="number" tick={{ fontSize: 11, fill: '#9ca3af' }} />
-        <YAxis type="category" dataKey="department" tick={{ fontSize: 11, fill: '#6b7280' }} width={70} />
-        <Tooltip formatter={v => [v, 'Employees']} />
-        <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-          {(wf.byDepartment || []).map((_, i) => (
+        <XAxis type="number" tick={{ fontSize: 10, fill: '#9ca3af' }} tickLine={false} axisLine={false} />
+        {/* interval=0 forces every department to keep its label — recharts
+            silently drops alternate category ticks when the plot is short, and
+            at 1366x768 that hid 3 of 6 departments. <DeptTick> then keeps each
+            label on ONE line (see its comment). */}
+        <YAxis type="category" dataKey="department" tick={<DeptTick />}
+          width={78} tickLine={false} axisLine={false} interval={0} />
+        <Tooltip formatter={v => [v, 'Employees']} cursor={{ fill: '#f8f7fd' }} />
+        <Bar dataKey="count" radius={[0, 5, 5, 0]} maxBarSize={18}>
+          {(wf.byDepartment || []).slice(0, limit).map((_, i) => (
             <Cell key={i} fill={DEPT_COLORS[i % DEPT_COLORS.length]} />
           ))}
         </Bar>
@@ -335,178 +421,207 @@ export default function ExecutiveDashboard({ setPage }) {
     </ResponsiveContainer>
   );
 
-  const headcountChart = (h = 180) => (
+  const headcountChart = (h = '100%', months = 8) => (
     <ResponsiveContainer width="100%" height={h}>
-      <BarChart data={hcTrend.slice(-12)} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+      <BarChart data={hcTrend.slice(-months)} margin={{ top: 4, right: 6, left: -16, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4" vertical={false} />
-        <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#9ca3af' }} />
-        <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} />
-        <Tooltip formatter={(v, n) => [v, n]} />
-        <Bar dataKey="hires" name="Hires" fill="#10b981" radius={[3, 3, 0, 0]} maxBarSize={14} />
-        <Bar dataKey="attrition" name="Attrition" fill="#ef4444" radius={[3, 3, 0, 0]} maxBarSize={14} />
+        <XAxis dataKey="month" tick={{ fontSize: 9, fill: '#9ca3af' }} tickLine={false} axisLine={{ stroke: '#eceaf4' }} />
+        <YAxis tick={{ fontSize: 9, fill: '#9ca3af' }} tickLine={false} axisLine={false} width={30} />
+        <Tooltip formatter={(v, n) => [v, n]} cursor={{ fill: '#f8f7fd' }} />
+        <Bar dataKey="hires" name="Hires" fill="#10b981" radius={[3, 3, 0, 0]} maxBarSize={12} />
+        <Bar dataKey="attrition" name="Exits" fill="#ef4444" radius={[3, 3, 0, 0]} maxBarSize={12} />
       </BarChart>
     </ResponsiveContainer>
   );
 
+  // Top-customers and top-vendors draw the same row shape from different keys;
+  // one renderer keeps the two cards from drifting apart.
+  const rankList = (rows, { valueOf, nameOf, color }) => (
+    <div className="dk-rank-list">
+      {rows.map((r, i) => {
+        const max = valueOf(rows[0]) || 1;
+        const pct = Math.round(((valueOf(r) || 0) / max) * 100);
+        return (
+          <div key={i} className="dk-rank-row">
+            <div className="dk-rank-meta">
+              <span className="dk-rank-name" title={nameOf(r)}>
+                <span className="dk-rank-num">#{i + 1}</span>{nameOf(r)}
+              </span>
+              <span className="dk-rank-val" style={{ color }}>{fmt(valueOf(r))}</span>
+            </div>
+            <div className="dk-bar-track">
+              <div className="dk-bar-fill" style={{ width: `${pct}%`, background: color, opacity: 0.75 }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const quickNav = (
+    <div className="exd-quicknav">
+      {QUICK_NAV.map(q => (
+        <button key={q.page} className="exd-chip" onClick={() => setPage(q.page)}>
+          <span className="exd-chip-dot" style={{ background: q.color }} />
+          {q.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  // Hero + filter bar + (only on failure) the degraded-load banner make up the
+  // frozen dock. They stay mounted across refetches so the controls never
+  // flicker away mid-interaction.
+  const chrome = (
+    <>
+      <PageHero
+        icon={Gauge}
+        eyebrow="Executive"
+        title="Executive Dashboard"
+        subtitle={`${greet()}, ${userName.split(' ')[0]} — company-wide performance at a glance`}
+        meta={[
+          { value: fmt(ytd), label: periodLabel ? `revenue · ${periodLabel.toLowerCase()}` : 'revenue' },
+          ...(netMargin != null
+            ? [{ value: `${netMargin}%`, label: 'net margin', tone: netMargin >= 20 ? 'good' : netMargin >= 5 ? 'warn' : 'bad' }]
+            : []),
+          { value: fmt(pipeline), label: 'pipeline' },
+          { value: highAlerts, label: 'high-priority alerts', tone: highAlerts > 0 ? 'bad' : 'good' },
+        ]}
+        actions={
+          <>
+            <span className="plh-pill">
+              Updated {lastSync.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+            <button className="plh-cta" onClick={load} disabled={loading}>
+              <RefreshCw size={14} className={loading ? 'plh-spin' : undefined} />
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </>
+        }
+      />
+
+      <DashboardFilterBar filters={filters} actions={quickNav} />
+
+      {!loading && failures.length > 0 && (
+        <div className="exd-banner">
+          <AlertTriangle size={14} className="exd-banner-ico" />
+          <strong>{failures.length} card{failures.length > 1 ? 's' : ''} could not load.</strong>
+          <span>
+            {failures.some(f => f.forbidden)
+              ? 'Some data is restricted for your role.'
+              : 'Showing empty because the request failed, not because there is no data.'}
+          </span>
+          <span className="exd-banner-list">{failures.map(f => `${f.label}${f.status ? ` (${f.status})` : ''}`).join(' · ')}</span>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <RequireRole roles={['super_admin', 'admin', 'manager']}>
-    <div className="dk-page exd-fit">
+    <PageShell className="exd-root" dock={chrome}>
+      <div className="exd-fit">
 
-      {/* ── Header ── */}
-      <div className="dk-head">
-        <div>
-          <h1 className="dk-title">{greet()}, {userName.split(' ')[0]} 👋</h1>
-          <p className="dk-subtitle">
-            {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
-            {' · '}Executive Overview
-          </p>
-        </div>
-        <div className="exd-quicknav">
-          {QUICK_NAV.map(q => (
-            <button key={q.page} className="exd-chip" onClick={() => setPage(q.page)}>
-              <span className="exd-chip-dot" style={{ background: q.color }} />
-              {q.label}
-            </button>
+        {/* ── Band 1 · the headline numbers ── */}
+        <StatBand cols={stats.length}>
+          {stats.map((s, i) => (
+            <Stat
+              key={s.key} index={i} icon={s.icon} tone={s.tone} label={s.label}
+              value={s.value} sub={s.sub} trend={s.trend} warn={s.warn}
+              loading={loading} onClick={s.page ? () => setPage(s.page) : undefined}
+            />
           ))}
-        </div>
-        <div className="dk-head-actions">
-          <span className="dk-sync">
-            Updated {lastSync.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-          </span>
-          {highAlerts > 0 && (
-            <span className="dk-btn" style={{ color: '#b91c1c', borderColor: '#fecaca', background: '#fef2f2' }}>
-              <Bell size={13} /> {highAlerts} alert{highAlerts > 1 ? 's' : ''}
-            </span>
-          )}
-          <button className="dk-btn primary" onClick={load} disabled={loading}>
-            <RefreshCw size={13} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-            Refresh
-          </button>
-        </div>
-      </div>
+        </StatBand>
 
-      {/* ── KPI strip ── */}
-      <div className="dk-kpis">
-        {kpis.map((k, i) => (
-          <div
-            key={i}
-            className={`dk-kpi ${k.page ? 'clickable' : ''}`}
-            style={{ '--dk-i': i }}
-            onClick={() => k.page && setPage(k.page)}
-          >
-            <div className="dk-kpi-top">
-              <span className="dk-kpi-ico" style={{ background: `${k.tint}18`, color: k.tint }}>
-                <k.icon size={15} />
-              </span>
-              <span className="dk-kpi-label">{k.label}</span>
-            </div>
-            {k.value === null
-              ? <div className="dk-kpi-sk" />
-              : <div className="dk-kpi-val">{k.value}</div>}
-            <div className="dk-kpi-sub">
-              <span>{k.sub}</span>
-              {k.page && <ChevronRight size={13} color="#c4c4d0" />}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* ── AI Insights ── */}
-      <div className="dk-insights">
-        <div className="dk-insights-hd">
-          <div className="dk-ai-icon"><Zap size={16} color={P} /></div>
-          <div>
-            <div className="dk-insights-title">AI Business Insights</div>
-            <div className="dk-insights-sub">
-              Last updated {lastSync.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-            </div>
-          </div>
-          <span className="dk-insights-badge">{insights.length} insight{insights.length !== 1 ? 's' : ''}</span>
-        </div>
-        <div className="dk-insights-grid">
-          {insights.map((ins, i) => {
-            const c = INSIGHT_STYLE[ins.type];
-            return (
-              <div key={i} className="dk-insight" style={{ background: c.bg, border: `1px solid ${c.border}` }}>
-                <span className="dk-insight-emoji">{ins.emoji}</span>
-                <span style={{ color: c.text }}>{ins.text}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ── Main cockpit grid: 4 cols × 2 rows under the fit contract ── */}
-      <div className="exd-main">
+        {/* ── Band 2 · money in, money forecast, things on fire ── */}
         <DashCard
-          index={0} className="exd-span2"
+          index={0} className="exd-c5"
           title="Revenue Trend" icon={<TrendingUp size={14} />} iconColor={P}
-          subtitle={`Monthly · last ${revChart.length} months`}
+          subtitle={`Monthly · last ${revChart.length} month${revChart.length === 1 ? '' : 's'}`}
           expandable={revChart.length > 0}
           headerRight={
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 11.5, color: '#9ca3af' }}>YTD <b style={{ color: '#1a1a2e' }}>{fmt(ytd)}</b></span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: revTrend >= 0 ? '#16a34a' : '#dc2626' }}>
-                {revTrend >= 0 ? '▲' : '▼'} {Math.abs(revTrend)}%
-              </span>
+            <span className="exd-hdr-stat">
+              <span>This month <b>{fmt(thisMonth)}</b></span>
+              <Delta value={revTrend} />
             </span>
           }
-          expandedChildren={revChart.length ? revenueChart(420) : null}
+          expandedChildren={revChart.length ? revenueChart(460) : null}
         >
           {revChart.length === 0
-            ? <div className="dk-empty"><BarChart2 size={26} color="#d1d5db" /><p>No revenue data yet</p></div>
-            : <div className="exd-chartfill">{revenueChart('100%')}</div>}
+            ? <Empty icon={BarChart2} text="No revenue data yet" />
+            : <div className="exd-chart">{revenueChart()}</div>}
         </DashCard>
 
         <DashCard
-          index={1} title="Sales Pipeline" icon={<Target size={14} />} iconColor="#3b82f6"
-          subtitle={`${sales.length} stages`}
+          index={1} className="exd-c4"
+          title="Pipeline by Stage" icon={<Target size={14} />} iconColor="#3b82f6"
+          subtitle={`${sales.length} stage${sales.length === 1 ? '' : 's'} · ${openDeals} deals${convRate != null ? ` · ${convRate.toFixed(1)}% conversion` : ''}`}
           onViewAll={() => setPage('SalesDashboard')}
+          expandable={sales.length > 5}
+          expandedChildren={
+            <div className="dk-rank-list">
+              {sales.map((s, i) => {
+                const max = Math.max(...sales.map(x => x.value || 0)) || 1;
+                const col = STAGE_COLORS[i % STAGE_COLORS.length];
+                return (
+                  <div key={i} className="dk-rank-row">
+                    <div className="dk-bar-labels">
+                      <span className="exd-stage-name">{s.stage}{s.count ? <em> · {s.count}</em> : null}</span>
+                      <span style={{ color: col, fontWeight: 700 }}>{fmt(s.value)}</span>
+                    </div>
+                    <div className="dk-bar-track">
+                      <div className="dk-bar-fill" style={{ width: `${Math.round(((s.value || 0) / max) * 100)}%`, background: col }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          }
         >
           {sales.length === 0 ? (
-            <div className="dk-empty"><Inbox size={26} color="#d1d5db" /><p>No pipeline data</p></div>
+            <Empty icon={Inbox} text="No pipeline data" />
           ) : (
-            <>
-              <div className="dk-rank-list exd-list">
-                {sales.map((s, i) => {
-                  const max = Math.max(...sales.map(x => x.value));
-                  const pct = max ? Math.round((s.value / max) * 100) : 0;
-                  const col = STAGE_COLORS[i % STAGE_COLORS.length];
-                  return (
-                    <div key={i} className="dk-rank-row">
-                      <div className="dk-bar-labels">
-                        <span style={{ color: '#374151', fontWeight: 500 }}>{s.stage}</span>
-                        <span style={{ color: col, fontWeight: 700 }}>{fmt(s.value)}</span>
-                      </div>
-                      <div className="dk-bar-track">
-                        <div className="dk-bar-fill" style={{ width: `${pct}%`, background: col }} />
-                      </div>
+            <div className="dk-rank-list">
+              {sales.slice(0, 5).map((s, i) => {
+                const max = Math.max(...sales.map(x => x.value || 0)) || 1;
+                const pct = Math.round(((s.value || 0) / max) * 100);
+                const col = STAGE_COLORS[i % STAGE_COLORS.length];
+                return (
+                  <div key={i} className="dk-rank-row">
+                    <div className="dk-bar-labels">
+                      <span className="exd-stage-name">
+                        {s.stage}{s.count ? <em> · {s.count}</em> : null}
+                      </span>
+                      <span style={{ color: col, fontWeight: 700 }}>{fmt(s.value)}</span>
                     </div>
-                  );
-                })}
-              </div>
-              <div className="dk-stats">
-                <div className="dk-stat">
-                  <div className="dk-stat-val" style={{ color: P }}>{fmt(pipeline)}</div>
-                  <div className="dk-stat-lbl">Total Pipeline Value</div>
-                </div>
-              </div>
-            </>
+                    <div className="dk-bar-track">
+                      <div className="dk-bar-fill" style={{ width: `${pct}%`, background: col }} />
+                    </div>
+                  </div>
+                );
+              })}
+              {sales.length > 5 && (
+                <div className="exd-more">+{sales.length - 5} more stage{sales.length - 5 > 1 ? 's' : ''} — Expand to see all</div>
+              )}
+            </div>
           )}
         </DashCard>
 
+        {/* The ONE card allowed to scroll inside itself: the alert feed is the
+            only panel here whose row count grows with the business. */}
         <DashCard
-          index={2} title="Smart Alerts" icon={<Bell size={14} />} iconColor="#ef4444"
-          subtitle={highAlerts > 0 ? `${highAlerts} high priority` : 'All clear'}
-          expandable={alerts.length > 3}
+          index={2} className="exd-c3"
+          title="Smart Alerts" icon={<Bell size={14} />} iconColor="#ef4444"
+          subtitle={highAlerts > 0 ? `${alerts.length} open · ${highAlerts} high priority` : `${alerts.length} open`}
+          expandable={alerts.length > 0}
           expandedChildren={
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+            <div className="exd-alerts">
               {alerts.map((a, i) => {
                 const s = ALERT_STYLE[a.priority] || ALERT_STYLE.low;
                 return (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 11px', borderRadius: 8, background: s.bg, border: `1px solid ${s.border}`, fontSize: 12.5 }}>
-                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: s.dot, flexShrink: 0 }} />
-                    <span>{a.message}</span>
+                  <div key={i} className="exd-alert" style={{ background: s.bg, borderColor: s.border }}>
+                    <span className="exd-alert-dot" style={{ background: s.dot }} />
+                    <span className="exd-alert-txt exd-alert-wrap">{a.message}</span>
                   </div>
                 );
               })}
@@ -514,15 +629,15 @@ export default function ExecutiveDashboard({ setPage }) {
           }
         >
           {alerts.length === 0 ? (
-            <div className="dk-empty"><CheckCircle size={26} color="#10b981" /><p>No active alerts</p></div>
+            <Empty icon={CheckCircle} text="No active alerts" color="#10b981" />
           ) : (
-            <div className="exd-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {alerts.slice(0, 5).map((a, i) => {
+            <div className="exd-alerts exd-scroll">
+              {alerts.map((a, i) => {
                 const s = ALERT_STYLE[a.priority] || ALERT_STYLE.low;
                 return (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 8, background: s.bg, border: `1px solid ${s.border}`, fontSize: 12, flexShrink: 0 }}>
-                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: s.dot, flexShrink: 0 }} />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.message}</span>
+                  <div key={i} className="exd-alert" style={{ background: s.bg, borderColor: s.border }}>
+                    <span className="exd-alert-dot" style={{ background: s.dot }} />
+                    <span className="exd-alert-txt" title={a.message}>{a.message}</span>
                   </div>
                 );
               })}
@@ -530,100 +645,96 @@ export default function ExecutiveDashboard({ setPage }) {
           )}
         </DashCard>
 
+        {/* ── Band 3 · people and counterparties ── */}
         <DashCard
-          index={3} title="Workforce by Dept" icon={<Users size={14} />} iconColor="#10b981"
+          index={3} className="exd-c3"
+          title="Workforce by Dept" icon={<Users size={14} />} iconColor="#10b981"
+          subtitle={`${wf.total || 0} employees · top ${Math.min(6, (wf.byDepartment || []).length)} depts`}
           onViewAll={() => setPage('EmployeesDashboard')} viewAllLabel="Details"
           expandable={(wf.byDepartment || []).length > 0}
-          expandedChildren={(wf.byDepartment || []).length ? workforceChart(420) : null}
+          expandedChildren={(wf.byDepartment || []).length ? workforceChart(460, 20) : null}
         >
           {(wf.byDepartment || []).length === 0
-            ? <div className="dk-empty"><Users size={26} color="#d1d5db" /><p>No workforce data yet</p></div>
-            : <div className="exd-chartfill">{workforceChart('100%')}</div>}
-          <div className="dk-stats">
-            {[
-              { label: 'Total', value: wf.total || 0, color: '#1a1a2e' },
-              { label: 'Active', value: wf.active || 0, color: '#10b981' },
-              { label: 'New Hires', value: wf.newHires || 0, color: P },
-            ].map(s => (
-              <div key={s.label} className="dk-stat">
-                <div className="dk-stat-val" style={{ color: s.color }}>{s.value}</div>
-                <div className="dk-stat-lbl">{s.label}</div>
-              </div>
-            ))}
-          </div>
+            ? <Empty icon={Users} text="No workforce data yet" />
+            : <div className="exd-chart">{workforceChart()}</div>}
         </DashCard>
 
         <DashCard
-          index={4} title="Headcount Trend" icon={<UserPlus size={14} />} iconColor="#10b981"
+          index={4} className="exd-c3"
+          title="Hiring vs Attrition" icon={<UserPlus size={14} />} iconColor="#10b981"
+          subtitle={`${totalHires} hires · ${totalExits} exits · ${attrition}% attrition`}
           onViewAll={() => setPage('EmployeesDashboard')} viewAllLabel="Details"
           expandable={hcTrend.length > 0}
-          expandedChildren={hcTrend.length ? headcountChart(420) : null}
+          expandedChildren={hcTrend.length ? headcountChart(460, 12) : null}
+          headerRight={
+            <span className="exd-legend">
+              <span><i style={{ background: '#10b981' }} />Hires</span>
+              <span><i style={{ background: '#ef4444' }} />Exits</span>
+            </span>
+          }
         >
           {hcTrend.length === 0
-            ? <div className="dk-empty"><TrendingUp size={26} color="#d1d5db" /><p>No trend data yet</p></div>
-            : <div className="exd-chartfill">{headcountChart('100%')}</div>}
-          <div style={{ display: 'flex', gap: 14, marginTop: 6, paddingLeft: 4, flexShrink: 0 }}>
-            {[{ label: 'Hires', color: '#10b981' }, { label: 'Attrition', color: '#ef4444' }].map(l => (
-              <span key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#6b7280' }}>
-                <span style={{ width: 10, height: 10, borderRadius: 2, background: l.color, display: 'inline-block' }} />
-                {l.label}
-              </span>
-            ))}
-          </div>
+            ? <Empty icon={TrendingUp} text="No trend data yet" />
+            : <div className="exd-chart">{headcountChart()}</div>}
         </DashCard>
 
         <DashCard
-          index={5} title="Top Customers" icon={<Trophy size={14} />} iconColor="#f59e0b"
+          index={5} className="exd-c3"
+          title="Top Customers" icon={<Trophy size={14} />} iconColor={P}
+          subtitle="By revenue contribution"
           onViewAll={() => setPage('CustomerOutstanding')}
+          expandable={topCustomers.length > 5}
+          expandedChildren={rankList(topCustomers.slice(0, 20), {
+            valueOf: c => c.revenue, nameOf: c => c.name || c.customer_name, color: P,
+          })}
         >
-          {topCustomers.length === 0 ? (
-            <div className="dk-empty"><Trophy size={26} color="#d1d5db" /><p>No customer data yet</p></div>
-          ) : (
-            <div className="dk-rank-list exd-list">
-              {topCustomers.slice(0, 5).map((c, i) => {
-                const max = topCustomers[0]?.revenue || 1;
-                const pct = Math.round((c.revenue / max) * 100);
-                return (
-                  <div key={i} className="dk-rank-row">
-                    <div className="dk-rank-meta">
-                      <span className="dk-rank-name"><span className="dk-rank-num">#{i + 1}</span>{c.name || c.customer_name}</span>
-                      <span className="dk-rank-val" style={{ color: P }}>{fmt(c.revenue)}</span>
-                    </div>
-                    <div className="dk-bar-track"><div className="dk-bar-fill" style={{ width: `${pct}%`, background: P, opacity: 0.75 }} /></div>
-                  </div>
-                );
+          {topCustomers.length === 0
+            ? <Empty icon={Trophy} text="No customer data yet" />
+            : rankList(topCustomers.slice(0, 5), {
+                valueOf: c => c.revenue, nameOf: c => c.name || c.customer_name, color: P,
               })}
-            </div>
-          )}
         </DashCard>
 
         <DashCard
-          index={6} title="Top Vendors" icon={<Truck size={14} />} iconColor="#6b7280"
+          index={6} className="exd-c3"
+          title="Top Vendors" icon={<Truck size={14} />} iconColor="#6b7280"
+          subtitle="By spend"
           onViewAll={() => setPage('SupplierOutstanding')}
+          expandable={topVendors.length > 5}
+          expandedChildren={rankList(topVendors.slice(0, 20), {
+            valueOf: v => v.spend, nameOf: v => v.name || v.vendor_name, color: '#dc2626',
+          })}
         >
-          {topVendors.length === 0 ? (
-            <div className="dk-empty"><Truck size={26} color="#d1d5db" /><p>No vendor data yet</p></div>
-          ) : (
-            <div className="dk-rank-list exd-list">
-              {topVendors.slice(0, 5).map((v, i) => {
-                const max = topVendors[0]?.spend || 1;
-                const pct = Math.round((v.spend / max) * 100);
-                return (
-                  <div key={i} className="dk-rank-row">
-                    <div className="dk-rank-meta">
-                      <span className="dk-rank-name"><span className="dk-rank-num">#{i + 1}</span>{v.name || v.vendor_name}</span>
-                      <span className="dk-rank-val" style={{ color: '#dc2626' }}>{fmt(v.spend)}</span>
-                    </div>
-                    <div className="dk-bar-track"><div className="dk-bar-fill" style={{ width: `${pct}%`, background: '#dc2626', opacity: 0.55 }} /></div>
-                  </div>
-                );
+          {topVendors.length === 0
+            ? <Empty icon={Truck} text="No vendor data yet" />
+            : rankList(topVendors.slice(0, 5), {
+                valueOf: v => v.spend, nameOf: v => v.name || v.vendor_name, color: '#dc2626',
               })}
-            </div>
-          )}
         </DashCard>
-      </div>
 
-    </div>
+        {/* ── Band 4 · AI insights, as a strip rather than a full card ── */}
+        <div className="exd-ai">
+          <div className="exd-ai-hd">
+            <span className="exd-ai-ico"><Zap size={13} color={P} /></span>
+            <span className="exd-ai-title">AI Insights</span>
+            <span className="exd-ai-badge">{insights.length}</span>
+          </div>
+          <div className="exd-ai-list">
+            {insights.map((ins, i) => {
+              const c = INSIGHT_STYLE[ins.type];
+              return (
+                <div key={i} className="exd-ai-item" title={ins.text}
+                  style={{ background: c.bg, border: `1px solid ${c.border}`, color: c.text }}>
+                  <span className="exd-ai-emoji">{ins.emoji}</span>
+                  <span className="exd-ai-txt">{ins.text}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+      </div>
+    </PageShell>
     </RequireRole>
   );
 }

@@ -7,11 +7,18 @@ import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { validate } from '../../../services/ValidationEngineService.js';
 import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { idDimension } from '../../../shared/dashboardFilters.js';
 import purchaseRequestRepo from '../../procurement/repositories/purchaseRequest.repository.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
 import advInventoryRouter from './advancedInventory.routes.js';
 import serialNumbersRouter from './serialNumbers.routes.js';
 import componentCatalogRouter from './componentCatalog.routes.js';
+import itemSourcingRouter from './itemSourcing.routes.js';
+import planningRouter from './planning.routes.js';
+import scmOpsRouter from './scmOperations.routes.js';
 import { postStock } from '../../production/subcontracting.routes.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { authorizeIssue } from '../services/stockAvailability.service.js';
 
 const router = express.Router();
 
@@ -20,7 +27,7 @@ const router = express.Router();
 // =====================================================
 router.post('/items', requirePermission('inventory', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('inventory', req.body);
+    const { valid, errors } = await validate('inventory', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
     const itemCode = await itemRepo.getNextCode();
     const item = await itemRepo.create({ ...req.body, item_code: itemCode, company_id: req.scope?.company_id ?? null });
@@ -57,7 +64,7 @@ router.get('/items/:id', requirePermission('inventory', 'view'), async (req, res
 router.put('/items/:id', requirePermission('inventory', 'edit'), async (req, res) => {
   try {
     const company_id = req.scope?.company_id ?? null;
-    const { valid, errors } = await validate('inventory', req.body);
+    const { valid, errors } = await validate('inventory', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
     const oldItem = await itemRepo.findById(req.params.id, company_id);
     if (!oldItem) return res.status(404).json({ error: 'Item not found' });
@@ -133,6 +140,91 @@ router.post('/warehouses', requirePermission('inventory', 'add'), async (req, re
   }
 });
 
+// `name` and `warehouse_name` are kept in lockstep — the POST above writes the
+// same value to both ($1 twice), and every read orders by warehouse_name, so a
+// rename that touched only one column would leave the store sorted under its
+// old name.
+router.put('/warehouses/:id', requirePermission('inventory', 'edit'), async (req, res) => {
+  const { warehouse_name, warehouse_code, warehouse_type, location, capacity, status, department } = req.body;
+  if (warehouse_name !== undefined && !warehouse_name?.trim()) {
+    return res.status(422).json({ error: 'warehouse_name cannot be blank' });
+  }
+  try {
+    const companyId = req.scope?.company_id ?? null;
+    const sets = [];
+    const vals = [];
+    const push = (frag, val) => { vals.push(val); sets.push(`${frag} = $${vals.length}`); };
+
+    if (warehouse_name !== undefined) {
+      push('warehouse_name', warehouse_name.trim());
+      push('name',           warehouse_name.trim());
+    }
+    if (warehouse_code !== undefined) push('warehouse_code', warehouse_code?.trim() || null);
+    if (warehouse_type !== undefined) push('warehouse_type', warehouse_type?.trim() || null);
+    if (location       !== undefined) push('location',       location?.trim() || null);
+    if (department     !== undefined) push('department',     department?.trim() || null);
+    if (status         !== undefined) push('status',         status?.trim() || 'active');
+    if (capacity       !== undefined) {
+      const n = parseInt(capacity, 10);
+      push('capacity', isNaN(n) ? null : n);
+    }
+    if (sets.length === 0) return res.status(422).json({ error: 'No updatable fields supplied' });
+
+    vals.push(req.params.id);
+    const idParam = `$${vals.length}`;
+    let where = `id = ${idParam} AND deleted_at IS NULL`;
+    if (companyId != null) { vals.push(companyId); where += ` AND company_id = $${vals.length}`; }
+
+    const result = await pool.query(
+      `UPDATE warehouses SET ${sets.join(', ')} WHERE ${where} RETURNING *`,
+      vals
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Warehouse not found' });
+    res.json(result.rows[0]);
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ error: 'Warehouse code already exists' });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Soft delete. 17 tables carry a warehouse_id FK, so a hard delete would either
+// fail on the constraint or orphan stock history. A store that still holds
+// stock is refused outright — retiring it would hide that stock from every
+// summary while the ledger rows kept pointing at it.
+router.delete('/warehouses/:id', requirePermission('inventory', 'delete'), async (req, res) => {
+  try {
+    const companyId = req.scope?.company_id ?? null;
+    const { rows: stock } = await pool.query(
+      `SELECT COALESCE(SUM(quantity_available), 0) AS qty
+         FROM inventory_batches
+        WHERE warehouse_id = $1
+          AND deleted_at IS NULL
+          AND COALESCE(quantity_available, 0) > 0`,
+      [req.params.id]
+    );
+    if (Number(stock[0]?.qty || 0) > 0) {
+      return res.status(409).json({
+        error: 'This store still holds stock. Transfer or write off the remaining quantity before retiring it.',
+      });
+    }
+
+    const vals = [req.params.id];
+    let where = 'id = $1 AND deleted_at IS NULL';
+    if (companyId != null) { vals.push(companyId); where += ' AND company_id = $2'; }
+
+    const result = await pool.query(
+      `UPDATE warehouses SET deleted_at = NOW(), status = 'inactive' WHERE ${where} RETURNING id, warehouse_name`,
+      vals
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Warehouse not found' });
+    res.json({ success: true, deleted: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // =====================================================
 // STOCK SUMMARY & REPORTS
 // =====================================================
@@ -156,7 +248,7 @@ router.get('/stock/low-stock', requirePermission('inventory', 'view'), async (re
 
 // Stock Add / Remove — single-item transactional stock movement
 router.post('/stock/movement', requirePermission('inventory', 'add'), async (req, res) => {
-  const { item_id, warehouse_id, movement_type, quantity, rate = 0, reference, notes } = req.body;
+  const { item_id, warehouse_id, movement_type, quantity, rate = 0, reference, notes, reservation_id = null } = req.body;
   if (!item_id || !warehouse_id || !movement_type || !quantity) {
     return res.status(422).json({ error: 'item_id, warehouse_id, movement_type, and quantity are required' });
   }
@@ -170,14 +262,14 @@ router.post('/stock/movement', requirePermission('inventory', 'add'), async (req
     await client.query('BEGIN');
 
     if (!isIN) {
-      const balRes = await client.query(
-        `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-        [item_id, warehouse_id]
-      );
-      const balance = parseFloat(balRes.rows[0].balance);
-      if (balance < qty) {
+      // Free stock only, unless the caller names the reservation they are
+      // drawing on. Checking the raw ledger balance here let one order's
+      // reserved stock be issued to another.
+      try {
+        await authorizeIssue(client, { itemId: item_id, warehouseId: warehouse_id, qty, reservationId: reservation_id });
+      } catch (err) {
         await client.query('ROLLBACK');
-        return res.status(422).json({ error: `Insufficient stock. Available: ${balance}, Requested: ${qty}` });
+        return res.status(err.status || 422).json({ error: err.message });
       }
     }
 
@@ -236,7 +328,7 @@ router.get('/stock/valuation', requirePermission('inventory', 'view'), async (re
       valuationMethod = cfg?.settings?.valuation_method || 'Weighted Average';
     } catch { /* use default */ }
 
-    const valuation = await stockLedgerRepo.getInventoryValuation(req.query.warehouse_id, valuationMethod);
+    const valuation = await stockLedgerRepo.getInventoryValuation(req.query.warehouse_id, valuationMethod, companyId);
     res.json({ valuation_method: valuationMethod, items: valuation });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -248,7 +340,7 @@ router.get('/stock/valuation', requirePermission('inventory', 'view'), async (re
 // =====================================================
 router.post('/rm-issues', requirePermission('inventory', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('inventory', req.body);
+    const { valid, errors } = await validate('inventory', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
     const issue = await rmIssueService.createIssue(req.body, req.user?.employee_id ?? null);
     logAudit({ userId: req.user?.userId, module: 'inventory', recordId: issue.id, recordType: 'rm_issue', action: 'create', newData: issue, req });
@@ -525,18 +617,46 @@ router.get('/dashboard', requirePermission('inventory', 'view'), async (req, res
     })();
 
     const companyId = req.scope?.company_id ?? null;
-    const cid = companyId != null ? companyId : 0;
+
+    // Dashboard filter bar: ?warehouse_id / ?category_id. Deliberately NO period
+    // — every figure here is a point-in-time balance (stock on hand, open POs),
+    // not period activity, so a date range would be meaningless. The frontend
+    // renders the bar with showPeriod={false}.
+    const warehouseId = idDimension(req.query, 'warehouse_id');
+    const categoryId = idDimension(req.query, 'category_id');
+
+    // $1 company, $2 warehouse, $3 category — each NULL-tolerant. Every query
+    // references only what it needs, with its own param list.
+    const itemScope = [companyId, categoryId];
+    const ledgerScope = [companyId, warehouseId, categoryId];
 
     const [totalItemsRes, lowStock, totalValueRes, pendingPosRes] = await Promise.all([
       pool.query(
-        `SELECT COUNT(*) as count FROM inventory_items WHERE is_active = true AND deleted_at IS NULL${companyId != null ? ' AND company_id = $1' : ''}`,
-        companyId != null ? [companyId] : []
+        `SELECT COUNT(*) as count FROM inventory_items
+          WHERE is_active = true AND deleted_at IS NULL
+            AND ($1::int IS NULL OR company_id = $1)
+            AND ($2::int IS NULL OR category_id = $2)`,
+        itemScope
       ),
       stockLedgerRepo.getLowStockItems(companyId),
-      pool.query(`SELECT COALESCE(SUM((quantity_in - quantity_out) * rate), 0) as value FROM stock_ledger`),
+      // company_id was missing entirely here: total inventory value summed
+      // stock_ledger across EVERY tenant, so a scoped user saw the whole
+      // installation's stock value (and, via holding cost, a wrong carrying
+      // cost). stock_ledger has had a company_id column all along.
       pool.query(
-        `SELECT COUNT(*) as count FROM purchase_orders WHERE status IN ('pending','approved','sent') AND deleted_at IS NULL${companyId != null ? ' AND company_id = $1' : ''}`,
-        companyId != null ? [companyId] : []
+        `SELECT COALESCE(SUM((sl.quantity_in - sl.quantity_out) * sl.rate), 0) as value
+           FROM stock_ledger sl
+           LEFT JOIN inventory_items ii ON ii.id = sl.item_id
+          WHERE ($1::int IS NULL OR sl.company_id = $1)
+            AND ($2::int IS NULL OR sl.warehouse_id = $2)
+            AND ($3::int IS NULL OR ii.category_id = $3)`,
+        ledgerScope
+      ),
+      pool.query(
+        `SELECT COUNT(*) as count FROM purchase_orders
+          WHERE status IN ('pending','approved','sent') AND deleted_at IS NULL
+            AND ($1::int IS NULL OR company_id = $1)`,
+        [companyId]
       ).catch(() => ({ rows: [{ count: 0 }] })),
     ]);
 
@@ -551,10 +671,36 @@ router.get('/dashboard', requirePermission('inventory', 'view'), async (req, res
       total_holding_cost_annual: totalInventoryValue * holdingRate,
       total_holding_cost_monthly: (totalInventoryValue * holdingRate) / 12,
       pending_pos: parseInt(pendingPosRes.rows[0].count) || 0,
+      warehouse_id: warehouseId,
+      category_id: categoryId,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// =====================================================
+// DASHBOARD FILTER OPTIONS
+// Warehouses / categories for the dashboard filter bar. Not narrowed by the
+// active selection, so picking one doesn't empty the other dropdown.
+// =====================================================
+router.get('/dashboard/filter-options', requirePermission('inventory', 'view'), async (req, res) => {
+  const companyId = req.scope?.company_id ?? null;
+  const safe = (sql) => pool.query(sql, [companyId]).catch(() => ({ rows: [] }));
+  const [warehouses, categories] = await Promise.all([
+    safe(`SELECT id, warehouse_name AS name FROM warehouses
+           WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+           ORDER BY warehouse_name`),
+    // item_categories names the column `name` (not `category_name`).
+    safe(`SELECT id, name FROM item_categories
+           WHERE deleted_at IS NULL AND is_active = true
+             AND ($1::int IS NULL OR company_id = $1)
+           ORDER BY name`),
+  ]);
+  res.json({
+    warehouses: warehouses.rows.map(r => ({ value: String(r.id), label: r.name })),
+    categories: categories.rows.map(r => ({ value: String(r.id), label: r.name })),
+  });
 });
 
 // =====================================================
@@ -594,46 +740,140 @@ router.get('/reorder-alerts', requirePermission('inventory', 'view'), async (req
           ii.reorder_level
         )                                                                             AS reorder_qty
       FROM inventory_items ii
-      CROSS JOIN warehouses w
+      -- Was CROSS JOIN warehouses: every item was tested against every store, so
+      -- a store that has never carried an item read 0, which is "below reorder
+      -- point", and alerted. With five stores that is four false alerts per item.
+      -- reorder_level is an item-level attribute and Pulse has no item x warehouse
+      -- planning row, so the honest proxy for "this store carries this item" is
+      -- that the store has ledger history for it. An item never stocked anywhere
+      -- raises no alert now, which is correct: you cannot be below a reorder point
+      -- at a location that does not hold the item.
+      JOIN (SELECT DISTINCT item_id, warehouse_id FROM stock_ledger) carried
+        ON carried.item_id = ii.id
+      JOIN warehouses w ON w.id = carried.warehouse_id AND w.deleted_at IS NULL
       LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
       LEFT JOIN vendors v ON v.id = ii.preferred_vendor_id
-      WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL AND ii.is_active = true
+      WHERE ii.deleted_at IS NULL AND ii.is_active = true
         AND ii.reorder_level > 0
+        AND ($1::INTEGER IS NULL OR ii.company_id = $1)
+        AND ($1::INTEGER IS NULL OR w.company_id = $1)
       GROUP BY ii.id, ii.item_code, ii.item_name, ii.unit_of_measure,
                ii.reorder_level, ii.safety_stock, ii.lead_time_days,
                ii.preferred_vendor_id, v.vendor_name, w.id, w.warehouse_name
       HAVING COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) <= ii.reorder_level
       ORDER BY shortfall DESC
-    `);
+    `, [companyId]);
     res.json(result.rows.map(r => ({ ...r, auto_create_po: autoCreatePo })));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+/**
+ * Raise a requisition for each item that has fallen to its reorder point.
+ *
+ * This is the "Generate PO" button on Inventory Intelligence and the Inventory
+ * Report. It had never created a single requisition. Five faults at once:
+ *
+ *  1. `purchaseRequestRepo.create({…})` was called with ONE argument against a
+ *     `create(client, data)` signature, so `client` silently became the data
+ *     object and `data` was undefined — the destructure threw on every call
+ *     ("Cannot destructure property 'request_number' of 'data'"). The throw was
+ *     caught into `failed[]` and the route still answered **HTTP 200**, so the
+ *     screen reported "0 purchase request(s) created" as a success.
+ *  2. `requested_by_employee_id` fell back to `req.user.userId`, a users.id,
+ *     into a column that FKs employees(id) — the recurring trap employeeOf()
+ *     exists to prevent. Even a bare arity fix would have FK-violated for the
+ *     three active accounts with no employee record.
+ *  3. No `company_id`, so the requisition would have been born NULL-company and
+ *     invisible to every company-scoped user — the exact defect the reorder
+ *     cron was fixed for.
+ *  4. `items` was passed but `create()` does not read it, so no
+ *     purchase_request_items row was written and `total_amount` would have
+ *     stayed 0 — which is the band that auto-approves.
+ *  5. `getNextNumber()` took neither the transaction client nor the company, so
+ *     the number was drawn outside the unit of work and ignored the company's
+ *     configured pr_prefix.
+ *
+ * Now mirrors reorderPr.cron.js's draftPrFromSuggestion() — the same repository
+ * calls in the same transaction — which is why the nightly job worked while the
+ * button beside it did not.
+ */
 router.post('/reorder-alerts/generate-pos', requirePermission('inventory', 'add'), async (req, res) => {
   const { item_ids = [] } = req.body;
+  if (!Array.isArray(item_ids) || item_ids.length === 0) {
+    return res.status(400).json({ error: 'Select at least one item to raise a requisition for.' });
+  }
+
+  const companyId = companyOf(req);
+  const requesterEmployeeId = await employeeOf(req, pool);
   const created = [];
   const failed = [];
+
   for (const id of item_ids) {
+    const client = await pool.connect();
     try {
-      const itemRes = await pool.query(`SELECT * FROM inventory_items WHERE id = $1 AND deleted_at IS NULL`, [id]);
-      const item = itemRes.rows[0];
+      const { rows: [item] } = await client.query(
+        `SELECT id, item_code, item_name, unit_of_measure,
+                COALESCE(reorder_level, 0) AS reorder_level,
+                COALESCE(standard_cost, 0)  AS standard_cost
+           FROM inventory_items
+          WHERE id = $1 AND deleted_at IS NULL
+            AND ($2::INTEGER IS NULL OR company_id = $2)`,
+        [id, companyId]
+      );
       if (!item) { failed.push({ item_id: id, error: 'Item not found' }); continue; }
-      const prNumber = await purchaseRequestRepo.getNextNumber();
-      const pr = await purchaseRequestRepo.create({
+
+      // Order back up to twice the reorder level, as before — but never zero:
+      // an item whose reorder level is unset would otherwise produce a
+      // requisition for no quantity, which create() would reject downstream.
+      const quantity = Number(item.reorder_level) > 0 ? Number(item.reorder_level) * 2 : 1;
+
+      await client.query('BEGIN');
+      const prNumber = await purchaseRequestRepo.getNextNumber(client, companyId);
+      const pr = await purchaseRequestRepo.create(client, {
         request_number: prNumber,
-        requested_by_employee_id: req.user.employee_id ?? req.user.userId ?? req.user.id,
+        requested_by_employee_id: requesterEmployeeId,
         request_date: new Date(),
-        notes: `Auto-generated reorder alert for ${item.item_name}`,
-        items: [{ item_id: item.id, item_name: item.item_name, quantity: item.reorder_level * 2 }],
+        company_id: companyId,
+        // Raised from a stock alert, not typed by a buyer: it lands as a draft
+        // for review rather than straight into the approval queue, matching
+        // what the reorder cron does and what the toast tells the user.
+        status: 'draft',
+        notes: `Reorder alert: ${item.item_code || item.item_name} is at or below its reorder point.`,
       });
-      created.push(pr);
+      await purchaseRequestRepo.createItem(client, {
+        pr_id: pr.id,
+        item_id: item.id,
+        item_name: item.item_name,
+        quantity,
+        // No quote exists yet, so the item's standard cost is the closest
+        // honest estimate. recomputeTotal sums quantity x expected_price and
+        // that total is what approval routing reads — leaving it 0 would put
+        // every reorder in the auto-approve band.
+        expected_price: Number(item.standard_cost) || 0,
+      });
+      await purchaseRequestRepo.recomputeTotal(client, pr.id);
+      await client.query('COMMIT');
+
+      created.push(await purchaseRequestRepo.findById(pr.id, companyId));
     } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
       failed.push({ item_id: id, error: err.message });
+    } finally {
+      client.release();
     }
   }
-  res.json({ purchase_orders: created, count: created.length, failed, failed_count: failed.length });
+
+  res.json({
+    purchase_requests: created,
+    // Deprecated alias: InventoryIntelligence.jsx still reads `purchase_orders`
+    // for its count. These have always been requisitions, never orders.
+    purchase_orders: created,
+    count: created.length,
+    failed,
+    failed_count: failed.length,
+  });
 });
 
 // =====================================================
@@ -641,7 +881,13 @@ router.post('/reorder-alerts/generate-pos', requirePermission('inventory', 'add'
 // =====================================================
 router.get('/abc-analysis', requirePermission('inventory', 'view'), async (req, res) => {
   try {
-    const cached = await pool.query(`SELECT * FROM abc_analysis_cache ORDER BY computed_at DESC LIMIT 1`);
+    // abc_analysis_cache carries a company_id; this read ignored it and handed
+    // whichever tenant computed last to whoever asked.
+    const cached = await pool.query(
+      `SELECT * FROM abc_analysis_cache
+        WHERE ($1::INTEGER IS NULL OR company_id = $1)
+        ORDER BY computed_at DESC LIMIT 1`,
+      [companyOf(req)]);
     if (cached.rows.length === 0) return res.json(null);
     const row = cached.rows[0];
     res.json({ last_computed: row.computed_at, stats: row.stats, items: row.items });
@@ -652,6 +898,7 @@ router.get('/abc-analysis', requirePermission('inventory', 'view'), async (req, 
 
 router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (req, res) => {
   try {
+    const abcCompanyId = companyOf(req);
     const result = await pool.query(`
       WITH item_values AS (
         SELECT
@@ -665,6 +912,7 @@ router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (
           AND sl.transaction_date >= CURRENT_DATE - INTERVAL '12 months'
           AND sl.quantity_out > 0
         WHERE ii.deleted_at IS NULL
+          AND ($1::INTEGER IS NULL OR ii.company_id = $1)
         GROUP BY ii.id, ii.item_code, ii.item_name
       ),
       total AS (SELECT NULLIF(SUM(annual_consumption_value), 0) AS grand_total FROM item_values),
@@ -687,7 +935,7 @@ router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (
         END AS category
       FROM ranked
       ORDER BY annual_consumption_value DESC
-    `);
+    `, [abcCompanyId]);
 
     const items = result.rows;
     const stats = { A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 } };
@@ -696,9 +944,10 @@ router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (
       stats[r.category].value += parseFloat(r.annual_consumption_value);
     });
 
-    await pool.query(`INSERT INTO abc_analysis_cache (stats, items) VALUES ($1, $2)`, [
+    await pool.query(`INSERT INTO abc_analysis_cache (stats, items, company_id) VALUES ($1, $2, $3)`, [
       JSON.stringify(stats),
       JSON.stringify(items),
+      abcCompanyId,
     ]);
 
     res.json({ last_computed: new Date(), stats, items });
@@ -737,6 +986,7 @@ router.get('/slow-movers', requirePermission('inventory', 'view'), async (req, r
       FROM inventory_items ii
       LEFT JOIN stock_ledger sl ON ii.id = sl.item_id
       WHERE ii.deleted_at IS NULL AND ii.is_active = true
+        AND ($2::INTEGER IS NULL OR ii.company_id = $2)
       GROUP BY ii.id, ii.item_code, ii.item_name
       HAVING
         COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) > 0
@@ -745,7 +995,7 @@ router.get('/slow-movers', requirePermission('inventory', 'view'), async (req, r
           OR MAX(CASE WHEN sl.quantity_out > 0 THEN sl.transaction_date END) < CURRENT_DATE - ($1 || ' days')::INTERVAL
         )
       ORDER BY stock_value DESC
-    `, [slowMoverDays]);
+    `, [slowMoverDays, companyId]);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -798,7 +1048,7 @@ router.post('/warehouse-transfers', requirePermission('inventory', 'add'), async
   }
 });
 
-router.put('/warehouse-transfers/:id/dispatch', requirePermission('inventory', 'edit'), async (req, res) => {
+router.put('/warehouse-transfers/:id/dispatch', requirePermission('inventory', 'edit'), captureBefore('warehouse_transfers'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -815,18 +1065,13 @@ router.put('/warehouse-transfers/:id/dispatch', requirePermission('inventory', '
     for (const item of items) {
       const qty = parseFloat(item.qty || item.quantity || 0);
       if (!item.item_id || !qty) continue;
-      // Guard: sufficient stock in source warehouse
-      const balRes = await client.query(
-        `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-        [item.item_id, tx.from_warehouse_id]
-      );
-      const available = parseFloat(balRes.rows[0].balance);
-      if (available < qty) {
-        throw Object.assign(
-          new Error(`Insufficient stock for item ${item.item_id}. Available: ${available}, Requested: ${qty}`),
-          { status: 422 }
-        );
-      }
+      // Guard: sufficient UNRESERVED stock in the source warehouse. A transfer
+      // moves stock out of the location the reservation was made against, so
+      // there is no reservation to draw on here — release the claim first if
+      // the stock really is to be moved.
+      await authorizeIssue(client, {
+        itemId: item.item_id, warehouseId: tx.from_warehouse_id, qty, reservationId: null,
+      });
       // Deduct from source warehouse on dispatch
       await stockLedgerRepo.createEntry(client, {
         item_id: item.item_id,
@@ -857,7 +1102,7 @@ router.put('/warehouse-transfers/:id/dispatch', requirePermission('inventory', '
   }
 });
 
-router.put('/warehouse-transfers/:id/receive', requirePermission('inventory', 'edit'), async (req, res) => {
+router.put('/warehouse-transfers/:id/receive', requirePermission('inventory', 'edit'), captureBefore('warehouse_transfers'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -916,7 +1161,7 @@ router.get('/landed-costs', requirePermission('inventory', 'view'), async (req, 
              v.vendor_name
       FROM landed_costs lc
       LEFT JOIN purchase_orders po ON lc.po_id = po.id
-      LEFT JOIN vendors         v  ON po.vendor_id = v.id
+      LEFT JOIN vendors         v  ON po.supplier_id = v.id
       ORDER BY lc.created_at DESC
     `);
     res.json(result.rows);
@@ -997,10 +1242,18 @@ router.post('/landed-costs/:id/allocate', requirePermission('inventory', 'edit')
 router.get('/advanced-dashboard', requirePermission('inventory', 'view'), async (req, res) => {
   try {
     const company_id = req.scope?.company_id ?? null;
-    const p = company_id != null ? [company_id] : [];
-    const iif = company_id != null ? 'AND ii.company_id = $1' : '';   // inventory_items with alias ii
-    const inf = company_id != null ? 'AND company_id = $1' : '';       // inventory_items no alias
-    const wf  = company_id != null ? 'AND w.company_id = $1' : '';    // warehouses with alias w
+    // Dashboard filter bar: ?category_id. No period (these are valuations, i.e.
+    // point-in-time balances) and no warehouse — only some of the twelve queries
+    // below reach stock_ledger, and Postgres rejects a bound-but-unreferenced
+    // $n, so a dimension here must be one EVERY query can apply.
+    const categoryId = idDimension(req.query, 'category_id');
+    // Both params are always bound and always referenced, via the NULL-tolerant
+    // form. The previous conditional fragments silently renumbered $n whenever
+    // company_id was null.
+    const p = [company_id, categoryId];
+    const iif = 'AND ($1::int IS NULL OR ii.company_id = $1) AND ($2::int IS NULL OR ii.category_id = $2)';
+    const inf = 'AND ($1::int IS NULL OR company_id = $1) AND ($2::int IS NULL OR category_id = $2)';
+    const wf  = 'AND ($1::int IS NULL OR w.company_id = $1)';        // warehouses with alias w
 
     const [
       totalValRes,
@@ -1436,15 +1689,15 @@ router.post('/consumption', requirePermission('inventory', 'add'), async (req, r
   try {
     await client.query('BEGIN');
 
-    // Guard: sufficient stock
-    const balRes = await client.query(
-      `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS balance FROM stock_ledger WHERE item_id = $1 AND warehouse_id = $2`,
-      [item_id, warehouse_id]
-    );
-    const available = parseFloat(balRes.rows[0].balance);
-    if (available < qty) {
+    // Guard: sufficient UNRESERVED stock, or an explicit reservation to spend.
+    try {
+      await authorizeIssue(client, {
+        itemId: item_id, warehouseId: warehouse_id, qty,
+        reservationId: req.body.reservation_id ?? null,
+      });
+    } catch (err) {
       await client.query('ROLLBACK');
-      return res.status(422).json({ error: `Insufficient stock. Available: ${available}, Requested: ${qty}` });
+      return res.status(err.status || 422).json({ error: err.message });
     }
 
     // Fetch current rate for valuation
@@ -1812,6 +2065,15 @@ router.get('/stores-dashboard', requirePermission('inventory', 'view'), async (r
     const iif = company_id != null ? 'AND ii.company_id = $1' : '';
     const wf  = company_id != null ? 'AND w.company_id = $1' : '';
 
+    // Dashboard filter bar: ?warehouse_id / ?category_id. No period — these are
+    // stock balances plus a fixed same-day activity strip.
+    const warehouseId = idDimension(req.query, 'warehouse_id');
+    const categoryId  = idDimension(req.query, 'category_id');
+    const whParams = [...p];
+    let whFilter = '';
+    if (warehouseId) { whParams.push(warehouseId); whFilter += ` AND w.id = $${whParams.length}`; }
+    if (categoryId)  { whParams.push(categoryId);  whFilter += ` AND ii.category_id = $${whParams.length}`; }
+
     const [warehouseRes, todayRes] = await Promise.all([
       pool.query(`
         SELECT
@@ -1846,11 +2108,14 @@ router.get('/stores-dashboard', requirePermission('inventory', 'view'), async (r
         ) s ON s.warehouse_id = w.id
         LEFT JOIN inventory_items ii
           ON ii.id = s.item_id AND ii.deleted_at IS NULL ${iif}
-        WHERE w.deleted_at IS NULL ${wf}
+        WHERE w.deleted_at IS NULL ${wf} ${whFilter}
         GROUP BY w.id, w.warehouse_name, w.warehouse_code
         ORDER BY total_value DESC
-      `, p),
+      `, whParams),
 
+      // company_id was missing here: today's receipt/issue/adjustment counts
+      // were summed across EVERY tenant. Same defect as the total-value query in
+      // /inventory/dashboard — stock_ledger has a company_id column.
       pool.query(`
         SELECT
           COUNT(DISTINCT CASE WHEN transaction_type = 'receipt'    THEN id END)::int AS receipts_count,
@@ -1858,7 +2123,9 @@ router.get('/stores-dashboard', requirePermission('inventory', 'view'), async (r
           COUNT(DISTINCT CASE WHEN transaction_type = 'adjustment' THEN id END)::int AS adjustments_count
         FROM stock_ledger
         WHERE transaction_date = CURRENT_DATE
-      `),
+          AND ($1::int IS NULL OR company_id = $1)
+          AND ($2::int IS NULL OR warehouse_id = $2)
+      `, [company_id, warehouseId]),
     ]);
 
     res.json({
@@ -2124,9 +2391,13 @@ router.get('/dept-cost-analysis', requirePermission('inventory', 'view'), async 
   }
 });
 
+router.use('/planning', planningRouter);
+router.use('/scm', scmOpsRouter);
 router.use('/advanced', advInventoryRouter);
 router.use('/serials', serialNumbersRouter);
 router.use('/catalog', componentCatalogRouter);
+// Sourcing view shares the /catalog base with the price book it reads from.
+router.use('/catalog', itemSourcingRouter);
 
 export default router;
 

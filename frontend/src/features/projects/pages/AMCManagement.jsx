@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Shield, Plus, X, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
+import { Shield, Plus, X, RefreshCw, AlertCircle, CheckCircle, LifeBuoy } from 'lucide-react';
 import api from '@/services/api/client';
 import { getProjects } from '../services/projectsService';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   active:    { bg: '#dcfce7', color: '#15803d', label: 'Active' },
@@ -96,7 +97,20 @@ export default function AMCManagement({ setPage }) {
   const totalARR = contracts.filter(c => c.status === 'active').reduce((s, c) => s + parseFloat(c.annual_cost || 0), 0);
 
   return (
-    <div style={{ padding: '20px 24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Projects"
+        title="AMC Management"
+        subtitle="Annual Maintenance Contracts — manage, renew, and schedule preventive visits"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} /></button>
+          <button className="plh-cta" onClick={openCreate}>
+            <Plus size={14} /> New AMC
+          </button>
+        </>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -109,18 +123,6 @@ export default function AMCManagement({ setPage }) {
       />
       {toast && <div style={{ position: 'fixed', top: 16, right: 16, padding: '10px 16px', borderRadius: 8, zIndex: 9999, background: toast.type === 'error' ? '#fef2f2' : '#f0fdf4', color: toast.type === 'error' ? '#dc2626' : '#15803d', border: `1px solid ${toast.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{toast.msg}</div>}
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>AMC Management</h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Annual Maintenance Contracts — manage, renew, and schedule preventive visits</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={load} style={{ padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', cursor: 'pointer' }}><RefreshCw size={14} /></button>
-          <button onClick={openCreate} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
-            <Plus size={14} /> New AMC
-          </button>
-        </div>
-      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
         {[
@@ -150,13 +152,13 @@ export default function AMCManagement({ setPage }) {
             const daysLeft = c.end_date ? Math.ceil((new Date(c.end_date) - new Date()) / 86400000) : null;
             const expiringSoon = daysLeft !== null && daysLeft > 0 && daysLeft <= 60;
             return (
-              <div key={c.id} style={{ background: 'var(--color-background-secondary)', border: `1px solid ${expiringSoon ? '#fed7aa' : 'var(--color-border-tertiary)'}`, borderRadius: 10, padding: '16px 18px', borderLeft: `4px solid ${sm.color}` }}>
+              <div key={c.id} style={{ background: 'var(--color-background-secondary)', border: `1px solid ${expiringSoon ? '#ddd6fe' : 'var(--color-border-tertiary)'}`, borderRadius: 10, padding: '16px 18px', borderLeft: `4px solid ${sm.color}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                       <span style={{ fontSize: 11, fontFamily: 'monospace', color: '#9ca3af' }}>{c.amc_number}</span>
                       <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: sm.bg, color: sm.color }}>{sm.label}</span>
-                      {expiringSoon && <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#fff7ed', color: '#ea580c' }}>⚠ Expires in {daysLeft}d</span>}
+                      {expiringSoon && <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#fff7ed', color: '#6d28d9' }}>⚠ Expires in {daysLeft}d</span>}
                       {c.auto_renew && <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, background: '#e0e7ff', color: '#4338ca' }}>Auto-Renew</span>}
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
@@ -265,6 +267,6 @@ export default function AMCManagement({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

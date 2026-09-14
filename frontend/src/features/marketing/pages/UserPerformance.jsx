@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Users, ChevronUp, ChevronDown } from 'lucide-react';
+import { RefreshCw, Users, ChevronUp, ChevronDown, Target } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -66,13 +67,20 @@ export default function UserPerformance() {
   });
 
   return (
-    <div style={{ padding: 24, background: 'var(--color-background-primary)' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Target}
+        eyebrow="Marketing"
+        title="User Performance"
+        subtitle="Per-member marketing activity for the selected month"
+      />
+    }>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>User Performance</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}>Per-member marketing activity for the selected month</p>
+
+
         </div>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…"
           style={{ padding: '7px 12px', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 7, fontSize: 13, background: 'var(--color-background-secondary)', color: 'var(--color-text-primary)', width: 180 }} />
@@ -139,7 +147,7 @@ export default function UserPerformance() {
                       <td style={{ padding: '10px 14px', minWidth: 140 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <div style={{ flex: 1, height: 6, background: 'var(--color-border-tertiary)', borderRadius: 3 }}>
-                            <div style={{ height: '100%', width: `${pct}%`, background: pct >= 80 ? '#16a34a' : pct >= 50 ? '#d97706' : '#6B3FDB', borderRadius: 3, transition: 'width 0.3s ease' }} />
+                            <div style={{ height: '100%', width: `${pct}%`, background: pct >= 80 ? '#16a34a' : pct >= 50 ? '#6d28d9' : '#6B3FDB', borderRadius: 3, transition: 'width 0.3s ease' }} />
                           </div>
                           <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>{pct}%</span>
                         </div>
@@ -158,6 +166,6 @@ export default function UserPerformance() {
           {sorted.length} team members · Click column headers to sort
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -280,14 +280,19 @@ router.get('/learning-path-completion', async (req, res) => {
              COUNT(CASE WHEN elp.status='completed' THEN 1 END)          AS completed,
              ROUND(100.0*COUNT(CASE WHEN elp.status='completed' THEN 1 END)
                /NULLIF(COUNT(elp.id),0),1)                               AS completion_pct,
-             ROUND(AVG(
-               100.0*COUNT(DISTINCT CASE WHEN te.status='completed' THEN lpi.id END)
-               /NULLIF(COUNT(DISTINCT lpi.id),0)
-             ),0)                                                         AS avg_progress_pct
+             ROUND(AVG(prog.progress_pct),0)                              AS avg_progress_pct
       FROM   learning_paths lp
       LEFT JOIN employee_learning_paths elp ON elp.path_id=lp.id${sc(companyId,'elp')}
-      LEFT JOIN learning_path_items lpi ON lpi.path_id=lp.id
-      LEFT JOIN training_enrollments te ON te.program_id=lpi.program_id AND te.employee_id=elp.employee_id
+      -- per-employee progress has to be aggregated in its own scope: AVG() over a
+      -- COUNT() in the outer select is a nested aggregate and Postgres rejects it.
+      LEFT JOIN LATERAL (
+        SELECT 100.0*COUNT(DISTINCT CASE WHEN te.status='completed' THEN lpi.id END)
+               /NULLIF(COUNT(DISTINCT lpi.id),0) AS progress_pct
+        FROM   learning_path_items lpi
+        LEFT JOIN training_enrollments te
+               ON te.program_id=lpi.program_id AND te.employee_id=elp.employee_id
+        WHERE  lpi.path_id=lp.id
+      ) prog ON TRUE
       WHERE  lp.is_active=true${sc(companyId,'lp')}
       GROUP  BY lp.id ORDER BY completion_pct ASC NULLS LAST`
     );

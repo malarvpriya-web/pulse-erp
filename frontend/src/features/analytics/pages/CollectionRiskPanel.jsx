@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
 import { IndianRupee, Clock, AlertTriangle, CheckCircle, FileText, Activity } from 'lucide-react';
+import { Stat } from '@/components/pulse-ui';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -17,35 +18,27 @@ const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
-  amber: '#d97706', blue: '#2563eb', border: '#e9e4ff', cyan: '#0891b2',
+  amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff', cyan: '#0891b2',
 };
 
 const BUCKET_CFG = [
   { key: 'bucket_0_30',  label: '0–30 Days',  color: C.amber },
-  { key: 'bucket_31_60', label: '31–60 Days', color: '#f97316' },
+  { key: 'bucket_31_60', label: '31–60 Days', color: '#7c5cf0' },
   { key: 'bucket_61_90', label: '61–90 Days', color: C.red },
   { key: 'bucket_90plus',label: '90+ Days',   color: '#7f1d1d' },
 ];
 
 const RISK_CFG = {
   Critical: { bg: '#fee2e2', color: C.red, border: '#fca5a5' },
-  High:     { bg: '#fef3c7', color: '#92400e', border: '#fcd34d' },
-  Medium:   { bg: '#fef9c3', color: '#78350f', border: '#fde68a' },
+  High:     { bg: '#ede9fe', color: '#5b21b6', border: '#c4b5fd' },
+  Medium:   { bg: '#ede9fe', color: '#4c1d95', border: '#ddd6fe' },
   Low:      { bg: '#dcfce7', color: C.green, border: '#86efac' },
 };
 
 function KpiCard({ label, value, sub, color, icon: Icon, warn }) {
-  const activeColor = warn ? C.red : (color || C.primary);
-  return (
-    <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 18px', borderLeft: `4px solid ${activeColor}` }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-        {Icon && <div style={{ width: 30, height: 30, borderRadius: 8, background: `${activeColor}18`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={15} color={activeColor} /></div>}
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 800, color: activeColor, marginTop: 6 }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>{sub}</div>}
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} sub={sub} color={color} icon={Icon} warn={warn} />;
 }
 
 export default function CollectionRiskPanel({ data, serviceData }) {
@@ -121,7 +114,7 @@ export default function CollectionRiskPanel({ data, serviceData }) {
                         <td style={{ padding: '8px 12px', fontWeight: 700, color: '#111827' }}>{r.customer}</td>
                         <td style={{ padding: '8px 12px', fontWeight: 700, color: C.red }}>{fmtL(r.total_outstanding)}</td>
                         <td style={{ padding: '8px 12px', color: r.bucket_0_30 > 0 ? C.amber : '#9ca3af' }}>{fmtL(r.bucket_0_30)}</td>
-                        <td style={{ padding: '8px 12px', color: r.bucket_31_60 > 0 ? '#f97316' : '#9ca3af' }}>{fmtL(r.bucket_31_60)}</td>
+                        <td style={{ padding: '8px 12px', color: r.bucket_31_60 > 0 ? '#7c5cf0' : '#9ca3af' }}>{fmtL(r.bucket_31_60)}</td>
                         <td style={{ padding: '8px 12px', color: r.bucket_61_90 > 0 ? C.red : '#9ca3af' }}>{fmtL(r.bucket_61_90)}</td>
                         <td style={{ padding: '8px 12px', color: r.bucket_90plus > 0 ? '#7f1d1d' : '#9ca3af', fontWeight: r.bucket_90plus > 0 ? 700 : 400 }}>{fmtL(r.bucket_90plus)}</td>
                         <td style={{ padding: '8px 12px', color: r.max_overdue_days > 60 ? C.red : '#374151' }}>{r.max_overdue_days}d</td>
@@ -173,7 +166,7 @@ export default function CollectionRiskPanel({ data, serviceData }) {
                 </tr>
               </thead>
               <tbody>
-                {expiring.map((c, i) => {
+                {expiring.map((c) => {
                   const urgentColor = c.days_to_expiry <= 30 ? C.red : c.days_to_expiry <= 60 ? C.amber : C.amber;
                   return (
                     <tr key={c.id} style={{ borderBottom: '1px solid #f3f4f6', background: c.days_to_expiry <= 30 ? '#fff8f8' : '#fff' }}>

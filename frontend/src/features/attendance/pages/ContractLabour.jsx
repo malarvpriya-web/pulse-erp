@@ -3,9 +3,11 @@ import {
   HardHat, Plus, Edit2, Trash2, RefreshCw, Shield, Clock, AlertCircle,
   AlertTriangle, Check, X, FileText, Download, Search, Phone,
   CalendarCheck, CheckSquare, XSquare, MinusSquare, Users,
+  CalendarClock,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -33,7 +35,7 @@ function fmt(dateStr) {
 // ── Status Badge ──────────────────────────────────────────────────────────────
 const STATUS_MAP = {
   active:   { bg: '#ecfdf5', color: '#15803d', label: 'Active' },
-  expiring: { bg: '#fffbeb', color: '#b45309', label: 'Expiring' },
+  expiring: { bg: '#f5f3ff', color: '#6d28d9', label: 'Expiring' },
   expired:  { bg: '#fef2f2', color: '#dc2626', label: 'Expired' },
   inactive: { bg: '#f9fafb', color: '#6b7280', label: 'Inactive' },
 };
@@ -371,6 +373,7 @@ function DeleteConfirm({ worker, onConfirm, onClose }) {
 
 // ── Statutory Registers (Form XII, XIII, XIV & XIX) ──────────────────────────
 function RegisterView({ workers, onClose }) {
+  const toast = useToast();
   const [active, setActive]   = useState('xii');
   const [month, setMonth]     = useState(() => {
     const d = new Date();
@@ -695,7 +698,7 @@ function RegisterView({ workers, onClose }) {
 const ATT_STATUS_OPTS = [
   { value: 'present',  label: 'Present',  Icon: CheckSquare,  color: '#15803d', bg: '#ecfdf5' },
   { value: 'absent',   label: 'Absent',   Icon: XSquare,      color: '#dc2626', bg: '#fef2f2' },
-  { value: 'halfday',  label: 'Half Day', Icon: MinusSquare,  color: '#d97706', bg: '#fffbeb' },
+  { value: 'halfday',  label: 'Half Day', Icon: MinusSquare,  color: '#6d28d9', bg: '#f5f3ff' },
 ];
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
@@ -840,39 +843,33 @@ export default function ContractLabour() {
   });
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 22 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1f2937' }}>Contract Labour</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-            Track contract workers, compliance, and statutory obligations under CLRA Act 1970
-          </p>
-          {/* Main view tabs */}
-          <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
-            {[
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title="Contract Labour"
+        subtitle="Track contract workers, compliance, and statutory obligations under CLRA Act 1970"
+        actions={<>
+          {[
               { key: 'workers',    label: 'Workers',    Icon: Users },
               { key: 'attendance', label: 'Attendance', Icon: CalendarCheck },
             ].map(({ key, label, Icon }) => (
-              <button key={key} onClick={() => setMainView(key)}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', borderRadius: 8, border: `1px solid ${mainView === key ? P : '#e9e4ff'}`, background: mainView === key ? P : '#fff', color: mainView === key ? '#fff' : '#6b7280', fontWeight: mainView === key ? 700 : 500, fontSize: 13, cursor: 'pointer' }}>
+              <button className="plh-cta plh-cta--ghost" key={key} onClick={() => setMainView(key)}>
                 <Icon size={14} /> {label}
               </button>
             ))}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => setShowRegisters(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 10, border: `1px solid ${P}`, background: '#f5f3ff', color: P, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setShowRegisters(true)}>
             <FileText size={14} /> Statutory Registers
           </button>
-          <button onClick={() => { setEditWorker(null); setShowForm(true); }}
-            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 18px', borderRadius: 10, border: 'none', background: P, color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+          <button className="plh-cta" onClick={() => { setEditWorker(null); setShowForm(true); }}>
             <Plus size={16} /> Add Worker
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      {/* Header */}
+
 
       {/* Flash */}
       {msg && (
@@ -883,8 +880,8 @@ export default function ContractLabour() {
 
       {/* Alert Banners */}
       {kpi.expiring > 0 && (
-        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 14px', marginBottom: 10, fontSize: 13, color: '#92400e', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <AlertTriangle size={14} color="#d97706" />
+        <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: '10px 14px', marginBottom: 10, fontSize: 13, color: '#5b21b6', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <AlertTriangle size={14} color="#6d28d9" />
           <strong>{kpi.expiring}</strong> contract{kpi.expiring > 1 ? 's' : ''} expiring within 30 days — renew before expiry to stay compliant.
         </div>
       )}
@@ -899,7 +896,7 @@ export default function ContractLabour() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 22 }}>
         {[
           { label: 'Active Workers',  value: kpi.active,   color: '#10b981', bg: '#ecfdf5', Icon: HardHat },
-          { label: 'Expiring (30d)',  value: kpi.expiring, color: '#f59e0b', bg: '#fffbeb', Icon: Clock },
+          { label: 'Expiring (30d)',  value: kpi.expiring, color: '#7c5cf0', bg: '#f5f3ff', Icon: Clock },
           { label: 'Expired',        value: kpi.expired,  color: '#ef4444', bg: '#fef2f2', Icon: AlertCircle },
           { label: 'No Safety Cert', value: kpi.noSafety, color: '#dc2626', bg: '#fff0f0', Icon: Shield },
         ].map(k => (
@@ -1089,7 +1086,7 @@ export default function ContractLabour() {
                       <div style={{ fontSize: 12, color: '#6b7280' }}>{fmt(w.contract_start)}</div>
                       <div style={{ fontSize: 12, fontWeight: 500, color: '#374151' }}>→ {fmt(w.contract_expiry)}</div>
                       {contractDays !== null && contractDays >= 0 && contractDays <= 30 && (
-                        <div style={{ fontSize: 11, color: '#d97706', fontWeight: 700, marginTop: 2 }}>⚠ {contractDays}d left</div>
+                        <div style={{ fontSize: 11, color: '#6d28d9', fontWeight: 700, marginTop: 2 }}>⚠ {contractDays}d left</div>
                       )}
                       {contractDays !== null && contractDays < 0 && (
                         <div style={{ fontSize: 11, color: '#dc2626', fontWeight: 700, marginTop: 2 }}>EXPIRED {Math.abs(contractDays)}d ago</div>
@@ -1101,7 +1098,7 @@ export default function ContractLabour() {
                         <div>
                           <span style={{ color: '#15803d', fontWeight: 700, fontSize: 12 }}>✓ Certified</span>
                           {certExpiring && (
-                            <div style={{ fontSize: 11, color: '#d97706', fontWeight: 600, marginTop: 2 }}>Cert exp in {certDays}d</div>
+                            <div style={{ fontSize: 11, color: '#6d28d9', fontWeight: 600, marginTop: 2 }}>Cert exp in {certDays}d</div>
                           )}
                           {w.safety_cert_expiry && (
                             <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{fmt(w.safety_cert_expiry)}</div>
@@ -1170,6 +1167,6 @@ export default function ContractLabour() {
       {renewWorker   && <RenewModal     worker={renewWorker}   onRenew={handleRenew} onClose={() => setRenewWorker(null)} />}
       {deleteWorker  && <DeleteConfirm  worker={deleteWorker}  onConfirm={handleDelete} onClose={() => setDeleteWorker(null)} />}
       {showRegisters && <RegisterView   workers={workers}      onClose={() => setShowRegisters(false)} />}
-    </div>
+    </PageShell>
   );
 }

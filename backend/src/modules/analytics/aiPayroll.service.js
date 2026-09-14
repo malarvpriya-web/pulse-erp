@@ -35,7 +35,19 @@ async function payrollRunsExist() {
  *   employee_count: number
  * }>}
  */
-export async function getPayrollTrends(months = 12) {
+/**
+ * TENANT SCOPING for the payroll analytics.
+ *
+ * `payroll_runs` carries no company_id of its own — every row reaches a tenant
+ * through `employees.company_id`. All three of these read it, and none of them
+ * joined for that, so a second company's admin was served the first company's
+ * payroll totals. Caught by the widened tenant leak probe, which now discovers
+ * these endpoints instead of relying on a hand-written list that omitted them.
+ *
+ * A null companyId means a genuinely global scope (an unassigned super admin),
+ * matching the convention across the analytics surface.
+ */
+export async function getPayrollTrends(months = 12, companyId = null) {
   const exists = await payrollRunsExist();
 
   if (exists) {
@@ -51,12 +63,14 @@ export async function getPayrollTrends(months = 12) {
         ROUND(SUM(pr.employee_esi + pr.employer_esi)::NUMERIC, 2) AS total_esi,
         ROUND(SUM(pr.tds)::NUMERIC, 2)                          AS total_tds
       FROM payroll_runs pr
+      JOIN employees e ON e.id = pr.employee_id
       WHERE
         TO_DATE(pr.year::TEXT || '-' || LPAD(pr.month::TEXT, 2, '0') || '-01', 'YYYY-MM-DD')
           >= DATE_TRUNC('month', NOW()) - ($1 || ' months')::INTERVAL
+        AND ($2::int IS NULL OR e.company_id = $2)
       GROUP BY pr.year, pr.month
       ORDER BY pr.year ASC, pr.month ASC
-    `, [months]);
+    `, [months, companyId]);
 
     return rows.map(r => ({
       year:           parseInt(r.year),
@@ -114,15 +128,18 @@ export async function getPayrollTrends(months = 12) {
  *   source: 'payroll_runs' | 'employees'
  * }>}
  */
-export async function getDepartmentCostAnalysis() {
+export async function getDepartmentCostAnalysis(companyId = null) {
   const exists = await payrollRunsExist();
 
   if (exists) {
-    // Use most recent month that has data
+    // Most recent month that has data FOR THIS TENANT — an unscoped MAX would
+    // pick another company's latest run and then report zero for this one.
     const { rows: latestRows } = await pool.query(`
-      SELECT year, month FROM payroll_runs
-      ORDER BY year DESC, month DESC LIMIT 1
-    `);
+      SELECT pr.year, pr.month FROM payroll_runs pr
+      JOIN employees e ON e.id = pr.employee_id
+      WHERE ($1::int IS NULL OR e.company_id = $1)
+      ORDER BY pr.year DESC, pr.month DESC LIMIT 1
+    `, [companyId]);
 
     if (latestRows.length) {
       const { year, month } = latestRows[0];
@@ -139,9 +156,10 @@ export async function getDepartmentCostAnalysis() {
         JOIN employees e ON e.id = pr.employee_id
         WHERE pr.year = $1 AND pr.month = $2
           AND e.department IS NOT NULL
+          AND ($3::int IS NULL OR e.company_id = $3)
         GROUP BY e.department
         ORDER BY total_gross DESC
-      `, [year, month]);
+      `, [year, month, companyId]);
 
       return rows.map(r => ({
         department:              r.department,
@@ -202,20 +220,22 @@ export async function getDepartmentCostAnalysis() {
  *   affected_employees: number
  * }>}
  */
-export async function getAnomalyFlags(threshold = 0.20) {
+export async function getAnomalyFlags(threshold = 0.20, companyId = null) {
   const exists = await payrollRunsExist();
   if (!exists) return [];
 
   const { rows } = await pool.query(`
     WITH MonthlyTotals AS (
       SELECT
-        year,
-        month,
-        TO_CHAR(TO_DATE(month::TEXT, 'MM'), 'Mon') AS month_label,
-        COUNT(DISTINCT employee_id)::INT          AS employee_count,
-        ROUND(SUM(gross)::NUMERIC, 2)             AS total_gross
-      FROM payroll_runs
-      GROUP BY year, month
+        pr.year,
+        pr.month,
+        TO_CHAR(TO_DATE(pr.month::TEXT, 'MM'), 'Mon') AS month_label,
+        COUNT(DISTINCT pr.employee_id)::INT       AS employee_count,
+        ROUND(SUM(pr.gross)::NUMERIC, 2)          AS total_gross
+      FROM payroll_runs pr
+      JOIN employees e ON e.id = pr.employee_id
+      WHERE ($2::int IS NULL OR e.company_id = $2)
+      GROUP BY pr.year, pr.month
     ),
     Comparison AS (
       SELECT
@@ -231,7 +251,7 @@ export async function getAnomalyFlags(threshold = 0.20) {
     FROM Comparison
     WHERE ABS((total_gross - prev_gross) / NULLIF(prev_gross, 0)) >= $1
     ORDER BY year DESC, month DESC
-  `, [threshold]);
+  `, [threshold, companyId]);
 
   return rows.map(r => {
     const absChange = Math.abs(parseFloat(r.change_pct));
@@ -304,7 +324,7 @@ async function financeTablesExist() {
  * @param {number} [daysAhead=30] 
  * @returns {Promise<Array<{ date: string, inflow: number, outflow: number, balance: number }>>}
  */
-export async function getPredictiveCashFlow(daysAhead = 30) {
+export async function getPredictiveCashFlow(daysAhead = 30, companyId = null) {
   if (!(await financeTablesExist())) return [];
 
   const { rows: results } = await pool.query(`
@@ -316,6 +336,7 @@ export async function getPredictiveCashFlow(daysAhead = 30) {
         0::NUMERIC as outflow
       FROM invoices
       WHERE status NOT IN ('Paid', 'Cancelled') AND due_date >= CURRENT_DATE
+        AND ($2::int IS NULL OR company_id = $2)
       GROUP BY due_date
       
       UNION ALL
@@ -327,6 +348,7 @@ export async function getPredictiveCashFlow(daysAhead = 30) {
         SUM(balance) as outflow
       FROM bills
       WHERE status NOT IN ('Paid', 'Cancelled') AND due_date >= CURRENT_DATE
+        AND ($2::int IS NULL OR company_id = $2)
       GROUP BY due_date
     )
     SELECT 
@@ -338,7 +360,7 @@ export async function getPredictiveCashFlow(daysAhead = 30) {
     WHERE due_date <= CURRENT_DATE + ($1 || ' days')::INTERVAL
     GROUP BY due_date
     ORDER BY due_date
-  `, [daysAhead]);
+  `, [daysAhead, companyId]);
 
   return results.map(r => ({
     date:     r.date,
@@ -408,11 +430,20 @@ export async function buildQueryContext(query) {
   // Inventory — included when query mentions stock/inventory/reorder
   if (q.includes('inventory') || q.includes('stock') || q.includes('reorder') || q.includes('item')) {
     try {
+      // ⚠ THIS QUERY HAD NEVER RETURNED A ROW. Two broken references, both
+      // inside a `try` that turned the failure into an absent section rather
+      // than an error: `name` does not exist (the column is `item_name`), and
+      // `reorder_point` was dropped by 20260911000010_sca_spine_identity after
+      // it was found to be 0.000 on every row — `reorder_level` is the single
+      // source of truth. Aliased back to the old names so the `r.name` /
+      // `r.reorder_point` readers below are untouched.
       const { rows } = await pool.query(`
-        SELECT name, current_stock, reorder_point, unit_of_measure
+        SELECT item_name AS name, current_stock,
+               reorder_level AS reorder_point, unit_of_measure
         FROM inventory_items
-        WHERE current_stock <= reorder_point * 1.5
-        ORDER BY current_stock::float / NULLIF(reorder_point, 0) ASC
+        WHERE reorder_level > 0
+          AND current_stock <= reorder_level * 1.5
+        ORDER BY current_stock::float / NULLIF(reorder_level, 0) ASC
         LIMIT 10
       `);
       if (rows.length) {

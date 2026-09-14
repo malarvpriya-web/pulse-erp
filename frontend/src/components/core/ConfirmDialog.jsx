@@ -3,7 +3,7 @@ import { AlertTriangle, Trash2, AlertCircle, Info } from 'lucide-react';
 
 const VARIANTS = {
   danger:  { icon: Trash2,        color: '#ef4444', bg: '#fef2f2', label: 'Delete'  },
-  warning: { icon: AlertTriangle, color: '#f59e0b', bg: '#fffbeb', label: 'Confirm' },
+  warning: { icon: AlertTriangle, color: '#7c5cf0', bg: '#f5f3ff', label: 'Confirm' },
   info:    { icon: Info,          color: '#3b82f6', bg: '#eff6ff', label: 'OK'      },
 };
 

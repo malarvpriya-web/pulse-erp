@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Factory } from 'lucide-react';
 import { usePagination } from '@/features/_shared/usePagination';
 import Pagination from '@/features/_shared/Pagination';
 import api from '@/services/api/client';
@@ -6,13 +7,14 @@ import { useToast } from '@/context/ToastContext';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import { formatDateTime } from '@/utils/dateFormatter';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmtQty = (n) => (parseFloat(n) || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 
 const STATUS_COLOR = {
   draft:              { bg: '#f3f4f6', color: '#374151' },
   submitted:          { bg: '#e0f2fe', color: '#0369a1' },
-  partially_assigned: { bg: '#fef3c7', color: '#d97706' },
+  partially_assigned: { bg: '#ede9fe', color: '#6d28d9' },
   completed:          { bg: '#dcfce7', color: '#166534' },
   cancelled:          { bg: '#fee2e2', color: '#991b1b' },
 };
@@ -190,7 +192,7 @@ export default function ProductionModuleRequests() {
     { label: 'All',        key: '',                   val: stats.total || 0,              color: '#6366f1' },
     { label: 'Draft',      key: 'draft',              val: stats.draft || 0,              color: '#6b7280' },
     { label: 'Submitted',  key: 'submitted',          val: stats.submitted || 0,          color: '#0ea5e9' },
-    { label: 'Partial',    key: 'partially_assigned', val: stats.partially_assigned || 0, color: '#d97706' },
+    { label: 'Partial',    key: 'partially_assigned', val: stats.partially_assigned || 0, color: '#6d28d9' },
     { label: 'Completed',  key: 'completed',          val: stats.completed || 0,          color: '#10b981' },
     { label: 'Cancelled',  key: 'cancelled',          val: stats.cancelled || 0,          color: '#ef4444' },
   ];
@@ -211,12 +213,15 @@ export default function ProductionModuleRequests() {
   const td = { padding: '10px 12px', fontSize: 13, color: '#374151', borderBottom: '1px solid #f3f4f6', verticalAlign: 'top' };
 
   return (
-    <div style={{ padding: 24 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Factory}
+        eyebrow="Production"
+        title="Module Production Batch Requests"
+        actions={<button className="plh-cta" onClick={load}>↻ Refresh</button>}
+      />
+    }>
       {readOnly && <ReadOnlyBanner />}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Module Production Batch Requests</h2>
-        <button onClick={load} style={{ padding: '8px 14px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 13 }}>↻ Refresh</button>
-      </div>
 
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -384,7 +389,7 @@ export default function ProductionModuleRequests() {
                 <tr key={l.id}>
                   <td style={td}>{l.module_spec} <span style={{ color: '#9ca3af' }}>{l.unit}</span></td>
                   <td style={{ ...td, textAlign: 'right' }}>{fmtQty(l.requested_qty)}</td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 600, color: parseFloat(l.assigned_qty) >= parseFloat(l.requested_qty) ? '#166534' : '#d97706' }}>{fmtQty(l.assigned_qty)}</td>
+                  <td style={{ ...td, textAlign: 'right', fontWeight: 600, color: parseFloat(l.assigned_qty) >= parseFloat(l.requested_qty) ? '#166534' : '#6d28d9' }}>{fmtQty(l.assigned_qty)}</td>
                 </tr>
               ))}
             </tbody>
@@ -394,7 +399,7 @@ export default function ProductionModuleRequests() {
           </div>
         </Drawer>
       )}
-    </div>
+    </PageShell>
   );
 }
 

@@ -3,10 +3,11 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 import {
-  Clock, AlertTriangle, Search, Download, RefreshCw, Users,
-  TrendingUp, BarChart2, FileWarning, X, CheckCircle, Printer,
-  Bell, Calendar, Shield,
+  Clock, AlertTriangle, Search, Download, RefreshCw, Users, TrendingUp,
+  BarChart2, FileWarning, X, CheckCircle, Printer, Bell, Calendar,
+  Shield, CalendarClock,
 } from 'lucide-react';
 
 const pad     = n => String(n).padStart(2, '0');
@@ -15,13 +16,13 @@ const fmtMins = m => m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
 // ─── Severity helpers ─────────────────────────────────────────────────────────
 function delaySeverity(mins) {
   if (mins > 60) return { label: 'Critical', bg: '#fee2e2', color: '#991b1b' };
-  if (mins > 30) return { label: 'High',     bg: '#fef3c7', color: '#92400e' };
-  if (mins > 15) return { label: 'Moderate', bg: '#fff7ed', color: '#c2410c' };
+  if (mins > 30) return { label: 'High',     bg: '#ede9fe', color: '#5b21b6' };
+  if (mins > 15) return { label: 'Moderate', bg: '#fff7ed', color: '#5b21b6' };
   return          { label: 'Low',            bg: '#f0fdf4', color: '#166534' };
 }
 function riskBadge(count) {
   if (count >= 10) return { label: 'High',   bg: '#fee2e2', color: '#991b1b' };
-  if (count >= 5)  return { label: 'Medium', bg: '#fef3c7', color: '#92400e' };
+  if (count >= 5)  return { label: 'Medium', bg: '#ede9fe', color: '#5b21b6' };
   return                   { label: 'Low',   bg: '#dcfce7', color: '#166534' };
 }
 const REPEAT_THRESHOLD = 3;   // highlight + warn button threshold
@@ -200,7 +201,7 @@ function WeekTooltip({ active, payload, label }) {
       fontSize:12, boxShadow:'0 4px 12px rgba(0,0,0,.2)',
     }}>
       <div style={{ fontWeight:600 }}>{label}</div>
-      <div style={{ color:'#fbbf24', marginTop:2 }}>{payload[0].value} late arrival{payload[0].value !== 1 ? 's' : ''}</div>
+      <div style={{ color:'#8b5cf6', marginTop:2 }}>{payload[0].value} late arrival{payload[0].value !== 1 ? 's' : ''}</div>
     </div>
   );
 }
@@ -364,10 +365,10 @@ export default function LateArrivals() {
   // ── Styles helpers ───────────────────────────────────────────────────────────
   const kpiCards = [
     {
-      icon:   <Clock size={20} color="#f59e0b" />,
+      icon:   <Clock size={20} color="#7c5cf0" />,
       label:  'Total Late Records',
       value:  stats.total,
-      bg:     '#fef3c7', border: '#fde68a',
+      bg:     '#ede9fe', border: '#ddd6fe',
     },
     {
       icon:   <Users size={20} color="#6366f1" />,
@@ -398,7 +399,13 @@ export default function LateArrivals() {
   });
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title="Late Arrivals — Monthly Report"
+      />
+    }>
 
       {/* Warning modal */}
       {warningTarget && (
@@ -416,9 +423,7 @@ export default function LateArrivals() {
         marginBottom:20, flexWrap:'wrap', gap:12,
       }}>
         <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>
-            Late Arrivals — Monthly Report
-          </h1>
+
           <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
             {filtered.length} record{filtered.length !== 1 ? 's' : ''} · {stats.employees} employee{stats.employees !== 1 ? 's' : ''} late this month
           </p>
@@ -489,9 +494,9 @@ export default function LateArrivals() {
         <div style={{
           display:'flex', alignItems:'center', gap:10,
           padding:'10px 16px', background:'#fff7ed',
-          border:'1px solid #fed7aa', borderRadius:10, marginBottom:20, fontSize:13,
+          border:'1px solid #ddd6fe', borderRadius:10, marginBottom:20, fontSize:13,
         }}>
-          <AlertTriangle size={16} color="#f59e0b" />
+          <AlertTriangle size={16} color="#7c5cf0" />
           <span>
             <strong>{stats.worst.name}</strong> had the most cumulative late time this month:{' '}
             <strong>{fmtMins(stats.worst.mins)}</strong> total
@@ -552,11 +557,11 @@ export default function LateArrivals() {
             display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8,
           }}>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              <Clock size={16} color="#f59e0b" />
+              <Clock size={16} color="#7c5cf0" />
               <span style={{ fontWeight:700, fontSize:14, color:'#111827' }}>Daily Detail</span>
               {filtered.length > 0 && (
                 <span style={{
-                  background:'#fef3c7', color:'#92400e', borderRadius:20,
+                  background:'#ede9fe', color:'#5b21b6', borderRadius:20,
                   padding:'1px 8px', fontSize:11, fontWeight:700,
                 }}>
                   {filtered.length}
@@ -636,7 +641,7 @@ export default function LateArrivals() {
                         <td style={{ padding:'10px 14px' }}>
                           <span style={{
                             display:'flex', alignItems:'center', gap:4,
-                            color: delay > 30 ? '#991b1b' : '#92400e', fontWeight:700,
+                            color: delay > 30 ? '#991b1b' : '#5b21b6', fontWeight:700,
                           }}>
                             {delay > 30 && <AlertTriangle size={11} />}
                             {delay} mins
@@ -723,7 +728,7 @@ export default function LateArrivals() {
                           </div>
                         </td>
                         <td style={{ padding:'10px 14px', color:'#6b7280' }}>{emp.dept}</td>
-                        <td style={{ padding:'10px 14px', fontWeight:700, color:'#f59e0b', fontSize:14 }}>
+                        <td style={{ padding:'10px 14px', fontWeight:700, color:'#7c5cf0', fontSize:14 }}>
                           {emp.count}×
                         </td>
                         <td style={{ padding:'10px 14px', color:'#374151' }}>{fmtMins(emp.totalMins)}</td>
@@ -851,6 +856,6 @@ export default function LateArrivals() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

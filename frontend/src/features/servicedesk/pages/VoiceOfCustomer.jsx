@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { MessageSquare, ThumbsUp, ThumbsDown, Star, TrendingUp, CheckCircle, X, Plus } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  MessageSquare, ThumbsUp, ThumbsDown, Star, TrendingUp, CheckCircle,
+  X, Plus, Contact,
+} from 'lucide-react';
 
 const CARD = { background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:'20px', marginBottom:16 };
 const BTN  = (bg='#6B3FDB') => ({ background:bg, color:'#fff', border:'none', borderRadius:8, padding:'8px 16px', fontSize:13, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6 });
@@ -82,27 +86,28 @@ export default function VoiceOfCustomer() {
 
   const kpis = dashboard?.kpis || {};
   const nps = kpis.nps_score ?? 0;
-  const npsColor = nps >= 50 ? '#059669' : nps >= 0 ? '#d97706' : '#dc2626';
+  const npsColor = nps >= 50 ? '#059669' : nps >= 0 ? '#6d28d9' : '#dc2626';
 
   const SentimentBadge = ({ sentiment }) => {
-    const map = { promoter:{ bg:'#d1fae5',c:'#065f46',label:'Promoter 😊' }, passive:{ bg:'#fef3c7',c:'#92400e',label:'Passive 😐' }, detractor:{ bg:'#fee2e2',c:'#991b1b',label:'Detractor 😞' } };
+    const map = { promoter:{ bg:'#d1fae5',c:'#065f46',label:'Promoter 😊' }, passive:{ bg:'#ede9fe',c:'#5b21b6',label:'Passive 😐' }, detractor:{ bg:'#fee2e2',c:'#991b1b',label:'Detractor 😞' } };
     const s = map[sentiment];
     if (!s) return null;
     return <span style={{ background:s.bg, color:s.c, padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700 }}>{s.label}</span>;
   };
 
   return (
-    <div style={{ padding:'24px' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#111', margin:0 }}>Voice of Customer</h1>
-          <p style={{ fontSize:13, color:'#6b7280', margin:'4px 0 0' }}>NPS, CSAT, feedback classification, improvement pipeline</p>
-        </div>
-        <div style={{ display:'flex', gap:8 }}>
-          <button onClick={() => setShowAddSurvey(true)} style={{ ...BTN('#374151') }}><Plus size={14}/>Survey Template</button>
-          <button onClick={() => setShowAddResponse(true)} style={BTN()}><Plus size={14}/>Log Feedback</button>
-        </div>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="Service Desk"
+        title="Voice of Customer"
+        subtitle="NPS, CSAT, feedback classification, improvement pipeline"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setShowAddSurvey(true)}><Plus size={14}/>Survey Template</button>
+          <button className="plh-cta" onClick={() => setShowAddResponse(true)}><Plus size={14}/>Log Feedback</button>
+        </>}
+      />
+    }>
 
       {/* NPS + Key Metrics */}
       {dashboard && (
@@ -122,7 +127,7 @@ export default function VoiceOfCustomer() {
           </div>
           {[
             { label:'Total Responses', value:parseInt(kpis.total_responses||0), color:'#6B3FDB' },
-            { label:'Avg Rating', value:kpis.avg_rating ? `${parseFloat(kpis.avg_rating).toFixed(1)}/10` : '—', color:'#d97706' },
+            { label:'Avg Rating', value:kpis.avg_rating ? `${parseFloat(kpis.avg_rating).toFixed(1)}/10` : '—', color:'#6d28d9' },
             { label:'Avg NPS', value:kpis.avg_nps ? parseFloat(kpis.avg_nps).toFixed(1) : '—', color:'#059669' },
             { label:'Unactioned', value:parseInt(kpis.unactioned||0), color:parseInt(kpis.unactioned||0)>5?'#dc2626':'#374151' },
             { label:'Promoters', value:`${kpis.promoters||0} / ${kpis.total_responses||0}`, color:'#059669' },
@@ -156,7 +161,7 @@ export default function VoiceOfCustomer() {
                   <span style={{ color:'#374151', textTransform:'capitalize' }}>{e.trigger_event?.replace('_',' ')}</span>
                   <div>
                     <span style={{ fontWeight:700, color:'#6B3FDB', marginRight:12 }}>{e.cnt} responses</span>
-                    {e.avg_nps && <span style={{ color:'#d97706', fontSize:12 }}>NPS {parseFloat(e.avg_nps).toFixed(1)}</span>}
+                    {e.avg_nps && <span style={{ color:'#6d28d9', fontSize:12 }}>NPS {parseFloat(e.avg_nps).toFixed(1)}</span>}
                   </div>
                 </div>
               ))}
@@ -189,7 +194,7 @@ export default function VoiceOfCustomer() {
                     const score = parseFloat(m.avg_nps || 0);
                     const maxScore = 10;
                     const h = Math.max(4, ((score + 10) / (maxScore + 10)) * 70);
-                    const color = score >= 7 ? '#059669' : score >= 5 ? '#d97706' : '#dc2626';
+                    const color = score >= 7 ? '#059669' : score >= 5 ? '#6d28d9' : '#dc2626';
                     return (
                       <div key={i} title={`${m.month}: NPS ${score.toFixed(1)}`} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
                         <div style={{ fontSize:8, color:'#9ca3af' }}>{score.toFixed(0)}</div>
@@ -258,13 +263,13 @@ export default function VoiceOfCustomer() {
                   <div style={{ display:'flex', gap:8, alignItems:'center' }}>
                     {r.nps_score !== null && r.nps_score !== undefined && (
                       <div style={{ textAlign:'center' }}>
-                        <div style={{ fontSize:20, fontWeight:800, color:r.nps_score>=9?'#059669':r.nps_score>=7?'#d97706':'#dc2626' }}>{r.nps_score}</div>
+                        <div style={{ fontSize:20, fontWeight:800, color:r.nps_score>=9?'#059669':r.nps_score>=7?'#6d28d9':'#dc2626' }}>{r.nps_score}</div>
                         <div style={{ fontSize:10, color:'#9ca3af' }}>NPS</div>
                       </div>
                     )}
                     {r.rating && (
                       <div style={{ textAlign:'center' }}>
-                        <div style={{ fontSize:16, fontWeight:700, color:'#d97706' }}>{'⭐'.repeat(Math.round(r.rating/2))}</div>
+                        <div style={{ fontSize:16, fontWeight:700, color:'#6d28d9' }}>{'⭐'.repeat(Math.round(r.rating/2))}</div>
                         <div style={{ fontSize:10, color:'#9ca3af' }}>{r.rating}/10</div>
                       </div>
                     )}
@@ -431,6 +436,6 @@ export default function VoiceOfCustomer() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

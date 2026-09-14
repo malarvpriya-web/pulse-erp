@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Trophy, TrendingUp, Users, Target, Award, Star,
   CheckCircle, Clock, AlertCircle, BarChart2, ArrowRight,
@@ -12,9 +12,11 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
 
-const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
+const COLORS = ['#10b981', '#3b82f6', '#7c5cf0', '#ef4444', '#8b5cf6'];
 
 function KPICard({ label, value, sub, icon: Icon, color = '#3b82f6', index = 0 }) {
   return (
@@ -52,17 +54,49 @@ export default function PerformanceDashboard() {
   const [topPerf, setTopPerf]   = useState([]);
   const [goalRate, setGoalRate] = useState([]);
   const [cycle, setCycle]       = useState(null);
+  const [cycles, setCycles]     = useState([]);
+  const [departments, setDepartments] = useState([]);
 
-  async function load() {
+  // Reviews are organised by cycle, not by date, so this dashboard filters on
+  // cycle + department rather than a period (hence showPeriod={false}).
+  const filters = useDashboardFilters({
+    dimensions: { cycle_id: 'all', department: 'all' },
+    storageKey: 'performance-dashboard',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.allSettled([
+      api.get('/performance/cycles'),
+      api.get('/analytics/hr-filter-options'),
+    ]).then(([cyc, dep]) => {
+      if (cancelled) return;
+      const rows = cyc.status === 'fulfilled'
+        ? (cyc.value.data?.cycles || cyc.value.data || []) : [];
+      setCycles(Array.isArray(rows) ? rows : []);
+      setDepartments(dep.status === 'fulfilled' ? (dep.value.data?.departments || []) : []);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
+      const opts = { params };
+      // These three were pointed at /team/department-performance,
+      // /team/top-performers and /goals/completion-rate — none of which exist on
+      // the router (it has /team/members only). Every call 404'd into
+      // Promise.allSettled, so the department chart, top-performer list and goal
+      // completion panel were permanently empty. Correct paths are under
+      // /analytics/.
       const [dashRes, distRes, deptRes, topRes, goalRes, cycleRes] = await Promise.allSettled([
-        api.get('/performance/analytics/dashboard'),
-        api.get('/performance/analytics/rating-distribution'),
-        api.get('/performance/team/department-performance'),
-        api.get('/performance/team/top-performers'),
-        api.get('/performance/goals/completion-rate'),
+        api.get('/performance/analytics/dashboard', opts),
+        api.get('/performance/analytics/rating-distribution', opts),
+        api.get('/performance/analytics/department-performance', opts),
+        api.get('/performance/analytics/top-performers', opts),
+        api.get('/performance/analytics/goal-completion', opts),
         api.get('/performance/cycles/active/current'),
       ]);
       if (dashRes.status === 'fulfilled') setDash(dashRes.value.data);
@@ -76,9 +110,20 @@ export default function PerformanceDashboard() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [params]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const filterDimensions = [
+    {
+      key: 'cycle_id', label: 'Review Cycle', allLabel: 'All Cycles', width: 180,
+      options: cycles.map(c => ({ value: String(c.id), label: c.name || c.cycle_name || `Cycle ${c.id}` })),
+    },
+    {
+      key: 'department', label: 'Department', allLabel: 'All Departments',
+      options: departments.map(d => ({ value: d, label: d })),
+    },
+  ];
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300, gap: 8 }}>
@@ -139,30 +184,21 @@ export default function PerformanceDashboard() {
   );
 
   return (
-    <div style={{ padding: '16px 18px 20px', margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Trophy size={20} style={{ color: 'var(--color-primary)' }} />
-            PMS Dashboard
-          </h1>
-          {cycle && (
-            <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: '4px 0 0' }}>
-              Active Cycle: <strong>{cycle.name}</strong> — {cycle.review_period}
-            </p>
-          )}
-        </div>
-        <button onClick={load} style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          padding: '8px 16px', borderRadius: 8,
-          background: 'var(--color-background-secondary)',
-          border: '0.5px solid var(--color-border-tertiary)',
-          cursor: 'pointer', fontSize: 13, color: 'var(--color-text-secondary)',
-        }}>
+    <PageShell dock={
+      <PageHero
+        icon={Trophy}
+        eyebrow="Performance"
+        title="PMS Dashboard"
+        actions={<button className="plh-cta" onClick={load}>
           <RefreshCw size={14} /> Refresh
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+      {/* Header */}
+
+
+      {/* Reviews are cycle-scoped, not date-scoped — no period selector here. */}
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} showPeriod={false} />
 
       {/* Cycle deadline strip */}
       {cycle && (
@@ -188,8 +224,8 @@ export default function PerformanceDashboard() {
           <span style={{
             marginLeft: 'auto', fontSize: 12, fontWeight: 600,
             padding: '2px 10px', borderRadius: 20,
-            background: cycle.status === 'active' ? '#10b98118' : '#f59e0b18',
-            color: cycle.status === 'active' ? '#10b981' : '#f59e0b',
+            background: cycle.status === 'active' ? '#10b98118' : '#7c5cf018',
+            color: cycle.status === 'active' ? '#10b981' : '#7c5cf0',
           }}>
             {cycle.status?.toUpperCase()}
           </span>
@@ -200,7 +236,7 @@ export default function PerformanceDashboard() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, marginBottom: 12 }}>
         <KPICard index={0} label="Total Reviews" value={totalReviews} icon={FileText} color="#3b82f6" />
         <KPICard index={1} label="Completed Reviews" value={`${completed} (${completionPct}%)`} icon={CheckCircle} color="#10b981" />
-        <KPICard index={2} label="Pending Self Reviews" value={pendingSelf} icon={Clock} color="#f59e0b" />
+        <KPICard index={2} label="Pending Self Reviews" value={pendingSelf} icon={Clock} color="#7c5cf0" />
         <KPICard index={3} label="Pending Manager Reviews" value={pendingMgr} icon={Users} color="#ef4444" />
         <KPICard index={4} label="Avg Rating" value={avgRating} sub="(calibrated)" icon={Star} color="#8b5cf6" />
         <KPICard index={5} label="Top Performers" value={topPerf.length} sub="Rating ≥ 4.0" icon={Award} color="#10b981" />
@@ -299,6 +335,6 @@ export default function PerformanceDashboard() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

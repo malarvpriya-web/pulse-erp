@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Users, CheckCircle, XCircle, Clock, MapPin, Zap, RefreshCw,
-  Activity, AlertCircle, Building, AlertTriangle,
+  Users, CheckCircle, XCircle, Clock, MapPin, Zap, RefreshCw, Activity,
+  AlertCircle, Building, AlertTriangle, LayoutDashboard,
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import api from '@/services/api/client';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function parseGPS(loc) {
   if (!loc) return null;
@@ -85,7 +86,7 @@ const StatCard = ({ icon: Icon, label, value, sub, color, bg, index = 0 }) => (
 const StatusBadge = ({ status }) => {
   const map = {
     present: { bg: '#dcfce7', color: '#166534', label: 'Present' },
-    late:    { bg: '#fef3c7', color: '#92400e', label: 'Late' },
+    late:    { bg: '#ede9fe', color: '#5b21b6', label: 'Late' },
     absent:  { bg: '#fee2e2', color: '#991b1b', label: 'Absent' },
     wfh:     { bg: '#dbeafe', color: '#1e40af', label: 'WFH' },
     field:   { bg: '#e0f2fe', color: '#0369a1', label: 'Field' },
@@ -155,35 +156,21 @@ export default function LiveWorkforceDashboard() {
   ];
 
   return (
-    <div style={{ padding: '16px 18px 20px', margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: '#111827', margin: 0 }}>
-            Live Workforce Dashboard
-          </h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', animation: 'pulse 2s infinite' }} />
-            <span style={{ fontSize: 13, color: '#6b7280' }}>
-              {lastRefresh
-                ? `Last updated ${lastRefresh.toLocaleTimeString('en-IN')} · Auto-refreshes every 60s`
-                : 'Connecting…'}
-            </span>
-          </div>
-        </div>
-        <button
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Attendance"
+        title="Live Workforce Dashboard"
+        actions={<button className="plh-cta"
           onClick={load}
-          disabled={loading}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '8px 16px', borderRadius: 8, border: `1px solid ${P}`,
-            background: 'transparent', color: P, cursor: 'pointer', fontSize: 13,
-          }}
-        >
+          disabled={loading}>
           <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
           Refresh
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+      {/* Header */}
+
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 80, color: '#9ca3af' }}>Loading live data…</div>
@@ -194,19 +181,19 @@ export default function LiveWorkforceDashboard() {
             <StatCard index={0} icon={Users}         label="Total Employees" value={totalEmployees} color="#6B3FDB" bg="#f5f3ff" />
             <StatCard index={1} icon={CheckCircle}   label="Present Today"   value={present}  sub={`${attendancePct}% attendance`} color="#10b981" bg="#dcfce7" />
             <StatCard index={2} icon={XCircle}       label="Absent Today"    value={absent}   color="#ef4444" bg="#fee2e2" />
-            <StatCard index={3} icon={Clock}         label="Late Arrivals"   value={late}     color="#f59e0b" bg="#fef3c7" />
+            <StatCard index={3} icon={Clock}         label="Late Arrivals"   value={late}     color="#7c5cf0" bg="#ede9fe" />
             <StatCard index={4} icon={MapPin}        label="WFH"             value={wfh}      color="#3b82f6" bg="#dbeafe" />
             <StatCard index={5} icon={Activity}      label="Field Engineers" value={field}    color="#0369a1" bg="#e0f2fe" />
             <StatCard index={6} icon={Zap}           label="On Overtime"     value={onOT}     color="#8b5cf6" bg="#ede9fe" />
             <StatCard index={7} icon={Building}      label="Still Inside"    value={stillInside} sub="not yet punched out" color="#059669" bg="#ecfdf5" />
-            <StatCard index={8} icon={AlertTriangle} label="Geo Violations"  value={geoViolations} sub="today" color="#d97706" bg="#fef3c7" />
+            <StatCard index={8} icon={AlertTriangle} label="Geo Violations"  value={geoViolations} sub="today" color="#6d28d9" bg="#ede9fe" />
           </div>
 
           {/* Attendance gauge */}
           <div className="dk-anim" style={{ ...CARD, marginBottom: 12, '--dk-i': 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <span style={{ fontWeight: 600, color: '#111827', fontSize: 14 }}>Overall Attendance Rate</span>
-              <span style={{ fontSize: 21, fontWeight: 700, color: attendancePct >= 90 ? '#10b981' : attendancePct >= 70 ? '#f59e0b' : '#ef4444' }}>
+              <span style={{ fontSize: 21, fontWeight: 700, color: attendancePct >= 90 ? '#10b981' : attendancePct >= 70 ? '#7c5cf0' : '#ef4444' }}>
                 {attendancePct}%
               </span>
             </div>
@@ -214,7 +201,7 @@ export default function LiveWorkforceDashboard() {
               <div style={{
                 height: '100%', borderRadius: 99,
                 width: `${attendancePct}%`,
-                background: attendancePct >= 90 ? '#10b981' : attendancePct >= 70 ? '#f59e0b' : '#ef4444',
+                background: attendancePct >= 90 ? '#10b981' : attendancePct >= 70 ? '#7c5cf0' : '#ef4444',
                 transition: 'width 0.8s ease',
               }} />
             </div>
@@ -253,7 +240,7 @@ export default function LiveWorkforceDashboard() {
                 {[
                   { label: 'Present',        value: present,     pct: totalEmployees > 0 ? Math.round(present/totalEmployees*100) : 0, color: '#10b981' },
                   { label: 'Absent',         value: absent,      pct: totalEmployees > 0 ? Math.round(absent/totalEmployees*100)  : 0, color: '#ef4444' },
-                  { label: 'Late',           value: late,        pct: totalEmployees > 0 ? Math.round(late/totalEmployees*100)    : 0, color: '#f59e0b' },
+                  { label: 'Late',           value: late,        pct: totalEmployees > 0 ? Math.round(late/totalEmployees*100)    : 0, color: '#7c5cf0' },
                   { label: 'Work From Home', value: wfh,         pct: totalEmployees > 0 ? Math.round(wfh/totalEmployees*100)     : 0, color: '#3b82f6' },
                   { label: 'Field',          value: field,       pct: totalEmployees > 0 ? Math.round(field/totalEmployees*100)   : 0, color: '#0369a1' },
                   { label: 'Overtime',       value: onOT,        pct: totalEmployees > 0 ? Math.round(onOT/totalEmployees*100)    : 0, color: '#8b5cf6' },
@@ -283,9 +270,9 @@ export default function LiveWorkforceDashboard() {
                 )}
 
                 {totalEmployees === 0 && (
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: 12, background: '#fff7f0', borderRadius: 8, border: '1px solid #fed7aa', marginBottom: 10 }}>
-                    <AlertCircle size={16} color="#f97316" />
-                    <span style={{ fontSize: 13, color: '#9a3412' }}>No active employees found — ensure employees are assigned to this company in HR settings</span>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: 12, background: '#fff7f0', borderRadius: 8, border: '1px solid #ddd6fe', marginBottom: 10 }}>
+                    <AlertCircle size={16} color="#7c5cf0" />
+                    <span style={{ fontSize: 13, color: '#4c1d95' }}>No active employees found — ensure employees are assigned to this company in HR settings</span>
                   </div>
                 )}
 
@@ -298,9 +285,9 @@ export default function LiveWorkforceDashboard() {
                   </div>
                 )}
                 {late > 10 && (
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: 12, background: '#fffbeb', borderRadius: 8, marginBottom: 10, border: '1px solid #fde68a' }}>
-                    <Clock size={16} color="#f59e0b" style={{ marginTop: 1, flexShrink: 0 }} />
-                    <span style={{ fontSize: 13, color: '#92400e' }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: 12, background: '#f5f3ff', borderRadius: 8, marginBottom: 10, border: '1px solid #ddd6fe' }}>
+                    <Clock size={16} color="#7c5cf0" style={{ marginTop: 1, flexShrink: 0 }} />
+                    <span style={{ fontSize: 13, color: '#5b21b6' }}>
                       {late} late arrivals recorded today
                     </span>
                   </div>
@@ -355,7 +342,7 @@ export default function LiveWorkforceDashboard() {
                             <div style={{ flex: 1, height: 6, background: '#f3f4f6', borderRadius: 99 }}>
                               <div style={{
                                 height: '100%', borderRadius: 99, width: `${s.utilization || 0}%`,
-                                background: (s.utilization || 0) >= 80 ? '#10b981' : (s.utilization || 0) >= 60 ? '#f59e0b' : '#ef4444',
+                                background: (s.utilization || 0) >= 80 ? '#10b981' : (s.utilization || 0) >= 60 ? '#7c5cf0' : '#ef4444',
                               }} />
                             </div>
                             <span style={{ fontSize: 12, fontWeight: 600, color: '#374151', minWidth: 36 }}>{s.utilization || 0}%</span>
@@ -384,8 +371,8 @@ export default function LiveWorkforceDashboard() {
                   {(() => {
                     const noGps = data.field_engineers.filter(f => !parseGPS(f.check_in_location)).length;
                     return noGps > 0 ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#92400e', background: '#fffbeb', borderRadius: 6, padding: '6px 10px', marginBottom: 12 }}>
-                        <AlertCircle size={13} color="#d97706" />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#5b21b6', background: '#f5f3ff', borderRadius: 6, padding: '6px 10px', marginBottom: 12 }}>
+                        <AlertCircle size={13} color="#6d28d9" />
                         {noGps} engineer{noGps > 1 ? 's' : ''} checked in without GPS — not shown on map
                       </div>
                     ) : null;
@@ -394,10 +381,10 @@ export default function LiveWorkforceDashboard() {
                     {(data?.field_engineers || []).map((f, i) => {
                       const hasGps = !!parseGPS(f.check_in_location);
                       return (
-                        <div key={i} style={{ border: `1px solid ${hasGps ? '#e0f2fe' : '#fde68a'}`, borderRadius: 10, padding: 11, background: hasGps ? '#f0f9ff' : '#fffbeb', alignSelf: 'start' }}>
+                        <div key={i} style={{ border: `1px solid ${hasGps ? '#e0f2fe' : '#ddd6fe'}`, borderRadius: 10, padding: 11, background: hasGps ? '#f0f9ff' : '#f5f3ff', alignSelf: 'start' }}>
                           <div style={{ fontWeight: 600, color: '#111827', marginBottom: 4 }}>{f.name}</div>
                           <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>{f.department} · {f.designation}</div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: hasGps ? '#0369a1' : '#d97706' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: hasGps ? '#0369a1' : '#6d28d9' }}>
                             <MapPin size={12} />
                             {hasGps
                               ? `${String(f.check_in_location).slice(0, 26)}…`
@@ -460,6 +447,6 @@ export default function LiveWorkforceDashboard() {
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
         @keyframes spin  { to { transform: rotate(360deg); } }
       `}</style>
-    </div>
+    </PageShell>
   );
 }

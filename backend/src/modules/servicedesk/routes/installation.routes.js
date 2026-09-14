@@ -11,10 +11,11 @@
  */
 import express from 'express';
 import pool from '../../../config/db.js';
-import { verifyToken } from '../../../middlewares/auth.middleware.js';
+import { requirePermission, verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { createCommissioningWorkflow } from './commissioning.routes.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 router.use(verifyToken);
@@ -58,7 +59,12 @@ export async function createInstallationRequest(companyId, data, actorId) {
 }
 
 // ── GET /installation-requests ────────────────────────────────────────────────
-router.get('/', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied servicedesk in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, project_id } = req.query;
@@ -89,7 +95,7 @@ router.get('/', async (req, res) => {
 });
 
 // ── GET /installation-requests/:id ────────────────────────────────────────────
-router.get('/:id', async (req, res) => {
+router.get('/:id', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -116,7 +122,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // ── POST /installation-requests — manual creation ─────────────────────────────
-router.post('/', async (req, res) => {
+router.post('/', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     if (!req.body.customer_name) return res.status(400).json({ error: 'customer_name is required' });
     const { installation } = await createInstallationRequest(cid(req), req.body, req.user?.employee_id ?? null);
@@ -126,7 +132,7 @@ router.post('/', async (req, res) => {
 });
 
 // ── POST /installation-requests/:id/assign-engineer ───────────────────────────
-router.post('/:id/assign-engineer', async (req, res) => {
+router.post('/:id/assign-engineer', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const { engineer_id } = req.body;
     if (!engineer_id) return res.status(400).json({ error: 'engineer_id is required' });
@@ -149,7 +155,7 @@ router.post('/:id/assign-engineer', async (req, res) => {
 
 // ── POST /installation-requests/:id/plan-travel — creates a real Travel
 // Request (travel.routes.js), doesn't just record a date on this row. ───────
-router.post('/:id/plan-travel', async (req, res) => {
+router.post('/:id/plan-travel', requirePermission('servicedesk', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { from_date, to_date, mode, notes } = req.body;
@@ -198,7 +204,7 @@ router.post('/:id/plan-travel', async (req, res) => {
 });
 
 // ── POST /installation-requests/:id/start ─────────────────────────────────────
-router.post('/:id/start', async (req, res) => {
+router.post('/:id/start', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const old = await pool.query(`SELECT * FROM installation_requests WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`, [req.params.id, companyId]);
@@ -218,7 +224,7 @@ router.post('/:id/start', async (req, res) => {
 
 // ── POST /installation-requests/:id/complete — optionally hands off straight
 // into Commissioning (Installation -> Commissioning, the next chain link). ──
-router.post('/:id/complete', async (req, res) => {
+router.post('/:id/complete', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const { completion_notes, create_commissioning = true, scheduled_date: commissioningDate } = req.body;
     const companyId = cid(req);
@@ -256,7 +262,7 @@ router.post('/:id/complete', async (req, res) => {
 });
 
 // ── POST /installation-requests/:id/customer-acceptance ──────────────────────
-router.post('/:id/customer-acceptance', async (req, res) => {
+router.post('/:id/customer-acceptance', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const { accepted_by, notes } = req.body;
     if (!accepted_by) return res.status(400).json({ error: 'accepted_by is required' });
@@ -279,7 +285,7 @@ router.post('/:id/customer-acceptance', async (req, res) => {
 });
 
 // ── PATCH /installation-requests/:id/cancel ───────────────────────────────────
-router.patch('/:id/cancel', async (req, res) => {
+router.patch('/:id/cancel', requirePermission('servicedesk', 'edit'), captureBefore('installation_requests'), async (req, res) => {
   try {
     const { reason } = req.body;
     const companyId = cid(req);

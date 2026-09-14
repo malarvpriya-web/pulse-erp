@@ -1,4 +1,12 @@
-.pb-root{padding:24px;background:#f8f9fc;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative;}
+/* Root is a PageShell (`.plh-page`), which already pays the page gutters and
+   the min-height — repeating them here nested the panels 24px deeper than the
+   tab strip they sit under. Keep only what PageShell does not set. */
+.pb-root{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative;}
+
+/* page tab strip — lives in the PageShell dock, frozen above every tab */
+.pb-tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:2px solid #e9e4ff;padding-top:4px;margin-bottom:12px;}
+.pb-tab{padding:8px 20px;border:none;cursor:pointer;border-radius:6px 6px 0 0;font-weight:600;font-size:14px;background:#e9e4ff;color:#6B3FDB;}
+.pb-tab.active{background:#6B3FDB;color:#fff;}
 .pb-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:60px;color:#9ca3af;}
 .pb-spinner{width:32px;height:32px;border:3px solid #e5e7eb;border-top-color:#6B3FDB;border-radius:50%;animation:pbspin .8s linear infinite;}
 @keyframes pbspin{to{transform:rotate(360deg);}}
@@ -26,7 +34,7 @@
 .pb-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
 @media(max-width:900px){.pb-stats{grid-template-columns:repeat(2,1fr);}}
 .pb-stat{background:#fff;border-radius:12px;padding:14px 16px;border:1px solid #f0f0f4;display:flex;align-items:flex-start;gap:12px;}
-.pb-stat-amber{border-left:3px solid #f59e0b;}
+.pb-stat-amber{border-left:3px solid #7c5cf0;}
 .pb-stat-blue{border-left:3px solid #3b82f6;}
 .pb-stat-icon{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
 .pb-stat-label{display:block;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}
@@ -34,8 +42,8 @@
 .pb-stat-sub{font-size:11px;color:#9ca3af;}
 
 /* alert */
-.pb-alert-banner{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#fef3c7;border-radius:8px;font-size:13px;color:#92400e;margin-bottom:12px;}
-.pb-alert-btn{margin-left:auto;display:flex;align-items:center;gap:4px;padding:5px 12px;background:#f59e0b;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:500;white-space:nowrap;}
+.pb-alert-banner{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#ede9fe;border-radius:8px;font-size:13px;color:#5b21b6;margin-bottom:12px;}
+.pb-alert-btn{margin-left:auto;display:flex;align-items:center;gap:4px;padding:5px 12px;background:#7c5cf0;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:500;white-space:nowrap;}
 
 /* filters */
 .pb-filters{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;}

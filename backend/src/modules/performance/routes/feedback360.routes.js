@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -73,7 +74,7 @@ router.post('/', async (req, res) => {
 });
 
 /* PATCH /performance/feedback/:id/submit — provider submits feedback */
-router.patch('/:id/submit', async (req, res) => {
+router.patch('/:id/submit', captureBefore('performance_feedback'), async (req, res) => {
   const cid = getCid(req);
   const uid = req.user?.userId;
   const { overall_score, feedback_text, strengths, improvements } = req.body;
@@ -105,7 +106,7 @@ router.patch('/:id/submit', async (req, res) => {
 });
 
 /* PATCH /performance/feedback/:id/decline */
-router.patch('/:id/decline', async (req, res) => {
+router.patch('/:id/decline', captureBefore('performance_feedback'), async (req, res) => {
   const cid = getCid(req);
   const uid = req.user?.userId;
   try {
@@ -179,7 +180,7 @@ router.get('/aggregate/:employeeId', async (req, res) => {
 });
 
 /* DELETE /performance/feedback/:id — HR only */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', captureBefore('performance_feedback'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   try {

@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Printer, Download, ChevronLeft, ChevronRight, Mail, MessageCircle } from 'lucide-react';
+import {
+  Printer, Download, ChevronLeft, ChevronRight, Mail, MessageCircle,
+  Wallet,
+} from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './PayslipViewer.print.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const safeNum = (n) => Number(n || 0);
@@ -234,7 +238,34 @@ export default function PayslipViewer({ setPage: _setPage }) {
   };
 
   return (
-    <div style={{ padding: '24px' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Wallet}
+        eyebrow="Human Resources"
+        title="Payslip Viewer"
+        subtitle="PDF password: DOB YYYYMMDD"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={handlePrint}>
+            <Printer size={14} /> Print
+          </button>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={handleDownloadPdf}
+            disabled={!data || pdfBusy}>
+            <Download size={14} /> {pdfBusy ? 'Preparing PDF...' : 'Download PDF'}
+          </button>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={handleEmailSelf}
+            disabled={!data || emailBusy}>
+            <Mail size={14} /> {emailBusy ? 'Emailing...' : 'Email My Payslip'}
+          </button>
+          <button className="plh-cta"
+            onClick={handleWhatsAppShare}
+            disabled={!data || waBusy}>
+            <MessageCircle size={14} /> {waBusy ? 'Sharing...' : 'WhatsApp Share'}
+          </button>
+        </>}
+      />
+    }>
       {error && (
         <div style={{ background: '#fee2e2', color: '#dc2626', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', fontSize: '13px' }}>
           {error}
@@ -252,55 +283,7 @@ export default function PayslipViewer({ setPage: _setPage }) {
         </div>
       )}
 
-      <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 700 }}>Payslip Viewer</h2>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: '13px' }}>{displayName}</p>
-        </div>
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <button onClick={handlePrint} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#f3f4f6', border: 'none', borderRadius: '8px', padding: '8px 14px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>
-            <Printer size={14} /> Print
-          </button>
-          <button
-            onClick={handleDownloadPdf}
-            disabled={!data || pdfBusy}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '6px', background: '#6366f1', color: '#fff', border: 'none',
-              borderRadius: '8px', padding: '8px 14px', fontWeight: 600, fontSize: '13px',
-              cursor: !data || pdfBusy ? 'not-allowed' : 'pointer', opacity: !data || pdfBusy ? 0.6 : 1,
-            }}
-          >
-            <Download size={14} /> {pdfBusy ? 'Preparing PDF...' : 'Download PDF'}
-          </button>
-          {employeeInfo.dob && (
-            <div style={{ alignSelf: 'center', fontSize: '11px', color: '#6b7280', marginLeft: '2px' }}>
-              PDF password: DOB YYYYMMDD
-            </div>
-          )}
-          <button
-            onClick={handleEmailSelf}
-            disabled={!data || emailBusy}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '6px', background: '#1f2937', color: '#fff', border: 'none',
-              borderRadius: '8px', padding: '8px 14px', fontWeight: 600, fontSize: '13px',
-              cursor: !data || emailBusy ? 'not-allowed' : 'pointer', opacity: !data || emailBusy ? 0.6 : 1,
-            }}
-          >
-            <Mail size={14} /> {emailBusy ? 'Emailing...' : 'Email My Payslip'}
-          </button>
-          <button
-            onClick={handleWhatsAppShare}
-            disabled={!data || waBusy}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '6px', background: '#16a34a', color: '#fff', border: 'none',
-              borderRadius: '8px', padding: '8px 14px', fontWeight: 600, fontSize: '13px',
-              cursor: !data || waBusy ? 'not-allowed' : 'pointer', opacity: !data || waBusy ? 0.6 : 1,
-            }}
-          >
-            <MessageCircle size={14} /> {waBusy ? 'Sharing...' : 'WhatsApp Share'}
-          </button>
-        </div>
-      </div>
+
 
       <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px', background: '#fff', borderRadius: '12px', border: '1px solid #e5e7eb', padding: '12px 20px', width: 'fit-content' }}>
         <button onClick={prevMonth} style={{ border: 'none', background: '#f3f4f6', borderRadius: '6px', padding: '5px', cursor: 'pointer' }}><ChevronLeft size={16} /></button>
@@ -395,6 +378,6 @@ export default function PayslipViewer({ setPage: _setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

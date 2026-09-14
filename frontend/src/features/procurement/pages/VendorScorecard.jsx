@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, Search, Star, TrendingUp, AlertTriangle } from 'lucide-react';
+import { Plus, X, Search, Star, TrendingUp, AlertTriangle, Building2 } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const RISK_COLORS = { Low:'#10b981', Medium:'#f59e0b', High:'#ef4444' };
+const RISK_COLORS = { Low:'#10b981', Medium:'#7c5cf0', High:'#ef4444' };
 const SCORE_DIMS = [
   { key:'quality_score',        label:'Quality' },
   { key:'delivery_score',       label:'Delivery' },
@@ -18,7 +19,7 @@ const EMPTY_SCORE = { vendor_id:'', period_year: new Date().getFullYear(), perio
 const fmtScore = v => Number(v || 0).toFixed(1);
 const pctBar = (v) => (
   <div style={{ height:6, background:'#f0f0f4', borderRadius:3, marginTop:4, overflow:'hidden' }}>
-    <div style={{ height:'100%', width:`${Math.min(Number(v),100)}%`, background: Number(v)>=80 ? '#10b981' : Number(v)>=60 ? '#f59e0b' : '#ef4444', borderRadius:3 }}/>
+    <div style={{ height:'100%', width:`${Math.min(Number(v),100)}%`, background: Number(v)>=80 ? '#10b981' : Number(v)>=60 ? '#7c5cf0' : '#ef4444', borderRadius:3 }}/>
   </div>
 );
 
@@ -79,17 +80,17 @@ export default function VendorScorecard() {
   const labelStyle = { display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:5 };
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Vendor Scorecards</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Quarterly evaluation — Quality, Delivery, Cost, Support, Compliance, Documentation</p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={Building2}
+        eyebrow="Procurement"
+        title="Vendor Scorecards"
+        subtitle="Quarterly evaluation — Quality, Delivery, Cost, Support, Compliance, Documentation"
+        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
           <Plus size={15}/> Add Scorecard
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Top vendors */}
       {top.length > 0 && (
@@ -99,7 +100,7 @@ export default function VendorScorecard() {
             {top.slice(0,6).map((v, i) => (
               <div key={i} style={{ flex:'0 0 160px', background:'#f9fafb', borderRadius:10, padding:'14px 16px', border:'1px solid #f0f0f4' }}>
                 <div style={{ fontSize:11, color:'#9ca3af', marginBottom:6, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{v.vendor_name}</div>
-                <div style={{ fontSize:22, fontWeight:700, color: Number(v.avg_score)>=80 ? '#10b981' : Number(v.avg_score)>=60 ? '#f59e0b' : '#ef4444' }}>
+                <div style={{ fontSize:22, fontWeight:700, color: Number(v.avg_score)>=80 ? '#10b981' : Number(v.avg_score)>=60 ? '#7c5cf0' : '#ef4444' }}>
                   {fmtScore(v.avg_score)}
                 </div>
                 <div style={{ fontSize:11, color:'#9ca3af' }}>/ 100</div>
@@ -164,7 +165,7 @@ export default function VendorScorecard() {
                         {pctBar(sc[d.key])}
                       </td>
                     ))}
-                    <td style={{ padding:'10px 14px', fontWeight:700, color: ov>=80 ? '#10b981' : ov>=60 ? '#f59e0b' : '#ef4444' }}>
+                    <td style={{ padding:'10px 14px', fontWeight:700, color: ov>=80 ? '#10b981' : ov>=60 ? '#7c5cf0' : '#ef4444' }}>
                       {fmtScore(ov)}
                     </td>
                     <td style={{ padding:'10px 14px' }}>
@@ -218,7 +219,7 @@ export default function VendorScorecard() {
                     <input type="range" min={0} max={100} value={form[d.key]}
                       onChange={e => fld(d.key, Number(e.target.value))}
                       style={{ flex:1, accentColor:'#6B3FDB' }}/>
-                    <span style={{ width:36, textAlign:'right', fontWeight:700, color: Number(form[d.key])>=80?'#10b981':Number(form[d.key])>=60?'#f59e0b':'#ef4444' }}>
+                    <span style={{ width:36, textAlign:'right', fontWeight:700, color: Number(form[d.key])>=80?'#10b981':Number(form[d.key])>=60?'#7c5cf0':'#ef4444' }}>
                       {form[d.key]}
                     </span>
                   </div>
@@ -250,6 +251,6 @@ export default function VendorScorecard() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Package, Layers } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { PageLayout, PageHeader, TableContainer, ContentCard, EmptyState, LoadingState } from '@/components/pulse-ui';
+import { PageLayout, PageHeader, TableContainer, ContentCard, EmptyState, LoadingState, PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt2 = (n) => parseFloat(n || 0).toFixed(2);
 const fmtRs = (n) => `₹${parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -98,14 +98,17 @@ export default function MaterialConsumption() {
   }, {});
 
   return (
-    <PageLayout>
-      <PageHeader
-        description="Track material usage by project, type, and date"
-        actions={
-          <button className="pulse-btn-primary" onClick={openLogModal}>+ Log Consumption</button>
-        }
-        filters={
-          <div style={{ display: 'flex', gap: 6 }}>
+    <PageShell dock={
+      <>
+        <PageHero
+          icon={Package}
+          eyebrow="Inventory"
+          title="Material Consumption"
+          subtitle="Track material usage by project, type, and date"
+          actions={<button className="plh-cta" onClick={openLogModal}>+ Log Consumption</button>}
+        />
+        <div className="plh-toolbar">
+          {<div style={{ display: 'flex', gap: 6 }}>
             {[['by-project', 'By Project'], ['by-type', 'By Type'], ['all-allocations', 'All Allocations']].map(([key, label]) => (
               <button
                 key={key}
@@ -116,9 +119,11 @@ export default function MaterialConsumption() {
                 {label}
               </button>
             ))}
-          </div>
-        }
-      />
+          </div>}
+        </div>
+      </>
+    }>
+
 
       {activeTab === 'by-project' && (
         <TableContainer
@@ -328,6 +333,6 @@ export default function MaterialConsumption() {
           </div>
         </div>
       )}
-    </PageLayout>
+    </PageShell>
   );
 }

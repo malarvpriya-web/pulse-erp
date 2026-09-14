@@ -1,28 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Download, RefreshCw, Search, Users, Clock, TrendingUp,
-  Target, AlertTriangle, CheckCircle,
+  Download, RefreshCw, Search, Users, Clock, TrendingUp, Target,
+  AlertTriangle, CheckCircle, BarChart3,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { exportCSV } from '@/features/_shared/exportUtils';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 const pct = (n) => `${parseFloat(n||0).toFixed(1)}%`;
 
 // ── Sub-components ────────────────────────────────────────────
 
 function KpiCard({ icon: Icon, label, value, sub, color }) {
-  return (
-    <div style={{ background:'#fff', borderRadius:12, padding:'18px 20px', border:'1px solid #f0f0f4', display:'flex', alignItems:'center', gap:14 }}>
-      <div style={{ width:44, height:44, borderRadius:10, background:color+'22', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-        <Icon size={20} color={color} />
-      </div>
-      <div>
-        <div style={{ fontSize:22, fontWeight:800, color:'#111827' }}>{value}</div>
-        <div style={{ fontSize:12, fontWeight:600, color:'#374151' }}>{label}</div>
-        {sub && <div style={{ fontSize:11, color:'#9ca3af', marginTop:2 }}>{sub}</div>}
-      </div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat icon={Icon} label={label} value={value} sub={sub} color={color} />;
 }
 
 function SectionHeader({ title, onExport, exportLabel = 'Export CSV' }) {
@@ -105,18 +97,20 @@ export default function RecruitmentReports() {
   ];
 
   return (
-    <div style={{ padding:28, background:'#f9fafb', minHeight:'100vh', margin:'0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Recruitment"
+        title="Recruitment Reports"
+        subtitle="Hiring analytics, vacancy aging, source ROI and department pipeline"
+        actions={<button className="plh-cta" onClick={load}>
+          <RefreshCw size={14} /> Refresh
+        </button>}
+      />
+    }>
 
       {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:24, flexWrap:'wrap', gap:16 }}>
-        <div>
-          <h1 style={{ fontSize:24, fontWeight:800, color:'#111827', margin:0 }}>Recruitment Reports</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Hiring analytics, vacancy aging, source ROI and department pipeline</p>
-        </div>
-        <button onClick={load} style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 16px', background:'#f3f4f6', border:'none', borderRadius:9, cursor:'pointer', fontSize:13, color:'#374151' }}>
-          <RefreshCw size={14} /> Refresh
-        </button>
-      </div>
+
 
       {/* Filters */}
       <div style={{ display:'flex', gap:12, marginBottom:24, flexWrap:'wrap', background:'#fff', padding:16, borderRadius:12, border:'1px solid #f0f0f4' }}>
@@ -151,7 +145,7 @@ export default function RecruitmentReports() {
           <KpiCard icon={Users}      label="Total Candidates" value={summary.total_candidates || 0}   color="#4B2DCE" />
           <KpiCard icon={CheckCircle} label="Total Hired"     value={summary.total_hired || 0}         color="#16a34a" />
           <KpiCard icon={Target}     label="Active Pipeline"  value={summary.active_pipeline || 0}     color="#0891b2" />
-          <KpiCard icon={Clock}      label="Avg Time to Hire" value={summary.avg_time_to_hire ? `${parseFloat(summary.avg_time_to_hire).toFixed(0)}d` : '—'} color="#d97706" />
+          <KpiCard icon={Clock}      label="Avg Time to Hire" value={summary.avg_time_to_hire ? `${parseFloat(summary.avg_time_to_hire).toFixed(0)}d` : '—'} color="#6d28d9" />
           <KpiCard icon={TrendingUp} label="Hire Rate"
             value={summary.total_candidates > 0 ? pct((summary.total_hired / summary.total_candidates) * 100) : '0%'}
             color="#6B3FDB" />
@@ -296,8 +290,8 @@ export default function RecruitmentReports() {
                         <TD right>{r.rejections || 0}</TD>
                         <TD right>
                           <span style={{ padding:'2px 8px', borderRadius:20, fontSize:11, fontWeight:700,
-                            background: parseFloat(r.hire_rate_pct) >= 20 ? '#d1fae5' : '#fef3c7',
-                            color: parseFloat(r.hire_rate_pct) >= 20 ? '#065f46' : '#92400e' }}>
+                            background: parseFloat(r.hire_rate_pct) >= 20 ? '#d1fae5' : '#ede9fe',
+                            color: parseFloat(r.hire_rate_pct) >= 20 ? '#065f46' : '#5b21b6' }}>
                             {pct(r.hire_rate_pct)}
                           </span>
                         </TD>
@@ -351,6 +345,6 @@ export default function RecruitmentReports() {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

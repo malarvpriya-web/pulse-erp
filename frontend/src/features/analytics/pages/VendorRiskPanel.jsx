@@ -14,20 +14,20 @@ const fmtPct = n => `${parseFloat(n || 0).toFixed(1)}%`;
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
-  amber: '#d97706', blue: '#2563eb', border: '#e9e4ff',
+  amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff',
 };
 
 const RISK_ROW_COLOR = {
   Critical: '#fff5f5',
-  High:     '#fffbeb',
+  High:     '#f5f3ff',
   Medium:   '#fffff0',
   Low:      '#f9fafb',
 };
 
 const RISK_BADGE = {
   Critical: { bg: '#fee2e2', color: '#dc2626', border: '#fca5a5' },
-  High:     { bg: '#fef3c7', color: '#92400e', border: '#fcd34d' },
-  Medium:   { bg: '#fef9c3', color: '#713f12', border: '#fde68a' },
+  High:     { bg: '#ede9fe', color: '#5b21b6', border: '#c4b5fd' },
+  Medium:   { bg: '#ede9fe', color: '#4c1d95', border: '#ddd6fe' },
   Low:      { bg: '#dcfce7', color: '#15803d', border: '#86efac' },
 };
 
@@ -91,7 +91,7 @@ export default function VendorRiskPanel({ highRisk = [] }) {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((v, i) => {
+              {sorted.map((v) => {
                 const riskCfg = RISK_BADGE[v.risk_level] || RISK_BADGE.Low;
                 const rowBg = RISK_ROW_COLOR[v.risk_level] || '#fff';
                 const revenueAtRisk = v.projects_impacted * 2000000; // estimate ₹20L per project
@@ -100,7 +100,7 @@ export default function VendorRiskPanel({ highRisk = [] }) {
                     <td style={{ padding: '10px 14px' }}>
                       <div style={{ fontWeight: 700, color: '#111827' }}>{v.name}</div>
                       <div style={{ fontSize: 10, color: '#9ca3af', display: 'flex', gap: 4, marginTop: 2 }}>
-                        {v.single_source && <span style={{ background: '#fef3c7', color: '#92400e', padding: '1px 5px', borderRadius: 4 }}>SINGLE SOURCE</span>}
+                        {v.single_source && <span style={{ background: '#ede9fe', color: '#5b21b6', padding: '1px 5px', borderRadius: 4 }}>SINGLE SOURCE</span>}
                         {v.critical_vendor && <span style={{ background: '#fee2e2', color: '#991b1b', padding: '1px 5px', borderRadius: 4 }}>CRITICAL VENDOR</span>}
                       </div>
                     </td>
@@ -150,7 +150,7 @@ export default function VendorRiskPanel({ highRisk = [] }) {
       {/* Legend */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600 }}>KEY:</span>
-        <span style={{ fontSize: 11, background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: 6 }}>SS = Single Source</span>
+        <span style={{ fontSize: 11, background: '#ede9fe', color: '#5b21b6', padding: '2px 8px', borderRadius: 6 }}>SS = Single Source</span>
         <span style={{ fontSize: 11, background: '#fee2e2', color: '#991b1b', padding: '2px 8px', borderRadius: 6 }}>CV = Critical Vendor</span>
         <span style={{ fontSize: 11, color: '#9ca3af' }}>Revenue At Risk = estimated based on open project count</span>
       </div>

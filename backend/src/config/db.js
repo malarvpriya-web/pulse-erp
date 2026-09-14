@@ -29,10 +29,28 @@ if (!process.env.DATABASE_URL && isProduction && !process.env.DB_HOST) {
   );
 }
 
+/**
+ * Pool size has to account for how many processes are building a pool.
+ *
+ * Under vitest every worker imports this module and constructs its OWN pool, so
+ * the server-wide connection count is `workers x max`, not `max`. On an 8-core
+ * box that is 8 x 30 = 240 against a stock `max_connections = 100`: workers
+ * starve, wait out `connectionTimeoutMillis`, and the test that happens to be
+ * holding the short straw fails with a bare "Test timed out in 5000ms" that
+ * names the test rather than the cause. That is why the real-DB integration
+ * suites passed in isolation and failed at random in a full run.
+ *
+ * 6 per worker keeps 8 workers under 50 connections with headroom for the dev
+ * server, and the connection timeout drops below vitest's own 5s test timeout
+ * so genuine starvation surfaces as a pool error naming the pool, not as a
+ * mystery timeout.
+ */
+const isTest = process.env.VITEST || process.env.NODE_ENV === 'test';
+
 const POOL_OPTS = {
-  max:                     30,
-  idleTimeoutMillis:    30000,
-  connectionTimeoutMillis: 15000,  // increased: cold-start has many concurrent module inits
+  max:                     isTest ? 6 : 30,
+  idleTimeoutMillis:    isTest ? 5000 : 30000,
+  connectionTimeoutMillis: isTest ? 4000 : 15000,  // prod: cold-start has many concurrent module inits
   query_timeout:          30000,
 };
 

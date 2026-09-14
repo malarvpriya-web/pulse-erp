@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react';
-import { Plus, CheckCircle, Clock, X, AlertCircle, RefreshCw, User, BarChart2 } from 'lucide-react';
+import {
+  Plus, CheckCircle, Clock, X, AlertCircle, RefreshCw, User, BarChart2,
+  LayoutDashboard,
+} from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_COLOR = {
-  pending:   { bg: '#f59e0b18', text: '#f59e0b' },
+  pending:   { bg: '#7c5cf018', text: '#7c5cf0' },
   submitted: { bg: '#10b98118', text: '#10b981' },
   declined:  { bg: '#ef444418', text: '#ef4444' },
 };
@@ -64,10 +68,13 @@ export default function Feedback360() {
   const setF = (id, key, val) => setFeedback(f => ({ ...f, [id]: { ...(f[id] || {}), [key]: val } }));
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>360° Feedback</h1>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Performance"
+        title="360° Feedback"
+      />
+    }>
 
       <div style={{ display: 'flex', gap: 0, marginBottom: 24, borderBottom: '1px solid var(--color-border-tertiary)' }}>
         {[
@@ -182,6 +189,6 @@ export default function Feedback360() {
           })}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

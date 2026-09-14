@@ -9,6 +9,7 @@ import pool from '../shared/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -82,6 +83,32 @@ router.get('/', async (req, res) => {
       LIMIT ${parseInt(limit)}
     `, params);
     res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── GET /visit-reports/check-pending ──────────────────────────────────────────
+// Check if a travel_request has a required visit report
+router.get('/check-pending', async (req, res) => {
+  try {
+    const { travel_request_id } = req.query;
+    if (!travel_request_id) return res.json({ report_required: false, report_submitted: true });
+
+    const { rows: [tr] } = await pool.query(
+      `SELECT travel_type FROM travel_requests WHERE id=$1`, [travel_request_id]);
+    const reportRequired = tr && MANDATORY_REPORT_TYPES.has(tr.travel_type);
+
+    if (!reportRequired) return res.json({ report_required: false, report_submitted: true });
+
+    const { rows: [existing] } = await pool.query(
+      `SELECT id, status FROM visit_reports WHERE travel_request_id=$1 LIMIT 1`,
+      [travel_request_id]);
+
+    res.json({
+      report_required: true,
+      report_submitted: !!existing,
+      report_id: existing?.id || null,
+      report_status: existing?.status || null,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -159,7 +186,7 @@ router.post('/', async (req, res) => {
 });
 
 // ── PUT /visit-reports/:id ────────────────────────────────────────────────────
-router.put('/:id', async (req, res) => {
+router.put('/:id', captureBefore('visit_reports'), async (req, res) => {
   try {
     const {
       visit_type, customer_name, project_number, site_name,
@@ -199,7 +226,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // ── DELETE /visit-reports/:id ─────────────────────────────────────────────────
-router.delete('/:id', allowRoles('admin', 'super_admin', 'manager'), async (req, res) => {
+router.delete('/:id', allowRoles('admin', 'super_admin', 'manager'), captureBefore('visit_reports'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM visit_reports WHERE id=$1`, [req.params.id]);
     res.json({ message: 'Report deleted' });
@@ -259,32 +286,6 @@ router.get('/summary/by-type', async (req, res) => {
     `);
     res.json(rows);
   } catch { res.json([]); }
-});
-
-// ── GET /visit-reports/check-pending ──────────────────────────────────────────
-// Check if a travel_request has a required visit report
-router.get('/check-pending', async (req, res) => {
-  try {
-    const { travel_request_id } = req.query;
-    if (!travel_request_id) return res.json({ report_required: false, report_submitted: true });
-
-    const { rows: [tr] } = await pool.query(
-      `SELECT travel_type FROM travel_requests WHERE id=$1`, [travel_request_id]);
-    const reportRequired = tr && MANDATORY_REPORT_TYPES.has(tr.travel_type);
-
-    if (!reportRequired) return res.json({ report_required: false, report_submitted: true });
-
-    const { rows: [existing] } = await pool.query(
-      `SELECT id, status FROM visit_reports WHERE travel_request_id=$1 LIMIT 1`,
-      [travel_request_id]);
-
-    res.json({
-      report_required: true,
-      report_submitted: !!existing,
-      report_id: existing?.id || null,
-      report_status: existing?.status || null,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 export default router;

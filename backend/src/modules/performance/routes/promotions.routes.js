@@ -3,6 +3,7 @@ import pool from '../../../config/db.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -97,7 +98,7 @@ router.post('/', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', captureBefore('promotion_recommendations'), async (req, res) => {
   if (!isMgr(req)) return res.status(403).json({ error: 'Manager+ access required' });
   const cid = getCid(req);
   const {
@@ -123,7 +124,7 @@ router.patch('/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/:id/approve', async (req, res) => {
+router.patch('/:id/approve', captureBefore('promotion_recommendations'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   const { effective_date, proposed_grade, proposed_designation } = req.body;
@@ -152,7 +153,7 @@ router.patch('/:id/approve', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/:id/reject', async (req, res) => {
+router.patch('/:id/reject', captureBefore('promotion_recommendations'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const { rejection_reason } = req.body;
   const cid = getCid(req);

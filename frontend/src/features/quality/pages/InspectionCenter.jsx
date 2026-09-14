@@ -1,7 +1,9 @@
 // frontend/src/features/quality/pages/InspectionCenter.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { ScanSearch, Plus } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STAGE_LABELS = { IQC: 'Incoming QC', IPQC: 'In-Process QC', FQC: 'Final QC' };
 
@@ -10,7 +12,7 @@ function Badge({ label, colorMap }) {
   return <span style={{ background: bg, color, padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 700 }}>{label?.toUpperCase()}</span>;
 }
 
-const RESULT_COLORS = { pass: ['#d1fae5', '#16a34a'], fail: ['#fee2e2', '#dc2626'], conditional: ['#fef3c7', '#d97706'] };
+const RESULT_COLORS = { pass: ['#d1fae5', '#16a34a'], fail: ['#fee2e2', '#dc2626'], conditional: ['#ede9fe', '#6d28d9'] };
 const STATUS_COLORS  = { pending: ['#f3f4f6', '#6b7280'], 'in-progress': ['#dbeafe', '#2563eb'], completed: ['#d1fae5', '#16a34a'] };
 
 function InspectionForm({ stage, onClose, onCreated }) {
@@ -150,12 +152,36 @@ export default function InspectionCenter() {
 
   useEffect(() => { load(); }, [load]);
 
+  const passCount    = inspections.filter(i => i.overall_result === 'pass').length;
+  const failCount    = inspections.filter(i => i.overall_result === 'fail').length;
+  const pendingCount = inspections.filter(i => i.status !== 'completed').length;
+  const decided      = passCount + failCount;
+  const passRate     = decided ? Math.round((passCount / decided) * 100) : 0;
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Inspection Center</h2>
-        <button onClick={() => setShowNew(true)} style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 20px', cursor: 'pointer', fontWeight: 600 }}>+ New Inspection</button>
-      </div>
+    <PageShell dock={
+        <PageHero
+          icon={ScanSearch}
+          eyebrow="Quality"
+          title="Inspection Center"
+          subtitle="Incoming, in-process and final quality control inspections"
+          meta={[
+            { value: STAGE_LABELS[activeTab], label: 'stage' },
+            { value: inspections.length, label: 'inspections' },
+            { value: `${passRate}%`, label: 'pass rate', tone: passRate >= 95 ? 'good' : passRate >= 80 ? 'warn' : 'bad' },
+          ]}
+          tiles={[
+            { label: 'Pass',    value: passCount },
+            { label: 'Fail',    value: failCount },
+            { label: 'Pending', value: pendingCount },
+          ]}
+          actions={
+            <button className="plh-cta" onClick={() => setShowNew(true)}>
+              <Plus size={14} /> New Inspection
+            </button>
+          }
+        />
+    }>
 
       <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '2px solid #e5e7eb' }}>
         {['IQC','IPQC','FQC'].map(t => (
@@ -200,6 +226,6 @@ export default function InspectionCenter() {
 
       {showNew && <InspectionForm stage={activeTab} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); load(); }} />}
       {detailId && <InspectionDetail id={detailId} onClose={() => setDetailId(null)} onRefresh={load} />}
-    </div>
+    </PageShell>
   );
 }

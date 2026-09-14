@@ -107,7 +107,7 @@ const attendanceRepository = {
         AND ar.attendance_date = $1
         AND ar.deleted_at IS NULL
       WHERE e.deleted_at IS NULL
-        AND LOWER(e.status) IN ('active', 'probation')
+        AND LOWER(e.status) IN ('active', 'probation', 'notice')
     `;
     const params = [attendance_date];
     let paramCount = 2;
@@ -219,7 +219,7 @@ const attendanceRepository = {
       query = `
         INSERT INTO attendance_records (employee_id, attendance_date, status, company_id)
         SELECT id, $1, $2, company_id FROM employees
-         WHERE LOWER(status) IN ('active', 'probation')
+         WHERE LOWER(status) IN ('active', 'probation', 'notice')
            AND deleted_at IS NULL
            AND id = ANY($3)
            ${scopeClause}
@@ -232,7 +232,7 @@ const attendanceRepository = {
       query = `
         INSERT INTO attendance_records (employee_id, attendance_date, status, company_id)
         SELECT id, $1, $2, company_id FROM employees
-         WHERE LOWER(status) IN ('active', 'probation')
+         WHERE LOWER(status) IN ('active', 'probation', 'notice')
            AND deleted_at IS NULL
            ${scopeClause}
         ON CONFLICT (employee_id, attendance_date)

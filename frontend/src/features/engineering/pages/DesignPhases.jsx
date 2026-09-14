@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Plus, Pencil, X, RefreshCw, ArrowLeft,
-  CheckCircle2, Circle, AlertCircle, MinusCircle,
-  User, Calendar, FileText, Target, Layers, Activity,
-  Zap, Flag, Clock, ChevronDown, AlertTriangle,
-  TrendingUp, BarChart2, FlaskConical
+  Plus, Pencil, X, RefreshCw, ArrowLeft, CheckCircle2, Circle,
+  AlertCircle, MinusCircle, User, Calendar, FileText, Target, Layers,
+  Activity, Zap, Flag, Clock, ChevronDown, AlertTriangle, TrendingUp,
+  BarChart2, FlaskConical, DraftingCompass,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './DesignPhases.css';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 const PHASE_STATUSES = ['pending', 'in_progress', 'completed', 'blocked', 'skipped'];
 
@@ -42,22 +42,15 @@ function getHealthStatus(phase) {
   const end = new Date(phase.end_date);
   const diff = (end - now) / (1000 * 60 * 60 * 24);
   if (diff < 0) return { label: 'Overdue', color: '#ef4444', bg: '#fef2f2' };
-  if (diff <= 3) return { label: 'Due Soon', color: '#f59e0b', bg: '#fffbeb' };
+  if (diff <= 3) return { label: 'Due Soon', color: '#7c5cf0', bg: '#f5f3ff' };
   return null;
 }
 
 /* ─── KPI Card ─────────────────────────────────────────────────── */
 function KpiCard({ icon: Icon, label, value, color, sub }) {
-  return (
-    <div className="dpp-kpi" style={{ '--kc': color }}>
-      <div className="dpp-kpi-icon"><Icon size={18} /></div>
-      <div className="dpp-kpi-text">
-        <span className="dpp-kpi-val">{value}</span>
-        <span className="dpp-kpi-label">{label}</span>
-        {sub && <span className="dpp-kpi-sub">{sub}</span>}
-      </div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat icon={Icon} label={label} value={value} color={color} sub={sub} />;
 }
 
 /* ─── Visual Stepper ────────────────────────────────────────────── */
@@ -415,27 +408,26 @@ export default function DesignPhases({ pageParams, setPage }) {
   }
 
   return (
-    <div className="dpp-page">
-      {/* ── Header ── */}
-      <div className="dpp-header">
-        <div className="dpp-header-left">
+    <PageShell dock={
+      <PageHero
+        icon={DraftingCompass}
+        eyebrow="Engineering"
+        title="Design Phases"
+        actions={<>
           {setPage && (
-            <button className="dpp-back-btn" onClick={() => setPage('RDProjects')}>
+            <button className="plh-cta plh-cta--ghost" onClick={() => setPage('RDProjects')}>
               <ArrowLeft size={14} /> R&amp;D Projects
             </button>
           )}
-          <div className="dpp-title-block">
-            <h1 className="dpp-title">Design Phases</h1>
-            <span className="dpp-project-tag">{projectName}</span>
-          </div>
-        </div>
-        <div className="dpp-header-right">
-          <button className="dpp-icon-btn" title="Refresh" onClick={load}><RefreshCw size={14} /></button>
-          <button className="dpp-btn-primary" onClick={() => setAddingPhase(true)}>
+          <button className="plh-cta plh-cta--ghost" title="Refresh" onClick={load}><RefreshCw size={14} /></button>
+          <button className="plh-cta" onClick={() => setAddingPhase(true)}>
             <Plus size={14} /> Add Phase
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {/* ── Header ── */}
+
 
       {/* ── KPI Strip ── */}
       <div className="dpp-kpi-strip">
@@ -536,7 +528,7 @@ export default function DesignPhases({ pageParams, setPage }) {
       {setPage && phases.length > 0 && (
         <div className="dpp-footer-nav">
           <button className="dpp-nav-card" onClick={() => setPage('PrototypeTracker', { projectId, projectName })}>
-            <div className="dpp-nav-card-icon" style={{ background: '#fff7ed', color: '#f59e0b' }}>
+            <div className="dpp-nav-card-icon" style={{ background: '#fff7ed', color: '#7c5cf0' }}>
               <FlaskConical size={16} />
             </div>
             <div>
@@ -565,6 +557,6 @@ export default function DesignPhases({ pageParams, setPage }) {
           saving={saving}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, RefreshCw, FileText, Calendar, AlertCircle, CheckCircle, Clock, Download, RotateCcw, Receipt } from 'lucide-react';
+import {
+  Plus, X, RefreshCw, FileText, Calendar, AlertCircle, CheckCircle,
+  Clock, Download, RotateCcw, Receipt, LifeBuoy,
+} from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_COLOR = {
   active:    { bg: '#d1fae5', color: '#065f46' },
   expired:   { bg: '#fee2e2', color: '#991b1b' },
-  draft:     { bg: '#fef3c7', color: '#92400e' },
+  draft:     { bg: '#ede9fe', color: '#5b21b6' },
   cancelled: { bg: '#f3f4f6', color: '#6b7280' },
 };
 
@@ -182,7 +186,22 @@ export default function AMCManagement() {
   const totalARR = contracts.filter(c => c.status === 'active').reduce((s, c) => s + Number(c.contract_value || 0), 0);
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Operations"
+        title="AMC Contract Management"
+        subtitle="Annual Maintenance Contracts — billing, renewals, preventive visits"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={handleExport}>
+            <Download size={14} /> Export
+          </button>
+          <button className="plh-cta" onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); }}>
+            <Plus size={15} /> New AMC Contract
+          </button>
+        </>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -193,29 +212,12 @@ export default function AMCManagement() {
         onConfirm={handleDelete}
         onCancel={() => setPendingHandleDelete(null)}
       />
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>AMC Contract Management</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>Annual Maintenance Contracts — billing, renewals, preventive visits</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={handleExport}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontSize: 13, color: '#374151' }}>
-            <Download size={14} /> Export
-          </button>
-          <button onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); }}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            <Plus size={15} /> New AMC Contract
-          </button>
-        </div>
-      </div>
 
       {/* KPI strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
         {[
           { label: 'Active Contracts', value: active, icon: <CheckCircle size={18} color="#10b981" />, bg: '#d1fae5' },
-          { label: 'Expiring ≤30 days', value: expiring, icon: <Clock size={18} color="#f59e0b" />, bg: '#fef3c7' },
+          { label: 'Expiring ≤30 days', value: expiring, icon: <Clock size={18} color="#7c5cf0" />, bg: '#ede9fe' },
           { label: 'Overdue (active past end)', value: expired, icon: <AlertCircle size={18} color="#ef4444" />, bg: '#fee2e2' },
           { label: 'Active ARR', value: fmt(totalARR), icon: <Receipt size={18} color="#6366f1" />, bg: '#e0e7ff' },
         ].map(k => (
@@ -271,7 +273,7 @@ export default function AMCManagement() {
               {contracts.map((c, i) => {
                 const sc  = STATUS_COLOR[c.status] || STATUS_COLOR.draft;
                 const dl  = daysLeft(c.end_date);
-                const dlColor = dl === null ? '#9ca3af' : dl < 0 ? '#ef4444' : dl <= 30 ? '#f59e0b' : '#10b981';
+                const dlColor = dl === null ? '#9ca3af' : dl < 0 ? '#ef4444' : dl <= 30 ? '#7c5cf0' : '#10b981';
                 const nextRenewalDays = c.next_renewal_date ? daysLeft(c.next_renewal_date) : null;
                 return (
                   <tr key={c.id || i} style={{ borderBottom: '1px solid #f9fafb', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
@@ -287,7 +289,7 @@ export default function AMCManagement() {
                       <div style={{ color: '#9ca3af' }}>to {(c.end_date || '').slice(0, 10)}</div>
                     </td>
                     <td style={{ padding: '10px 12px', fontWeight: 600, color: '#1f2937', whiteSpace: 'nowrap' }}>
-                      {c.contract_value ? fmt(c.contract_value) : <span style={{ color: '#f59e0b' }}>Not set</span>}
+                      {c.contract_value ? fmt(c.contract_value) : <span style={{ color: '#7c5cf0' }}>Not set</span>}
                     </td>
                     <td style={{ padding: '10px 12px', color: '#6b7280', fontSize: 12 }}>
                       <div>{c.billing_frequency || 'Annual'}</div>
@@ -296,7 +298,7 @@ export default function AMCManagement() {
                     <td style={{ padding: '10px 12px', color: '#374151' }}>{c.sla_response_hours}h</td>
                     <td style={{ padding: '10px 12px', fontSize: 12 }}>
                       {c.next_renewal_date ? (
-                        <div style={{ color: nextRenewalDays !== null && nextRenewalDays <= 30 ? '#f59e0b' : '#6b7280' }}>
+                        <div style={{ color: nextRenewalDays !== null && nextRenewalDays <= 30 ? '#7c5cf0' : '#6b7280' }}>
                           {(c.next_renewal_date || '').slice(0, 10)}
                           {c.renewal_count > 0 && <div style={{ color: '#9ca3af' }}>#{c.renewal_count} renewals</div>}
                         </div>
@@ -325,7 +327,7 @@ export default function AMCManagement() {
                         </button>
                         <button onClick={() => { setRenewingId(c.id); setRenewForm({ new_end_date: '', new_value: c.contract_value || '', notes: '' }); }}
                           title="Renew contract"
-                          style={{ padding: '3px 8px', background: '#fef3c7', color: '#92400e', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                          style={{ padding: '3px 8px', background: '#ede9fe', color: '#5b21b6', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
                           Renew
                         </button>
                         <button onClick={() => viewRenewalHistory(c.id)}
@@ -517,6 +519,6 @@ export default function AMCManagement() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,12 +1,16 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Users, Plus, X, Search, Eye, Pencil, Trash2, Tag, Building2 } from 'lucide-react';
+import {
+  Users, Plus, X, Search, Eye, Pencil, Trash2, Tag, Building2,
+  UserPlus,
+} from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { formatDate as fmtDate } from '@/utils/dateFormatter';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY_FORM = { pool_name: '', description: '', department: '', skills: [], is_active: true };
-const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#3b82f6','#ec4899','#14b8a6'];
+const COLORS = ['#6366f1','#10b981','#7c5cf0','#ef4444','#8b5cf6','#3b82f6','#ec4899','#14b8a6'];
 
 export default function TalentPools({ setPage }) {
   const toast = useToast();
@@ -118,7 +122,16 @@ export default function TalentPools({ setPage }) {
   };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={UserPlus}
+        eyebrow="Recruitment"
+        title="Talent Pools"
+        actions={<button className="plh-cta" onClick={openCreate}>
+          <Plus size={15}/> New Pool
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeletePool}
         title="Delete Talent Pool"
@@ -129,16 +142,7 @@ export default function TalentPools({ setPage }) {
         onCancel={() => setPendingDeletePool(null)}
       />
       {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Talent Pools</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>{pools.length} pool{pools.length !== 1 ? 's' : ''}</p>
-        </div>
-        <button onClick={openCreate}
-          style={{ display:'flex', alignItems:'center', gap: 6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius: 8, cursor:'pointer', fontSize: 13, fontWeight: 600 }}>
-          <Plus size={15}/> New Pool
-        </button>
-      </div>
+
 
       {/* Search */}
       <div style={{ position:'relative', marginBottom: 16, maxWidth: 320 }}>
@@ -340,7 +344,7 @@ export default function TalentPools({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

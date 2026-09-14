@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -38,7 +39,7 @@ router.post('/definitions', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/definitions/:id', async (req, res) => {
+router.patch('/definitions/:id', captureBefore('kra_definitions'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   const { name, description, weightage, department, role_level, is_active } = req.body;
@@ -61,7 +62,7 @@ router.patch('/definitions/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/definitions/:id', async (req, res) => {
+router.delete('/definitions/:id', captureBefore('kra_definitions'), async (req, res) => {
   if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   try {
@@ -118,7 +119,7 @@ router.post('/employee/:employeeId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/:id/self-score', async (req, res) => {
+router.patch('/:id/self-score', captureBefore('employee_kras'), async (req, res) => {
   const { self_score, evidence } = req.body;
   const cid = getCid(req);
   const uid = req.user?.userId;
@@ -140,7 +141,7 @@ router.patch('/:id/self-score', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/:id/manager-score', async (req, res) => {
+router.patch('/:id/manager-score', captureBefore('employee_kras'), async (req, res) => {
   if (!isMgr(req)) return res.status(403).json({ error: 'Manager+ access required' });
   const { manager_score, final_score } = req.body;
   try {
@@ -157,7 +158,7 @@ router.patch('/:id/manager-score', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', captureBefore('employee_kras'), async (req, res) => {
   if (!isMgr(req)) return res.status(403).json({ error: 'Manager+ access required' });
   const cid = getCid(req);
   try {

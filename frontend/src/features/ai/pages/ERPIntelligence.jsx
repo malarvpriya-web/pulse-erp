@@ -15,6 +15,7 @@ import api from '@/services/api/client';
 import './ERPIntelligence.css';
 import './AIAssistant.css';
 import '../ai.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const MAX_HISTORY = 20;
 const ROLE_CHIPS = {
@@ -242,30 +243,30 @@ const ERPIntelligence = ({ setPage }) => {
   };
 
   return (
-    <div className="erp-intelligence-container">
-
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="intelligence-header">
-        <div className="title-section">
-          <Brain className="icon-pulse" />
-          <h1>ERP Intelligence Hub</h1>
-          <p>AI-driven insights and predictive forecasting for your enterprise.</p>
-        </div>
-        <div className="tab-switcher">
-          <button className={activeTab === 'agent' ? 'active' : ''} onClick={() => setActiveTab('agent')}>
+    <PageShell dock={
+      <PageHero
+        icon={Sparkles}
+        eyebrow="AI"
+        title="ERP Intelligence Hub"
+        subtitle="AI-driven insights and predictive forecasting for your enterprise."
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setActiveTab('agent')}>
             <Cpu size={18} /> LLM Agent
           </button>
-          <button className={activeTab === 'predictive' ? 'active' : ''} onClick={() => setActiveTab('predictive')}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setActiveTab('predictive')}>
             <Zap size={18} /> Predictive
           </button>
-          <button className={activeTab === 'prescriptive' ? 'active' : ''} onClick={() => setActiveTab('prescriptive')}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setActiveTab('prescriptive')}>
             <Lightbulb size={18} /> Prescriptive
           </button>
-          <button className={activeTab === 'chat' ? 'active' : ''} onClick={() => setActiveTab('chat')}>
+          <button className="plh-cta" onClick={() => setActiveTab('chat')}>
             <MessageSquare size={18} /> AI Chat
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
 
       <div className="intelligence-content">
 
@@ -424,7 +425,7 @@ const ERPIntelligence = ({ setPage }) => {
                       <XAxis dataKey="department" stroke="rgba(255,255,255,0.4)" fontSize={11} />
                       <YAxis stroke="rgba(255,255,255,0.4)" fontSize={11} unit="%" />
                       <Tooltip {...tooltipStyle} formatter={v => [`${v}%`, 'Risk']} />
-                      <Bar dataKey="attrition_pct" fill="#f59e0b" radius={[4, 4, 0, 0]} name="Attrition Risk" />
+                      <Bar dataKey="attrition_pct" fill="#7c5cf0" radius={[4, 4, 0, 0]} name="Attrition Risk" />
                     </BarChart>
                   </ResponsiveContainer>
                 )}
@@ -669,7 +670,7 @@ const ERPIntelligence = ({ setPage }) => {
         )}
 
       </div>
-    </div>
+    </PageShell>
   );
 };
 

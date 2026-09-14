@@ -6,6 +6,7 @@ import express from 'express';
 import pool from '../../../config/db.js';
 import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { companyOf } from '../../../shared/scope.js';
+import { resolveRange } from '../../../shared/dashboardFilters.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -114,6 +115,15 @@ router.get('/dashboard', verifyToken, async (req, res) => {
   try {
     const cidVal = cid(req);
     const fallback = { rows: [{}] };
+    // Dashboard filter bar: ?period / ?from / ?to. The window was hardcoded to
+    // 30 days in all four queries; that is now just the default. company_id is
+    // also NULL-tolerant here so a global-scope super_admin isn't shown nothing.
+    const range = resolveRange(req.query, { defaultPeriod: 'last30' });
+    const p = [cidVal, range.from, range.to];
+    const scope = `($1::int IS NULL OR company_id = $1)
+      AND ($2::date IS NULL OR created_at >= $2::date)
+      AND ($3::date IS NULL OR created_at < ($3::date + INTERVAL '1 day'))`;
+
     const [ticketKPIs, slaKPIs, csatKPIs, trendData] = await Promise.all([
       pool.query(`
         SELECT
@@ -122,25 +132,25 @@ router.get('/dashboard', verifyToken, async (req, res) => {
           SUM(CASE WHEN status IN ('Closed','closed','resolved') THEN 1 ELSE 0 END) AS closed_tickets,
           ROUND(AVG(CASE WHEN resolved_at IS NOT NULL THEN EXTRACT(EPOCH FROM (resolved_at - created_at))/3600 END)::NUMERIC,2) AS avg_closure_hrs,
           COUNT(DISTINCT assigned_to) AS active_engineers
-        FROM support_tickets WHERE company_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
-      `, [cidVal]).catch(() => fallback),
+        FROM support_tickets WHERE ${scope}
+      `, p).catch(() => fallback),
       pool.query(`
         SELECT priority, COUNT(*) AS cnt,
                SUM(CASE WHEN status IN ('Closed','closed','resolved') THEN 1 ELSE 0 END) AS closed
-          FROM support_tickets WHERE company_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
+          FROM support_tickets WHERE ${scope}
          GROUP BY priority
-      `, [cidVal]).catch(() => ({ rows: [] })),
+      `, p).catch(() => ({ rows: [] })),
       pool.query(`
         SELECT ROUND(AVG(CASE WHEN csat_rating IS NOT NULL THEN csat_rating END)::NUMERIC,2) AS avg_csat,
                COUNT(CASE WHEN csat_rating IS NOT NULL THEN 1 END) AS rated_tickets
-          FROM support_tickets WHERE company_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
-      `, [cidVal]).catch(() => ({ rows: [{ avg_csat: null, rated_tickets: 0 }] })),
+          FROM support_tickets WHERE ${scope}
+      `, p).catch(() => ({ rows: [{ avg_csat: null, rated_tickets: 0 }] })),
       pool.query(`
         SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS day, COUNT(*) AS created,
                SUM(CASE WHEN status IN ('Closed','closed','resolved') THEN 1 ELSE 0 END) AS closed
-          FROM support_tickets WHERE company_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
+          FROM support_tickets WHERE ${scope}
          GROUP BY day ORDER BY day
-      `, [cidVal]).catch(() => ({ rows: [] })),
+      `, p).catch(() => ({ rows: [] })),
     ]);
 
     res.json({
@@ -148,6 +158,8 @@ router.get('/dashboard', verifyToken, async (req, res) => {
       by_priority: slaKPIs.rows,
       csat: csatKPIs.rows[0],
       trend: trendData.rows,
+      period: range.period,
+      period_label: range.label,
     });
   } catch (err) { console.error('[service-analytics/dashboard]', err.stack || err.message); res.status(500).json({ error: err.message }); }
 });

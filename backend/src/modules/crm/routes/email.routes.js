@@ -5,6 +5,7 @@ import nodemailer from 'nodemailer';
 import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { companyOf } from '../../../shared/scope.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -55,7 +56,7 @@ router.get('/email-accounts', requirePermission('crm', 'view'), async (req, res)
               imap_host, imap_port, is_active, last_sync_at, sync_status, sync_error
        FROM crm_email_accounts
        WHERE company_id = $1 AND user_id = $2 AND is_active = true
-       ORDER BY created_at`,
+       ORDER BY display_name, id`,
       [companyId, userId]
     );
     res.json({ success: true, data: rows });
@@ -119,7 +120,7 @@ router.post('/email-accounts/connect-smtp', requirePermission('crm', 'add'), asy
 });
 
 // DELETE /crm/email-accounts/:id — disconnect account
-router.delete('/email-accounts/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/email-accounts/:id', requirePermission('crm', 'delete'), captureBefore('crm_email_accounts'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const userId = req.user?.employee_id || req.user?.id;
@@ -173,7 +174,12 @@ router.get('/emails', requirePermission('crm', 'view'), async (req, res) => {
     if (direction) { params.push(direction); query += ` AND e.direction = $${params.length}`; }
     if (lead_id)   { params.push(lead_id);   query += ` AND e.lead_id = $${params.length}`; }
 
-    query += ` ORDER BY COALESCE(e.sent_at, e.received_at, e.created_at) DESC`;
+    // crm_emails has no created_at; sent_at/received_at are its only timestamps.
+    // This fragment is appended with `query +=`, so it lives in a separate string
+    // literal that does not begin with a SQL verb — which is exactly why
+    // check-sql-references.mjs never saw it. Concatenated SQL is a blind spot in
+    // that gate; keep whole statements in one literal where you can.
+    query += ` ORDER BY COALESCE(e.sent_at, e.received_at) DESC NULLS LAST, e.id DESC`;
     params.push(parseInt(per_page)); query += ` LIMIT $${params.length}`;
     params.push(offset);             query += ` OFFSET $${params.length}`;
 
@@ -202,6 +208,31 @@ router.post('/emails/send', requirePermission('crm', 'add'), async (req, res) =>
       if (rows.length) accountRow = rows[0];
     }
 
+    // ORDER MATTERS. The row is inserted BEFORE the message is sent, because the
+    // open-tracking pixel has to carry this email's id and that id does not exist
+    // until the row does. The original order — send, then insert — is why nothing
+    // in the codebase ever embedded the pixel: there was no id to put in it, and
+    // the tracking endpoint therefore had no caller at all.
+    const msgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@pulsetech.in>`;
+    const { rows: [emailRow] } = await pool.query(
+      `INSERT INTO crm_emails
+         (company_id, account_id, lead_id, contact_id, opportunity_id,
+          direction, subject, body_html, body_text, from_email,
+          to_emails, cc_emails, is_read, is_draft, sent_at, message_id)
+       VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8,$9,$10,$11,true,false,NULL,$12)
+       RETURNING *`,
+      [
+        companyId, account_id || null, lead_id || null, contact_id || null, opportunity_id || null,
+        subject, body_html || '', body_text || '',
+        accountRow ? accountRow.email_address : 'sales@pulsetech.in',
+        JSON.stringify(Array.isArray(to_emails) ? to_emails : [to_emails]),
+        JSON.stringify(Array.isArray(cc_emails) ? cc_emails : (cc_emails ? [cc_emails] : [])),
+        msgId,
+      ]
+    );
+
+    const { html: outboundHtml, tracking } = await buildTrackedHtml(body_html || '', emailRow.id, companyId);
+
     let sendError = null;
     if (accountRow?.smtp_host) {
       try {
@@ -217,7 +248,7 @@ router.post('/emails/send', requirePermission('crm', 'add'), async (req, res) =>
           to: Array.isArray(to_emails) ? to_emails.join(',') : to_emails,
           cc: Array.isArray(cc_emails) ? cc_emails.join(',') : (cc_emails || ''),
           subject,
-          html: body_html,
+          html: outboundHtml,
           text: body_text,
         });
       } catch (e) {
@@ -225,48 +256,109 @@ router.post('/emails/send', requirePermission('crm', 'add'), async (req, res) =>
       }
     }
 
-    const msgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@pulsetech.in>`;
+    // sent_at is stamped only on a successful send. Stamping it unconditionally
+    // would report a message as sent when SMTP rejected it.
     const { rows } = await pool.query(
-      `INSERT INTO crm_emails
-         (company_id, account_id, lead_id, contact_id, opportunity_id,
-          direction, subject, body_html, body_text, from_email,
-          to_emails, cc_emails, is_read, is_draft, sent_at, message_id)
-       VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8,$9,$10,$11,true,false,NOW(),$12)
-       RETURNING *`,
-      [
-        companyId, account_id || null, lead_id || null, contact_id || null, opportunity_id || null,
-        subject, body_html || '', body_text || '',
-        accountRow ? accountRow.email_address : 'sales@pulsetech.in',
-        JSON.stringify(Array.isArray(to_emails) ? to_emails : [to_emails]),
-        JSON.stringify(Array.isArray(cc_emails) ? cc_emails : (cc_emails ? [cc_emails] : [])),
-        msgId,
-      ]
+      `UPDATE crm_emails
+          SET body_html = $1,
+              sent_at   = CASE WHEN $2::boolean THEN NOW() ELSE NULL END
+        WHERE id = $3 RETURNING *`,
+      [outboundHtml, !sendError && !!accountRow?.smtp_host, emailRow.id]
     );
-    res.json({ success: true, data: rows[0], send_error: sendError || undefined });
+
+    res.json({
+      success: true,
+      data: rows[0] || emailRow,
+      open_tracking: tracking,
+      send_error: sendError || undefined,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Pixel tracker (no auth — called by email clients)
-router.post('/emails/:id/track-open', async (req, res) => {
+/**
+ * Append the open-tracking pixel to an outgoing message, when the company has
+ * asked for it AND a public URL exists to point at.
+ *
+ * Two guards, both deliberate:
+ *
+ *  - `crm_settings.email_open_tracking` is opt-IN and defaults false. Tracking
+ *    whether a customer opened a message without the company having switched it
+ *    on is not a decision this code gets to make.
+ *  - PUBLIC_BASE_URL must be set. Without it the only URL available is
+ *    http://localhost:5000, and embedding that in a customer's inbox produces a
+ *    broken image in every message and records nothing. Skipping is the correct
+ *    failure: the caller is told `tracking: 'no_public_base_url'` rather than
+ *    the message silently going out damaged.
+ */
+async function buildTrackedHtml(html, emailId, companyId) {
+  const base = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+  if (!base) return { html, tracking: 'no_public_base_url' };
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT email_open_tracking FROM crm_settings WHERE company_id = $1`, [companyId]
+    );
+    if (!rows[0]?.email_open_tracking) return { html, tracking: 'disabled' };
+  } catch {
+    // A settings read that fails must not be read as consent.
+    return { html, tracking: 'settings_unavailable' };
+  }
+
+  const pixel = `<img src="${base}/api/crm/emails/${emailId}/track-open" width="1" height="1" alt="" style="display:none" />`;
+  return { html: `${html}${pixel}`, tracking: 'enabled' };
+}
+
+/**
+ * The tracking pixel itself.
+ *
+ * GET, not POST: an <img> in an email issues a GET, so the original POST route
+ * could never have been reached by a mail client even if it had been public.
+ * It is exported separately and mounted WITHOUT verifyToken ahead of the
+ * authenticated /crm mount (see server.js) — mounted inside this router it sat
+ * behind the token gate, which no email client carries.
+ *
+ * Always returns the GIF, including for an unknown id: a tracker that 404s tells
+ * the recipient's client something is wrong with the message.
+ */
+export const trackOpenRouter = express.Router();
+trackOpenRouter.get('/emails/:id/track-open', async (req, res) => {
   try {
     await pool.query(
       `UPDATE crm_emails SET opened_at = NOW() WHERE id = $1 AND opened_at IS NULL`,
       [req.params.id]
     );
-  } catch (_) {}
+  } catch (err) {
+    console.warn(JSON.stringify({
+      ts: new Date().toISOString(), level: 'WARN', event: 'email_open_track_failed',
+      emailId: req.params.id, message: err.message,
+    }));
+  }
   const GIF_1x1 = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
   res.set({ 'Content-Type': 'image/gif', 'Content-Length': GIF_1x1.length, 'Cache-Control': 'no-cache, no-store' });
   res.end(GIF_1x1);
 });
 
 // ─── Routes: Email Templates ───────────────────────────────────────────────────
+// email_templates is shared with Recruitment (recruitment.repository.js —
+// template_name/template_type columns, same table, different rows). Both
+// modules previously read/wrote it with no company_id and no module
+// discriminator at all, so every tenant saw every template from both
+// modules. Migration 20260812000001 added company_id/module; scoped here to
+// module='crm' and this request's tenant, same NULL-company_id="pre-scoping
+// legacy row, still visible" convention this file's own email-sequences
+// routes already use just below (company_id = $1 OR company_id IS NULL).
 
 router.get('/email-templates', requirePermission('crm', 'view'), async (req, res) => {
   try {
+    const companyId = companyOf(req);
     const { rows } = await pool.query(
-      `SELECT * FROM email_templates WHERE is_active = true ORDER BY created_at DESC`
+      `SELECT * FROM email_templates
+        WHERE is_active = true AND module = 'crm'
+          AND (company_id = $1 OR company_id IS NULL)
+        ORDER BY created_at DESC`,
+      [companyId]
     );
     res.json({ success: true, data: rows });
   } catch (err) {
@@ -276,12 +368,13 @@ router.get('/email-templates', requirePermission('crm', 'view'), async (req, res
 
 router.post('/email-templates', requirePermission('crm', 'add'), async (req, res) => {
   try {
+    const companyId = companyOf(req);
     const { name, category, stage_trigger, subject, body_html, variables } = req.body;
     if (!name || !subject) return res.status(400).json({ success: false, message: 'name and subject are required' });
     const { rows } = await pool.query(
-      `INSERT INTO email_templates (name, category, stage_trigger, subject, body_html, variables)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [name, category, stage_trigger || null, subject, body_html || '', JSON.stringify(variables || [])]
+      `INSERT INTO email_templates (name, category, stage_trigger, subject, body_html, variables, company_id, module)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'crm') RETURNING *`,
+      [name, category, stage_trigger || null, subject, body_html || '', JSON.stringify(variables || []), companyId]
     );
     res.json({ success: true, data: rows[0] });
   } catch (err) {
@@ -289,13 +382,15 @@ router.post('/email-templates', requirePermission('crm', 'add'), async (req, res
   }
 });
 
-router.put('/email-templates/:id', requirePermission('crm', 'edit'), async (req, res) => {
+router.put('/email-templates/:id', requirePermission('crm', 'edit'), captureBefore('email_templates'), async (req, res) => {
   try {
+    const companyId = companyOf(req);
     const { name, category, stage_trigger, subject, body_html, variables } = req.body;
     const { rows } = await pool.query(
       `UPDATE email_templates SET name=$1, category=$2, stage_trigger=$3, subject=$4, body_html=$5, variables=$6
-       WHERE id=$7 AND is_active=true RETURNING *`,
-      [name, category, stage_trigger || null, subject, body_html || '', JSON.stringify(variables || []), req.params.id]
+       WHERE id=$7 AND is_active=true AND module='crm' AND (company_id=$8 OR company_id IS NULL)
+       RETURNING *`,
+      [name, category, stage_trigger || null, subject, body_html || '', JSON.stringify(variables || []), req.params.id, companyId]
     );
     if (!rows.length) return res.status(404).json({ success: false, message: 'Template not found' });
     res.json({ success: true, data: rows[0] });
@@ -304,11 +399,14 @@ router.put('/email-templates/:id', requirePermission('crm', 'edit'), async (req,
   }
 });
 
-router.delete('/email-templates/:id', requirePermission('crm', 'delete'), async (req, res) => {
+router.delete('/email-templates/:id', requirePermission('crm', 'delete'), captureBefore('email_templates'), async (req, res) => {
   try {
+    const companyId = companyOf(req);
     const { rows } = await pool.query(
-      `UPDATE email_templates SET is_active=false WHERE id=$1 RETURNING id`,
-      [req.params.id]
+      `UPDATE email_templates SET is_active=false
+        WHERE id=$1 AND module='crm' AND (company_id=$2 OR company_id IS NULL)
+        RETURNING id`,
+      [req.params.id, companyId]
     );
     if (!rows.length) return res.status(404).json({ success: false, message: 'Template not found' });
     res.json({ success: true, message: 'Template deleted' });
@@ -341,12 +439,38 @@ router.post('/email-sequences', requirePermission('crm', 'add'), async (req, res
     const companyId = companyOf(req);
     const { name, trigger_stage, steps, is_active = true } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'name is required' });
-    const { rows } = await pool.query(
-      `INSERT INTO email_sequences (name, trigger, trigger_stage, steps, is_active, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [name, trigger_stage || null, trigger_stage || null, JSON.stringify(steps || []), Boolean(is_active), companyId]
-    );
-    res.json({ success: true, data: rows[0] });
+    // Steps live in `crm_email_sequence_steps`, one row per step — this used to
+    // write a JSON blob into `email_sequences.steps`, a column that does not
+    // exist, so creating a sequence 500'd every time. The child table is the
+    // schema's own answer; writing both in one transaction keeps a sequence from
+    // existing without its steps.
+    const client = await pool.connect();
+    let created;
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `INSERT INTO email_sequences (name, trigger, trigger_stage, is_active, company_id)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [name, trigger_stage || null, trigger_stage || null, Boolean(is_active), companyId]
+      );
+      created = rows[0];
+      const list = Array.isArray(steps) ? steps : [];
+      for (let i = 0; i < list.length; i++) {
+        const s = list[i] || {};
+        await client.query(
+          `INSERT INTO crm_email_sequence_steps
+             (sequence_id, step_order, delay_days, subject, body_html)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [created.id, s.step_order ?? i + 1, s.delay_days ?? 0, s.subject || null, s.body_html || null]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally { client.release(); }
+
+    res.json({ success: true, data: { ...created, steps: steps || [] } });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -356,33 +480,84 @@ router.put('/email-sequences/:id', requirePermission('crm', 'edit'), async (req,
   try {
     const companyId = companyOf(req);
     const { name, trigger_stage, steps, is_active } = req.body;
-    const result = await pool.query(
-      `UPDATE email_sequences
-       SET name          = COALESCE($1, name),
-           trigger       = COALESCE($2, trigger),
-           trigger_stage = COALESCE($3, trigger_stage),
-           steps         = COALESCE($4, steps),
-           is_active     = COALESCE($5, is_active)
-       WHERE id = $6 AND (company_id = $7 OR company_id IS NULL)
-       RETURNING *`,
-      [
-        name ?? null,
-        trigger_stage ?? null, trigger_stage ?? null,
-        steps !== undefined ? JSON.stringify(steps) : null,
-        is_active !== undefined ? Boolean(is_active) : null,
-        req.params.id, companyId,
-      ]
-    );
-    if (!result.rowCount) return res.status(404).json({ success: false, message: 'Sequence not found' });
-    res.json({ success: true, data: result.rows[0] });
+    // Same shape as the create path: the sequence row carries no `steps`
+    // column (that column never existed — every update 500'd), so steps are
+    // replaced wholesale in `crm_email_sequence_steps` inside one transaction.
+    const client = await pool.connect();
+    let updated;
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `UPDATE email_sequences
+         SET name          = COALESCE($1, name),
+             trigger       = COALESCE($2, trigger),
+             trigger_stage = COALESCE($3, trigger_stage),
+             is_active     = COALESCE($4, is_active)
+         WHERE id = $5 AND (company_id = $6 OR company_id IS NULL)
+         RETURNING *`,
+        [
+          name ?? null,
+          trigger_stage ?? null, trigger_stage ?? null,
+          is_active !== undefined ? Boolean(is_active) : null,
+          req.params.id, companyId,
+        ]
+      );
+      if (!result.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ success: false, message: 'Sequence not found' });
+      }
+      updated = result.rows[0];
+
+      if (steps !== undefined) {
+        await client.query(`DELETE FROM crm_email_sequence_steps WHERE sequence_id = $1`, [updated.id]);
+        const list = Array.isArray(steps) ? steps : [];
+        for (let i = 0; i < list.length; i++) {
+          const st = list[i] || {};
+          await client.query(
+            `INSERT INTO crm_email_sequence_steps
+               (sequence_id, step_order, delay_days, subject, body_html)
+             VALUES ($1,$2,$3,$4,$5)`,
+            [updated.id, st.step_order ?? i + 1, st.delay_days ?? 0, st.subject || null, st.body_html || null]
+          );
+        }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally { client.release(); }
+
+    res.json({ success: true, data: updated });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.delete('/email-sequences/:id', requirePermission('crm', 'delete'), async (req, res) => {
+/**
+ * Delete a sequence.
+ *
+ * Refuses while people are still enrolled. `sequence_enrollments` now cascades
+ * on delete (migration 20260909000001), so without this check removing a journey
+ * would silently take its enrolments and their event history with it — and
+ * before that FK existed it did something worse, stranding them as orphans
+ * pointing at a journey that no longer exists. Deactivating stops a journey
+ * sending without destroying what it did.
+ */
+router.delete('/email-sequences/:id', requirePermission('crm', 'delete'), captureBefore('email_sequences'), async (req, res) => {
   try {
     const companyId = companyOf(req);
+    const { rows: [live] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM sequence_enrollments
+        WHERE sequence_id = $1 AND status IN ('active','paused')`,
+      [req.params.id]
+    );
+    if (live.n > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `${live.n} ${live.n === 1 ? 'person is' : 'people are'} still enrolled in this journey. Deactivate it to stop it sending, or stop the enrolments first.`,
+        enrolled: live.n,
+      });
+    }
     const { rowCount } = await pool.query(
       `DELETE FROM email_sequences WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)`,
       [req.params.id, companyId]

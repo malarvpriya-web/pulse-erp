@@ -1,6 +1,7 @@
 // frontend/src/features/crm/pages/CustomerHealthDashboard.jsx
 // Phase 49F — Customer Health Score Engine — CEO/Management Command Center
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LineChart, Line,
@@ -8,12 +9,13 @@ import {
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import '@/components/dashboard/dashkit.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
   excellent: '#16a34a',
   good:      '#2563eb',
-  watchlist: '#d97706',
+  watchlist: '#6d28d9',
   critical:  '#dc2626',
   primary:   '#6B3FDB',
   border:    '#e9e4ff',
@@ -30,7 +32,7 @@ const STATUS_COLOR = {
 
 const RISK_COLOR = {
   low:      { bg: '#dcfce7', color: '#16a34a' },
-  medium:   { bg: '#fef9c3', color: '#854d0e' },
+  medium:   { bg: '#ede9fe', color: '#5b21b6' },
   high:     { bg: '#fee2e2', color: '#dc2626' },
   critical: { bg: '#fce7f3', color: '#9d174d' },
 };
@@ -341,8 +343,8 @@ function AlertsPanel({ alerts, onResolve }) {
       {alerts.map(a => (
         <div key={a.id} style={{
           display: 'flex', alignItems: 'flex-start', gap: 12, padding: 14,
-          border: '1px solid ' + (a.alert_severity === 'critical' ? '#fecaca' : '#fef3c7'),
-          background: a.alert_severity === 'critical' ? '#fff5f5' : '#fffbeb',
+          border: '1px solid ' + (a.alert_severity === 'critical' ? '#fecaca' : '#ede9fe'),
+          background: a.alert_severity === 'critical' ? '#fff5f5' : '#f5f3ff',
           borderRadius: 8, marginBottom: 8,
         }}>
           <AlertSeverityIcon severity={a.alert_severity} />
@@ -465,39 +467,25 @@ export default function CustomerHealthDashboard({ setPage }) {
   );
 
   return (
-    <div style={{ padding: '16px 18px 20px', fontFamily: 'Inter, sans-serif', background: '#f8f7fd', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: '#111827' }}>
-            Customer Health Dashboard
-          </h1>
-          <p style={{ margin: '3px 0 0', color: '#6b7280', fontSize: 12.5 }}>
-            AI-assisted intelligence across {all.length} customer{all.length !== 1 ? 's' : ''} · {alerts.length} active alert{alerts.length !== 1 ? 's' : ''}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {alerts.length > 0 && (
-            <button
-              onClick={() => setTab('alerts')}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px',
-                background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8,
-                color: C.critical, fontWeight: 600, fontSize: 12, cursor: 'pointer',
-              }}
-            >
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="CRM"
+        title="Customer Health Dashboard"
+        actions={<>
+          {alerts.length> 0 && (
+            <button className="plh-cta plh-cta--ghost"
+              onClick={() => setTab('alerts')}>
               🚨 {alerts.length} Alert{alerts.length !== 1 ? 's' : ''}
             </button>
           )}
-          <button
-            onClick={load}
-            style={{
-              padding: '8px 14px', background: C.primary, border: 'none',
-              borderRadius: 8, color: '#fff', fontWeight: 600, fontSize: 12, cursor: 'pointer',
-            }}
-          >↻ Refresh</button>
-        </div>
-      </div>
+          <button className="plh-cta"
+            onClick={load}>↻ Refresh</button>
+        </>}
+      />
+    }>
+      {/* Header */}
+
 
       {/* KPI Cards */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
@@ -615,6 +603,6 @@ export default function CustomerHealthDashboard({ setPage }) {
           <CustomerDetailDrawer customer={selected} onClose={() => setSelected(null)} />
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

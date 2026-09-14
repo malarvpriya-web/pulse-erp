@@ -24,6 +24,7 @@ import { companyOf } from '../../shared/scope.js';
 import {
   DEV_STATUSES, DEV_TYPES, ASSEMBLY_TYPES, DEV_PRIORITIES, DEV_TERMINAL_STATUSES,
 } from '../../shared/engineeringDevelopment.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -220,7 +221,7 @@ router.post('/', engPerm('add'), async (req, res) => {
 });
 
 // ── update ────────────────────────────────────────────────────────────────────
-router.put('/:id', engPerm('edit'), async (req, res) => {
+router.put('/:id', engPerm('edit'), captureBefore('eng_development'), async (req, res) => {
   const errs = validate(req.body, { partial: true });
   if (errs.length) return res.status(400).json({ error: errs.join('; ') });
 
@@ -265,7 +266,7 @@ router.put('/:id', engPerm('edit'), async (req, res) => {
 // ── delete ────────────────────────────────────────────────────────────────────
 // Soft delete — the module's convention (deleted_at), so an IPD number is never
 // reissued and history survives.
-router.delete('/:id', engPerm('delete'), async (req, res) => {
+router.delete('/:id', engPerm('delete'), captureBefore('eng_development'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE eng_development SET deleted_at = NOW()

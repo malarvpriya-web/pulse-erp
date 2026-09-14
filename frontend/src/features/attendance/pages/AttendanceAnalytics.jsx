@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  RefreshCw, BarChart2, Clock, Zap, Building,
-  AlertTriangle, Download, ChevronDown, Star, Award,
+  RefreshCw, BarChart2, Clock, Zap, Building, AlertTriangle, Download,
+  ChevronDown, Star, Award, BarChart3,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P    = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -11,9 +12,9 @@ const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4'
 const STATUS_COLORS = {
   present:  '#10b981',
   absent:   '#ef4444',
-  late:     '#f59e0b',
+  late:     '#7c5cf0',
   wfh:      '#3b82f6',
-  half_day: '#f97316',
+  half_day: '#7c5cf0',
   holiday:  '#8b5cf6',
   leave:    '#6366f1',
 };
@@ -63,7 +64,7 @@ function DeltaBadge({ delta, invertGood = false }) {
 function ErrorState({ message, onRetry }) {
   return (
     <div style={{ textAlign: 'center', padding: 60 }}>
-      <AlertTriangle size={36} style={{ color: '#f59e0b', marginBottom: 12 }} />
+      <AlertTriangle size={36} style={{ color: '#7c5cf0', marginBottom: 12 }} />
       <div style={{ fontWeight: 600, color: '#374151', marginBottom: 6 }}>Failed to load data</div>
       <div style={{ color: '#6b7280', fontSize: 13, marginBottom: 20 }}>{message}</div>
       <button
@@ -290,15 +291,20 @@ export default function AttendanceAnalytics() {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Attendance"
+        title="Attendance Analytics"
+        subtitle="Heatmaps · absenteeism trends · OT cost · shift efficiency — all live from DB"
+      />
+    }>
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>Attendance Analytics</h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-            Heatmaps · absenteeism trends · OT cost · shift efficiency — all live from DB
-          </p>
+
+
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -470,7 +476,7 @@ export default function AttendanceAnalytics() {
                                       </td>
                                     );
                                   })}
-                                  <td style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 700, color: pct >= 90 ? '#10b981' : pct >= 70 ? '#f59e0b' : '#ef4444' }}>{pct}%</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 700, color: pct >= 90 ? '#10b981' : pct >= 70 ? '#7c5cf0' : '#ef4444' }}>{pct}%</td>
                                 </tr>
                               );
                             })}
@@ -522,7 +528,7 @@ export default function AttendanceAnalytics() {
                               <div style={{
                                 height: '100%',
                                 width: `${Math.min(parseFloat(r.absenteeism_rate || 0) / maxAbsRate * 100, 100)}%`,
-                                background: parseFloat(r.absenteeism_rate) > 20 ? '#ef4444' : parseFloat(r.absenteeism_rate) > 10 ? '#f59e0b' : '#10b981',
+                                background: parseFloat(r.absenteeism_rate) > 20 ? '#ef4444' : parseFloat(r.absenteeism_rate) > 10 ? '#7c5cf0' : '#10b981',
                                 borderRadius: 4, transition: 'width 0.3s',
                               }} />
                             </div>
@@ -550,7 +556,7 @@ export default function AttendanceAnalytics() {
                         <div style={{ fontWeight: 600, color: '#111827', marginBottom: 12, fontSize: 14 }}>Summary</div>
                         {[
                           { label: 'Avg. absenteeism', value: avgAbsRate, color: '#ef4444' },
-                          { label: 'Avg. late rate',   value: avgLateRate, color: '#f59e0b' },
+                          { label: 'Avg. late rate',   value: avgLateRate, color: '#7c5cf0' },
                           { label: 'Peak employees',   value: peakEmployees || '—', color: P },
                         ].map(s => (
                           <div key={s.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #f9fafb', fontSize: 13 }}>
@@ -610,7 +616,7 @@ export default function AttendanceAnalytics() {
                     {/* Perfect Attendance */}
                     <div style={CARD}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-                        <Award size={15} color="#f59e0b" />
+                        <Award size={15} color="#7c5cf0" />
                         <span style={{ fontWeight: 600, color: '#111827', fontSize: 14 }}>
                           Perfect Attendance
                         </span>
@@ -624,10 +630,10 @@ export default function AttendanceAnalytics() {
                         </div>
                       ) : (
                         <>
-                          {perfectAtt.slice(0, 10).map((e, i) => (
+                          {perfectAtt.slice(0, 10).map((e) => (
                             <div key={e.employee_id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f9fafb' }}>
-                              <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#fef9c3', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                <Star size={11} color="#f59e0b" fill="#f59e0b" />
+                              <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#ede9fe', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <Star size={11} color="#7c5cf0" fill="#7c5cf0" />
                               </div>
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{ fontWeight: 500, color: '#111827', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.employee_name}</div>
@@ -636,7 +642,7 @@ export default function AttendanceAnalytics() {
                               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                                 <div style={{ fontWeight: 700, color: '#10b981', fontSize: 13 }}>{e.days_tracked}d tracked</div>
                                 {parseInt(e.late_days) > 0 && (
-                                  <div style={{ fontSize: 11, color: '#f59e0b' }}>{e.late_days}d late</div>
+                                  <div style={{ fontSize: 11, color: '#7c5cf0' }}>{e.late_days}d late</div>
                                 )}
                               </div>
                             </div>
@@ -712,10 +718,10 @@ export default function AttendanceAnalytics() {
                                 <td style={{ padding: '10px 12px' }}>{d.total_employees}</td>
                                 <td style={{ padding: '10px 12px', color: '#10b981' }}>{d.present_days}</td>
                                 <td style={{ padding: '10px 12px', color: '#ef4444' }}>{d.absent_days}</td>
-                                <td style={{ padding: '10px 12px', color: '#f59e0b' }}>{d.late_days}</td>
+                                <td style={{ padding: '10px 12px', color: '#7c5cf0' }}>{d.late_days}</td>
                                 <td style={{ padding: '10px 12px' }}>{parseFloat(d.total_hours || 0).toFixed(0)}h</td>
                                 <td style={{ padding: '10px 12px' }}>
-                                  <span style={{ fontWeight: 700, color: parseFloat(d.absenteeism_rate) > 20 ? '#ef4444' : parseFloat(d.absenteeism_rate) > 10 ? '#f59e0b' : '#10b981' }}>
+                                  <span style={{ fontWeight: 700, color: parseFloat(d.absenteeism_rate) > 20 ? '#ef4444' : parseFloat(d.absenteeism_rate) > 10 ? '#7c5cf0' : '#10b981' }}>
                                     {parseFloat(d.absenteeism_rate || 0).toFixed(1)}%
                                   </span>
                                 </td>
@@ -761,7 +767,7 @@ export default function AttendanceAnalytics() {
                         {[
                           { label: 'Total OT Hours',     value: otCost.reduce((s, r) => s + parseFloat(r.total_ot_hours || 0), 0).toFixed(1) + 'h', color: P },
                           { label: 'Employees with OT',  value: otCost.reduce((s, r) => s + parseInt(r.employees_with_ot || 0), 0), color: '#10b981' },
-                          { label: 'Pending Approvals',  value: otCost.reduce((s, r) => s + parseInt(r.pending_ot || 0), 0), color: '#f59e0b' },
+                          { label: 'Pending Approvals',  value: otCost.reduce((s, r) => s + parseInt(r.pending_ot || 0), 0), color: '#7c5cf0' },
                           { label: 'Approved OT Cost',   value: fmtINR(otCost.reduce((s, r) => s + parseFloat(r.approved_ot_cost || 0), 0)), color: '#ef4444' },
                           { label: 'Total Cost (if all approved)', value: fmtINR(otCost.reduce((s, r) => s + parseFloat(r.total_ot_cost || 0), 0)), color: '#6b7280' },
                         ].map(s => (
@@ -792,7 +798,7 @@ export default function AttendanceAnalytics() {
                               <td style={{ padding: '10px 12px' }}>{d.employees_with_ot}</td>
                               <td style={{ padding: '10px 12px', fontWeight: 700, color: P }}>{parseFloat(d.total_ot_hours || 0).toFixed(1)}h</td>
                               <td style={{ padding: '10px 12px', color: '#10b981' }}>{d.approved_ot}</td>
-                              <td style={{ padding: '10px 12px', color: '#f59e0b' }}>{d.pending_ot}</td>
+                              <td style={{ padding: '10px 12px', color: '#7c5cf0' }}>{d.pending_ot}</td>
                               <td style={{ padding: '10px 12px', color: '#ef4444' }}>{d.rejected_ot}</td>
                               <td style={{ padding: '10px 12px' }}>{parseFloat(d.avg_multiplier || 1.5).toFixed(2)}×</td>
                               <td style={{ padding: '10px 12px', fontWeight: 600, color: '#10b981' }}>{fmtINR(d.approved_ot_cost)}</td>
@@ -843,7 +849,7 @@ export default function AttendanceAnalytics() {
                             </td>
                             <td style={{ padding: '10px 12px' }}>{s.assigned_employees}</td>
                             <td style={{ padding: '10px 12px', color: '#10b981', fontWeight: 600 }}>{s.present_count}</td>
-                            <td style={{ padding: '10px 12px', color: '#f59e0b' }}>{s.total_late_minutes || 0} min</td>
+                            <td style={{ padding: '10px 12px', color: '#7c5cf0' }}>{s.total_late_minutes || 0} min</td>
                             <td style={{ padding: '10px 12px' }}>{s.avg_hours ? `${s.avg_hours}h` : '—'}</td>
                             <td style={{ padding: '10px 12px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -851,7 +857,7 @@ export default function AttendanceAnalytics() {
                                   <div style={{
                                     height: '100%', borderRadius: 99,
                                     width: `${Math.min(parseFloat(s.attendance_rate || 0), 100)}%`,
-                                    background: parseFloat(s.attendance_rate) >= 80 ? '#10b981' : parseFloat(s.attendance_rate) >= 60 ? '#f59e0b' : '#ef4444',
+                                    background: parseFloat(s.attendance_rate) >= 80 ? '#10b981' : parseFloat(s.attendance_rate) >= 60 ? '#7c5cf0' : '#ef4444',
                                     transition: 'width 0.3s',
                                   }} />
                                 </div>
@@ -872,6 +878,6 @@ export default function AttendanceAnalytics() {
       )}
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </PageShell>
   );
 }

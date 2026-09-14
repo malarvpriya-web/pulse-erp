@@ -97,7 +97,7 @@
 /* ── Modal overlay ── */
 .sq-overlay {
   position: fixed; inset: 0; background: rgba(30,27,75,.45);
-  backdrop-filter: blur(3px); z-index: 1000;
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); z-index: 1000;
   display: flex; align-items: center; justify-content: center;
   padding: 20px;
 }
@@ -260,7 +260,7 @@
 
 /* ── Acceptance rate card ── */
 .sq-sum-card-rate { gap: 6px; }
-.sq-sum-orange { color: #d97706; }
+.sq-sum-orange { color: #6d28d9; }
 .sq-sum-red    { color: #b91c1c; }
 .sq-rate-row   { display: flex; align-items: center; gap: 10px; }
 .sq-rate-bar-wrap {
@@ -308,7 +308,7 @@
 /* ── Revision drawer ── */
 .sq-rev-overlay {
   position: fixed; inset: 0; background: rgba(21,15,61,.35);
-  backdrop-filter: blur(2px); z-index: 1001;
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); z-index: 1001;
 }
 .sq-rev-drawer {
   position: fixed; top: 0; right: 0; bottom: 0;
@@ -462,3 +462,81 @@
   border-color: #5B35D5;
   box-shadow: 0 0 0 3px rgba(75,45,206,.1);
 }
+
+/* ── Filter bar: chip counts, search field, advanced panel ── */
+.sq-tab-count {
+  display: inline-block; margin-left: 7px; padding: 1px 6px;
+  border-radius: 10px; font-size: 10px; font-weight: 800;
+  background: #F2EFFE; color: #5B35D5;
+}
+.sq-tab-active .sq-tab-count { background: rgba(255,255,255,.22); color: #fff; }
+
+.sq-tab-search {
+  margin-left: auto; position: relative;
+  display: flex; align-items: center;
+}
+.sq-search-icon { position: absolute; left: 12px; color: #9ca3af; pointer-events: none; }
+.sq-tab-search input { padding: 6px 30px 6px 32px; }
+.sq-search-clear {
+  position: absolute; right: 8px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border: none; border-radius: 50%;
+  background: #ede9fe; color: #5B35D5; cursor: pointer;
+}
+.sq-search-clear:hover { background: #ddd6fe; }
+
+.sq-filter-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px; border: 1.5px solid #e5e7eb;
+  background: #fff; color: #6b7280;
+  font-size: 12px; font-weight: 600; font-family: inherit;
+  cursor: pointer; white-space: nowrap; transition: all .15s;
+}
+.sq-filter-toggle:hover { border-color: #5B35D5; color: #5B35D5; }
+.sq-filter-toggle-on   { border-color: #5B35D5; color: #5B35D5; background: #F2EFFE; }
+.sq-filter-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+  background: linear-gradient(135deg, #4B2DCE 0%, #7B3FE4 100%);
+  color: #fff; font-size: 10px; font-weight: 800;
+}
+
+.sq-filters {
+  background: #fff; border: 1px solid #E8E1FC; border-radius: 14px;
+  padding: 16px 18px; margin-bottom: 16px;
+  box-shadow: 0 1px 6px rgba(75,45,206,.06);
+}
+.sq-filters-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 14px;
+}
+@media (max-width: 1200px) { .sq-filters-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px)  { .sq-filters-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px)  { .sq-filters-grid { grid-template-columns: 1fr; } }
+
+.sq-filters-ft {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin-top: 14px; padding-top: 12px;
+  border-top: 1px dashed #E8E1FC;
+}
+.sq-filters-hint { font-size: 11px; color: #9ca3af; }
+
+.sq-filter-note {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: -8px 0 16px; padding: 9px 14px;
+  background: #F2EFFE; border: 1px solid #E8E1FC; border-radius: 10px;
+  font-size: 12px; color: #4c1d95;
+}
+.sq-filter-note > svg { color: #5B35D5; flex-shrink: 0; }
+.sq-filter-note strong { font-weight: 800; color: #150F3D; }
+
+.sq-filter-clear {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-left: auto; padding: 4px 11px; border-radius: 14px;
+  border: 1.5px solid #D4CAFE; background: #fff; color: #5B35D5;
+  font-size: 11px; font-weight: 700; font-family: inherit;
+  cursor: pointer; white-space: nowrap; transition: all .15s;
+}
+.sq-filter-clear:hover:not(:disabled) { background: #5B35D5; border-color: #5B35D5; color: #fff; }
+.sq-filter-clear:disabled { opacity: .45; cursor: not-allowed; }
+/* inside the empty state the button is centred by the column flex, not pushed right */
+.sq-empty .sq-filter-clear { margin-left: 0; margin-top: 4px; }

@@ -1,7 +1,9 @@
 // frontend/src/features/hr/pages/TrainingReports.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { GraduationCap } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, Cell } from 'recharts';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const REPORTS = [
   { id:'training-hours',         label:'Training Hours by Dept',   icon:'⏱' },
@@ -93,7 +95,15 @@ export default function TrainingReports() {
   const labelKey = data.length ? Object.keys(data[0])[0] : null;
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh', display:'grid', gridTemplateColumns:'220px 1fr', gap:20 }}>
+    <PageShell dock={
+      <PageHero
+        icon={GraduationCap}
+        eyebrow="Human Resources"
+        title="L&D Reports"
+        subtitle="Training completion, attendance and effectiveness across programmes"
+      />
+    }>
+      <div style={{ display:'grid', gridTemplateColumns:'220px 1fr', gap:20 }}>
       {/* Sidebar */}
       <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:12, padding:16, alignSelf:'start', position:'sticky', top:24 }}>
         <h3 style={{ margin:'0 0 12px', color:'#4c1d95', fontSize:14 }}>L&D Reports</h3>
@@ -145,7 +155,7 @@ export default function TrainingReports() {
                   <YAxis tick={{ fontSize:10 }} />
                   <Tooltip />
                   <Bar dataKey={chartKey} radius={[4,4,0,0]}>
-                    {data.slice(0,20).map((_, i) => <Cell key={i} fill={['#6B3FDB','#2563eb','#16a34a','#d97706','#dc2626'][i % 5]} />)}
+                    {data.slice(0,20).map((_, i) => <Cell key={i} fill={['#6B3FDB','#2563eb','#16a34a','#6d28d9','#dc2626'][i % 5]} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
@@ -162,6 +172,7 @@ export default function TrainingReports() {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }

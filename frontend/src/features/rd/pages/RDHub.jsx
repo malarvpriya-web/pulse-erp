@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  FlaskConical, Cpu, FileBadge, GitBranch, Plus, X, RefreshCw, CircuitBoard, Package,
+  FlaskConical, Cpu, FileBadge, GitBranch, Plus, X, RefreshCw,
+  CircuitBoard, Package, LayoutDashboard,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const CARD = { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 11, padding: 16 };
 const TH = { padding: '9px 12px', textAlign: 'left', fontWeight: 600, fontSize: 11, color: '#6b7280', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '.04em' };
@@ -13,10 +15,10 @@ const btn = { cursor: 'pointer', border: '1px solid #e5e7eb', background: '#fff'
 const btnPri = { ...btn, background: '#6B3FDB', color: '#fff', border: 'none' };
 const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 
-const ART_STATUS = { draft: '#6b7280', in_review: '#d97706', released: '#059669', superseded: '#9ca3af', obsolete: '#dc2626' };
+const ART_STATUS = { draft: '#6b7280', in_review: '#6d28d9', released: '#059669', superseded: '#9ca3af', obsolete: '#dc2626' };
 const ART_TYPE = { pcb: 'PCB', firmware: 'Firmware', software: 'Software', schematic: 'Schematic', mechanical: 'Mechanical', document: 'Document' };
-const PAT_STATUS = { idea: '#6b7280', drafting: '#6366f1', filed: '#0369a1', published: '#0891b2', granted: '#059669', rejected: '#dc2626', lapsed: '#d97706', abandoned: '#9ca3af' };
-const STAGE_COLOR = { concept: '#6b7280', design: '#6366f1', prototype: '#8b5cf6', validation: '#0891b2', production: '#059669', maintenance: '#d97706', eol: '#dc2626' };
+const PAT_STATUS = { idea: '#6b7280', drafting: '#6366f1', filed: '#0369a1', published: '#0891b2', granted: '#059669', rejected: '#dc2626', lapsed: '#6d28d9', abandoned: '#9ca3af' };
+const STAGE_COLOR = { concept: '#6b7280', design: '#6366f1', prototype: '#8b5cf6', validation: '#0891b2', production: '#059669', maintenance: '#6d28d9', eol: '#dc2626' };
 
 function Chip({ text, color }) {
   return <span style={{ background: `${color}1a`, color, padding: '2px 9px', borderRadius: 9, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', textTransform: 'capitalize' }}>{String(text || '—').replace(/_/g, ' ')}</span>;
@@ -57,12 +59,15 @@ export default function RDHub() {
   useEffect(() => { loadSummary(); }, [loadSummary]);
 
   return (
-    <div className="pulse-page">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <FlaskConical size={22} color="#6B3FDB" />
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>R&amp;D</h1>
-        <button onClick={loadSummary} style={{ ...btn, marginLeft: 'auto' }}><RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh</button>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="R&D"
+        title="R&D"
+        actions={<button className="plh-cta" onClick={loadSummary}><RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh</button>}
+      />
+    }>
+
       <p style={{ margin: '0 0 16px', color: '#6b7280', fontSize: 13 }}>
         Versioned design repository, patents &amp; IP, and the product lifecycle (PLM) across product lines.
       </p>
@@ -71,7 +76,7 @@ export default function RDHub() {
         <Kpi icon={CircuitBoard} label="Artifact families" value={summary.artifacts?.families ?? 0} color="#6B3FDB" />
         <Kpi icon={Package} label="Released versions" value={summary.artifacts?.released ?? 0} color="#059669" />
         <Kpi icon={FileBadge} label="Patents granted" value={summary.patents?.granted ?? 0} color="#0891b2" />
-        <Kpi icon={GitBranch} label="In production" value={summary.lifecycle?.in_production ?? 0} color="#d97706" />
+        <Kpi icon={GitBranch} label="In production" value={summary.lifecycle?.in_production ?? 0} color="#6d28d9" />
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid #eee' }}>
@@ -87,7 +92,7 @@ export default function RDHub() {
       {tab === 'repository' && <Repository productLines={productLines} onChange={loadSummary} />}
       {tab === 'patents' && <Patents productLines={productLines} onChange={loadSummary} />}
       {tab === 'lifecycle' && <Lifecycle rows={productLines} onChange={loadSummary} />}
-    </div>
+    </PageShell>
   );
 }
 

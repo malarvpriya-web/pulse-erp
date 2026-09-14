@@ -1,8 +1,10 @@
 // frontend/src/features/hr/pages/LearningPaths.jsx
 import { useState, useEffect, useCallback } from 'react';
+import { GraduationCap } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const inputStyle = { width:'100%', boxSizing:'border-box', padding:'8px 10px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 };
 
@@ -142,17 +144,18 @@ export default function LearningPaths() {
   };
 
   return (
-    <div style={{ padding:24, background:'#f5f3ff', minHeight:'100vh' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, flexWrap:'wrap', gap:10 }}>
-        <div>
-          <h2 style={{ margin:0, color:'#4c1d95', fontSize:22 }}>🛤️ Learning Paths</h2>
-          <p style={{ margin:0, color:'#6b7280', fontSize:13 }}>Build role-based or onboarding learning journeys</p>
-        </div>
-        <button onClick={() => { setShowForm(true); setEditPath(null); setForm({ name:'', description:'', path_type:'role', target_role:'', target_department:'' }); }}
-          style={{ background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontWeight:600 }}>
+    <PageShell dock={
+      <PageHero
+        icon={GraduationCap}
+        eyebrow="Human Resources"
+        title="🛤️ Learning Paths"
+        subtitle="Build role-based or onboarding learning journeys"
+        actions={<button className="plh-cta" onClick={() => { setShowForm(true); setEditPath(null); setForm({ name:'', description:'', path_type:'role', target_role:'', target_department:'' }); }}>
           + New Learning Path
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))', gap:16 }}>
         {paths.map(path => (
@@ -174,7 +177,7 @@ export default function LearningPaths() {
                 setSelectedPath(path); setShowAssignModal(true); setAssignIds([]); setAssignDue('');
                 api.get('/employees').then(r => setEmployees((r.data || []).filter(e => !['left','terminated'].includes((e.status || '').toLowerCase())))).catch(() => setEmployees([]));
               }} style={{ padding:'5px 12px', background:'#dcfce7', color:'#16a34a', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Assign</button>
-              <button onClick={() => openProgress(path)} style={{ padding:'5px 12px', background:'#fef3c7', color:'#d97706', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Progress</button>
+              <button onClick={() => openProgress(path)} style={{ padding:'5px 12px', background:'#ede9fe', color:'#6d28d9', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Progress</button>
               <button onClick={() => { setEditPath(path); setForm({ name:path.name, description:path.description||'', path_type:path.path_type, target_role:path.target_role||'', target_department:path.target_department||'' }); setShowForm(true); }} style={{ padding:'5px 12px', background:'#f5f3ff', color:'#6b7280', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Edit</button>
               <button onClick={() => setPendingArchivePath(path.id)} style={{ padding:'5px 12px', background:'#fef2f2', color:'#dc2626', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Archive</button>
             </div>
@@ -345,7 +348,7 @@ export default function LearningPaths() {
                   <td style={{ padding:'8px 12px' }}>
                     <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                       <div style={{ flex:1, height:8, background:'#e9e4ff', borderRadius:4, overflow:'hidden' }}>
-                        <div style={{ height:'100%', width:`${r.progress_pct||0}%`, background: r.progress_pct >= 100 ? '#16a34a' : r.progress_pct >= 50 ? '#d97706' : '#6B3FDB', borderRadius:4 }} />
+                        <div style={{ height:'100%', width:`${r.progress_pct||0}%`, background: r.progress_pct >= 100 ? '#16a34a' : r.progress_pct >= 50 ? '#6d28d9' : '#6B3FDB', borderRadius:4 }} />
                       </div>
                       <span style={{ fontSize:12, fontWeight:700, color:'#4c1d95', minWidth:36 }}>{r.progress_pct||0}%</span>
                     </div>
@@ -364,6 +367,6 @@ export default function LearningPaths() {
           </table>
         </Modal>
       )}
-    </div>
+    </PageShell>
   );
 }

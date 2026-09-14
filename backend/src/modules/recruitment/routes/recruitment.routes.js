@@ -11,7 +11,35 @@ import {
 import notificationsRepository from '../../notifications/repositories/notifications.repository.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { triggerEmail } from '../../../services/emailTrigger.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
+import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
+import { requirePermission } from '../../../middlewares/auth.middleware.js';
+// Turns Postgres constraint violations into actionable 4xx responses instead of
+// the blanket 500s these handlers used to return. See shared/pgErrors.js.
+import { respondError, httpFromPgError } from '../../../shared/pgErrors.js';
+// Request-schema validation — the layer pgErrors.js's own header calls out as the
+// thing it is not. Rejects bad input before it reaches Postgres, and rejects values
+// Postgres would happily accept: the status columns in this module are bare varchars
+// with no CHECK constraint, so `status: 'banana'` used to insert and then render as
+// an unknown badge on every page that read it.
+import { validateBody, validatePatch } from '../../../shared/requestSchema.js';
+import {
+  requisitionSchema, openingSchema, candidateSchema, moveStageSchema,
+  interviewSchema, interviewNoteSchema, submitFeedbackSchema,
+  offerSchema, emailTemplateSchema,
+} from './recruitment.schemas.js';
+
+// GET → view, POST create → add, PUT/POST-mutation → edit, DELETE → delete.
+// The 'recruitment' role_permissions matrix (manager/department_head/hr/hr_manager/
+// hr_exec/employee, base seed 20260428000001 + granular seeds 20260529000001/
+// 20260716000009) is already fully populated for every role that has frontend
+// access to this module — this was previously enforced only by the frontend
+// nav/menu gate, so any authenticated user of any role could call these routes
+// directly regardless of their actual role_permissions row.
+const view   = requirePermission('recruitment', 'view');
+const add    = requirePermission('recruitment', 'add');
+const edit   = requirePermission('recruitment', 'edit');
+const remove = requirePermission('recruitment', 'delete');
 
 const notify = (userId, module, recordId, message) => {
   if (!userId) return;
@@ -105,62 +133,81 @@ const cid = (req) => companyOf(req);
 // ==================== DASHBOARD SUMMARY ====================
 const getDashboardSummary = async (req, res) => {
   try {
-    const data = await recruitmentRepository.getDashboard(cid(req));
-    res.json(data);
+    const range = resolveRange(req.query, { defaultPeriod: 'fytd' });
+    const department = dimension(req.query, 'department');
+    const data = await recruitmentRepository.getDashboard(cid(req), {
+      from: range.from, to: range.to, department,
+    });
+    res.json({ ...data, period: range.period, period_label: range.label, department });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 };
+
+// Dimension options for the dashboard filter bar. Declared before any
+// `/:id`-style route in this file so it isn't captured as a param.
+router.get('/filter-options', view, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT department FROM job_openings
+        WHERE department IS NOT NULL AND TRIM(department) <> '' AND deleted_at IS NULL
+          AND ($1::int IS NULL OR company_id = $1)
+        ORDER BY department`,
+      [cid(req)]
+    );
+    res.json({ departments: rows.map(r => r.department) });
+  } catch { res.json({ departments: [] }); }
+});
 // /dashboard-summary is the canonical path (used by RecruitmentDashboard.jsx);
 // /dashboard has no current frontend caller but is kept as an alias for any
 // external/API consumer rather than removed outright.
-router.get('/dashboard-summary', getDashboardSummary);
-router.get('/dashboard', getDashboardSummary);
+router.get('/dashboard-summary', view, getDashboardSummary);
+router.get('/dashboard', view, getDashboardSummary);
 
 // ==================== PIPELINE SUMMARY ====================
-router.get('/pipeline-summary', async (req, res) => {
+router.get('/pipeline-summary', view, async (req, res) => {
   try {
     const rows = await recruitmentRepository.getPipelineSummary(cid(req));
     res.json(rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== JOB REQUISITIONS ====================
-router.get('/requisitions', async (req, res) => {
+router.get('/requisitions', view, async (req, res) => {
   try {
     const requisitions = await recruitmentRepository.findRequisitions({
       ...req.query, company_id: cid(req),
     });
     res.json(requisitions);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/requisitions/:id', async (req, res) => {
+router.get('/requisitions/:id', view, async (req, res) => {
   try {
     const requisition = await recruitmentRepository.findRequisitionById(req.params.id, cid(req));
     if (!requisition) return res.status(404).json({ error: 'Requisition not found' });
     res.json(requisition);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.post('/requisitions', async (req, res) => {
+router.post('/requisitions', add, validateBody(requisitionSchema), async (req, res) => {
   try {
     const requisition = await recruitmentRepository.createRequisition({
       ...req.body, company_id: cid(req),
     });
     res.status(201).json(requisition);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.put('/requisitions/:id', async (req, res) => {
+router.put('/requisitions/:id', edit, validatePatch(requisitionSchema), async (req, res) => {
   try {
     // 'approved' is now gated through the Approval Center (POST
     // /approvals/requisition:<id>/approve, which requires an approver role —
@@ -175,43 +222,54 @@ router.put('/requisitions/:id', async (req, res) => {
     const requisition = await recruitmentRepository.updateRequisition(req.params.id, req.body, cid(req));
     res.json(requisition);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.delete('/requisitions/:id', async (req, res) => {
+router.delete('/requisitions/:id', remove, async (req, res) => {
   try {
     await recruitmentRepository.deleteRequisition(req.params.id, cid(req));
     res.json({ message: 'Requisition deleted successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== JOB OPENINGS ====================
-router.get('/openings', async (req, res) => {
+router.get('/openings', view, async (req, res) => {
   try {
     const openings = await recruitmentRepository.findOpenings({
       ...req.query, company_id: cid(req),
     });
     res.json(openings);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/openings/:id', async (req, res) => {
+router.get('/openings/:id', view, async (req, res) => {
   try {
     const opening = await recruitmentRepository.findOpeningById(req.params.id, cid(req));
     if (!opening) return res.status(404).json({ error: 'Opening not found' });
     res.json(opening);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.post('/openings', async (req, res) => {
+router.post('/openings', add, validateBody(openingSchema), async (req, res) => {
   try {
+    // Requisitions must be approved before a job opening can be created against them.
+    // createOpening() itself accepted any requisition_id (or none) with no status check and
+    // unconditionally flipped the requisition to 'open' once referenced — this was the actual
+    // enforcement gap, since editing a requisition's status straight to 'approved' was already
+    // blocked above and routed through the Approval Center, but nothing stopped HR from
+    // sidestepping that entirely by just creating the opening.
+    //
+    // The check used to live here, one unlocked statement ahead of the insert, which left a
+    // race window where two concurrent requests both saw 'approved'. It now lives inside
+    // createOpening()'s transaction behind a SELECT ... FOR UPDATE on the requisition row,
+    // so it is enforced atomically; this route just surfaces the resulting status code.
     const opening = await recruitmentRepository.createOpening({
       ...req.body, company_id: cid(req),
     });
@@ -222,42 +280,59 @@ router.post('/openings', async (req, res) => {
     );
     res.status(201).json(opening);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // createOpening() tags the approval-gate rejections with 404/400; without this
+    // they would collapse into a blanket 500 and the UI would show no reason.
+    respondError(res, error);
   }
 });
 
-router.put('/openings/:id', async (req, res) => {
+router.put('/openings/:id', edit, validatePatch(openingSchema), async (req, res) => {
   try {
+    // Same approval guard as POST /openings — otherwise an unapproved requisition could be
+    // linked in later via edit instead of at creation time.
+    if (req.body.requisition_id) {
+      const requisition = await recruitmentRepository.findRequisitionById(req.body.requisition_id, cid(req));
+      if (!requisition) {
+        return res.status(404).json({ error: 'Requisition not found.' });
+      }
+      if (requisition.status !== 'approved') {
+        return res.status(400).json({
+          error: 'This requisition has not been approved yet. Job openings can only be linked to an approved requisition.',
+        });
+      }
+    }
     const opening = await recruitmentRepository.updateOpening(req.params.id, req.body, cid(req));
     res.json(opening);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== CANDIDATES ====================
-router.get('/candidates', async (req, res) => {
+router.get('/candidates', view, async (req, res) => {
   try {
     const candidates = await recruitmentRepository.findCandidates({
       ...req.query, company_id: cid(req),
     });
     res.json(candidates);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/candidates/:id', async (req, res) => {
+router.get('/candidates/:id', view, async (req, res) => {
   try {
     const candidate = await recruitmentRepository.findCandidateById(req.params.id, cid(req));
     if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
     res.json(candidate);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.post('/candidates', upload.single('resume'), async (req, res) => {
+// validateBody sits after multer, not before it: this route is multipart, so
+// req.body does not exist until upload.single() has parsed the stream.
+router.post('/candidates', add, upload.single('resume'), validateBody(candidateSchema), async (req, res) => {
   try {
     const data = { ...req.body, company_id: cid(req) };
     if (req.file) {
@@ -287,11 +362,19 @@ router.post('/candidates', upload.single('resume'), async (req, res) => {
 
     res.status(201).json(candidate);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // 409 (duplicate candidate / closed opening) must not surface as a 500 —
+    // the frontend shows this message directly to the recruiter. Not using
+    // respondError() here because this response carries an extra field the
+    // recruiter UI needs (a link to the candidate they just collided with).
+    const mapped = httpFromPgError(error);
+    res.status(mapped?.status ?? 500).json({
+      error: mapped?.message ?? error.message,
+      existing_candidate_id: error.existingCandidateId,
+    });
   }
 });
 
-router.post('/candidates/bulk', upload.array('resumes'), async (req, res) => {
+router.post('/candidates/bulk', add, upload.array('resumes'), async (req, res) => {
   try {
     const candidates = JSON.parse(req.body.candidates);
     if (req.files?.length) {
@@ -304,22 +387,29 @@ router.post('/candidates/bulk', upload.array('resumes'), async (req, res) => {
     const results = await recruitmentRepository.bulkCreateCandidates(
       candidates.map(c => ({ ...c, company_id: cid(req) }))
     );
-    res.status(201).json(results);
+    // Duplicates are skipped rather than failing the whole upload — report both
+    // halves so the uploader knows exactly what landed and what didn't.
+    res.status(201).json({
+      created: Array.from(results),
+      created_count: results.length,
+      skipped: results.skipped || [],
+      skipped_count: (results.skipped || []).length,
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.put('/candidates/:id', async (req, res) => {
+router.put('/candidates/:id', edit, validatePatch(candidateSchema), async (req, res) => {
   try {
     const candidate = await recruitmentRepository.updateCandidate(req.params.id, req.body, cid(req));
     res.json(candidate);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.post('/candidates/:id/move-stage', async (req, res) => {
+router.post('/candidates/:id/move-stage', edit, validateBody(moveStageSchema), async (req, res) => {
   try {
     const { new_stage, moved_by, notes } = req.body;
     await recruitmentRepository.moveCandidateStage(req.params.id, new_stage, moved_by, notes, cid(req));
@@ -356,37 +446,42 @@ router.post('/candidates/:id/move-stage', async (req, res) => {
 
     res.json({ message: 'Candidate moved to new stage' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/candidates/:id/history', async (req, res) => {
+router.get('/candidates/:id/history', view, async (req, res) => {
   try {
-    const history = await recruitmentRepository.getCandidateStageHistory(req.params.id);
+    const history = await recruitmentRepository.getCandidateStageHistory(req.params.id, cid(req));
     res.json(history);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-// ==================== HIRE CANDIDATE (full transaction) ====================
-router.post('/candidates/:id/hire', async (req, res) => {
-  const client = await pool.connect();
+// ==================== HIRE CANDIDATE ====================
+// Routed through autoCreateEmployeeFromCandidate() rather than calling
+// hireCandidate() directly. This endpoint used to be the one hire path that
+// skipped the 'hired' stage-gate and the recruitment_employee_creation_log
+// de-duplication that the other three paths (move-stage → hired, offer-accept,
+// manual auto-creation trigger) all go through — so it could mint a second
+// employee record, login and payroll enrolment for an already-hired candidate.
+// It now shares the exact same guarded, transactional path as the rest.
+router.post('/candidates/:id/hire', edit, async (req, res) => {
   try {
-    await client.query('BEGIN');
-
-    const { employee, employeeId } = await recruitmentRepository.hireCandidate(
-      req.params.id,
-      cid(req),
-      client
+    const result = await recruitmentRepository.autoCreateEmployeeFromCandidate(
+      req.params.id, cid(req), req.user?.userId ?? req.user?.id ?? null
     );
+    if (result.status !== 201) {
+      return res.status(result.status).json({ error: result.error, employee_code: result.employee_code });
+    }
+    const { employee, employeeId } = result;
 
-    // Move resume to Hired folder (non-blocking, outside transaction)
+    // Move resume to Hired folder (non-blocking)
     moveResumeOnStageChange(req.params.id, 'hired').catch(err =>
       console.warn('[Drive] hire moveResume failed:', err.message)
     );
 
-    await client.query('COMMIT');
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'candidate', action: 'hire', newData: { employee_id: employeeId }, req });
     // Notify HR of new hire
     notify(req.user?.userId ?? req.user?.id, 'recruitment', parseInt(req.params.id),
@@ -399,66 +494,63 @@ router.post('/candidates/:id/hire', async (req, res) => {
     }, cid(req));
     res.json({ success: true, employee_id: employeeId, employee });
   } catch (error) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: error.message });
-  } finally {
-    client.release();
+    respondError(res, error);
   }
 });
 
 // ==================== PIPELINE ====================
-router.get('/pipeline/:job_opening_id', async (req, res) => {
+router.get('/pipeline/:job_opening_id', view, async (req, res) => {
   try {
     const pipeline = await recruitmentRepository.getPipelineSummary(cid(req), req.params.job_opening_id);
     res.json(pipeline);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/pipeline/:job_opening_id/:stage', async (req, res) => {
+router.get('/pipeline/:job_opening_id/:stage', view, async (req, res) => {
   try {
     const candidates = await recruitmentRepository.getCandidatesByStage(
       req.params.job_opening_id, req.params.stage, cid(req)
     );
     res.json(candidates);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== INTERVIEW NOTES ====================
-router.post('/interview-notes', async (req, res) => {
+router.post('/interview-notes', add, validateBody(interviewNoteSchema), async (req, res) => {
   try {
     const note = await recruitmentRepository.createInterviewNote(req.body, cid(req));
     res.status(201).json(note);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/interview-notes/:candidate_id', async (req, res) => {
+router.get('/interview-notes/:candidate_id', view, async (req, res) => {
   try {
     const notes = await recruitmentRepository.findInterviewNotes(req.params.candidate_id, cid(req));
     res.json(notes);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== INTERVIEWS ====================
-router.get('/interviews', async (req, res) => {
+router.get('/interviews', view, async (req, res) => {
   try {
     const interviews = await recruitmentRepository.findInterviews({
       ...req.query, company_id: cid(req),
     });
     res.json(interviews);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.post('/interviews', async (req, res) => {
+router.post('/interviews', add, validateBody(interviewSchema), async (req, res) => {
   try {
     const interview = await recruitmentRepository.scheduleInterview({
       ...req.body, company_id: cid(req),
@@ -481,31 +573,31 @@ router.post('/interviews', async (req, res) => {
       candidate_email:  interview.candidate_email || '',
       candidate_name:   interview.candidate_name  || '',
       interview_date:   interview.interview_date  || '',
-      interview_mode:   interview.mode            || '',
+      interview_mode:   interview.interview_mode  || '',
     }, cid(req));
     res.status(201).json(interview);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.put('/interviews/:id', async (req, res) => {
+router.put('/interviews/:id', edit, validatePatch(interviewSchema), async (req, res) => {
   try {
     const interview = await recruitmentRepository.updateInterview(req.params.id, req.body, cid(req));
     res.json(interview);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== INTERVIEW FEEDBACK + AUTO-PROGRESSION ====================
-router.post('/interviews/:id/submit-feedback', async (req, res) => {
+router.post('/interviews/:id/submit-feedback', edit, validateBody(submitFeedbackSchema), async (req, res) => {
   try {
     const { outcome, rejection_reason, rating, comments } = req.body;
 
-    if (!outcome || !['selected', 'rejected'].includes(outcome)) {
-      return res.status(400).json({ error: 'outcome must be "selected" or "rejected"' });
-    }
+    // `outcome` presence/vocabulary and `rating`'s 1-5 bound are handled by
+    // submitFeedbackSchema above. This one stays inline: it is a conditional
+    // requirement between two fields, which the schema format cannot express.
     if (outcome === 'rejected' && !rejection_reason) {
       return res.status(400).json({ error: 'rejection_reason is required when outcome is rejected' });
     }
@@ -618,92 +710,97 @@ router.post('/interviews/:id/submit-feedback', async (req, res) => {
         : 'Feedback saved — stage unchanged',
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== EMAIL TEMPLATES ====================
-router.get('/email-templates', async (req, res) => {
+router.get('/email-templates', view, async (req, res) => {
   try {
-    const templates = await recruitmentRepository.findEmailTemplates(req.query);
+    const templates = await recruitmentRepository.findEmailTemplates(req.query, cid(req));
     res.json(templates);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/email-templates/:id', async (req, res) => {
+router.get('/email-templates/:id', view, async (req, res) => {
   try {
-    const template = await recruitmentRepository.findEmailTemplateById(req.params.id);
+    const template = await recruitmentRepository.findEmailTemplateById(req.params.id, cid(req));
     if (!template) return res.status(404).json({ error: 'Template not found' });
     res.json(template);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.post('/email-templates', async (req, res) => {
+router.post('/email-templates', add, validateBody(emailTemplateSchema), async (req, res) => {
   try {
-    const template = await recruitmentRepository.createEmailTemplate(req.body);
+    const template = await recruitmentRepository.createEmailTemplate(req.body, cid(req));
     res.status(201).json(template);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.put('/email-templates/:id', async (req, res) => {
+router.put('/email-templates/:id', edit, validatePatch(emailTemplateSchema), async (req, res) => {
   try {
-    const template = await recruitmentRepository.updateEmailTemplate(req.params.id, req.body);
+    const template = await recruitmentRepository.updateEmailTemplate(req.params.id, req.body, cid(req));
     res.json(template);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.delete('/email-templates/:id', async (req, res) => {
+router.delete('/email-templates/:id', remove, async (req, res) => {
   try {
-    await recruitmentRepository.deleteEmailTemplate(req.params.id);
+    await recruitmentRepository.deleteEmailTemplate(req.params.id, cid(req));
     res.json({ message: 'Template deleted successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== OFFERS ====================
-router.get('/offers', async (req, res) => {
+router.get('/offers', view, async (req, res) => {
   try {
     const offers = await recruitmentRepository.findOffers({
       ...req.query, company_id: cid(req),
     });
     res.json(offers);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/offers/:id', async (req, res) => {
+router.get('/offers/:id', view, async (req, res) => {
   try {
     const offer = await recruitmentRepository.findOfferById(req.params.id, cid(req));
     if (!offer) return res.status(404).json({ error: 'Offer not found' });
     res.json(offer);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.post('/offers', async (req, res) => {
+router.post('/offers', add, validateBody(offerSchema), async (req, res) => {
   try {
     const offer = await recruitmentRepository.createOffer({
-      ...req.body, company_id: cid(req),
+      ...req.body,
+      company_id: cid(req),
+      // Stamped server-side, never taken from the body: this is the value the
+      // Approval Center compares against to block self-approval, so letting a
+      // caller supply it would defeat the check it exists for.
+      created_by: await employeeOf(req, pool),
     });
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: offer.id, recordType: 'offer', action: 'create', newData: offer, req });
     res.status(201).json(offer);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.put('/offers/:id', async (req, res) => {
+router.put('/offers/:id', edit, validatePatch(offerSchema), async (req, res) => {
   try {
     // 'sent' is now gated through the Approval Center (POST
     // /approvals/offer:<id>/approve, which requires an approver role — see
@@ -720,132 +817,175 @@ router.put('/offers/:id', async (req, res) => {
     const offer = await recruitmentRepository.updateOffer(req.params.id, req.body, cid(req));
     res.json(offer);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.post('/offers/:id/accept', async (req, res) => {
+router.post('/offers/:id/accept', edit, async (req, res) => {
   try {
     const offer = await recruitmentRepository.acceptOffer(req.params.id, cid(req));
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'offer', action: 'accept', newData: offer, req });
 
     // acceptOffer() always flips the candidate straight to Hired — same
     // auto-creation hook as the move-stage route above. See
-    // AUTOMATION_OPPORTUNITY_AUDIT.md §10.1.
+    // AUTOMATION_OPPORTUNITY_AUDIT.md §10.1. Safe against double-invocation:
+    // acceptOffer()'s status guard means a repeat call never reaches here, and
+    // autoCreateEmployeeFromCandidate() de-dupes against its own creation log.
     recruitmentRepository.autoCreateEmployeeFromCandidate(
       offer.candidate_id, cid(req), req.user?.userId ?? req.user?.id ?? null
     ).catch(err => console.warn('[Recruitment] auto-create-on-hire failed:', err.message));
 
     res.json(offer);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== ANALYTICS ====================
-router.get('/analytics/source', async (req, res) => {
+router.get('/analytics/source', view, async (req, res) => {
   try {
     const analytics = await recruitmentRepository.getSourceAnalytics(cid(req));
     res.json(analytics);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/analytics/time-to-hire', async (req, res) => {
+router.get('/analytics/time-to-hire', view, async (req, res) => {
   try {
     const data = await recruitmentRepository.getTimeToHire(cid(req));
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/analytics/offer-acceptance-rate', async (req, res) => {
+router.get('/analytics/offer-acceptance-rate', view, async (req, res) => {
   try {
     const data = await recruitmentRepository.getOfferAcceptanceRate(cid(req));
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/analytics/interview-to-hire-ratio', async (req, res) => {
+router.get('/analytics/interview-to-hire-ratio', view, async (req, res) => {
   try {
     const data = await recruitmentRepository.getInterviewToHireRatio(cid(req));
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== ONBOARDING ====================
-router.get('/onboarding', async (req, res) => {
+// Read-only view of recently-hired candidates and how far their onboarding has
+// actually got. Recruitment does NOT own onboarding — HR does, in
+// hr_onboarding_checklist_templates/_progress, initialised by hireCandidate() and
+// edited through /hr/onboarding/*. This endpoint only reports on that system so the
+// recruiter who filled the role can see whether the handover landed; every mutation
+// still belongs to HR's routes.
+//
+// (The page this used to back, OnboardingChecklist.jsx, was a hardcoded 25-item list
+// persisted to localStorage and completely disconnected from the real tables. It was
+// deleted rather than fixed. Progress counts below come from the real ones.)
+router.get('/onboarding', view, async (req, res) => {
   try {
     const company_id = cid(req);
-    const params = [];
-    let query = `
+    const params = [company_id];
+    // `total` is the count of active checklist templates, matching how
+    // GET /hr/onboarding/progress/:employee_id computes its denominator — progress
+    // rows only exist for items someone has touched, so counting those instead
+    // would report 3/3 complete for an employee with 3 done and 20 untouched.
+    const query = `
       SELECT c.id, c.full_name AS name, c.email, c.phone,
              COALESCE(jo.job_title, jr.job_title) AS designation,
              COALESCE(jo.department, jr.department) AS department,
-             TO_CHAR(c.hired_at::date, 'YYYY-MM-DD') AS joining_date
+             TO_CHAR(c.hired_at::date, 'YYYY-MM-DD') AS joining_date,
+             e.id AS employee_id,
+             COALESCE(tpl.total, 0)::int AS onboarding_total,
+             COALESCE(prog.done, 0)::int AS onboarding_done
       FROM candidates c
       LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
       LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
+      -- The link Recruitment → Employees. NULL here means the hire never produced
+      -- an employee record, i.e. auto-creation failed and is sitting in
+      -- recruitment_employee_creation_log — worth surfacing, not hiding.
+      LEFT JOIN employees e
+             ON e.source_candidate_id = c.id AND e.deleted_at IS NULL
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS total
+          FROM hr_onboarding_checklist_templates t
+         WHERE t.is_active = true
+           AND (t.company_id IS NULL OR t.company_id = $1)
+      ) tpl ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) FILTER (WHERE p.done) AS done
+          FROM hr_onboarding_checklist_progress p
+         WHERE p.employee_id = e.id
+      ) prog ON TRUE
       WHERE c.overall_status = 'hired'
         AND c.hired_at >= NOW() - INTERVAL '60 days'
-        AND c.deleted_at IS NULL`;
-    if (company_id) { query += ` AND c.company_id = $1`; params.push(company_id); }
-    query += ` ORDER BY c.hired_at DESC`;
+        AND c.deleted_at IS NULL
+        AND ($1::int IS NULL OR c.company_id = $1)
+      ORDER BY c.hired_at DESC`;
     const result = await pool.query(query, params);
-    res.json(result.rows);
+    // pct is derived here rather than in SQL so the divide-by-zero case (no templates
+    // configured) stays explicit. COUNT() comes back as a bigint → JS string, hence
+    // the ::int casts above; without them `total > 0` is true for the string "0".
+    res.json(result.rows.map(r => ({
+      ...r,
+      onboarding_pct: r.onboarding_total > 0
+        ? Math.round((r.onboarding_done / r.onboarding_total) * 100)
+        : null,
+    })));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
 // ==================== REPORTS ====================
-router.get('/reports/summary', async (req, res) => {
+router.get('/reports/summary', view, async (req, res) => {
   try {
     const company_id = cid(req);
     const { from_date, to_date, department } = req.query;
     const data = await recruitmentRepository.getReportsSummary({ company_id, from_date, to_date, department });
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/reports/vacancy-aging', async (req, res) => {
+router.get('/reports/vacancy-aging', view, async (req, res) => {
   try {
     const company_id = cid(req);
     const { from_date, to_date } = req.query;
     const data = await recruitmentRepository.getVacancyAging({ company_id, from_date, to_date });
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/reports/source-effectiveness', async (req, res) => {
+router.get('/reports/source-effectiveness', view, async (req, res) => {
   try {
     const company_id = cid(req);
     const { from_date, to_date } = req.query;
     const data = await recruitmentRepository.getSourceEffectiveness({ company_id, from_date, to_date });
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.get('/reports/department-pipeline', async (req, res) => {
+router.get('/reports/department-pipeline', view, async (req, res) => {
   try {
     const company_id = cid(req);
     const { from_date, to_date } = req.query;
     const data = await recruitmentRepository.getDepartmentPipeline({ company_id, from_date, to_date });
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
@@ -854,7 +994,7 @@ router.get('/reports/department-pipeline', async (req, res) => {
 // =============================================================================
 
 // GET /recruitment/auto-creation/pending — candidates in Hired status without employee record
-router.get('/auto-creation/pending', async (req, res) => {
+router.get('/auto-creation/pending', view, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT c.id, c.full_name, c.email, c.phone, c.current_stage, c.applied_job_id AS job_opening_id,
@@ -863,7 +1003,7 @@ router.get('/auto-creation/pending', async (req, res) => {
              ecl.status AS creation_status, ecl.employee_code, ecl.triggered_at, ecl.error_log
         FROM candidates c
         LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
-        LEFT JOIN offer_letters o ON o.candidate_id = c.id AND LOWER(COALESCE(o.offer_status, o.status, '')) = 'accepted'
+        LEFT JOIN offer_letters o ON o.candidate_id = c.id AND LOWER(COALESCE(o.offer_status, o.offer_status, '')) = 'accepted'
         LEFT JOIN recruitment_employee_creation_log ecl ON ecl.candidate_id = c.id AND ecl.company_id = $1
        WHERE c.company_id = $1 AND LOWER(c.current_stage) = 'hired'
        ORDER BY o.joining_date ASC NULLS LAST, c.updated_at DESC
@@ -871,7 +1011,7 @@ router.get('/auto-creation/pending', async (req, res) => {
     res.json(rows);
   } catch (err) {
     if (err.message?.includes('does not exist')) return res.json([]);
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -879,7 +1019,7 @@ router.get('/auto-creation/pending', async (req, res) => {
 // (manual fallback — the same logic now also fires automatically when a candidate
 // reaches Hired via move-stage or offer-accept below, see recruitmentRepository
 // .autoCreateEmployeeFromCandidate and AUTOMATION_OPPORTUNITY_AUDIT.md §10.1)
-router.post('/auto-creation/:candidateId/trigger', async (req, res) => {
+router.post('/auto-creation/:candidateId/trigger', add, async (req, res) => {
   try {
     const company_id = cid(req);
     const candidate_id = req.params.candidateId; // UUID — do NOT parseInt
@@ -903,11 +1043,11 @@ router.post('/auto-creation/:candidateId/trigger', async (req, res) => {
       candidate_name: result.candidateName,
       next_steps: ['Configure payroll profile', 'Set up leave balance', 'Create email account', 'Add to org chart'],
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
 // GET /recruitment/auto-creation/log — creation history
-router.get('/auto-creation/log', async (req, res) => {
+router.get('/auto-creation/log', view, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT ecl.*, c.email AS candidate_email
@@ -917,7 +1057,7 @@ router.get('/auto-creation/log', async (req, res) => {
        ORDER BY ecl.triggered_at DESC LIMIT 100
     `, [cid(req)]);
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { respondError(res, err); }
 });
 
 export default router;

@@ -109,7 +109,8 @@ class InvoiceService {
         reference_type: 'invoice',
         reference_id: invoice.id,
         description: `Invoice ${invoiceNumber}`,
-        created_by: userId
+        created_by: userId,
+        company_id: data.company_id ?? invoice.company_id ?? null,
       });
 
       // DR: Accounts Receivable (full invoice amount)

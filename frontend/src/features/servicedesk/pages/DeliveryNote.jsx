@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { Plus, X, Search, Truck, CheckCircle, XCircle } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_STYLE = {
-  Pending:   { bg: '#fef3c7', color: '#92400e' },
+  Pending:   { bg: '#ede9fe', color: '#5b21b6' },
   Delivered: { bg: '#d1fae5', color: '#065f46' },
   Cancelled: { bg: '#fee2e2', color: '#991b1b' },
 };
@@ -78,7 +79,16 @@ export default function DeliveryNote() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Truck}
+        eyebrow="Service Desk"
+        title="Delivery Notes"
+        actions={<button className="plh-cta" onClick={() => { setShowForm(true); setError(''); }}>
+          <Plus size={15}/> New Delivery Note
+        </button>}
+      />
+    }>
       {toast && (
         <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 9999, padding: '10px 18px', borderRadius: 8, fontWeight: 600, fontSize: 13,
           background: toast.type === 'success' ? '#d1fae5' : '#fee2e2',
@@ -87,16 +97,6 @@ export default function DeliveryNote() {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Delivery Notes</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>{filtered.length} records</p>
-        </div>
-        <button onClick={() => { setShowForm(true); setError(''); }}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          <Plus size={15}/> New Delivery Note
-        </button>
-      </div>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
@@ -194,6 +194,6 @@ export default function DeliveryNote() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

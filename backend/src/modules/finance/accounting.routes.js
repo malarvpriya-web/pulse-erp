@@ -4,11 +4,41 @@ import pool from '../../config/db.js';
 import { nextAccountingJournalNumber } from '../../shared/docNumber.js';
 import { numberToWordsINR } from '../../shared/numberToWordsINR.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { respondError } from '../../shared/pgErrors.js';
 import { postPayrollJournal } from './services/payrollJournal.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
 const cid = req => { const n = Number.parseInt(req.scope?.company_id, 10); return Number.isInteger(n) ? n : null; };
+
+/**
+ * A journal entry's before-image is its header AND its lines.
+ *
+ * `captureBefore()` reads exactly one table, and the amounts are not in the one
+ * it would read: PUT /journal-entries/:id deletes every `journal_lines` row and
+ * re-inserts them. A header-only snapshot would faithfully record that the
+ * description changed while losing the fact that ₹4,00,000 moved from one
+ * account to another — which is the only question anyone asks a general ledger
+ * audit trail. This is why the §8d codemod refused to automate multi-table
+ * handlers rather than capturing the wrong row.
+ *
+ * Stashed on `req._auditBefore`, which the audit floor already mounted on
+ * /finance/accounting picks up as `oldData`.
+ */
+async function captureEntryBefore(req, entry) {
+  try {
+    const { rows: lines } = await pool.query(
+      `SELECT id, account_id, account_code, account_name, debit, credit, narration
+         FROM journal_lines WHERE entry_id = $1 ORDER BY id`,
+      [entry.id]
+    );
+    req._auditBefore = { ...entry, lines };
+  } catch {
+    // The header alone is a poorer audit entry; no entry at all is poorer still.
+    req._auditBefore = entry;
+  }
+}
 
 // ─── Helper: check transaction lock date ─────────────────────────────────────
 async function checkLockDate(companyId, entryDate) {
@@ -282,6 +312,42 @@ router.get('/journal-entries', requirePermission('finance', 'view'), async (req,
   }
 });
 
+// ─── GET /journal-entries/:id ─────────────────────────────────────────────────
+// Registered after the literal /journal-entries above so the collection route is
+// still reachable. JournalEntry.jsx's General Ledger drill-down calls this when
+// an entry number is clicked — until now that click always failed, because only
+// the list, PUT and DELETE by id existed.
+router.get('/journal-entries/:id', requirePermission('finance', 'view'), async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const params = [req.params.id];
+    let scope = '';
+    if (companyId) { params.push(companyId); scope = ' AND je.company_id = $2'; }
+
+    const { rows: [entry] } = await pool.query(
+      `SELECT je.* FROM journal_entries je WHERE je.id = $1${scope}`,
+      params
+    );
+    if (!entry) return res.status(404).json({ error: 'Journal entry not found' });
+
+    // Account code/name come along so the viewer can render lines without a
+    // second round trip per line.
+    const { rows: lines } = await pool.query(
+      `SELECT jl.*, coa.code AS account_code, coa.name AS account_name
+         FROM journal_lines jl
+         LEFT JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        WHERE jl.entry_id = $1
+        ORDER BY jl.id`,
+      [req.params.id]
+    );
+
+    res.json({ ...entry, lines });
+  } catch (err) {
+    console.error('[GET /journal-entries/:id]', err.message);
+    respondError(res, err);
+  }
+});
+
 // ─── GET /trial-balance ────────────────────────────────────────────────────────
 router.get('/trial-balance', requirePermission('finance', 'view'), async (req, res) => {
   try {
@@ -348,19 +414,32 @@ router.get('/trial-balance', requirePermission('finance', 'view'), async (req, r
       const baseOpening = parseFloat(acc.opening_balance) || 0;
       const isDebitNormal = ['Asset', 'Expense'].includes(acc.account_type);
 
+      // `opening_balance` and `closing_balance` are NATURAL balances: positive
+      // means the account sits on its own normal side. Converting one back to a
+      // DR/CR column therefore depends on which side that is — a revenue account
+      // with a natural +1000 is a CREDIT of 1000, not a debit.
+      //
+      // Placing every positive natural balance in the debit column put revenue,
+      // liabilities and equity on the wrong side, so a clean Dr 100 / Cr 100 book
+      // reported closing debit 200, closing credit 0 and balanced:false.
+      const toDrCr = (natural) => {
+        const amount = Math.abs(natural);
+        const onNormalSide = natural >= 0;
+        const isDr = isDebitNormal ? onNormalSide : !onNormalSide;
+        return isDr ? { dr: amount, cr: 0 } : { dr: 0, cr: amount };
+      };
+
       const opening_balance = isDebitNormal
         ? baseOpening + preDr - preCr
         : baseOpening - preDr + preCr;
 
-      const opening_dr = opening_balance > 0 ? opening_balance : 0;
-      const opening_cr = opening_balance < 0 ? Math.abs(opening_balance) : 0;
+      const { dr: opening_dr, cr: opening_cr } = toDrCr(opening_balance);
 
       const closing_balance = isDebitNormal
         ? opening_balance + mDr - mCr
         : opening_balance - mDr + mCr;
 
-      const closing_dr = closing_balance > 0 ? closing_balance : 0;
-      const closing_cr = closing_balance < 0 ? Math.abs(closing_balance) : 0;
+      const { dr: closing_dr, cr: closing_cr } = toDrCr(closing_balance);
 
       grand_total_debit += mDr;
       grand_total_credit += mCr;
@@ -669,7 +748,7 @@ router.get('/general-ledger/:accountId', requirePermission('finance', 'view'), a
     res.json({ account, opening_balance, transactions, closing_balance, date_range: { date_from, date_to } });
   } catch (err) {
     console.error('[GET /general-ledger/:accountId]', err.message);
-    res.status(500).json({ error: err.message });
+    respondError(res, err);
   }
 });
 
@@ -693,7 +772,17 @@ router.get('/chart-of-accounts', requirePermission('finance', 'view'), async (re
 // ─── GET /periods ──────────────────────────────────────────────────────────────
 router.get('/periods', requirePermission('finance', 'view'), async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM accounting_periods ORDER BY start_date DESC');
+    // This listing is the twin of finance.controller.js getPeriods, which is
+    // scoped. This copy was not, so every accounting period of every tenant came
+    // back to any caller with finance:view. Reachable at BOTH /api/accounting
+    // and /api/finance/accounting, which is why fixing only the /finance copy
+    // left the hole open.
+    const { rows } = await pool.query(
+      `SELECT * FROM accounting_periods
+        WHERE ($1::int IS NULL OR company_id = $1)
+        ORDER BY start_date DESC`,
+      [cid(req)]
+    );
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -704,15 +793,28 @@ router.get('/periods', requirePermission('finance', 'view'), async (req, res) =>
 router.post('/periods/:id/close', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { rows: periods } = await pool.query('SELECT * FROM accounting_periods WHERE id=$1', [id]);
+    // Every query below was unscoped. In order of consequence: a caller could
+    // close another tenant's period; the draft check counted drafts belonging to
+    // every tenant, so one tenant's unposted entry blocked another's close; and
+    // the summary aggregated all tenants' journals into the `period_summary`
+    // net_income that gets WRITTEN to the row -- a cross-tenant total persisted
+    // as this period's closing figure.
+    const companyId = cid(req);
+    const { rows: periods } = await pool.query(
+      `SELECT * FROM accounting_periods
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [id, companyId]
+    );
     if (periods.length === 0) return res.status(404).json({ error: 'Period not found.' });
     const period = periods[0];
     if (period.status !== 'open') return res.status(400).json({ error: `Period is already ${period.status}.` });
 
     // Check no draft entries in this period
     const { rows: drafts } = await pool.query(
-      `SELECT COUNT(*) FROM journal_entries WHERE status='draft' AND entry_date BETWEEN $1 AND $2`,
-      [period.start_date, period.end_date]
+      `SELECT COUNT(*) FROM journal_entries
+        WHERE status='draft' AND entry_date BETWEEN $1 AND $2
+          AND ($3::int IS NULL OR company_id = $3)`,
+      [period.start_date, period.end_date, companyId]
     );
     if (parseInt(drafts[0].count) > 0) {
       return res.status(400).json({ error: `Cannot close period: ${drafts[0].count} draft journal entries exist within this period.` });
@@ -727,8 +829,9 @@ router.post('/periods/:id/close', requirePermission('finance', 'approve'), async
        FROM journal_entries je
        JOIN journal_lines jl ON jl.entry_id=je.id
        JOIN chart_of_accounts coa ON coa.id=jl.account_id
-       WHERE je.status='posted' AND je.entry_date BETWEEN $1 AND $2`,
-      [period.start_date, period.end_date]
+       WHERE je.status='posted' AND je.entry_date BETWEEN $1 AND $2
+         AND ($3::int IS NULL OR je.company_id = $3)`,
+      [period.start_date, period.end_date, companyId]
     );
 
     const periodSummary = {
@@ -739,8 +842,11 @@ router.post('/periods/:id/close', requirePermission('finance', 'approve'), async
 
     const userId = req.user?.userId ?? req.user?.id ?? null;
     const { rows: updated } = await pool.query(
-      `UPDATE accounting_periods SET status='closed', closed_by=$1, closed_at=NOW(), period_summary=$2 WHERE id=$3 RETURNING *`,
-      [userId, JSON.stringify(periodSummary), id]
+      `UPDATE accounting_periods
+          SET status='closed', closed_by=$1, closed_at=NOW(), period_summary=$2
+        WHERE id=$3 AND ($4::int IS NULL OR company_id = $4)
+        RETURNING *`,
+      [userId, JSON.stringify(periodSummary), id, companyId]
     );
     res.json(updated[0]);
   } catch (err) {
@@ -785,6 +891,8 @@ router.put('/journal-entries/:id', requirePermission('finance', 'edit'), async (
 
     const totalDebit  = lines.reduce((s, l) => s + parseFloat(l.debit  || 0), 0);
     const totalCredit = lines.reduce((s, l) => s + parseFloat(l.credit || 0), 0);
+
+    await captureEntryBefore(req, entry);
 
     const client = await pool.connect();
     try {
@@ -833,6 +941,8 @@ router.delete('/journal-entries/:id', requirePermission('finance', 'delete'), as
     if (entry.status !== 'draft') {
       return res.status(400).json({ error: `Only draft entries can be deleted. Current status: '${entry.status}'.` });
     }
+
+    await captureEntryBefore(req, entry);
 
     await pool.query('DELETE FROM journal_lines WHERE entry_id=$1', [id]);
     await pool.query('DELETE FROM journal_entries WHERE id=$1', [id]);
@@ -1067,9 +1177,29 @@ router.post('/year-end-close', requirePermission('finance', 'approve'), async (r
     const jeCidFilter = companyId ? `AND je.company_id = ${parseInt(companyId)}` : '';
     const coaCidFilter = companyId ? `AND (coa.company_id = ${parseInt(companyId)} OR coa.company_id IS NULL)` : '';
 
+    // Refuse to close twice. The closing journal moves the whole year's P&L, so a
+    // second run would move it again and double Retained Earnings.
+    const { rows: priorClose } = await pool.query(
+      `SELECT entry_number FROM journal_entries je
+        WHERE je.reference_type = 'year_end_close'
+          AND je.entry_date = $1
+          AND je.status = 'posted'
+          AND je.deleted_at IS NULL
+          ${jeCidFilter}
+        LIMIT 1`,
+      [fyEnd]
+    );
+    if (priorClose.length) {
+      return res.status(409).json({
+        error: `FY ${financial_year} is already closed by journal ${priorClose[0].entry_number}. Reverse that entry before closing again.`,
+      });
+    }
+
     // Check no open draft entries in this FY
+    // `jeCidFilter` is written against the alias `je`, so the table must carry it.
     const { rows: drafts } = await pool.query(
-      `SELECT COUNT(*) FROM journal_entries WHERE status='draft' AND entry_date BETWEEN $1 AND $2 ${jeCidFilter ? jeCidFilter.replace('AND ', 'AND ') : ''}`,
+      `SELECT COUNT(*) FROM journal_entries je
+        WHERE je.status = 'draft' AND je.entry_date BETWEEN $1 AND $2 ${jeCidFilter}`,
       [fyStart, fyEnd]
     );
     if (parseInt(drafts[0].count) > 0) {
@@ -1090,8 +1220,10 @@ router.post('/year-end-close', requirePermission('finance', 'approve'), async (r
     const netProfit = parseFloat(plRows[0]?.net_profit) || 0;
 
     // Look up account IDs for 3002 (Retained Earnings) and 3004 (Current Year P/L)
+    // `coaCidFilter` is written against the alias `coa`, so the table must carry it.
     const { rows: accts } = await pool.query(
-      `SELECT id, code, name FROM chart_of_accounts WHERE code IN ('3002','3004') AND is_active = true ${coaCidFilter ? coaCidFilter.replace('AND (', 'AND (') : ''}`
+      `SELECT coa.id, coa.code, coa.name FROM chart_of_accounts coa
+        WHERE coa.code IN ('3002','3004') AND coa.is_active = true ${coaCidFilter}`
     );
     const acctMap = accts.reduce((m, a) => { m[a.code] = a; return m; }, {});
     if (!acctMap['3002']) return res.status(400).json({ error: 'Account 3002 (Retained Earnings) not found in Chart of Accounts. Add it before year-end close.' });
@@ -1144,26 +1276,21 @@ router.post('/year-end-close', requirePermission('finance', 'approve'), async (r
         );
       }
 
-      // Close all open periods in this FY
+      // Close all open periods in this FY — this company's periods only.
+      // Without the company predicate, closing one company's year locked every
+      // other company's periods over the same dates.
       await client.query(
         `UPDATE accounting_periods SET status='closed', closed_by=$1, closed_at=NOW()
-         WHERE start_date >= $2 AND end_date <= $3 AND status='open'`,
-        [userId, fyStart, fyEnd]
+          WHERE start_date >= $2 AND end_date <= $3 AND status='open'
+            AND ($4::int IS NULL OR company_id = $4::int)`,
+        [userId, fyStart, fyEnd, companyId]
       );
 
-      // Reset Current Year P/L account opening_balance to 0 (new FY starts fresh)
-      if (acctMap['3004']) {
-        await client.query(
-          `UPDATE chart_of_accounts SET opening_balance = 0 WHERE id = $1`,
-          [acctMap['3004'].id]
-        );
-      }
-
-      // Add net profit to Retained Earnings opening_balance
-      await client.query(
-        `UPDATE chart_of_accounts SET opening_balance = COALESCE(opening_balance, 0) + $1 WHERE id = $2`,
-        [netProfit, acctMap['3002'].id]
-      );
+      // chart_of_accounts.opening_balance is deliberately NOT touched here.
+      // The closing journal above already moves the year's P&L into Retained
+      // Earnings, and every report adds `opening_balance` on top of posted
+      // journal movements — so bumping the master column counted the same
+      // profit twice from the next report run onwards.
 
       await client.query('COMMIT');
       res.json({
@@ -1187,9 +1314,16 @@ router.post('/year-end-close', requirePermission('finance', 'approve'), async (r
 
 // ─── POST /opening-balances ────────────────────────────────────────────────────
 // Sets opening balances when migrating from a legacy system.
-// Accepts an array of { account_id, balance } and:
-//   1. Updates chart_of_accounts.opening_balance for each account
-//   2. Creates a single "Opening Balance" journal entry so the GL has an audit trail
+// Accepts an array of { account_id, balance } and creates ONE dated
+// "Opening Balance" journal entry. That journal is the only source of the
+// opening position.
+//
+// It deliberately does NOT also write chart_of_accounts.opening_balance.
+// Every report in this file derives opening as `chart_of_accounts.opening_balance`
+// PLUS posted journal movements before the from-date (see GET /trial-balance and
+// GET /ledger), so writing both made the same opening balance count twice in any
+// report whose range starts after as_of_date. The master column also stored
+// Math.abs(balance), which silently discarded the sign of a contra account.
 //
 // Balance sign convention: positive = debit-normal accounts carry debit balance,
 // credit-normal accounts carry credit balance. Pass a negative value to indicate
@@ -1201,6 +1335,7 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
     if (!Array.isArray(balances) || balances.length === 0) {
       return res.status(400).json({ error: 'balances must be a non-empty array of { account_id, balance }' });
     }
+    const companyId = cid(req);
 
     // Resolve accounts and build JE lines
     const lines = [];
@@ -1212,8 +1347,10 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
       if (!account_id || balance === undefined || balance === null) continue;
 
       const { rows } = await pool.query(
-        'SELECT id, code, name, account_type FROM chart_of_accounts WHERE id=$1 AND is_active=true',
-        [account_id]
+        `SELECT id, code, name, account_type FROM chart_of_accounts
+          WHERE id = $1 AND is_active = true
+            AND ($2::int IS NULL OR company_id = $2::int OR company_id IS NULL)`,
+        [account_id, companyId]
       );
       if (rows.length === 0) {
         return res.status(400).json({ error: `Account ID ${account_id} not found or inactive.` });
@@ -1240,7 +1377,12 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
     const diff = Math.round((totalDebit - totalCredit) * 100) / 100;
     if (Math.abs(diff) > 0.01) {
       const { rows: reRows } = await pool.query(
-        `SELECT id, code, name FROM chart_of_accounts WHERE code='3001' AND is_active=true LIMIT 1`
+        `SELECT id, code, name FROM chart_of_accounts
+          WHERE code = '3001' AND is_active = true
+            AND ($1::int IS NULL OR company_id = $1::int OR company_id IS NULL)
+          ORDER BY company_id NULLS LAST
+          LIMIT 1`,
+        [companyId]
       );
       if (reRows.length === 0) {
         return res.status(400).json({
@@ -1264,31 +1406,27 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
     try {
       await client.query('BEGIN');
 
-      // 1. Update opening_balance on each account
-      for (const line of lines) {
-        await client.query(
-          `UPDATE chart_of_accounts SET opening_balance = $1 WHERE id = $2`,
-          [line.abs_balance, line.account_id]
-        );
-      }
-
-      // 2. Create an audit-trail journal entry
+      // The dated opening journal below is the single source of the opening
+      // position. chart_of_accounts.opening_balance is deliberately left alone —
+      // see the note above this handler.
       const entry_number = await getNextEntryNumber();
       const { rows: entryRows } = await client.query(
         `INSERT INTO journal_entries
-           (entry_number, entry_date, entry_type, description, reference_type, status, total_debit, total_credit)
-         VALUES ($1,$2,'OpeningBalance',$3,'opening_balance','posted',$4,$5) RETURNING *`,
-        [entry_number, as_of_date, description || `Opening balances as of ${as_of_date}`, totalDebit, totalCredit]
+           (entry_number, entry_date, entry_type, description, reference_type, status,
+            total_debit, total_credit, company_id)
+         VALUES ($1,$2,'OpeningBalance',$3,'opening_balance','posted',$4,$5,$6) RETURNING *`,
+        [entry_number, as_of_date, description || `Opening balances as of ${as_of_date}`,
+         totalDebit, totalCredit, companyId]
       );
       const entry = entryRows[0];
 
       const insertedLines = [];
       for (const line of lines) {
         const { rows: lr } = await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
           [entry.id, line.account_id, line._account_code, line._account_name,
-           line.debit, line.credit, 'Opening balance migration']
+           line.debit, line.credit, 'Opening balance migration', companyId]
         );
         insertedLines.push(lr[0]);
       }
@@ -2143,7 +2281,7 @@ router.post('/recurring-vouchers/:id/generate', requirePermission('finance', 'ad
   }
 });
 
-router.delete('/recurring-vouchers/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/recurring-vouchers/:id', requirePermission('finance', 'delete'), captureBefore('recurring_vouchers'), async (req, res) => {
   try {
     const { rows: [row] } = await pool.query(
       `UPDATE recurring_vouchers SET is_active=false, updated_at=NOW() WHERE id=$1 RETURNING id`, [req.params.id]

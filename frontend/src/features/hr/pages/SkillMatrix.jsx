@@ -1,7 +1,9 @@
 // frontend/src/features/hr/pages/SkillMatrix.jsx
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { GraduationCap } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P      = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -9,7 +11,7 @@ const BORDER = '#e9e4ff';
 
 const LEVEL_META = {
   beginner:     { label: 'Beginner',     color: '#6b7280', bg: '#f3f4f6', rank: 1 },
-  intermediate: { label: 'Intermediate', color: '#d97706', bg: '#fef3c7', rank: 2 },
+  intermediate: { label: 'Intermediate', color: '#6d28d9', bg: '#ede9fe', rank: 2 },
   advanced:     { label: 'Advanced',     color: '#6B3FDB', bg: '#ede9fe', rank: 3 },
   expert:       { label: 'Expert',       color: '#16a34a', bg: '#dcfce7', rank: 4 },
 };
@@ -143,23 +145,32 @@ export default function SkillMatrix({ setPage }) {
   const [pendingDeleteSkill, setPendingDeleteSkill] = useState(null);
   const abortRef = useRef(null);
 
+  // The controller existed but its signal never reached the requests, so
+  // abort() was a no-op and a superseded load still overwrote the page with
+  // whichever response happened to land last. Signal threaded through, and
+  // every state write gated on the call still being the current one.
   const load = useCallback(async () => {
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
+    abortRef.current?.abort();
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    const { signal } = myCtrl;
+    const isStale = () => signal.aborted || abortRef.current !== myCtrl;
     setLoading(true); setError(null);
     try {
       const [allRes, catRes, expRes] = await Promise.allSettled([
-        api.get('/employee-skills'),
-        api.get('/employee-skills/categories'),
-        api.get('/employee-skills/expiring?days=60'),
+        api.get('/employee-skills', { signal }),
+        api.get('/employee-skills/categories', { signal }),
+        api.get('/employee-skills/expiring?days=60', { signal }),
       ]);
+      if (isStale()) return;
       setSkills(allRes.status === 'fulfilled' ? (allRes.value.data || []) : []);
       setCategories(catRes.status === 'fulfilled' ? (catRes.value.data || []) : []);
       setExpiring(expRes.status === 'fulfilled' ? (expRes.value.data || []) : []);
     } catch (e) {
-      if (e.name !== 'AbortError') setError(e.message);
+      if (isStale() || e.name === 'AbortError' || e.name === 'CanceledError') return;
+      setError(e.message);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, []);
 
@@ -217,20 +228,20 @@ export default function SkillMatrix({ setPage }) {
   const expiryCount = expiring.length;
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={GraduationCap}
+        eyebrow="Human Resources"
+        title="Skill Matrix"
+        subtitle="Employee competencies, certifications and gap analysis"
+        actions={<button className="plh-cta" onClick={exportCSV}>
+            ⬇ Export CSV
+          </button>}
+      />
+    }>
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Skill Matrix</h2>
-          <p style={{ margin: '2px 0 0', color: '#6b7280', fontSize: 13 }}>Employee competencies, certifications and gap analysis</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={exportCSV} style={{ padding: '8px 14px', borderRadius: 8, border: `1px solid ${BORDER}`, background: LIGHT, color: P, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
-            ⬇ Export CSV
-          </button>
-        </div>
-      </div>
+
 
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 12, marginBottom: 20 }}>
@@ -239,7 +250,7 @@ export default function SkillMatrix({ setPage }) {
           { label: 'Unique Skills',    value: uniqueSkills,    color: '#2563eb' },
           { label: 'Certified',        value: certCount,       color: '#16a34a' },
           { label: 'Expiring (60d)',   value: expiryCount,     color: expiryCount > 0 ? '#dc2626' : '#6b7280' },
-          { label: 'Employees',        value: Object.keys(byEmployee).length, color: '#d97706' },
+          { label: 'Employees',        value: Object.keys(byEmployee).length, color: '#6d28d9' },
         ].map(k => (
           <div key={k.label} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, padding: '14px 16px' }}>
             <div style={{ fontSize: 24, fontWeight: 800, color: k.color }}>{loading ? '—' : k.value}</div>
@@ -302,13 +313,13 @@ export default function SkillMatrix({ setPage }) {
                       <td style={{ padding: '9px 14px', color: '#374151' }}>{s.skill_name}</td>
                       <td style={{ padding: '9px 14px', color: '#6b7280' }}>{s.category || '—'}</td>
                       <td style={{ padding: '9px 14px', color: '#6b7280' }}>{s.certified_by || '—'}</td>
-                      <td style={{ padding: '9px 14px', color: days <= 7 ? '#dc2626' : days <= 30 ? '#d97706' : '#374151', fontWeight: 600 }}>
+                      <td style={{ padding: '9px 14px', color: days <= 7 ? '#dc2626' : days <= 30 ? '#6d28d9' : '#374151', fontWeight: 600 }}>
                         {s.expiry_date?.split('T')[0]}
                       </td>
                       <td style={{ padding: '9px 14px' }}>
                         <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700,
-                          background: days <= 7 ? '#fef2f2' : days <= 30 ? '#fef3c7' : '#f0fdf4',
-                          color:      days <= 7 ? '#dc2626' : days <= 30 ? '#d97706' : '#16a34a' }}>
+                          background: days <= 7 ? '#fef2f2' : days <= 30 ? '#ede9fe' : '#f0fdf4',
+                          color:      days <= 7 ? '#dc2626' : days <= 30 ? '#6d28d9' : '#16a34a' }}>
                           {days}d
                         </span>
                       </td>
@@ -402,7 +413,7 @@ export default function SkillMatrix({ setPage }) {
                     </td>
                     <td style={{ padding: '9px 14px' }}>
                       {expSkills.length > 0
-                        ? <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: '#fef3c7', color: '#d97706' }}>{expSkills.length} expiring</span>
+                        ? <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: '#ede9fe', color: '#6d28d9' }}>{expSkills.length} expiring</span>
                         : <span style={{ fontSize: 11, color: '#d1d5db' }}>—</span>
                       }
                     </td>
@@ -442,6 +453,6 @@ export default function SkillMatrix({ setPage }) {
           onClose={() => setModal(null)}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

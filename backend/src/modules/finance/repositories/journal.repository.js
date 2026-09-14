@@ -10,14 +10,76 @@ import { nextJournalEntryNumber } from '../../../shared/docNumber.js';
 // up as a complete, agreeing financial picture. This repository now writes and
 // reads `journal_lines` exclusively so every posting path shares one ledger.
 class JournalRepository {
+  /**
+   * Create a journal entry.
+   *
+   * COMPANY ATTRIBUTION
+   * -------------------
+   * `company_id` was not in the column list, so every entry written through this
+   * repository — invoices, receipts, payments, bills, COGS, depreciation: nine
+   * call sites — landed with a NULL company. That is not cosmetic: every
+   * company-scoped financial report filters `je.company_id = $n`, so those
+   * entries were invisible to the tenant that created them. The CFO dashboard
+   * reported "no journal entries posted for this period" while nine posted
+   * entries sat in the table (see ANALYTICS_AI_FINAL_HARDENING_REPORT.md §3.5).
+   *
+   * Callers should pass `company_id` from `companyOf(req)`. When they cannot,
+   * it is derived from the source document rather than left null — every
+   * reference table this posts against carries a company_id of its own, and an
+   * entry attributed to the wrong tenant would be worse than one attributed to
+   * none, so the derivation only ever reads the row it is already referencing.
+   */
   async createEntry(client, data) {
-    const { entry_number, entry_date, entry_type, reference_type, reference_id, description, created_by } = data;
+    const {
+      entry_number, entry_date, entry_type, reference_type, reference_id,
+      description, created_by,
+    } = data;
+
+    const companyId = data.company_id
+      ?? await this.#deriveCompanyId(client, reference_type, reference_id);
+
     const result = await client.query(
-      `INSERT INTO journal_entries (entry_number, entry_date, entry_type, reference_type, reference_id, description, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [entry_number, entry_date, entry_type, reference_type, reference_id, description, created_by]
+      `INSERT INTO journal_entries
+         (entry_number, entry_date, entry_type, reference_type, reference_id,
+          description, created_by, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [entry_number, entry_date, entry_type, reference_type, reference_id,
+       description, created_by, companyId ?? null]
     );
     return result.rows[0];
+  }
+
+  /**
+   * Best-effort company for an entry whose caller did not supply one.
+   *
+   * Maps reference_type to the table it points at and reads that row's
+   * company_id. Returns null when the reference type is unknown or the lookup
+   * fails — a null company is the pre-existing behaviour, so this can only
+   * improve attribution, never corrupt it.
+   */
+  async #deriveCompanyId(client, referenceType, referenceId) {
+    if (!referenceType || referenceId == null) return null;
+    const SOURCE = {
+      invoice:             'invoices',
+      bill:                'bills',
+      receipt:             'receipts',
+      payment:             'payments',
+      payment_transaction: 'payment_transactions',
+      fixed_asset:         'fixed_assets',
+      depreciation:        'fixed_assets',
+      asset_disposal:      'fixed_assets',
+      sales_order:         'sales_orders',
+      purchase_order:      'purchase_orders',
+    };
+    const table = SOURCE[String(referenceType).toLowerCase()];
+    if (!table) return null;
+    try {
+      const { rows } = await client.query(
+        `SELECT company_id FROM ${table} WHERE id = $1`, [referenceId]);
+      return rows[0]?.company_id ?? null;
+    } catch {
+      return null;   // unknown table/column — fall back to the old behaviour
+    }
   }
 
   async createLine(client, data) {

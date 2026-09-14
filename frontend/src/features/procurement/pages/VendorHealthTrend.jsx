@@ -14,12 +14,12 @@ import api from '@/services/api/client';
 const STATUS_BANDS = [
   { min: 90, max: 100, color: '#dcfce7', label: 'Preferred Zone' },
   { min: 75, max: 90,  color: '#dbeafe', label: 'Approved Zone' },
-  { min: 50, max: 75,  color: '#fef3c7', label: 'Watchlist Zone' },
+  { min: 50, max: 75,  color: '#ede9fe', label: 'Watchlist Zone' },
   { min: 0,  max: 50,  color: '#fee2e2', label: 'Critical Zone' },
 ];
 
 const STATUS_COLOR = {
-  Preferred: '#16a34a', Approved: '#2563eb', Watchlist: '#d97706', Critical: '#dc2626',
+  Preferred: '#16a34a', Approved: '#2563eb', Watchlist: '#6d28d9', Critical: '#dc2626',
 };
 
 function CustomTooltip({ active, payload, label }) {
@@ -76,10 +76,12 @@ export default function VendorHealthTrend({ vendorId }) {
     ...row,
     month_label:    row.month_label,
     health_score:   parseFloat(row.health_score   || 0),
-    quality_score:  parseFloat(row.quality_score  || 0),
-    delivery_score: parseFloat(row.delivery_score || 0),
-    cost_score:     parseFloat(row.cost_score     || 0),
-    compliance_score: parseFloat(row.compliance_score || 0),
+    // null = not measured that month. Coercing to 0 drew a cliff to the axis
+    // that looks like a collapse in performance; recharts renders null as a gap.
+    quality_score:    row.quality_score    == null ? null : parseFloat(row.quality_score),
+    delivery_score:   row.delivery_score   == null ? null : parseFloat(row.delivery_score),
+    cost_score:       row.cost_score       == null ? null : parseFloat(row.cost_score),
+    compliance_score: row.compliance_score == null ? null : parseFloat(row.compliance_score),
   }));
 
   // Summary stats
@@ -142,8 +144,8 @@ export default function VendorHealthTrend({ vendorId }) {
               label={{ value: 'Preferred', position: 'right', fontSize: 10, fill: '#16a34a' }} />
             <ReferenceLine y={75} stroke="#2563eb" strokeDasharray="6 4"
               label={{ value: 'Approved', position: 'right', fontSize: 10, fill: '#2563eb' }} />
-            <ReferenceLine y={50} stroke="#d97706" strokeDasharray="6 4"
-              label={{ value: 'Watchlist', position: 'right', fontSize: 10, fill: '#d97706' }} />
+            <ReferenceLine y={50} stroke="#6d28d9" strokeDasharray="6 4"
+              label={{ value: 'Watchlist', position: 'right', fontSize: 10, fill: '#6d28d9' }} />
 
             {/* Health score — main line */}
             <Line type="monotone" dataKey="health_score" name="Health Score"
@@ -154,7 +156,7 @@ export default function VendorHealthTrend({ vendorId }) {
             {showDims && <>
               <Line type="monotone" dataKey="quality_score"    name="Quality"    stroke="#16a34a" strokeWidth={1.5} dot={false} />
               <Line type="monotone" dataKey="delivery_score"   name="Delivery"   stroke="#2563eb" strokeWidth={1.5} dot={false} />
-              <Line type="monotone" dataKey="cost_score"       name="Cost"       stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+              <Line type="monotone" dataKey="cost_score"       name="Cost"       stroke="#7c5cf0" strokeWidth={1.5} dot={false} />
               <Line type="monotone" dataKey="compliance_score" name="Compliance" stroke="#ec4899" strokeWidth={1.5} dot={false} />
             </>}
           </LineChart>
@@ -202,10 +204,10 @@ export default function VendorHealthTrend({ vendorId }) {
                       </span>
                     </td>
                     <td style={{ padding: '9px 14px', fontSize: 13, color: '#374151' }}>
-                      {row.quality_score.toFixed(1)}
+                      {row.quality_score  == null ? '—' : row.quality_score.toFixed(1)}
                     </td>
                     <td style={{ padding: '9px 14px', fontSize: 13, color: '#374151' }}>
-                      {row.delivery_score.toFixed(1)}
+                      {row.delivery_score == null ? '—' : row.delivery_score.toFixed(1)}
                     </td>
                     <td style={{ padding: '9px 14px', fontSize: 13, color: '#374151' }}>
                       {row.cost_score.toFixed(1)}

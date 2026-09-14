@@ -11,7 +11,7 @@ import { ErrorState } from '../core/ErrorStates';
 
 const ALERT_TYPE_CONFIG = {
   auto_executed: { bg: '#f0fdf4', border: '#86efac', color: '#15803d', icon: Zap,           label: 'Auto-Executed' },
-  pending:       { bg: '#fefce8', border: '#fde047', color: '#854d0e', icon: Clock,         label: 'Pending Approval' },
+  pending:       { bg: '#f5f3ff', border: '#c4b5fd', color: '#5b21b6', icon: Clock,         label: 'Pending Approval' },
   acknowledged:  { bg: '#f0f9ff', border: '#7dd3fc', color: '#0369a1', icon: CheckCircle,   label: 'Acknowledged' },
   resolved:      { bg: '#f0fdf4', border: '#86efac', color: '#166534', icon: CheckCircle,   label: 'Resolved' },
   dismissed:     { bg: '#f9fafb', border: '#e5e7eb', color: '#6b7280', icon: XCircle,       label: 'Dismissed' },
@@ -20,7 +20,7 @@ const ALERT_TYPE_CONFIG = {
 
 const SEVERITY_DOT = {
   critical: '#dc2626',
-  high:     '#f59e0b',
+  high:     '#7c5cf0',
   medium:   '#3b82f6',
   low:      '#10b981',
 };
@@ -103,8 +103,8 @@ function AlertCard({ alert, onAction }) {
 
       {/* Pending approval details */}
       {localStatus === 'pending' && alert.pending_action && (
-        <div style={{ background: '#fff', border: '1px solid #fde047', borderRadius: 8, padding: '7px 12px', marginBottom: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#854d0e', marginBottom: 3 }}>⏳ Awaiting Approval</div>
+        <div style={{ background: '#fff', border: '1px solid #c4b5fd', borderRadius: 8, padding: '7px 12px', marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#5b21b6', marginBottom: 3 }}>⏳ Awaiting Approval</div>
           <div style={{ fontSize: 12, color: '#374151' }}>{alert.pending_action}</div>
         </div>
       )}

@@ -4,11 +4,13 @@
  */
 import express from 'express';
 import pool from '../../../config/db.js';
+import { deriveResponseFields } from '../services/voc.service.js';
 import { verifyToken } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { dependencyBlocked } from '../../../shared/workflowDependency.js';
 import { emitEvent } from '../../../shared/eventBus.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 const cid = req => companyOf(req);
@@ -177,7 +179,7 @@ router.get('/:id', verifyToken, async (req, res) => {
 });
 
 // PUT /commissioning/:id — update workflow fields
-router.put('/:id', verifyToken, async (req, res) => {
+router.put('/:id', verifyToken, captureBefore('commissioning_workflows'), async (req, res) => {
   try {
     const { customer_name, site_name, site_address, engineer_id, engineer_name,
             fat_reference, sat_reference, scheduled_date, notes, status } = req.body;
@@ -369,6 +371,36 @@ router.post('/:id/signoff', verifyToken, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Workflow not found' });
     logAudit({ userId: uid(req), company_id: cid(req), action: 'update', module: 'Commissioning', recordId: rows[0].id, recordType: 'commissioning_workflow', newData: { customer_sign_name }, req });
+
+    // voc.routes.js documents an auto-trigger "after commissioning / service
+    // visit / AMC visit / project closure" but nothing anywhere ever called
+    // POST /voc/responses — voc_responses had zero rows regardless of how
+    // many commissioning sign-offs happened, same "config exists, nothing
+    // executes it" shape as slaEscalation.cron.js's own header note. Wires
+    // the one instrument this route already collects (customer_rating 1-5,
+    // same scale voc_responses.rating and csat_responses.rating use)
+    // into voc_responses via commissioning_id, the FK that table already
+    // has for exactly this. Best-effort: sign-off must not fail on this.
+    if (customer_rating) {
+      try {
+        await pool.query(
+          // sentiment and classification are DERIVED here. Writing only the
+          // rating left this response out of the NPS band counts, the sentiment
+          // breakdown and the top-complaints list entirely.
+          `INSERT INTO voc_responses
+             (company_id, trigger_event, trigger_ref_id, customer_name, project_id,
+              commissioning_id, rating, suggestions, sentiment, classification, submitted_at)
+           VALUES ($1,'commissioning',$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+          [cid(req), rows[0].id, rows[0].customer_name || customer_sign_name,
+           rows[0].project_id, rows[0].id, customer_rating, customer_feedback || null,
+           ...(({ sentiment, classification }) => [sentiment, classification])(
+             deriveResponseFields({ rating: customer_rating, suggestions: customer_feedback }))]
+        );
+      } catch (e) {
+        console.error('[commissioning/:id/signoff] voc_responses mirror failed:', e.message);
+      }
+    }
+
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

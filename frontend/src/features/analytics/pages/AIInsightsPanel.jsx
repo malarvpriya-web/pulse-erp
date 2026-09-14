@@ -1,47 +1,54 @@
 // frontend/src/features/analytics/pages/AIInsightsPanel.jsx
-// Phase 49H — AI Insights (Section 15) — Auto-generated CEO intelligence
-// Embedded in StrategicAlertsPanel/War Room tab; also importable standalone
+// Signal Digest — measured business signals for the CEO War Room.
+//
+// This panel used to render 25 bullets from /ceo-intelligence/ai-insights, of
+// which 21 were fixed prose written at build time, and closed with a note telling
+// the reader there were "no hardcoded or fabricated values". The endpoint now
+// emits only findings it derived from live data, each carrying the metric and
+// figure behind it, and this panel renders that evidence rather than a bare
+// sentence. A category with nothing in it means no signal crossed its threshold —
+// which is information, not an empty state to be padded.
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Zap, RefreshCw, ChevronDown, ChevronRight, TrendingUp, AlertTriangle, IndianRupee, Package, BarChart2 } from 'lucide-react';
 import api from '@/services/api/client';
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
-  amber: '#d97706', blue: '#2563eb', border: '#e9e4ff', cyan: '#0891b2',
+  amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff', cyan: '#0891b2',
 };
 
 const INSIGHT_SECTIONS = [
   {
     key: 'customer_risks',
-    title: 'Top 5 Customer Risks',
+    title: 'Customer Risk',
     icon: AlertTriangle,
     color: C.red,
     bg: '#fff1f2',
   },
   {
     key: 'supplier_risks',
-    title: 'Top 5 Supplier Risks',
+    title: 'Supplier Risk',
     icon: Package,
     color: C.amber,
-    bg: '#fffbeb',
+    bg: '#f5f3ff',
   },
   {
     key: 'growth_opportunities',
-    title: 'Top 5 Growth Opportunities',
+    title: 'Growth Opportunities',
     icon: TrendingUp,
     color: C.green,
     bg: '#f0fdf4',
   },
   {
     key: 'collection_risks',
-    title: 'Top 5 Collection Risks',
+    title: 'Collection Risk',
     icon: IndianRupee,
     color: '#db2777',
     bg: '#fdf2f8',
   },
   {
     key: 'margin_risks',
-    title: 'Top 5 Margin Risks',
+    title: 'Margin Risk',
     icon: BarChart2,
     color: C.blue,
     bg: '#eff6ff',
@@ -68,25 +75,43 @@ function InsightSection({ section, insights }) {
             <Icon size={16} color={section.color} />
           </div>
           <span style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>{section.title}</span>
-          <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500 }}>{items.length} insights</span>
+          <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500 }}>
+            {items.length === 0 ? 'no signal' : `${items.length} signal${items.length > 1 ? 's' : ''}`}
+          </span>
         </div>
         {expanded ? <ChevronDown size={16} color="#9ca3af" /> : <ChevronRight size={16} color="#9ca3af" />}
       </button>
 
       {expanded && (
         <div style={{ padding: '12px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {items.map((insight, i) => (
-            <div key={i} style={{ display: 'flex', gap: 12, padding: '10px 12px', background: i % 2 === 0 ? '#fafafa' : '#fff', borderRadius: 8, border: '1px solid #f3f4f6' }}>
-              <div style={{
-                width: 22, height: 22, borderRadius: '50%', background: `${section.color}15`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 11, fontWeight: 800, color: section.color, flexShrink: 0,
-              }}>
-                {i + 1}
+          {items.map((insight, i) => {
+            // The endpoint returns objects ({ text, severity, metric, value }).
+            // Strings are still accepted so an older cached response degrades to
+            // plain text rather than rendering "[object Object]".
+            const text     = typeof insight === 'string' ? insight : insight?.text;
+            const severity = typeof insight === 'string' ? null : insight?.severity;
+            const metric   = typeof insight === 'string' ? null : insight?.metric;
+            const sevColor = severity === 'high' ? C.red : severity === 'medium' ? C.amber : section.color;
+            return (
+              <div key={i} style={{ display: 'flex', gap: 12, padding: '10px 12px', background: i % 2 === 0 ? '#fafafa' : '#fff', borderRadius: 8, border: '1px solid #f3f4f6' }}>
+                <div style={{
+                  width: 22, height: 22, borderRadius: '50%', background: `${sevColor}15`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 11, fontWeight: 800, color: sevColor, flexShrink: 0,
+                }}>
+                  {i + 1}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>{text}</div>
+                  {metric && (
+                    <div style={{ fontSize: 10.5, color: '#9ca3af', marginTop: 3, fontFamily: 'ui-monospace, monospace' }}>
+                      {severity ? `${severity} · ` : ''}{metric}
+                    </div>
+                  )}
+                </div>
               </div>
-              <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>{insight}</div>
-            </div>
-          ))}
+            );
+          })}
           {items.length === 0 && (
             <div style={{ padding: '12px 0', color: '#9ca3af', fontSize: 12, textAlign: 'center' }}>No insights available</div>
           )}
@@ -112,7 +137,7 @@ export default function AIInsightsPanel() {
       const res = await api.get('/ceo-intelligence/ai-insights');
       if (ctrl.signal.aborted) return;
       setData(res.data);
-    } catch (e) {
+    } catch {
       if (!ctrl.signal.aborted) setError('Failed to load AI insights');
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
@@ -156,13 +181,15 @@ export default function AIInsightsPanel() {
             <div style={{ width: 36, height: 36, borderRadius: 10, background: `${C.primary}20`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Zap size={18} color={C.primary} />
             </div>
-            <div style={{ fontSize: 20, fontWeight: 900, color: '#111827' }}>AI Insights</div>
+            <div style={{ fontSize: 20, fontWeight: 900, color: '#111827' }}>Signal Digest</div>
             <span style={{ padding: '3px 10px', background: `${C.primary}15`, borderRadius: 12, fontSize: 11, fontWeight: 700, color: C.primary }}>
-              AI-Generated · Live Data
+              Rule-based · Live Data
             </span>
           </div>
           <div style={{ fontSize: 12, color: '#9ca3af', paddingLeft: 46 }}>
-            Automatically generated from your live ERP data
+            {data?.signal_count != null
+              ? `${data.signal_count} signal${data.signal_count === 1 ? '' : 's'} detected${data.high_severity_count ? `, ${data.high_severity_count} high severity` : ''}`
+              : 'Derived from live ERP records'}
             {genAt && ` · ${genAt}`}
           </div>
         </div>
@@ -198,12 +225,19 @@ export default function AIInsightsPanel() {
         ))}
       </div>
 
-      {/* Disclaimer */}
+      {/* Method note.
+
+          The previous version of this block asserted "no hardcoded or fabricated
+          values" while 21 of the 25 bullets above it were exactly that. It now
+          describes what the endpoint actually does, and says plainly what the
+          absence of a signal does and does not mean. */}
       <div style={{ padding: '10px 14px', background: '#f9fafb', borderRadius: 10, border: '1px solid #f3f4f6' }}>
         <div style={{ fontSize: 11, color: '#9ca3af', lineHeight: 1.6 }}>
-          <strong style={{ color: '#6b7280' }}>Note:</strong> AI insights are generated from live ERP data using rule-based analysis.
-          They reflect patterns observed in actual business data — no hardcoded or fabricated values.
-          Insights should be reviewed by relevant business stakeholders before action is taken.
+          <strong style={{ color: '#6b7280' }}>Method:</strong> each signal is produced by a
+          threshold rule evaluated against live records, and shows the metric and figure it was
+          derived from. A category with no entries means nothing crossed its threshold in the data
+          on file — it is not a statement about areas the ERP does not yet track. Review with the
+          relevant owner before acting.
         </div>
       </div>
     </div>

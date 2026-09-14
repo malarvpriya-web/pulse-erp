@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { TrendingUp, Plane, IndianRupee, Users } from 'lucide-react';
+import { TrendingUp, Plane, IndianRupee, Users, BarChart3 } from 'lucide-react';
 import { fmt } from './travelUtils';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 
-const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#3b82f6'];
+const COLORS = ['#6366f1','#10b981','#7c5cf0','#ef4444','#8b5cf6','#3b82f6'];
 
 export default function TravelAnalytics() {
   const [trend,   setTrend]   = useState([]);
@@ -12,34 +14,69 @@ export default function TravelAnalytics() {
   const [stats,   setStats]   = useState({});
   const [topTravelers, setTopTravelers] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [departments, setDepartments] = useState([]);
+
+  const filters = useDashboardFilters({
+    defaultPeriod: 'last6m',
+    dimensions: { department: 'all' },
+    storageKey: 'travel-analytics',
+  });
+  const { params } = filters;
 
   useEffect(() => {
+    let cancelled = false;
+    api.get('/travel/analytics/filter-options')
+      .then(r => { if (!cancelled) setDepartments(r.data?.departments || []); })
+      .catch(() => { /* falls back to "All Departments" only */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
     Promise.allSettled([
-      api.get('/travel/analytics/trend'),
-      api.get('/travel/analytics/department'),
-      api.get('/travel/analytics/stats'),
-      api.get('/travel/analytics/travelers'),
+      api.get('/travel/analytics/trend', { params }),
+      api.get('/travel/analytics/department', { params }),
+      api.get('/travel/analytics/stats', { params }),
+      api.get('/travel/analytics/travelers', { params }),
     ]).then(([tRes, dRes, sRes, tvRes]) => {
+      if (cancelled) return;
       setTrend(tRes.status==='fulfilled'       ? (Array.isArray(tRes.value?.data)  ? tRes.value.data  : []) : []);
       setDeptData(dRes.status==='fulfilled'    ? (Array.isArray(dRes.value?.data)  ? dRes.value.data  : []) : []);
       setStats(sRes.status==='fulfilled'       ? (sRes.value?.data || {})           : {});
       setTopTravelers(tvRes.status==='fulfilled'? (Array.isArray(tvRes.value?.data) ? tvRes.value.data : []) : []);
-    }).finally(() => setLoading(false));
-  }, []);
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [params]);
 
+  // Labels follow the selected window rather than claiming "This Month".
+  const periodLabel = stats.period_label || 'Selected period';
   const kpis = [
-    { label:'Trips This Month',  value: stats.trips_this_month  || 0,                    icon: Plane,       color:'#6366f1' },
-    { label:'Spend This Month',  value: fmt(stats.spend_this_month  || 0),               icon: IndianRupee,  color:'#10b981', isText:true },
-    { label:'Avg Trip Cost (All Time)', value: fmt(stats.avg_cost_per_trip || 0),         icon: TrendingUp,  color:'#f59e0b', isText:true },
-    { label:'Active Travelers',  value: stats.active_travelers  || 0,                    icon: Users,       color:'#8b5cf6' },
+    { label:`Trips · ${periodLabel}`,  value: stats.trips_this_month  || 0,             icon: Plane,       color:'#6366f1' },
+    { label:`Spend · ${periodLabel}`,  value: fmt(stats.spend_this_month  || 0),        icon: IndianRupee,  color:'#10b981', isText:true },
+    { label:'Avg Trip Cost',           value: fmt(stats.avg_cost_per_trip || 0),        icon: TrendingUp,  color:'#7c5cf0', isText:true },
+    { label:'Active Travelers',        value: stats.active_travelers  || 0,             icon: Users,       color:'#8b5cf6' },
   ];
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ marginBottom:24 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Travel Analytics</h1>
-        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Travel spend and trip analysis</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Travel"
+        title="Travel Analytics"
+        subtitle="Travel spend and trip analysis"
+      />
+    }>
+
+      <DashboardFilterBar
+        filters={filters}
+        dimensions={[{
+          key: 'department',
+          label: 'Department',
+          allLabel: 'All Departments',
+          options: departments.map(d => ({ value: d, label: d })),
+        }]}
+      />
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:16, marginBottom:24 }}>
         {kpis.map(k => (
@@ -117,6 +154,6 @@ export default function TravelAnalytics() {
           </table>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

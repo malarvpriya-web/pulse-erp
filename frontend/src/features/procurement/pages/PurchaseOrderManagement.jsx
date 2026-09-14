@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ShoppingCart, Search, RefreshCw, CheckCircle, XCircle,
   Clock, AlertTriangle, ChevronRight, Package, TrendingUp,
-  Filter, Eye, Download, Send
+  Filter, Eye, Download, Send, FileText, Truck
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './PurchaseOrderManagement.css';
+import { PageHero, PageShell, Stat, LoadError } from '@/components/pulse-ui';
 
 const fmt = n => `₹${parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtD = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
@@ -14,7 +15,7 @@ const STATUS_CFG = {
   draft:     { label: 'Draft',     bg: '#f3f4f6', color: '#6b7280' },
   sent:      { label: 'Sent',      bg: '#dbeafe', color: '#1d4ed8' },
   approved:  { label: 'Approved',  bg: '#dcfce7', color: '#15803d' },
-  partial:   { label: 'Partial',   bg: '#fef9c3', color: '#a16207' },
+  partial:   { label: 'Partial',   bg: '#ede9fe', color: '#6d28d9' },
   received:  { label: 'Received',  bg: '#d1fae5', color: '#065f46' },
   invoiced:  { label: 'Invoiced',  bg: '#ede9fe', color: '#6d28d9' },
   cancelled: { label: 'Cancelled', bg: '#fee2e2', color: '#dc2626' },
@@ -34,12 +35,17 @@ const isReminderQueued = (createdAt, status) => {
 
 export default function PurchaseOrderManagement() {
   const [orders,  setOrders]  = useState([]);
-  const [stats,   setStats]   = useState({ pending: 0, approved: 0, received: 0, follow_up: 0, total_value: 0, total: 0 });
+  // Every key the strip renders, so the cards read 0 rather than `undefined`
+  // in the moment before the first fetch resolves.
+  const [stats,   setStats]   = useState({ total: 0, draft: 0, pending: 0, approved: 0, partial: 0, received: 0, cancelled: 0, other: 0, follow_up: 0, total_value: 0 });
   const [loading, setLoading] = useState(false);
   const [search,  setSearch]  = useState('');
   const [fStatus, setFStatus] = useState('');
   const [selected,setSelected]= useState(null);
   const [updatingId, setUpdatingId] = useState(null);
+  // A failed request used to become an empty array, so the screen said
+  // "No purchase orders yet" when the request had in fact been refused.
+  const [loadErr, setLoadErr] = useState(null);
   const [toast,   setToast]   = useState(null);
   const [onlyReminderQueued, setOnlyReminderQueued] = useState(false);
 
@@ -70,13 +76,18 @@ export default function PurchaseOrderManagement() {
       const params = {};
       if (fStatus) params.status = fStatus;
       if (onlyReminderQueued) params.reminder_queued = 'true';
+      setLoadErr(null);
       const res = await api.get('/procurement/purchase-orders', { params });
       if (!isMounted.current) return;
       const raw = res.data?.orders || res.data?.rows || res.data || [];
       setOrders(Array.isArray(raw) ? raw : []);
-    } catch {
+    } catch (e) {
       if (!isMounted.current) return;
       setOrders([]);
+      // Was a bare `setOrders([])`: a refused or failed request rendered as
+      // "No purchase orders yet", which is a claim about the business rather
+      // than about the request.
+      setLoadErr(e.response?.data?.error || e.message || 'The purchase orders could not be loaded.');
     } finally {
       if (isMounted.current) setLoading(false);
     }
@@ -138,30 +149,34 @@ export default function PurchaseOrderManagement() {
   });
 
   return (
-    <div className="pom-root">
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Procurement"
+        title="PO Management"
+        subtitle="Track and approve purchase orders"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => { load(); loadStats(); }}><RefreshCw size={14} /></button>
+          <button className="plh-cta" onClick={exportCSV}><Download size={14} /> Export</button>
+        </>}
+      />
+    }>
       {toast && <div className={`pom-toast pom-toast-${toast.type}`}>{toast.msg}</div>}
 
-      {/* Header */}
-      <div className="pom-header">
-        <div className="pom-header-left">
-          <div className="pom-header-icon"><ShoppingCart size={20} /></div>
-          <div>
-            <h1 className="pom-title">PO Management</h1>
-            <p className="pom-sub">Track and approve purchase orders</p>
-          </div>
-        </div>
-        <div className="pom-header-actions">
-          <button className="pom-icon-btn" onClick={() => { load(); loadStats(); }}><RefreshCw size={14} /></button>
-          <button className="pom-export-btn" onClick={exportCSV}><Download size={14} /> Export</button>
-        </div>
-      </div>
 
       {/* KPI strip */}
       <div className="pom-kpis">
-        <KpiCard icon={ShoppingCart}  label="Total POs"          value={stats.total}       color="#6366f1" bg="#eef2ff" />
-        <KpiCard icon={Clock}         label="Pending"             value={stats.pending}     color="#f59e0b" bg="#fffbeb" onClick={() => setFStatus('sent')} />
+        {/* Every status has a card, so these add up to Total POs. Draft,
+            Partial and Cancelled had none, which left orders counted in the
+            total that no card could select. Follow-up is deliberately not a
+            bucket — it is a subset of Pending. */}
+        <KpiCard icon={ShoppingCart}  label="Total POs"          value={stats.total}       color="#6366f1" bg="#eef2ff" onClick={() => setFStatus('')} />
+        <KpiCard icon={FileText}      label="Draft"               value={stats.draft}       color="#64748b" bg="#f1f5f9" onClick={() => setFStatus('draft')} />
+        <KpiCard icon={Clock}         label="Pending"             value={stats.pending}     color="#7c5cf0" bg="#f5f3ff" onClick={() => setFStatus('sent')} />
         <KpiCard icon={CheckCircle}   label="Approved"            value={stats.approved}    color="#10b981" bg="#f0fdf4" onClick={() => setFStatus('approved')} />
+        <KpiCard icon={Truck}         label="Partial"             value={stats.partial}     color="#d97706" bg="#fffbeb" onClick={() => setFStatus('partial')} />
         <KpiCard icon={Package}       label="Received"            value={stats.received}    color="#0ea5e9" bg="#f0f9ff" onClick={() => setFStatus('received')} />
+        <KpiCard icon={XCircle}       label="Cancelled"           value={stats.cancelled}   color="#6b7280" bg="#f3f4f6" onClick={() => setFStatus('cancelled')} />
         <KpiCard icon={AlertTriangle} label="Follow-up (7 Days)"  value={stats.follow_up}   color="#dc2626" bg="#fef2f2" onClick={() => setOnlyReminderQueued(true)} />
         <KpiCard icon={TrendingUp}    label="Total Value"         value={fmt(stats.total_value)} color="#6B3FDB" bg="#f5f3ff" />
       </div>
@@ -220,6 +235,8 @@ export default function PurchaseOrderManagement() {
         <div className="pom-table-wrap">
           {loading ? (
             <div className="pom-loading"><div className="pom-spinner" /></div>
+          ) : loadErr ? (
+            <LoadError message={loadErr} onRetry={load} />
           ) : displayed.length === 0 ? (
             <div className="pom-empty">
               <ShoppingCart size={40} />
@@ -264,8 +281,8 @@ export default function PurchaseOrderManagement() {
                             fontSize: 11,
                             fontWeight: 600,
                             color: '#7c2d12',
-                            background: '#ffedd5',
-                            border: '1px solid #fed7aa',
+                            background: '#ede9fe',
+                            border: '1px solid #ddd6fe',
                             borderRadius: 999,
                             padding: '2px 7px'
                           }}>
@@ -393,20 +410,14 @@ export default function PurchaseOrderManagement() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }
 
 function KpiCard({ icon: Icon, label, value, color, bg, onClick }) {
-  return (
-    <div className="pom-kpi" style={{ cursor: onClick ? 'pointer' : 'default' }} onClick={onClick}>
-      <div className="pom-kpi-icon" style={{ background: bg, color }}><Icon size={18} /></div>
-      <div>
-        <div className="pom-kpi-val">{value}</div>
-        <div className="pom-kpi-label">{label}</div>
-      </div>
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat icon={Icon} label={label} value={value} color={color} bg={bg} onClick={onClick} />;
 }
 
 function DetailRow({ label, value, bold }) {

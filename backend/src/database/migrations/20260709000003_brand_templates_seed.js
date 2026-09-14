@@ -5,9 +5,11 @@
  * (PPT template, logo, colour codex) even on databases where
  * 20260709000001_company_documents already ran with the earlier seed set.
  *
- * Each row is inserted only when a document with the same title+category
- * doesn't already exist for company 1, so this is safe to run repeatedly and
- * never duplicates an admin-curated row.
+ * Each row is inserted only when a document with the same title+category, OR
+ * the same file_url+category, doesn't already exist for company 1 — the
+ * file_url check guards against the title text changing between the two
+ * migrations (that's exactly how 'Presentation Template' vs 'PPT Template'
+ * ended up as two rows for the same .pptx; see 20260812000002_dedupe_company_documents).
  */
 const TEMPLATES = [
   ['PPT Template',   'Branded PowerPoint slide deck template for client presentations.', '/documents/brand/presentation-template.pptx', 'presentation'],
@@ -26,10 +28,11 @@ export async function up(knex) {
        SELECT 1, $1::text, 'brand_assets', $2::text, $3::text, $4::text
         WHERE NOT EXISTS (
           SELECT 1 FROM company_documents
-           WHERE category = 'brand_assets' AND title = $5::text
+           WHERE category = 'brand_assets'
+             AND (title = $5::text OR file_url = $6::text)
              AND (company_id = 1 OR company_id IS NULL)
         )`,
-      [title, description, file_url, icon, title]
+      [title, description, file_url, icon, title, file_url]
     );
   }
 }

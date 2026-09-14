@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
+import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P = '#6B3FDB';
 const LIGHT = '#f5f3ff';
@@ -95,40 +97,36 @@ export default function CostCentreTracking({ setPage }) {
   const maxCC    = txByCC[0]?.total || 1;
 
   return (
-    <div style={{ padding: 24 }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111' }}>Cost Centre Tracking</h2>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>
-            Every cost linked to Department · Cost Centre · Project · Customer · Site · PO
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setPage?.('CostTransactions')}
-            style={{ padding: '8px 14px', background: LIGHT, border: `1px solid ${BORDER}`, borderRadius: 8, color: P, fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+    <PageShell dock={
+      <PageHero
+        icon={IndianRupee}
+        eyebrow="Projects"
+        title="Cost Centre Tracking"
+        subtitle="Every cost linked to Department · Cost Centre · Project · Customer · Site · PO"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('CostTransactions')}>
             ← Transactions
           </button>
-          <button onClick={() => { setForm(EMPTY_CC); setEditId(null); setShowForm(true); }}
-            style={{ padding: '8px 16px', background: P, border: 'none', borderRadius: 8, color: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+          <button className="plh-cta" onClick={() => { setForm(EMPTY_CC); setEditId(null); setShowForm(true); }}>
             + Cost Centre
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
 
       {/* Unallocated Alert */}
       {(unallocated?.count || 0) > 0 && (
-        <div style={{ marginBottom: 16, padding: '12px 16px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <div style={{ marginBottom: 16, padding: '12px 16px', background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
           <div>
-            <div style={{ fontWeight: 700, color: '#92400e', fontSize: 14 }}>
+            <div style={{ fontWeight: 700, color: '#5b21b6', fontSize: 14 }}>
               ⚠ {unallocated.count} UNALLOCATED COSTS — {cr(unallocated.total_unallocated)}
             </div>
-            <div style={{ color: '#78350f', fontSize: 12, marginTop: 2 }}>
+            <div style={{ color: '#4c1d95', fontSize: 12, marginTop: 2 }}>
               These expenses are not linked to Customer / Project / PO / Cost Centre. Review and assign them.
             </div>
           </div>
           <button onClick={() => setTab('Unallocated Costs')}
-            style={{ padding: '6px 14px', background: '#92400e', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
+            style={{ padding: '6px 14px', background: '#5b21b6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
             Review Now
           </button>
         </div>
@@ -262,7 +260,7 @@ export default function CostCentreTracking({ setPage }) {
           ) : (
             <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, overflow: 'hidden' }}>
               <div style={{ padding: '12px 16px', borderBottom: `1px solid ${BORDER}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ fontWeight: 600, fontSize: 14, color: '#92400e' }}>
+                <div style={{ fontWeight: 600, fontSize: 14, color: '#5b21b6' }}>
                   {uaRows.length} Unallocated Costs — {cr(unallocated?.total_unallocated)}
                 </div>
                 <span style={{ fontSize: 12, color: '#6b7280' }}>Resolve by editing each entry in Cost Transactions</span>
@@ -278,10 +276,10 @@ export default function CostCentreTracking({ setPage }) {
                   </thead>
                   <tbody>
                     {uaRows.map((r, i) => (
-                      <tr key={r.id} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 === 0 ? '#fffbeb' : '#fef9c3' }}>
+                      <tr key={r.id} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 === 0 ? '#f5f3ff' : '#ede9fe' }}>
                         <td style={{ padding: '9px 12px', whiteSpace: 'nowrap', color: '#374151' }}>{r.transaction_date?.slice(0, 10)}</td>
                         <td style={{ padding: '9px 12px' }}>
-                          <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                          <span style={{ background: '#ede9fe', color: '#5b21b6', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
                             {r.cost_type?.replace(/_/g, ' ')}
                           </span>
                         </td>
@@ -289,7 +287,7 @@ export default function CostCentreTracking({ setPage }) {
                           {r.description || '—'}
                         </td>
                         <td style={{ padding: '9px 12px', textAlign: 'right', fontWeight: 600, color: '#dc2626' }}>{cr(r.amount)}</td>
-                        <td style={{ padding: '9px 12px', color: '#92400e', fontSize: 12 }}>{r.unallocated_reason}</td>
+                        <td style={{ padding: '9px 12px', color: '#5b21b6', fontSize: 12 }}>{r.unallocated_reason}</td>
                         <td style={{ padding: '9px 12px', color: '#374151' }}>{r.created_by_name || '—'}</td>
                       </tr>
                     ))}
@@ -331,7 +329,7 @@ export default function CostCentreTracking({ setPage }) {
                     </div>
                     <div style={{ background: '#f3f4f6', borderRadius: 6, height: 18, overflow: 'hidden' }}>
                       <div style={{
-                        width: `${pctVal}%`, background: [P, '#2563eb', '#0891b2', '#d97706', '#dc2626', '#059669'][i % 6],
+                        width: `${pctVal}%`, background: [P, '#2563eb', '#0891b2', '#6d28d9', '#dc2626', '#059669'][i % 6],
                         height: '100%', borderRadius: 6, display: 'flex', alignItems: 'center', paddingLeft: 8,
                       }}>
                         {pctVal > 15 && <span style={{ fontSize: 10, color: '#fff', fontWeight: 600 }}>{pctVal.toFixed(0)}%</span>}
@@ -344,6 +342,6 @@ export default function CostCentreTracking({ setPage }) {
           )}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -12,11 +12,17 @@ import logo from "../assets/logo.png";
 import { NAV_ITEMS } from "@/config/routes";
 import { canRoleOpenPage } from "@/config/menuCatalog";
 
-// Build search list from NAV_ITEMS
+// Build search list from NAV_ITEMS. `divider` rows (the sidebar's domain
+// bands) and `separator` rows (submenu group headings) are labels, not pages —
+// including them listed unclickable headings in the results whose Enter/click
+// navigated to `/undefined`.
 const SEARCH_PAGES = [
   ...NAV_ITEMS.flatMap(item => {
+    if (item.divider) return [];
     if (item.page)    return [{ label: item.name, page: item.page, group: '' }];
-    if (item.submenu) return item.submenu.map(sub => ({ label: sub.name, page: sub.page, group: item.name }));
+    if (item.submenu) return item.submenu
+      .filter(sub => !sub.separator && sub.page)
+      .map(sub => ({ label: sub.name, page: sub.page, group: item.name }));
     return [];
   }),
   // Pages not in nav menu but still navigable
@@ -51,7 +57,7 @@ const SEARCH_PAGES = [
 
 // ── Notification type config ──────────────────────────────────────────────────
 const NOTIF_CFG = {
-  probation_warning : { icon: Clock,         color: '#d97706', bg: '#fffbeb', label: 'Probation'  },
+  probation_warning : { icon: Clock,         color: '#6d28d9', bg: '#f5f3ff', label: 'Probation'  },
   probation_due     : { icon: AlertTriangle,  color: '#dc2626', bg: '#fef2f2', label: 'Probation'  },
   approval          : { icon: UserCheck,      color: '#7c3aed', bg: '#f5f3ff', label: 'Approval'   },
   info              : { icon: Info,           color: '#0369a1', bg: '#eff6ff', label: 'Info'       },

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { getMenuSections, SELF_SERVICE_LOCK } from '@/config/menuCatalog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /**
  * MenuPermissions — "Page Access" control center.
@@ -25,7 +26,7 @@ const LEVELS = {
 const ORDER = ['hidden', 'view', 'edit'];
 
 const ROLE_ACCENT = {
-  admin: '#6B3FDB', manager: '#d97706', hr: '#0369a1',
+  admin: '#6B3FDB', manager: '#6d28d9', hr: '#0369a1',
   finance: '#16a34a', engineer: '#0891b2', employee: '#6b7280',
 };
 
@@ -197,7 +198,22 @@ export default function MenuPermissions() {
   const hasTarget = mode === 'role' ? !!activeRole : !!activeUser;
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShieldCheck}
+        eyebrow="Administration"
+        title="Page Access"
+        subtitle="Control which sections each role — or a specific employee — can see and edit."
+        actions={[['role', 'By Role', KeyRound], ['user', 'By Employee', Users]].map(([id, label, Icon]) => {
+            const on = mode === id;
+            return (
+              <button className="plh-cta" key={id} onClick={() => setMode(id)}>
+                <Icon size={14} /> {label}
+              </button>
+            );
+          })}
+      />
+    }>
 
       {msg && (
         <div style={{
@@ -208,34 +224,6 @@ export default function MenuPermissions() {
       )}
 
       {/* Intro + mode toggle */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 11, background: '#ede9fe', color: '#6B3FDB', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <ShieldCheck size={21} />
-          </div>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Page Access</h2>
-            <p style={{ margin: '2px 0 0', fontSize: 13, color: '#6b7280' }}>
-              Control which sections each role — or a specific employee — can see and edit.
-            </p>
-          </div>
-        </div>
-        <div style={{ display: 'flex', background: '#f3f4f6', borderRadius: 10, padding: 3 }}>
-          {[['role', 'By Role', KeyRound], ['user', 'By Employee', Users]].map(([id, label, Icon]) => {
-            const on = mode === id;
-            return (
-              <button key={id} onClick={() => setMode(id)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', border: 'none', borderRadius: 8,
-                  background: on ? '#fff' : 'transparent', color: on ? '#6B3FDB' : '#6b7280',
-                  fontWeight: 700, fontSize: 13, cursor: 'pointer', boxShadow: on ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
-                }}>
-                <Icon size={14} /> {label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
 
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
 
@@ -361,7 +349,7 @@ export default function MenuPermissions() {
                             <Layers size={14} style={{ color: '#c4b5fd' }} /> {s.name}
                             {locked && (
                               <span title="Kept visible so Admins keep access to this screen"
-                                style={{ fontSize: 10, fontWeight: 700, color: '#92400e', background: '#fef3c7', padding: '1px 6px', borderRadius: 6 }}>LOCKED</span>
+                                style={{ fontSize: 10, fontWeight: 700, color: '#5b21b6', background: '#ede9fe', padding: '1px 6px', borderRadius: 6 }}>LOCKED</span>
                             )}
                           </div>
                           <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1, display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -446,7 +434,7 @@ export default function MenuPermissions() {
           )}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }
 

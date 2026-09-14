@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import {
-  Users, Briefcase, Calendar, FileText,
-  AlertCircle, Clock, Plus, Video,
+  Users, Briefcase, Calendar, FileText, AlertCircle, Clock, Plus,
+  Video, LayoutDashboard,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -11,6 +11,7 @@ import {
 } from 'recharts';
 import { formatDate as fmtDate } from '@/utils/dateFormatter';
 import './RecruiterDashboard.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STAGE_LABELS = {
   applied:     'Applied',
@@ -27,7 +28,7 @@ const SOURCE_COLORS = {
   linkedin:   '#0077b5',
   referral:   '#10b981',
   website:    '#6366f1',
-  job_portal: '#f59e0b',
+  job_portal: '#7c5cf0',
   walk_in:    '#ef4444',
 };
 
@@ -78,7 +79,7 @@ export default function RecruiterDashboard({ setPage }) {
   const kpis = [
     { label: 'Open Positions',       value: stats?.open_positions        ?? 0,              icon: Briefcase,    color: '#6366f1' },
     { label: 'Total Candidates',     value: stats?.total_candidates      ?? 0,              icon: Users,        color: '#10b981' },
-    { label: 'Upcoming Interviews',  value: stats?.upcoming_interviews   ?? 0,              icon: Calendar,     color: '#f59e0b' },
+    { label: 'Upcoming Interviews',  value: stats?.upcoming_interviews   ?? 0,              icon: Calendar,     color: '#7c5cf0' },
     { label: 'Pending Offers',       value: stats?.pending_offers        ?? 0,              icon: FileText,     color: '#3b82f6' },
     {
       label: 'Expiring Offers',
@@ -96,19 +97,17 @@ export default function RecruiterDashboard({ setPage }) {
   }));
 
   return (
-    <div className="rd-root">
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Recruitment"
+        title="Recruiter Dashboard"
+        subtitle="Today's hiring workload at a glance"
+        actions={<button className="plh-cta" onClick={fetchDashboard}>Refresh</button>}
+      />
+    }>
       {/* ── Header ─────────────────────────────────────────────── */}
-      <div className="rd-header">
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)', margin: 0 }}>
-            Recruiter Dashboard
-          </h1>
-          <p style={{ color: 'var(--color-text-secondary)', margin: '2px 0 0', fontSize: 13 }}>
-            Today's hiring workload at a glance
-          </p>
-        </div>
-        <button className="rd-btn-outline" onClick={fetchDashboard}>Refresh</button>
-      </div>
+
 
       {/* ── Quick Actions ───────────────────────────────────────── */}
       <div className="rd-quick-actions">
@@ -240,7 +239,7 @@ export default function RecruiterDashboard({ setPage }) {
             <div className="rd-activity-list">
               {actionItems.map(item => (
                 <div key={`stale-${item.id}`} className="rd-activity-item">
-                  <span className="rd-activity-badge" style={{ background: '#fff7ed', color: '#c2410c' }}>
+                  <span className="rd-activity-badge" style={{ background: '#fff7ed', color: '#5b21b6' }}>
                     STALE
                   </span>
                   <div className="rd-activity-info">
@@ -315,6 +314,6 @@ export default function RecruiterDashboard({ setPage }) {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

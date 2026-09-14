@@ -7,6 +7,8 @@ import * as drive from '../../services/googleDrive.service.js';
 import { copyRoutingToProductionOperations } from '../production/routingCopy.service.js';
 import invoiceService from '../finance/services/invoice.service.js';
 import { requiresRenewalApproval, isAuthorizedRenewalApprover, RENEWAL_APPROVAL_THRESHOLD } from '../../shared/renewalApproval.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
@@ -283,7 +285,12 @@ function gateAllowsTransition(from, to, g) {
   return false;
 }
 
-router.get('/instances', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied servicedesk in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/instances', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { sales_order_id, current_stage, status } = req.query;
@@ -309,7 +316,7 @@ router.get('/instances', async (req, res) => {
   }
 });
 
-router.post('/instances', async (req, res) => {
+router.post('/instances', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const { sales_order_id, production_order_id, project_id, customer_id, stage_notes } = req.body;
     const companyId = cid(req);
@@ -334,7 +341,7 @@ router.post('/instances', async (req, res) => {
   }
 });
 
-router.post('/instances/from-sales-order/:id', async (req, res) => {
+router.post('/instances/from-sales-order/:id', requirePermission('servicedesk', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { auto_create_production_order = true } = req.body || {};
@@ -367,7 +374,7 @@ router.post('/instances/from-sales-order/:id', async (req, res) => {
   }
 });
 
-router.post('/instances/auto-bootstrap/:id', async (req, res) => {
+router.post('/instances/auto-bootstrap/:id', requirePermission('servicedesk', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -400,7 +407,7 @@ router.post('/instances/auto-bootstrap/:id', async (req, res) => {
   }
 });
 
-router.get('/instances/:id', async (req, res) => {
+router.get('/instances/:id', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -419,7 +426,7 @@ router.get('/instances/:id', async (req, res) => {
   }
 });
 
-router.post('/instances/:id/advance', async (req, res) => {
+router.post('/instances/:id/advance', requirePermission('servicedesk', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { remarks } = req.body;
@@ -485,7 +492,7 @@ router.post('/instances/:id/advance', async (req, res) => {
   }
 });
 
-router.post('/instances/:id/hold', async (req, res) => {
+router.post('/instances/:id/hold', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const { remarks } = req.body;
     const companyId = cid(req);
@@ -509,7 +516,7 @@ router.post('/instances/:id/hold', async (req, res) => {
   }
 });
 
-router.post('/instances/:id/resume', async (req, res) => {
+router.post('/instances/:id/resume', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const { remarks } = req.body;
     const companyId = cid(req);
@@ -533,7 +540,7 @@ router.post('/instances/:id/resume', async (req, res) => {
   }
 });
 
-router.post('/commissioning', async (req, res) => {
+router.post('/commissioning', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const {
       lifecycle_instance_id,
@@ -562,7 +569,7 @@ router.post('/commissioning', async (req, res) => {
   }
 });
 
-router.put('/commissioning/:id', async (req, res) => {
+router.put('/commissioning/:id', requirePermission('servicedesk', 'edit'), captureBefore('commissioning_reports'), async (req, res) => {
   try {
     const { status, checklist, punch_points, remarks, site_name, site_address, commissioning_date, engineer_name } = req.body;
     const companyId = cid(req);
@@ -599,7 +606,7 @@ router.put('/commissioning/:id', async (req, res) => {
   }
 });
 
-router.post('/amc-contracts', async (req, res) => {
+router.post('/amc-contracts', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const {
       lifecycle_instance_id, sales_order_id, commissioning_workflow_id,
@@ -665,7 +672,7 @@ router.post('/amc-contracts', async (req, res) => {
   }
 });
 
-router.get('/amc-contracts', async (req, res) => {
+router.get('/amc-contracts', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { lifecycle_instance_id, status } = req.query;
@@ -690,7 +697,7 @@ router.get('/amc-contracts', async (req, res) => {
   }
 });
 
-router.get('/amc-contracts/:id', async (req, res) => {
+router.get('/amc-contracts/:id', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -719,7 +726,7 @@ router.get('/amc-contracts/:id', async (req, res) => {
   }
 });
 
-router.put('/amc-contracts/:id', async (req, res) => {
+router.put('/amc-contracts/:id', requirePermission('servicedesk', 'edit'), captureBefore('amc_contracts'), async (req, res) => {
   try {
     const { status, sla_response_hours, preventive_visits_per_year, coverage_notes, end_date,
             contract_value, billing_frequency, payment_terms, serial_number, start_date } = req.body;
@@ -755,7 +762,7 @@ router.put('/amc-contracts/:id', async (req, res) => {
   }
 });
 
-router.delete('/amc-contracts/:id', async (req, res) => {
+router.delete('/amc-contracts/:id', requirePermission('servicedesk', 'delete'), captureBefore('amc_contracts'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -769,7 +776,7 @@ router.delete('/amc-contracts/:id', async (req, res) => {
   }
 });
 
-router.post('/amc-contracts/:id/generate-visits', async (req, res) => {
+router.post('/amc-contracts/:id/generate-visits', requirePermission('servicedesk', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const companyId = cid(req);
@@ -824,7 +831,7 @@ router.post('/amc-contracts/:id/generate-visits', async (req, res) => {
 });
 
 // ── AMC generate-invoice ──────────────────────────────────────────────────────
-router.post('/amc-contracts/:id/generate-invoice', async (req, res) => {
+router.post('/amc-contracts/:id/generate-invoice', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -866,7 +873,7 @@ router.post('/amc-contracts/:id/generate-invoice', async (req, res) => {
 // to subscription renewal (sales.routes.js). Invoice creation happens before
 // the contract is updated so a credit-limit (or other) failure blocks the
 // renewal instead of silently proceeding.
-router.post('/amc-contracts/:id/renew', async (req, res) => {
+router.post('/amc-contracts/:id/renew', requirePermission('servicedesk', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     const companyId = cid(req);
@@ -943,7 +950,7 @@ router.post('/amc-contracts/:id/renew', async (req, res) => {
 });
 
 // ── AMC renewal history ───────────────────────────────────────────────────────
-router.get('/amc-contracts/:id/renewals', async (req, res) => {
+router.get('/amc-contracts/:id/renewals', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -957,7 +964,7 @@ router.get('/amc-contracts/:id/renewals', async (req, res) => {
 });
 
 // ── AMC export CSV ────────────────────────────────────────────────────────────
-router.get('/amc-contracts/export/csv', async (req, res) => {
+router.get('/amc-contracts/export/csv', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -985,7 +992,7 @@ router.get('/amc-contracts/export/csv', async (req, res) => {
 });
 
 // ── Commissioning sign-off ────────────────────────────────────────────────────
-router.put('/commissioning/:id/signoff', async (req, res) => {
+router.put('/commissioning/:id/signoff', requirePermission('servicedesk', 'edit'), captureBefore('commissioning_reports'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { serial_number, customer_signature, witness_name, witness_signature, iec_standard, ambient_temp_c, test_voltage_kv } = req.body;
@@ -1034,7 +1041,7 @@ router.put('/commissioning/:id/signoff', async (req, res) => {
 });
 
 // ── Warranty Registrations ────────────────────────────────────────────────────
-router.get('/warranty', async (req, res) => {
+router.get('/warranty', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, expiring_days } = req.query;
@@ -1057,7 +1064,7 @@ router.get('/warranty', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/warranty/:id', async (req, res) => {
+router.get('/warranty/:id', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1071,7 +1078,7 @@ router.get('/warranty/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/warranty', async (req, res) => {
+router.post('/warranty', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { serial_number, product_name, customer_name, customer_id, site_id,
@@ -1101,7 +1108,7 @@ router.post('/warranty', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/warranty/:id', async (req, res) => {
+router.put('/warranty/:id', requirePermission('servicedesk', 'edit'), captureBefore('warranty_registrations'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { warranty_end, warranty_type, coverage_parts, coverage_labour, coverage_travel, notes, status } = req.body;
@@ -1127,7 +1134,7 @@ router.put('/warranty/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/warranty/:id', async (req, res) => {
+router.delete('/warranty/:id', requirePermission('servicedesk', 'delete'), captureBefore('warranty_registrations'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1140,7 +1147,7 @@ router.delete('/warranty/:id', async (req, res) => {
 });
 
 // ── Warranty Claims ───────────────────────────────────────────────────────────
-router.get('/warranty-claims', async (req, res) => {
+router.get('/warranty-claims', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, warranty_registration_id } = req.query;
@@ -1156,7 +1163,7 @@ router.get('/warranty-claims', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/warranty-claims', async (req, res) => {
+router.post('/warranty-claims', requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { warranty_registration_id, ticket_id, serial_number, issue_description,
@@ -1180,7 +1187,7 @@ router.post('/warranty-claims', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/warranty-claims/:id', async (req, res) => {
+router.put('/warranty-claims/:id', requirePermission('servicedesk', 'edit'), captureBefore('warranty_claims'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, resolution_notes, approved_by } = req.body;
@@ -1200,7 +1207,7 @@ router.put('/warranty-claims/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/commissioning', async (req, res) => {
+router.get('/commissioning', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { lifecycle_instance_id, status } = req.query;
@@ -1225,7 +1232,7 @@ router.get('/commissioning', async (req, res) => {
   }
 });
 
-router.get('/commissioning/:id', async (req, res) => {
+router.get('/commissioning/:id', requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(

@@ -1,15 +1,17 @@
 // frontend/src/features/sales/pages/CommissionManagement.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Percent, Search, X } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { formatINR, Badge } from './salesUtils';
+import { PageHero } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT = '#f5f3ff';
 const BORDER = '#e9e4ff';
-const GOLD = '#f59e0b';
+const GOLD = '#7c5cf0';
 
 function getInitials(name) {
   if (!name) return '?';
@@ -67,6 +69,53 @@ function Input(props) {
   return <input {...props} style={{ width: '100%', padding: '8px 12px', border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box', ...props.style }} />;
 }
 
+// India FY starts 1 April — same convention as SalesCommandCenter/SalesTargets.
+const getFYStart = () => {
+  const now = new Date();
+  return now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+};
+const fyLabel = (y) => `FY ${y}-${String(y + 1).slice(2)}`;
+const FY_YEARS = [getFYStart() + 1, getFYStart(), getFYStart() - 1];
+
+// Shared list filter: free-text search + status chips with live counts.
+// Plans, payouts and the leaderboard all return the full unpaginated set,
+// so the text/status narrowing happens client-side.
+function FilterBar({ query, onQuery, placeholder, chips, active, onChip, children }) {
+  return (
+    <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+      {onQuery && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 240, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '0 10px' }}>
+          <Search size={14} color="#9ca3af" />
+          <input
+            value={query}
+            onChange={e => onQuery(e.target.value)}
+            placeholder={placeholder}
+            style={{ flex: 1, border: 'none', outline: 'none', padding: '9px 0', fontSize: 13, background: 'transparent' }}
+          />
+          {query && (
+            <button onClick={() => onQuery('')} title="Clear search" aria-label="Clear search"
+              style={{ border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', padding: 2 }}>
+              <X size={12} color="#9ca3af" />
+            </button>
+          )}
+        </div>
+      )}
+      {(chips || []).map(c => (
+        <button key={c.key} onClick={() => onChip(c.key)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+            border: 'none', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            background: active === c.key ? PURPLE : '#f3f4f6',
+            color:      active === c.key ? '#fff' : '#374151',
+          }}>
+          {c.label}<span style={{ fontWeight: 700, opacity: 0.75 }}>{c.count}</span>
+        </button>
+      ))}
+      {children}
+    </div>
+  );
+}
+
 function Select({ children, ...props }) {
   return <select {...props} style={{ width: '100%', padding: '8px 12px', border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 14, outline: 'none', background: '#fff', boxSizing: 'border-box', ...props.style }}>{children}</select>;
 }
@@ -109,7 +158,7 @@ function StatsBar() {
 
   const cards = [
     { label: 'Total Earned (FY)',  value: formatINR(stats?.total_earned   ?? 0), color: PURPLE,    bg: '#f5f3ff' },
-    { label: 'Pending Payout',     value: formatINR(stats?.pending_payout ?? 0), color: '#d97706', bg: '#fffbeb' },
+    { label: 'Pending Payout',     value: formatINR(stats?.pending_payout ?? 0), color: '#6d28d9', bg: '#f5f3ff' },
     { label: 'Paid YTD',           value: formatINR(stats?.paid_ytd       ?? 0), color: '#16a34a', bg: '#f0fdf4' },
     { label: 'Active Plans',       value: String(stats?.active_plans ?? '—'),    color: '#2563eb', bg: '#eff6ff' },
   ];
@@ -136,6 +185,8 @@ function PlansTab() {
   const [showDrawer, setShowDrawer] = useState(false);
   const [editPlan, setEditPlan] = useState(null);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const [query, setQuery]   = useState('');
+  const [status, setStatus] = useState('all');
   const [form, setForm] = useState({
     name: '', rep_name: '', rep_id: '', plan_type: 'percentage', base_rate_pct: '',
     tiered_slabs: [{ min_revenue: 0, max_revenue: 500000, rate_pct: 3 }],
@@ -225,6 +276,21 @@ function PlansTab() {
     return `${formatINR(plan.base_rate_pct)} flat`;
   };
 
+  const q = query.trim().toLowerCase();
+  const hitsQuery = (p) => !q || [p.name, p.rep_name, p.plan_type]
+    .some(v => (v ?? '').toString().toLowerCase().includes(q));
+  const hitsStatus = (p, key) => key === 'all' ? true
+    : key === 'active' ? !!p.is_active
+    : !p.is_active;
+
+  const chips = [
+    { key: 'all',      label: 'All'      },
+    { key: 'active',   label: 'Active'   },
+    { key: 'inactive', label: 'Inactive' },
+  ].map(c => ({ ...c, count: plans.filter(p => hitsStatus(p, c.key) && hitsQuery(p)).length }));
+
+  const visiblePlans = plans.filter(p => hitsStatus(p, status) && hitsQuery(p));
+
   return (
     <div>
       <ConfirmDialog
@@ -241,15 +307,23 @@ function PlansTab() {
         <Btn onClick={openNew}>+ New Plan</Btn>
       </div>
 
+      <FilterBar
+        query={query} onQuery={setQuery}
+        placeholder="Search plan name, rep or type…"
+        chips={chips} active={status} onChip={setStatus}
+      />
+
       {loading ? (
         <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Loading...</div>
-      ) : plans.length === 0 ? (
+      ) : visiblePlans.length === 0 ? (
         <div style={{ padding: 60, textAlign: 'center', color: '#9ca3af', background: LIGHT, borderRadius: 12 }}>
-          No commission plans yet. Create the first one.
+          {plans.length === 0
+            ? 'No commission plans yet. Create the first one.'
+            : 'No plans match the current filters.'}
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 }}>
-          {plans.map(plan => (
+          {visiblePlans.map(plan => (
             <div key={plan.id} style={{ background: '#fff', border: '1px solid #f0f0f4', borderRadius: 14, padding: 20, boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
                 <Avatar name={plan.rep_name || plan.name} />
@@ -264,7 +338,7 @@ function PlansTab() {
                 {plan.effective_from || '—'} → {plan.effective_to || 'Ongoing'}
               </div>
               <div style={{ marginBottom: 14 }}>
-                <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                <span style={{ background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
                   Clawback {plan.clawback_period_days}d
                 </span>
               </div>
@@ -424,7 +498,7 @@ function StatementsTab() {
               <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 6 }}>{statement.rep_name} — YTD Earnings</div>
               <div style={{ fontSize: 28, fontWeight: 900, color: PURPLE }}>{formatINR(statement.ytd_total)}</div>
               <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>earned this year</div>
-              <div style={{ marginTop: 8, fontSize: 13, color: '#d97706' }}>Pending: {formatINR(statement.pending_amount)}</div>
+              <div style={{ marginTop: 8, fontSize: 13, color: '#6d28d9' }}>Pending: {formatINR(statement.pending_amount)}</div>
             </div>
             <div style={{ background: '#fff', borderRadius: 14, padding: 16, border: '1px solid #f0f0f4', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 8 }}>YTD Achievement</div>
@@ -510,6 +584,8 @@ function PayoutsTab() {
   const [genForm, setGenForm] = useState({ rep_id: '', period_from: '', period_to: '' });
   const [preview, setPreview] = useState(null);
   const [computing, setComputing] = useState(false);
+  const [query, setQuery]   = useState('');
+  const [status, setStatus] = useState('all');
 
   const load = useCallback(async () => {
     const [payR, planR] = await Promise.allSettled([api.get('/commissions/payouts'), api.get('/commissions/plans')]);
@@ -572,12 +648,31 @@ function PayoutsTab() {
 
   const assignedReps = plans.filter(p => p.rep_id && p.rep_name);
 
+  const q = query.trim().toLowerCase();
+  const hitsQuery = (p) => !q || (p.rep_name ?? '').toLowerCase().includes(q);
+  const hitsStatus = (p, key) => key === 'all' || (p.status || 'draft') === key;
+
+  const chips = [
+    { key: 'all',      label: 'All'      },
+    { key: 'draft',    label: 'Draft'    },
+    { key: 'approved', label: 'Approved' },
+    { key: 'paid',     label: 'Paid'     },
+  ].map(c => ({ ...c, count: payouts.filter(p => hitsStatus(p, c.key) && hitsQuery(p)).length }));
+
+  const visiblePayouts = payouts.filter(p => hitsStatus(p, status) && hitsQuery(p));
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#1a1a2e' }}>Commission Payouts</h2>
         <Btn onClick={() => setShowModal(true)}>Generate Payout</Btn>
       </div>
+
+      <FilterBar
+        query={query} onQuery={setQuery}
+        placeholder="Search sales rep…"
+        chips={chips} active={status} onChip={setStatus}
+      />
 
       <div style={{ background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -591,9 +686,11 @@ function PayoutsTab() {
           <tbody>
             {loading ? (
               <tr><td colSpan={8} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>Loading...</td></tr>
-            ) : payouts.length === 0 ? (
-              <tr><td colSpan={8} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>No payouts generated yet.</td></tr>
-            ) : payouts.map((p, i) => (
+            ) : visiblePayouts.length === 0 ? (
+              <tr><td colSpan={8} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>
+                {payouts.length === 0 ? 'No payouts generated yet.' : 'No payouts match the current filters.'}
+              </td></tr>
+            ) : visiblePayouts.map((p, i) => (
               <tr key={p.id} style={{ borderTop: i > 0 ? '1px solid #f0f0f4' : 'none' }}>
                 <td style={{ padding: '12px 16px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -665,12 +762,14 @@ function PayoutsTab() {
 function LeaderboardTab() {
   const [leaders, setLeaders] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [fyYear, setFyYear] = useState(getFYStart());
 
   const load = useCallback(async () => {
-    const [r] = await Promise.allSettled([api.get('/commissions/leaderboard')]);
+    setLoading(true);
+    const [r] = await Promise.allSettled([api.get('/commissions/leaderboard', { params: { fy_year: fyYear } })]);
     setLeaders(r.status === 'fulfilled' ? (r.value.data || []) : []);
     setLoading(false);
-  }, []);
+  }, [fyYear]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -685,13 +784,17 @@ function LeaderboardTab() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#1a1a2e' }}>Sales Leaderboard</h2>
+        <select value={fyYear} onChange={e => setFyYear(Number(e.target.value))}
+          style={{ padding: '8px 14px', border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 13, background: '#fff', outline: 'none' }}>
+          {FY_YEARS.map(y => <option key={y} value={y}>{fyLabel(y)}</option>)}
+        </select>
       </div>
 
       {loading ? (
         <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Loading...</div>
       ) : leaders.length === 0 ? (
         <div style={{ padding: 60, textAlign: 'center', color: '#9ca3af', background: LIGHT, borderRadius: 12 }}>
-          No commission data yet. Record commissions via the Plans tab.
+          No commission earned in {fyLabel(fyYear)}.
         </div>
       ) : (
         <>
@@ -769,10 +872,13 @@ export default function CommissionManagement() {
 
   return (
     <div style={{ padding: 32, background: '#fafafa', fontFamily: 'Inter, system-ui, sans-serif' }}>
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ fontSize: 24, fontWeight: 800, color: '#1a1a2e' }}>Commission Management</div>
-        <div style={{ fontSize: 14, color: '#9ca3af', marginTop: 4 }}>Manage commission plans, statements, payouts and track rep performance</div>
-      </div>
+      <PageHero
+        icon={Percent}
+        eyebrow="Sales"
+        title="Commission Management"
+        subtitle="Commission plans, statements, payouts and rep performance"
+      />
+
 
       <div style={{ marginTop: 24, marginBottom: 0 }}>
         <StatsBar />

@@ -681,8 +681,89 @@ export const Vendor360Service = {
     return buildDocumentStructure(vendor);
   },
 
+  // ── GET /vendor-360/:vendorId/purchase-lines ─────────────────────────────
+  // Every item line we ever bought from this vendor, with the PO date, the rate
+  // paid and what was actually received. Also returns a per-item rollup so the
+  // UI can show "this vendor supplies N distinct items" without a second call.
+  async getPurchaseLines(vendorId, companyId, filters = {}) {
+    const vendor = await repo.profile(vendorId, companyId);
+    if (!vendor) return null;
+
+    const rows = await repo.purchaseLines(vendorId, companyId, filters);
+    const lines = rows.map(r => ({
+      ...r,
+      quantity:      toNum(r.quantity),
+      rate:          toNum(r.rate),
+      tax_rate:      toNum(r.tax_rate),
+      amount:        toNum(r.amount),
+      received_qty:  toNum(r.grn_received ?? r.received_qty, 0),
+      rejected_qty:  toNum(r.grn_rejected, 0),
+    }));
+
+    const byItem = new Map();
+    for (const l of lines) {
+      const key = l.item_id ?? `txt:${l.item_name}`;
+      const agg = byItem.get(key) || {
+        item_id: l.item_id, item_name: l.item_name, item_code: l.item_code,
+        uom: l.uom, category_name: l.category_name,
+        line_count: 0, total_qty: 0, total_value: 0,
+        first_ordered: null, last_ordered: null, last_rate: null,
+        min_rate: null, max_rate: null,
+      };
+      agg.line_count += 1;
+      agg.total_qty   += l.quantity || 0;
+      agg.total_value += l.amount   || 0;
+      if (l.rate != null) {
+        agg.min_rate = agg.min_rate == null ? l.rate : Math.min(agg.min_rate, l.rate);
+        agg.max_rate = agg.max_rate == null ? l.rate : Math.max(agg.max_rate, l.rate);
+      }
+      // Lines arrive newest-first, so the first rate seen is the latest one.
+      if (agg.last_rate == null && l.rate != null) agg.last_rate = l.rate;
+      if (l.order_date) {
+        if (!agg.last_ordered  || l.order_date > agg.last_ordered)  agg.last_ordered  = l.order_date;
+        if (!agg.first_ordered || l.order_date < agg.first_ordered) agg.first_ordered = l.order_date;
+      }
+      byItem.set(key, agg);
+    }
+
+    const items = [...byItem.values()]
+      .map(a => ({
+        ...a,
+        total_qty:   +a.total_qty.toFixed(3),
+        total_value: +a.total_value.toFixed(2),
+        avg_rate:    a.total_qty > 0 ? +(a.total_value / a.total_qty).toFixed(2) : null,
+      }))
+      .sort((a, b) => b.total_value - a.total_value);
+
+    return {
+      vendor: {
+        id: vendor.id,
+        name: vendor.vendor_name || vendor.name,
+        code: vendor.vendor_code || null,
+      },
+      summary: {
+        line_count:    lines.length,
+        item_count:    items.length,
+        po_count:      new Set(lines.map(l => l.po_id)).size,
+        total_value:   +lines.reduce((s, l) => s + (l.amount || 0), 0).toFixed(2),
+        first_ordered: items.reduce((m, i) => (!m || (i.first_ordered && i.first_ordered < m) ? i.first_ordered : m), null),
+        last_ordered:  items.reduce((m, i) => (!m || (i.last_ordered && i.last_ordered > m) ? i.last_ordered : m), null),
+      },
+      items,
+      lines,
+    };
+  },
+
   // ── GET /vendor-360/command-center ───────────────────────────────────────
   async commandCenter(companyId) {
     return repo.commandCenterData(companyId);
   },
 };
+
+// pg returns NUMERIC as a string; keep null as null so the UI renders "—"
+// instead of a misleading 0 (see project_pg_count_string_nan_bug).
+function toNum(v, fallback = null) {
+  if (v == null || v === '') return fallback;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : fallback;
+}

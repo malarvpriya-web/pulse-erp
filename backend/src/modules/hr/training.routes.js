@@ -1,6 +1,9 @@
 // backend/src/modules/hr/training.routes.js
 import express from 'express';
 import pool from '../../config/db.js';
+import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -17,7 +20,12 @@ function cidWhere(companyId, alias = '') {
 }
 
 /* ── GET /programs ──────────────────────────────────────────── */
-router.get('/programs', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied training in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/programs', requirePermission('training', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { category, status, is_mandatory } = req.query;
@@ -49,7 +57,7 @@ router.get('/programs', async (req, res) => {
 });
 
 /* ── POST /programs ──────────────────────────────────────────── */
-router.post('/programs', async (req, res) => {
+router.post('/programs', requirePermission('training', 'add'), async (req, res) => {
   if (!MGR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const {
     title, description, category, trainer, trainer_id, mode = 'offline',
@@ -76,7 +84,7 @@ router.post('/programs', async (req, res) => {
 });
 
 /* ── GET /programs/:id ───────────────────────────────────────── */
-router.get('/programs/:id', async (req, res) => {
+router.get('/programs/:id', requirePermission('training', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const [progRes, enrollRes, costRes, sessionRes] = await Promise.all([
@@ -97,7 +105,7 @@ router.get('/programs/:id', async (req, res) => {
 });
 
 /* ── PUT /programs/:id ───────────────────────────────────────── */
-router.put('/programs/:id', async (req, res) => {
+router.put('/programs/:id', requirePermission('training', 'edit'), captureBefore('training_programs'), async (req, res) => {
   if (!MGR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const {
     title,description,category,trainer,trainer_id,mode,duration_hours,
@@ -134,7 +142,7 @@ router.put('/programs/:id', async (req, res) => {
 });
 
 /* ── DELETE /programs/:id ────────────────────────────────────── */
-router.delete('/programs/:id', async (req, res) => {
+router.delete('/programs/:id', requirePermission('training', 'delete'), captureBefore('training_programs'), async (req, res) => {
   if (!HR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   try {
     const { rows } = await pool.query(
@@ -147,7 +155,7 @@ router.delete('/programs/:id', async (req, res) => {
 });
 
 /* ── POST /programs/:id/enroll ───────────────────────────────── */
-router.post('/programs/:id/enroll', async (req, res) => {
+router.post('/programs/:id/enroll', requirePermission('training', 'add'), async (req, res) => {
   const { employee_ids = [] } = req.body;
   if (!employee_ids.length) return res.status(400).json({ error: 'employee_ids required' });
   const companyId = cid(req);
@@ -166,7 +174,7 @@ router.post('/programs/:id/enroll', async (req, res) => {
 });
 
 /* ── PUT /enrollments/:id/complete ──────────────────────────── */
-router.put('/enrollments/:id/complete', async (req, res) => {
+router.put('/enrollments/:id/complete', requirePermission('training', 'edit'), captureBefore('training_enrollments'), async (req, res) => {
   const { score, certificate_url, feedback_rating } = req.body;
   const client = await pool.connect();
   try {
@@ -212,7 +220,7 @@ router.put('/enrollments/:id/complete', async (req, res) => {
 });
 
 /* ── GET /employee/:id/history ───────────────────────────────── */
-router.get('/employee/:id/history', async (req, res) => {
+router.get('/employee/:id/history', requirePermission('training', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT te.*, tp.title, tp.category, tp.trainer, tp.mode,
@@ -235,7 +243,7 @@ router.get('/employee/:id/history', async (req, res) => {
 });
 
 /* ── GET /skills ──────────────────────────────────────────────── */
-router.get('/skills', async (req, res) => {
+router.get('/skills', requirePermission('training', 'view'), async (req, res) => {
   try {
     const { employee_id, category } = req.query;
     const companyId = cid(req);
@@ -252,7 +260,7 @@ router.get('/skills', async (req, res) => {
 });
 
 /* ── POST /skills ────────────────────────────────────────────── */
-router.post('/skills', async (req, res) => {
+router.post('/skills', requirePermission('training', 'add'), async (req, res) => {
   const { employee_id, skill_name, category, proficiency_level=1,
           certified=false, certification_name, expiry_date } = req.body;
   if (!employee_id || !skill_name) return res.status(400).json({ error: 'employee_id and skill_name required' });
@@ -272,7 +280,7 @@ router.post('/skills', async (req, res) => {
 });
 
 /* ── PUT /skills/:id ─────────────────────────────────────────── */
-router.put('/skills/:id', async (req, res) => {
+router.put('/skills/:id', requirePermission('training', 'edit'), captureBefore('skill_matrix'), async (req, res) => {
   const { proficiency_level, certified, certification_name, expiry_date, category } = req.body;
   try {
     const { rows } = await pool.query(`
@@ -292,7 +300,7 @@ router.put('/skills/:id', async (req, res) => {
 });
 
 /* ── GET /skills/matrix ──────────────────────────────────────── */
-router.get('/skills/matrix', async (req, res) => {
+router.get('/skills/matrix', requirePermission('training', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { department } = req.query;
@@ -338,25 +346,67 @@ router.get('/skills/matrix', async (req, res) => {
 });
 
 /* ── GET /dashboard ──────────────────────────────────────────── */
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND company_id=${companyId}` : '';
   // training_costs has no company_id of its own (see /cost-by-type) — scope via
   // its parent program instead, or this silently resolves to 0 under
   // Promise.allSettled for every scoped (non-super_admin) caller.
   const tcSc = companyId != null ? ` AND (tp.company_id IS NULL OR tp.company_id=${companyId})` : '';
+
+  // Dashboard filter bar: ?period / ?from / ?to / ?department.
+  // Programmes are dated by scheduled_date; enrolments and costs inherit the
+  // window through their parent programme.
+  const range = resolveRange(req.query, { defaultPeriod: 'fytd' });
+  const department = dimension(req.query, 'department');
+  // Bound params, appended after any query-specific ones. Each query below owns
+  // its own list — a shared array breaks queries that skip a placeholder.
+  const dateOn = (col, params) => {
+    let sql = '';
+    if (range.from) { params.push(range.from); sql += ` AND ${col} >= $${params.length}::date`; }
+    if (range.to)   { params.push(range.to);   sql += ` AND ${col} <= $${params.length}::date`; }
+    return sql;
+  };
+  // training_programs targets a department; enrolments/skills reach it via employees.
+  const deptOnProgram = (params) => {
+    if (!department) return '';
+    params.push(department);
+    return ` AND target_department = $${params.length}`;
+  };
+  const deptViaEmployee = (col, params) => {
+    if (!department) return '';
+    params.push(department);
+    return ` AND ${col} IN (SELECT id FROM employees WHERE department = $${params.length})`;
+  };
+
   try {
+    const pProg = []; const fProg = dateOn('scheduled_date', pProg) + deptOnProgram(pProg);
+    const pEnrol = []; const fEnrol = dateOn('created_at', pEnrol) + deptViaEmployee('employee_id', pEnrol);
+    const pCost = []; const fCost = dateOn('tp.scheduled_date', pCost);
+    const pTrained = []; const fTrained = dateOn('created_at', pTrained) + deptViaEmployee('employee_id', pTrained);
+    const pGap = []; const fGap = deptViaEmployee('employee_id', pGap);
+    const pMand = []; const fMand = deptOnProgram(pMand);
+    const pCert = []; const fCert = deptViaEmployee('employee_id', pCert);
+
     const [monthRes,complRes,costRes,trainedRes,gapRes,mandRes,certRes] = await Promise.allSettled([
-      pool.query(`SELECT COUNT(*) FROM training_programs WHERE DATE_TRUNC('month',scheduled_date)=DATE_TRUNC('month',CURRENT_DATE) AND deleted_at IS NULL${sc}`),
-      pool.query(`SELECT ROUND(100.0*COUNT(CASE WHEN status='completed' THEN 1 END)/NULLIF(COUNT(*),0),1) AS rate FROM training_enrollments WHERE 1=1${sc}`),
-      pool.query(`SELECT COALESCE(SUM(tc.amount),0) AS total FROM training_costs tc JOIN training_programs tp ON tp.id=tc.program_id WHERE 1=1${tcSc}`),
-      pool.query(`SELECT COUNT(DISTINCT employee_id) FROM training_enrollments WHERE status='completed'${sc}`),
-      pool.query(`SELECT COUNT(*) FROM (SELECT skill_name FROM skill_matrix WHERE 1=1${sc} GROUP BY skill_name HAVING AVG(proficiency_level)<3) g`),
-      pool.query(`SELECT COUNT(*) FROM training_programs WHERE is_mandatory=true AND status!='completed' AND deleted_at IS NULL${sc}`),
-      pool.query(`SELECT COUNT(*) FROM skill_matrix WHERE certified=true AND expiry_date IS NOT NULL AND expiry_date <= CURRENT_DATE+30${sc}`),
+      // Was hardcoded to the calendar month; now follows the selected period.
+      pool.query(`SELECT COUNT(*) FROM training_programs WHERE deleted_at IS NULL${sc}${fProg}`, pProg),
+      pool.query(`SELECT ROUND(100.0*COUNT(CASE WHEN status='completed' THEN 1 END)/NULLIF(COUNT(*),0),1) AS rate FROM training_enrollments WHERE 1=1${sc}${fEnrol}`, pEnrol),
+      pool.query(`SELECT COALESCE(SUM(tc.amount),0) AS total FROM training_costs tc JOIN training_programs tp ON tp.id=tc.program_id WHERE 1=1${tcSc}${fCost}`, pCost),
+      pool.query(`SELECT COUNT(DISTINCT employee_id) FROM training_enrollments WHERE status='completed'${sc}${fTrained}`, pTrained),
+      // Skill gaps and expiring certs are point-in-time, so they take the
+      // department but not the period.
+      pool.query(`SELECT COUNT(*) FROM (SELECT skill_name FROM skill_matrix WHERE 1=1${sc}${fGap} GROUP BY skill_name HAVING AVG(proficiency_level)<3) g`, pGap),
+      pool.query(`SELECT COUNT(*) FROM training_programs WHERE is_mandatory=true AND status!='completed' AND deleted_at IS NULL${sc}${fMand}`, pMand),
+      pool.query(`SELECT COUNT(*) FROM skill_matrix WHERE certified=true AND expiry_date IS NOT NULL AND expiry_date <= CURRENT_DATE+30${sc}${fCert}`, pCert),
     ]);
     res.json({
+      period:                range.period,
+      period_label:          range.label,
+      department,
+      // Key kept for existing callers; the window is now the selected period.
       trainings_this_month:  parseInt(monthRes.value?.rows[0]?.count   || 0),
+      trainings_in_period:   parseInt(monthRes.value?.rows[0]?.count   || 0),
       completion_rate_pct:   parseFloat(complRes.value?.rows[0]?.rate  || 0),
       total_training_cost:   parseFloat(costRes.value?.rows[0]?.total  || 0),
       employees_trained:     parseInt(trainedRes.value?.rows[0]?.count || 0),
@@ -367,8 +417,24 @@ router.get('/dashboard', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/* ── GET /dashboard/filter-options ───────────────────────────── */
+// Departments that actually appear on training programmes, for the filter bar.
+router.get('/dashboard/filter-options', requirePermission('training', 'view'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT target_department AS v FROM training_programs
+        WHERE deleted_at IS NULL AND target_department IS NOT NULL
+          AND TRIM(target_department) <> ''
+          AND ($1::int IS NULL OR company_id = $1)
+        ORDER BY v`,
+      [cid(req)]
+    );
+    res.json({ departments: rows.map(r => r.v) });
+  } catch { res.json({ departments: [] }); }
+});
+
 /* ── GET /certifications/expiring ────────────────────────────── */
-router.get('/certifications/expiring', async (req, res) => {
+router.get('/certifications/expiring', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const days = parseInt(req.query.days || 30);
   const sc   = companyId != null ? ` AND (sm.company_id IS NULL OR sm.company_id=${companyId})` : '';
@@ -379,7 +445,7 @@ router.get('/certifications/expiring', async (req, res) => {
       FROM   skill_matrix sm
       JOIN   employees e ON e.id = sm.employee_id
       WHERE  sm.certified=true AND sm.expiry_date IS NOT NULL
-        AND  sm.expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + $1${sc}
+        AND  sm.expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + $1::int${sc}
       ORDER  BY sm.expiry_date`, [days]
     );
     res.json(rows);
@@ -387,7 +453,7 @@ router.get('/certifications/expiring', async (req, res) => {
 });
 
 /* ── GET /cost-trend ─────────────────────────────────────────── */
-router.get('/cost-trend', async (req, res) => {
+router.get('/cost-trend', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   try {
     const { rows } = await pool.query(`
@@ -411,7 +477,7 @@ router.get('/cost-trend', async (req, res) => {
 // tenant anchor is the parent program, same join the /cost-trend handler
 // above already uses. Filtering on a bare `company_id` 500'd unconditionally
 // for any scoped caller (every non-super_admin role).
-router.get('/cost-by-type', async (req, res) => {
+router.get('/cost-by-type', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND (tp.company_id IS NULL OR tp.company_id=${companyId})` : '';
   try {
@@ -430,7 +496,7 @@ router.get('/cost-by-type', async (req, res) => {
 // training_costs has no company_id column of its own (see /cost-by-type above) —
 // inserting one 500'd unconditionally for every caller with "column company_id
 // does not exist". Tenant anchor is the parent program, not this row.
-router.post('/programs/:id/costs', async (req, res) => {
+router.post('/programs/:id/costs', requirePermission('training', 'add'), async (req, res) => {
   if (!MGR_ROLES.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
   const { cost_type, amount, description } = req.body;
   if (!cost_type || !amount) return res.status(400).json({ error: 'cost_type and amount required' });
@@ -445,7 +511,7 @@ router.post('/programs/:id/costs', async (req, res) => {
 });
 
 /* ── DELETE /skills/:id ──────────────────────────────────────── */
-router.delete('/skills/:id', async (req, res) => {
+router.delete('/skills/:id', requirePermission('training', 'delete'), captureBefore('skill_matrix'), async (req, res) => {
   try {
     const { rows } = await pool.query(`DELETE FROM skill_matrix WHERE id=$1 RETURNING id`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -454,16 +520,18 @@ router.delete('/skills/:id', async (req, res) => {
 });
 
 /* ── GET /mandatory-compliance ───────────────────────────────── */
-router.get('/mandatory-compliance', async (req, res) => {
+router.get('/mandatory-compliance', requirePermission('training', 'view'), async (req, res) => {
   const companyId = cid(req);
   const sc = companyId != null ? ` AND e.company_id=${companyId}` : '';
   const psc = companyId != null ? ` AND p.company_id=${companyId}` : '';
   try {
     const [progRes, empRes] = await Promise.all([
-      pool.query(`SELECT id, title, category, target_department, target_role FROM training_programs
-                  WHERE is_mandatory=true AND deleted_at IS NULL${psc}`),
-      pool.query(`SELECT id, name, department, designation FROM employees
-                  WHERE deleted_at IS NULL AND LOWER(status) IN ('active','probation')${sc}`),
+      pool.query(`SELECT p.id, p.title, p.category, p.target_department, p.target_role
+                  FROM training_programs p
+                  WHERE p.is_mandatory=true AND p.deleted_at IS NULL${psc}`),
+      pool.query(`SELECT e.id, e.name, e.department, e.designation
+                  FROM employees e
+                  WHERE e.deleted_at IS NULL AND LOWER(e.status) IN ('active','probation')${sc}`),
     ]);
     const enrollRes = await pool.query(`
       SELECT te.employee_id, te.program_id, te.status

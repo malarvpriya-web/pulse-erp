@@ -3,8 +3,9 @@
  * Live database health check driven by backend table introspection.
  *
  * Instead of a hardcoded endpoint list, this fetches /system-health/db-tables,
- * which enumerates every table in the database at request time. Any newly-created
- * table therefore appears in the connection test automatically — no manual edits.
+ * which enumerates every table in the database at request time — every schema,
+ * ordinary and partitioned alike. Any newly-created table therefore appears in
+ * the connection test automatically — no manual edits.
  *
  * The result shape is kept identical to the previous endpoint-based test so the
  * SystemHealth UI (status tiers, KPIs, grouping) renders unchanged.
@@ -82,19 +83,28 @@ export async function testAllConnections(onProgress) {
 
   const tables = Array.isArray(body?.tables) ? body.tables : [];
 
-  const results = tables.map((t, i) => ({
-    module: t.label || t.table,
-    group: t.group || 'Other',
-    url: t.table,
-    status: 200,
-    ok: true,
-    // The catalog read is a single round-trip; attribute the measured latency to
-    // the first row rather than fabricating a per-table number for every row.
-    ms: i === 0 ? ms : 0,
-    records: typeof t.rows === 'number' ? t.rows : 0,
-    dataSnippet: t.columns ? `${t.columns} column${t.columns !== 1 ? 's' : ''}` : null,
-    error: null,
-  }));
+  const results = tables.map((t, i) => {
+    const cols = t.columns ? `${t.columns} column${t.columns !== 1 ? 's' : ''}` : null;
+    // A partitioned table's row count is the sum over its partitions, so say how
+    // many there were — otherwise the number looks like it came from one table.
+    const parts = t.kind === 'partitioned'
+      ? `${t.partitions || 0} partition${t.partitions === 1 ? '' : 's'}`
+      : null;
+    return {
+      module: t.label || t.table,
+      group: t.group || 'Other',
+      // Schema-qualified when the backend says the bare name is ambiguous.
+      url: t.qualified_name || t.table,
+      status: 200,
+      ok: true,
+      // The catalog read is a single round-trip; attribute the measured latency to
+      // the first row rather than fabricating a per-table number for every row.
+      ms: i === 0 ? ms : 0,
+      records: typeof t.rows === 'number' ? t.rows : 0,
+      dataSnippet: [cols, parts].filter(Boolean).join(' · ') || null,
+      error: null,
+    };
+  });
 
   onProgress?.(100);
   return results;

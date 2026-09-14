@@ -63,6 +63,14 @@ async function getMaterialCost(projectId) {
   return parseFloat(rows[0]?.total || 0);
 }
 
+/**
+ * Fallback hourly rate for timesheet lines with no billing rate on the project
+ * member and no rate on the entry itself. This is an ASSUMPTION baked into
+ * labour_cost — a project whose members carry no billing_rate will still report
+ * a labour figure, computed at this rate.
+ */
+const DEFAULT_HOURLY_RATE = 500;
+
 /* ── 2. Labour cost — timesheets ────────────────────────────────────────── */
 async function getLabourCost(projectId) {
   if (!await tableExists('timesheet_entries')) return 0;
@@ -77,9 +85,17 @@ async function getLabourCost(projectId) {
   const hasBR     = hasPM && await columnExists('project_members', 'billing_rate');
   const hasHR     = await columnExists('timesheet_entries', 'hourly_rate');
 
-  let rateExpr = '500';
-  if (hasBR)      rateExpr = `COALESCE(pm.billing_rate, COALESCE(te.hourly_rate, 500))`;
-  else if (hasHR) rateExpr = `COALESCE(te.hourly_rate, 500)`;
+  // Compose the rate from the columns that actually exist. The previous version
+  // probed for te.hourly_rate but then referenced it unconditionally on the
+  // hasBR branch, so on a schema with project_members.billing_rate and NO
+  // timesheet_entries.hourly_rate (the live one) every recalculation died with
+  // 42703 — which is why project_cost_summary has never held a row this engine
+  // wrote. DEFAULT_HOURLY_RATE is an assumed fallback, not a measured rate.
+  const rateParts = [];
+  if (hasBR) rateParts.push('pm.billing_rate');
+  if (hasHR) rateParts.push('te.hourly_rate');
+  rateParts.push(String(DEFAULT_HOURLY_RATE));
+  const rateExpr = `COALESCE(${rateParts.join(', ')})`;
 
   const query = hasBR
     ? `SELECT COALESCE(SUM(${hoursExpr} * ${rateExpr}), 0) AS total
@@ -153,12 +169,12 @@ async function getQualityCost(projectId) {
   let total = 0;
 
   // NCR resolution cost (if column exists)
-  if (await tableExists('quality_ncrs') && await columnExists('quality_ncrs', 'project_id')) {
-    const hasCost = await columnExists('quality_ncrs', 'resolution_cost');
+  if (await tableExists('ncr_reports') && await columnExists('ncr_reports', 'project_id')) {
+    const hasCost = await columnExists('ncr_reports', 'resolution_cost');
     if (hasCost) {
       const { rows } = await pool.query(
         `SELECT COALESCE(SUM(COALESCE(resolution_cost,0)),0) AS total
-         FROM quality_ncrs WHERE project_id=$1`,
+         FROM ncr_reports WHERE project_id=$1`,
         [projectId]
       );
       total += parseFloat(rows[0]?.total || 0);

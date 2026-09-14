@@ -23,14 +23,19 @@ SET row_security = off;
 --
 
 INSERT INTO public.companies VALUES
-	(1, 'Manifest Technologies Private Limited', 'MANIFEST', '29AABCM1234A1Z5', 'Duragai Nagar, Tamil Nadu', NULL, 'Karnataka', 'India', true, '2026-06-18 08:14:48.880139+05:30', '2026-07-05 21:27:56.093756+05:30', '9808987809', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '29', 'Karnataka');
+	(1, 'Manifest Electra Private Limited', 'MANIFEST', '29AABCM1234A1Z5', 'Durgai Nagar, Tamil Nadu', NULL, 'Karnataka', 'India', true, '2026-06-18 08:14:48.880139+05:30', '2026-08-21 18:42:43.400593+05:30', '9808987809', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '29', 'Karnataka'),
+	(999905, 'ZZVS foreign tenant', 'ZZVSF', NULL, NULL, NULL, NULL, 'India', true, '2026-09-03 16:50:54.9841+05:30', '2026-09-03 16:50:54.9841+05:30', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+	(999901, 'ZZPROC foreign tenant', 'ZZPRC', NULL, NULL, NULL, NULL, 'India', true, '2026-09-02 19:46:43.105264+05:30', '2026-09-02 19:46:43.105264+05:30', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+	(999902, 'ZZHD foreign tenant', 'ZZHD', NULL, NULL, NULL, NULL, 'India', true, '2026-09-03 08:38:49.603422+05:30', '2026-09-03 08:38:49.603422+05:30', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+	(999903, 'ZZAN foreign', 'ZZANF', NULL, NULL, NULL, NULL, 'India', true, '2026-09-03 08:42:42.627174+05:30', '2026-09-03 08:42:42.627174+05:30', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+	(999904, 'ZZAN analytics tenant', 'ZZANA', NULL, NULL, NULL, NULL, 'India', true, '2026-09-03 09:01:53.620636+05:30', '2026-09-03 09:01:53.620636+05:30', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
 
 --
 -- Name: companies_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.companies_id_seq', 6, true);
+SELECT pg_catalog.setval('public.companies_id_seq', 323, true);
 
 
 --
@@ -1037,14 +1042,67 @@ INSERT INTO public.role_permissions VALUES
 	(954, 46, 'attendance', true, false, false, false, false, false),
 	(929, 22, 'approvals', true, true, false, false, false, false),
 	(931, 23, 'approvals', true, true, false, false, false, false),
-	(933, 25, 'approvals', true, true, false, false, false, false);
+	(933, 25, 'approvals', true, true, false, false, false, false),
+	(957, 44, 'marketing', false, false, false, false, false, false),
+	(958, 45, 'marketing', false, false, false, false, false, false),
+	(959, 46, 'marketing', false, false, false, false, false, false),
+	(960, 3, 'marketing', true, false, false, false, false, true),
+	(961, 4, 'marketing', false, false, false, false, false, false),
+	(962, 1, 'marketing', true, true, true, true, true, true),
+	(963, 2, 'marketing', true, true, true, true, true, true),
+	(964, 9, 'marketing', false, false, false, false, false, false),
+	(965, 10, 'marketing', false, false, false, false, false, false),
+	(966, 11, 'marketing', false, false, false, false, false, false),
+	(967, 12, 'marketing', false, false, false, false, false, false),
+	(968, 13, 'marketing', false, false, false, false, false, false),
+	(969, 14, 'marketing', false, false, false, false, false, false),
+	(970, 15, 'marketing', false, false, false, false, false, false),
+	(971, 16, 'marketing', false, false, false, false, false, false),
+	(972, 17, 'marketing', false, false, false, false, false, false),
+	(973, 18, 'marketing', false, false, false, false, false, false),
+	(974, 19, 'marketing', false, false, false, false, false, false),
+	(975, 20, 'marketing', false, false, false, false, false, false),
+	(976, 21, 'marketing', false, false, false, false, false, false),
+	(977, 22, 'marketing', false, false, false, false, false, false),
+	(978, 23, 'marketing', true, true, true, true, true, true),
+	(979, 24, 'marketing', true, true, true, false, false, true),
+	(980, 25, 'marketing', false, false, false, false, false, false),
+	(981, 26, 'marketing', false, false, false, false, false, false),
+	(982, 5, 'marketing', false, false, false, false, false, false),
+	(983, 44, 'logistics', false, false, false, false, false, false),
+	(984, 45, 'logistics', false, false, false, false, false, false),
+	(985, 46, 'logistics', false, false, false, false, false, false),
+	(986, 3, 'logistics', true, false, false, false, false, true),
+	(987, 4, 'logistics', false, false, false, false, false, false),
+	(988, 1, 'logistics', true, true, true, true, true, true),
+	(989, 2, 'logistics', true, true, true, true, true, true),
+	(990, 9, 'logistics', false, false, false, false, false, false),
+	(991, 10, 'logistics', false, false, false, false, false, false),
+	(992, 11, 'logistics', true, false, false, false, false, true),
+	(993, 12, 'logistics', false, false, false, false, false, false),
+	(994, 13, 'logistics', false, false, false, false, false, false),
+	(995, 14, 'logistics', true, true, true, true, true, true),
+	(996, 15, 'logistics', true, true, true, false, false, false),
+	(997, 16, 'logistics', true, true, true, false, false, true),
+	(998, 17, 'logistics', true, false, false, false, false, false),
+	(999, 18, 'logistics', false, false, false, false, false, false),
+	(1000, 19, 'logistics', false, false, false, false, false, false),
+	(1001, 20, 'logistics', false, false, false, false, false, false),
+	(1002, 21, 'logistics', false, false, false, false, false, false),
+	(1003, 22, 'logistics', false, false, false, false, false, false),
+	(1004, 23, 'logistics', true, false, false, false, false, true),
+	(1005, 24, 'logistics', true, false, false, false, false, false),
+	(1006, 25, 'logistics', false, false, false, false, false, false),
+	(1007, 26, 'logistics', false, false, false, false, false, false),
+	(1008, 5, 'logistics', false, false, false, false, false, false),
+	(1009, 4, 'training', true, true, true, false, false, false);
 
 
 --
 -- Name: role_permissions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.role_permissions_id_seq', 954, true);
+SELECT pg_catalog.setval('public.role_permissions_id_seq', 1009, true);
 
 
 --

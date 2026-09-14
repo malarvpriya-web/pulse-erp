@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { LayoutDashboard } from 'lucide-react';
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, LineChart, Line,
@@ -9,6 +11,7 @@ import VendorProjectImpact  from './VendorProjectImpact';
 import VendorRiskPanel      from './VendorRiskPanel';
 import VendorHealthWidget   from './VendorHealthWidget';
 import VendorHealthTrend    from './VendorHealthTrend';
+import { PageHero, PageShell, Stat } from '@/components/pulse-ui';
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 const fmtINR = n => {
@@ -20,11 +23,14 @@ const fmtINR = n => {
 };
 const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 const fmtPct  = v => v != null ? `${v}%` : '—';
+// Quantities are counts, not money — fmtINR would stamp a rupee sign on them.
+const fmtQty  = v => (v == null || v === '' || isNaN(parseFloat(v)))
+  ? '—' : parseFloat(v).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 
 // ── Design tokens ──────────────────────────────────────────────────────────────
 const C = {
   primary: '#6B3FDB', light: '#f5f3ff', border: '#e9e4ff',
-  green:   '#16a34a', red:   '#dc2626', amber:  '#d97706', blue:  '#2563eb',
+  green:   '#16a34a', red:   '#dc2626', amber:  '#6d28d9', blue:  '#2563eb',
   card: { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12 },
 };
 
@@ -38,13 +44,9 @@ function Badge({ label, color = C.primary, bg = C.light }) {
 }
 
 function KpiCard({ label, value, sub, color = '#111827', warn }) {
-  return (
-    <div style={{ ...C.card, padding: '14px 16px', borderTop: warn ? `3px solid ${C.red}` : `3px solid transparent` }}>
-      <div style={{ fontSize: 10, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 800, color }}>{value ?? '—'}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} sub={sub} color={color} warn={warn} />;
 }
 
 function EmptyState({ icon = '📭', msg = 'No data available' }) {
@@ -123,7 +125,7 @@ function ComplianceRow({ doc, done }) {
       <span style={{ marginLeft: 'auto', fontSize: 11 }}>
         {done
           ? <Badge label="Complete" color={C.green} bg="#dcfce7" />
-          : <Badge label="Pending" color={C.amber} bg="#fef3c7" />}
+          : <Badge label="Pending" color={C.amber} bg="#ede9fe" />}
       </span>
     </div>
   );
@@ -137,7 +139,7 @@ const ICON_MAP = {
 };
 const TYPE_COLOR = {
   registration: '#6B3FDB', first_po: '#0891b2', po: '#2563eb', grn: '#16a34a',
-  ncr: '#dc2626', bill: '#d97706', scorecard: '#0891b2', rfq: '#6b7280',
+  ncr: '#dc2626', bill: '#6d28d9', scorecard: '#0891b2', rfq: '#6b7280',
 };
 
 function TimelineView({ events }) {
@@ -208,13 +210,13 @@ const SCORE_WEIGHTS = [
   { key: 'quality_score',    label: 'Quality',     weight: 30, color: '#6B3FDB' },
   { key: 'delivery_score',   label: 'Delivery',    weight: 25, color: '#2563eb' },
   { key: 'cost_score',       label: 'Cost',        weight: 15, color: '#16a34a' },
-  { key: 'support_score',    label: 'Support',     weight: 15, color: '#d97706' },
+  { key: 'support_score',    label: 'Support',     weight: 15, color: '#6d28d9' },
   { key: 'compliance_score', label: 'Compliance',  weight: 15, color: '#0891b2' },
 ];
 const CLASSIFICATION_CFG = {
   Preferred: { color: '#16a34a', bg: '#dcfce7', icon: '🌟' },
   Approved:  { color: '#2563eb', bg: '#dbeafe', icon: '✅' },
-  Watchlist: { color: '#d97706', bg: '#fef3c7', icon: '⚠️' },
+  Watchlist: { color: '#6d28d9', bg: '#ede9fe', icon: '⚠️' },
   Blocked:   { color: '#dc2626', bg: '#fee2e2', icon: '🚫' },
 };
 
@@ -383,12 +385,21 @@ function ScoreForm({ vendorId, onSaved, onCancel }) {
 }
 
 // ── Main tabs ──────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Commercial', 'Quality', 'Projects', 'Inventory', 'Finance', 'Documents', 'Scorecard', 'Health', 'Health Trend', 'Timeline', 'Risk'];
+const TABS = ['Overview', 'Commercial', 'Purchases', 'Quality', 'Projects', 'Inventory', 'Finance', 'Documents', 'Scorecard', 'Health', 'Health Trend', 'Timeline', 'Risk'];
 
 export default function Vendor360() {
   const toast = useToast();
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const [vendors,     setVendors]     = useState([]);
-  const [selectedId,  setSelectedId]  = useState(null);
+  // Seeded from ?vendor= so a vendor row anywhere in the app can deep-link
+  // straight to this page instead of dumping the user on the first vendor in
+  // the list and making them hunt. Set at init, before loadVendors runs, so the
+  // "auto-select the first vendor" fallback below does not overwrite it.
+  const [selectedId,  setSelectedId]  = useState(() => {
+    const v = Number(params.get('vendor'));
+    return Number.isInteger(v) && v > 0 ? v : null;
+  });
   const [data,        setData]        = useState(null);
   const [listLoading, setListLoading] = useState(true);
   const [loading,     setLoading]     = useState(false);
@@ -396,9 +407,19 @@ export default function Vendor360() {
   const [search,      setSearch]      = useState('');
   const [timelineEvents, setTimelineEvents] = useState(null);
   const [riskData,    setRiskData]    = useState(null);
+  const [purchases,   setPurchases]   = useState(null);
+  const [purchasesErr, setPurchasesErr] = useState('');
+  const [purchaseSearch, setPurchaseSearch] = useState('');
   const [showScoreForm, setShowScoreForm] = useState(false);
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Re-arm on mount, do not just disarm on unmount. StrictMode mounts, unmounts
+  // and remounts every component in dev: the cleanup set this to false and
+  // nothing ever set it back, so every `if (mountedRef.current)` guard below
+  // failed on the surviving mount and the page hung on "Loading…" forever.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // ── Load vendor list ───────────────────────────────────────────────────────
   const loadVendors = useCallback(async () => {
@@ -420,6 +441,8 @@ export default function Vendor360() {
     setData(null);
     setTimelineEvents(null);
     setRiskData(null);
+    setPurchases(null);
+    setPurchasesErr('');
     try {
       const res = await api.get(`/vendor-360/${id}`);
       if (mountedRef.current) setData(res.data);
@@ -435,6 +458,22 @@ export default function Vendor360() {
         .catch(() => { if (mountedRef.current) setTimelineEvents([]); });
     }
   }, [tab, selectedId, timelineEvents]);
+
+  // ── Lazy-load line-level purchases ────────────────────────────────────────
+  // Kept out of the /vendor-360/:id payload on purpose: it is the one section
+  // that grows without bound (one row per PO line, ever), so it loads only when
+  // the tab is opened.
+  useEffect(() => {
+    if (tab !== 'Purchases' || !selectedId || purchases) return;
+    api.get(`/vendor-360/${selectedId}/purchase-lines`)
+      .then(r => { if (mountedRef.current) setPurchases(r.data); })
+      .catch(e => {
+        if (!mountedRef.current) return;
+        // Surfaced, not swallowed — an empty table would read as "we have never
+        // bought anything from this vendor", which is a different claim.
+        setPurchasesErr(e?.response?.data?.error || 'Could not load purchase history');
+      });
+  }, [tab, selectedId, purchases]);
 
   // ── Lazy-load risk ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -462,7 +501,7 @@ export default function Vendor360() {
   const health = data?.health     || {};
 
   const statusBadge = s => {
-    const m = { Active: { bg: '#dcfce7', c: C.green }, approved: { bg: '#dcfce7', c: C.green }, Blacklisted: { bg: '#fee2e2', c: C.red }, Suspended: { bg: '#fef3c7', c: C.amber } };
+    const m = { Active: { bg: '#dcfce7', c: C.green }, approved: { bg: '#dcfce7', c: C.green }, Blacklisted: { bg: '#fee2e2', c: C.red }, Suspended: { bg: '#ede9fe', c: C.amber } };
     const cfg = m[s] || { bg: '#f3f4f6', c: '#6b7280' };
     return <Badge label={s || 'Unknown'} color={cfg.c} bg={cfg.bg} />;
   };
@@ -476,43 +515,56 @@ export default function Vendor360() {
   );
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 60px)', fontFamily: 'inherit', overflow: 'hidden' }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Procurement"
+        title={v.name || 'Vendor 360°'}
+        subtitle={v.name ? (v.category || 'Full vendor intelligence') : 'Pick a vendor to see spend, purchases, quality and risk'}
+      />
+    }>
+      {/* Two-pane body. Both panes used to be rendered inside PageHero's
+           slot, which is a narrow flex item at the end of the hero row:
+          the KPI grid and every tab table were being squeezed into a ~200px
+          column on top of an otherwise empty hero. The hero now carries only the
+          vendor identity, and the panes live in the page body where they fit. */}
+      <div style={{ display: 'flex', alignItems: 'stretch', minHeight: 0 }}>
 
-      {/* ── Left Panel: Vendor List ──────────────────────────────────────────── */}
-      <div style={{ width: 280, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
-        <div style={{ padding: '16px 14px 12px', borderBottom: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#111827', marginBottom: 10 }}>Vendor 360°</div>
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && loadVendors()}
-            placeholder="Search vendors…"
-            style={{ width: '100%', padding: '7px 12px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, boxSizing: 'border-box', outline: 'none' }}
-          />
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {listLoading ? <div style={{ padding: 20, color: '#9ca3af', textAlign: 'center', fontSize: 13 }}>Loading…</div> : (
-            vendors.map(vv => (
-              <div key={vv.id} onClick={() => setSelectedId(vv.id)}
-                style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', background: selectedId === vv.id ? C.light : '#fff', borderLeft: selectedId === vv.id ? `3px solid ${C.primary}` : '3px solid transparent' }}>
-                <div style={{ fontWeight: 600, fontSize: 13, color: '#111827', marginBottom: 2 }}>{vv.name}</div>
-                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>{vv.vendor_code} · {vv.vendor_type || vv.category || 'Vendor'}</div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  {vv.po_value > 0 && <span style={{ fontSize: 11, color: C.primary, fontWeight: 600 }}>{fmtINR(vv.po_value)}</span>}
-                  {vv.po_count > 0 && <span style={{ fontSize: 10, color: '#9ca3af' }}>{vv.po_count} POs</span>}
-                  {vv.score > 0 && <span style={{ fontSize: 11, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 8, fontWeight: 600 }}>★ {parseFloat(vv.score).toFixed(1)}</span>}
+        {/* ── Left Panel: Vendor List ──────────────────────────────────────────── */}
+        <div style={{ width: 280, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
+          <div style={{ padding: '16px 14px 12px', borderBottom: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: '#111827', marginBottom: 10 }}>Vendor 360°</div>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && loadVendors()}
+              placeholder="Search vendors…"
+              style={{ width: '100%', padding: '7px 12px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, boxSizing: 'border-box', outline: 'none' }}
+            />
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {listLoading ? <div style={{ padding: 20, color: '#9ca3af', textAlign: 'center', fontSize: 13 }}>Loading…</div> : (
+              vendors.map(vv => (
+                <div key={vv.id} onClick={() => { setSelectedId(vv.id); setParams({ vendor: String(vv.id) }, { replace: true }); }}
+                  style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', background: selectedId === vv.id ? C.light : '#fff', borderLeft: selectedId === vv.id ? `3px solid ${C.primary}` : '3px solid transparent' }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: '#111827', marginBottom: 2 }}>{vv.name}</div>
+                  <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>{vv.vendor_code} · {vv.vendor_type || vv.category || 'Vendor'}</div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {vv.po_value > 0 && <span style={{ fontSize: 11, color: C.primary, fontWeight: 600 }}>{fmtINR(vv.po_value)}</span>}
+                    {vv.po_count > 0 && <span style={{ fontSize: 10, color: '#9ca3af' }}>{vv.po_count} POs</span>}
+                    {vv.score > 0 && <span style={{ fontSize: 11, background: '#ede9fe', color: '#5b21b6', padding: '1px 6px', borderRadius: 8, fontWeight: 600 }}>★ {parseFloat(vv.score).toFixed(1)}</span>}
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
-          {!listLoading && !vendors.length && (
-            <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>No vendors found</div>
-          )}
+              ))
+            )}
+            {!listLoading && !vendors.length && (
+              <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>No vendors found</div>
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* ── Right Panel ─────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        {/* ── Right Panel: the selected vendor ──────────────────────────── */}
+        <div style={{ flex: 1, minWidth: 0 }}>
         {!selectedId ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af' }}>
             <div style={{ textAlign: 'center' }}><div style={{ fontSize: 48, marginBottom: 12 }}>🏭</div><div style={{ fontWeight: 600 }}>Select a vendor</div></div>
@@ -557,26 +609,25 @@ export default function Vendor360() {
               {showScoreForm && (
                 <ScoreForm vendorId={selectedId}
                   onSaved={() => { setShowScoreForm(false); loadVendor(selectedId); }}
-                  onCancel={() => setShowScoreForm(false)}
-                />
+                  onCancel={() => setShowScoreForm(false)} />
               )}
 
               {/* Row 2: 8 KPI Header Cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
                 <KpiCard label="Total Spend"      value={fmtINR(proc.summary?.total_po_value)}      color={C.primary} />
-                <KpiCard label="Outstanding"      value={fmtINR(fin.summary?.outstanding_amount)}    color={fin.summary?.outstanding_amount > 0 ? C.amber : C.green} />
+                <KpiCard label="Outstanding"      value={fmtINR(fin.summary?.outstanding_amount)}    color={fin.summary?.outstanding_amount> 0 ? C.amber : C.green} />
                 <KpiCard label="Open PO Value"    value={fmtINR(proc.summary?.open_po_value)}        color={C.blue} />
-                <KpiCard label="On-Time Delivery" value={fmtPct(del.summary?.on_time_delivery_percent)} color={parseFloat(del.summary?.on_time_delivery_percent || 0) >= 80 ? C.green : C.amber} />
-                <KpiCard label="Overall Score"    value={sc.overall_score > 0 ? `${Math.round(sc.overall_score)}/100` : '—'} color={sc.overall_score >= 80 ? C.green : sc.overall_score >= 60 ? C.blue : C.amber} />
-                <KpiCard label="Open NCRs"        value={qual.summary?.open_ncr || 0}               color={(qual.summary?.open_ncr || 0) > 0 ? C.red : C.green} warn={(qual.summary?.open_ncr || 0) > 0} />
-                <KpiCard label="Open CAPAs"       value={qual.summary?.open_capa || 0}              color={(qual.summary?.open_capa || 0) > 0 ? C.amber : C.green} />
-                <KpiCard label="Projects"         value={proj.summary?.projects_count || 0}         color={C.primary} sub={proj.summary?.active_projects > 0 ? `${proj.summary.active_projects} active` : undefined} />
+                <KpiCard label="On-Time Delivery" value={fmtPct(del.summary?.on_time_delivery_percent)} color={parseFloat(del.summary?.on_time_delivery_percent || 0)>= 80 ? C.green : C.amber} />
+                <KpiCard label="Overall Score"    value={sc.overall_score> 0 ? `${Math.round(sc.overall_score)}/100` : '—'} color={sc.overall_score>= 80 ? C.green : sc.overall_score>= 60 ? C.blue : C.amber} />
+                <KpiCard label="Open NCRs"        value={qual.summary?.open_ncr || 0}               color={(qual.summary?.open_ncr || 0)> 0 ? C.red : C.green} warn={(qual.summary?.open_ncr || 0)> 0} />
+                <KpiCard label="Open CAPAs"       value={qual.summary?.open_capa || 0}              color={(qual.summary?.open_capa || 0)> 0 ? C.amber : C.green} />
+                <KpiCard label="Projects"         value={proj.summary?.projects_count || 0}         color={C.primary} sub={proj.summary?.active_projects> 0 ? `${proj.summary.active_projects} active` : undefined} />
               </div>
 
               {/* Tabs */}
               <div style={{ display: 'flex', gap: 2, overflowX: 'auto', paddingBottom: 1 }}>
                 {TABS.map(t => (
-                  <button key={t} onClick={() => setTab(t)} style={{ padding: '8px 14px', border: 'none', background: tab === t ? C.light : 'transparent', cursor: 'pointer', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', color: tab === t ? C.primary : '#6b7280', borderBottom: tab === t ? `2px solid ${C.primary}` : '2px solid transparent', marginBottom: -1, borderRadius: '6px 6px 0 0' }}>
+                  <button className="plh-cta" key={t} onClick={() => setTab(t)}>
                     {t}
                   </button>
                 ))}
@@ -600,7 +651,7 @@ export default function Vendor360() {
                           ['Phone',         v.phone],
                           ['Location',      [v.city, v.state].filter(Boolean).join(', ')],
                           ['Payment Terms', v.payment_terms],
-                          ['Credit Limit',  v.credit_limit > 0 ? fmtINR(v.credit_limit) : null],
+                          ['Credit Limit',  v.credit_limit> 0 ? fmtINR(v.credit_limit) : null],
                           ['Products',      v.products_services],
                           ['Bank',          reg.bank_name],
                           ['IFSC',          reg.ifsc],
@@ -617,7 +668,7 @@ export default function Vendor360() {
 
                     {/* Health + Scorecard */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                      {health?.score > 0 && (
+                      {health?.score> 0 && (
                         <SectionCard title="Vendor Health">
                           <div style={{ padding: '16px 20px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 14 }}>
@@ -660,7 +711,7 @@ export default function Vendor360() {
                   </div>
 
                   {/* Contacts */}
-                  {data.contacts?.length > 0 && (
+                  {data.contacts?.length> 0 && (
                     <SectionCard title="Contacts">
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12, padding: 16 }}>
                         {data.contacts.map((c, i) => (
@@ -711,11 +762,10 @@ export default function Vendor360() {
                           </td>
                           <TD>{fmtDate(po.expected_delivery_date || po.delivery_date)}</TD>
                         </tr>
-                      ))}
-                    />
+                      ))} />
                   </SectionCard>
 
-                  {(proc.rfqs || []).length > 0 && (
+                  {(proc.rfqs || []).length> 0 && (
                     <SectionCard title="RFQ History">
                       <Table
                         headers={['RFQ Number', 'Date', 'Required By', 'Quote Value', 'Delivery Days', 'Winner']}
@@ -731,10 +781,110 @@ export default function Vendor360() {
                               {r.is_winner ? <Badge label="Winner" color={C.green} bg="#dcfce7" /> : <span style={{ color: '#9ca3af', fontSize: 12 }}>—</span>}
                             </td>
                           </tr>
-                        ))}
-                      />
+                        ))} />
                     </SectionCard>
                   )}
+                </div>
+              )}
+
+              {/* ─── PURCHASES ────────────────────────────────────────────────── */}
+              {/* "What do we buy from this vendor, when, at what price" — the
+                  question the aggregated Items Supplied panel on the Inventory
+                  tab cannot answer, because it collapses away dates and rates. */}
+              {tab === 'Purchases' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                  {purchasesErr && (
+                    <div style={{ background: '#fee2e2', color: C.red, borderRadius: 8, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>
+                      {purchasesErr}
+                    </div>
+                  )}
+                  {!purchases && !purchasesErr && (
+                    <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>Loading purchase history…</div>
+                  )}
+                  {purchases && (() => {
+                    const q = purchaseSearch.trim().toLowerCase();
+                    const match = r => !q
+                      || (r.item_name || '').toLowerCase().includes(q)
+                      || (r.item_code || '').toLowerCase().includes(q)
+                      || (r.po_number || '').toLowerCase().includes(q);
+                    const items = (purchases.items || []).filter(match);
+                    const lines = (purchases.lines || []).filter(match);
+                    const ps = purchases.summary || {};
+                    return (
+                      <>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14 }}>
+                          <KpiCard label="Distinct Items"  value={ps.item_count || 0} color={C.blue} />
+                          <KpiCard label="Order Lines"     value={ps.line_count || 0} />
+                          <KpiCard label="Purchase Orders" value={ps.po_count || 0} />
+                          <KpiCard label="Total Purchased" value={fmtINR(ps.total_value)} color={C.primary} />
+                          <KpiCard label="First Order"     value={fmtDate(ps.first_ordered)} />
+                          <KpiCard label="Latest Order"    value={fmtDate(ps.last_ordered)} />
+                        </div>
+
+                        <input
+                          value={purchaseSearch}
+                          onChange={e => setPurchaseSearch(e.target.value)}
+                          placeholder="Filter by item, code or PO number…"
+                          style={{ maxWidth: 340, padding: '8px 12px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, outline: 'none' }}
+                        />
+
+                        <SectionCard title="Items Purchased — price range & volume">
+                          <Table
+                            headers={['Item', 'Code', 'UOM', 'Category', 'Lines', 'Total Qty', 'Last Rate', 'Avg Realised', 'Lowest', 'Highest', 'Total Value', 'Last Ordered']}
+                            emptyMsg="No purchases recorded for this vendor"
+                            rows={items.map(it => (
+                              <tr key={it.item_id ?? it.item_name} style={{ borderBottom: '1px solid #f9f9fb' }}>
+                                <TD bold>
+                                  {it.item_id
+                                    ? <button
+                                        onClick={() => navigate(`/ItemDetail?id=${it.item_id}`)}
+                                        title="Compare every vendor for this component"
+                                        style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: C.primary, fontWeight: 700, cursor: 'pointer' }}
+                                      >{it.item_name}</button>
+                                    : it.item_name}
+                                </TD>
+                                <TD primary>{it.item_code || '—'}</TD>
+                                <TD>{it.uom || '—'}</TD>
+                                <TD>{it.category_name || '—'}</TD>
+                                <TD right>{it.line_count}</TD>
+                                <TD right>{fmtQty(it.total_qty)}</TD>
+                                <TD right bold>{fmtINR(it.last_rate)}</TD>
+                                <TD right><span title="Total value divided by total quantity. It can differ from the unit prices beside it when a line amount carries a discount or was overridden.">{fmtINR(it.avg_rate)}</span></TD>
+                                <TD right>{fmtINR(it.min_rate)}</TD>
+                                <TD right>{fmtINR(it.max_rate)}</TD>
+                                <TD right bold>{fmtINR(it.total_value)}</TD>
+                                <TD>{fmtDate(it.last_ordered)}</TD>
+                              </tr>
+                            ))} />
+                        </SectionCard>
+
+                        <SectionCard title="Every Purchase Line">
+                          <Table
+                            headers={['PO Number', 'Order Date', 'Item', 'Qty', 'Rate', 'Amount', 'Received', 'Rejected', 'Received On', 'Status']}
+                            emptyMsg="No purchase lines match this filter"
+                            rows={lines.map(l => (
+                              <tr key={l.line_id} style={{ borderBottom: '1px solid #f9f9fb' }}>
+                                <TD primary>{l.po_number || `PO #${l.po_id}`}</TD>
+                                <TD>{fmtDate(l.order_date)}</TD>
+                                <TD bold>{l.item_name}{l.item_code ? ` (${l.item_code})` : ''}</TD>
+                                <TD right>{fmtQty(l.quantity)}</TD>
+                                <TD right bold>{fmtINR(l.rate)}</TD>
+                                <TD right>{fmtINR(l.amount)}</TD>
+                                <TD right>{fmtQty(l.received_qty)}</TD>
+                                <TD right>{l.rejected_qty ? fmtQty(l.rejected_qty) : '—'}</TD>
+                                <TD>{fmtDate(l.received_date)}</TD>
+                                <td style={{ padding: '9px 14px', borderBottom: '1px solid #f8f8fc' }}>
+                                  <Badge
+                                    label={l.status || '—'}
+                                    color={/received|completed/i.test(l.status || '') ? C.green : /approved/i.test(l.status || '') ? C.blue : '#374151'}
+                                    bg={/received|completed/i.test(l.status || '') ? '#dcfce7' : /approved/i.test(l.status || '') ? '#dbeafe' : '#f3f4f6'} />
+                                </td>
+                              </tr>
+                            ))} />
+                        </SectionCard>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -743,11 +893,11 @@ export default function Vendor360() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14 }}>
                     <KpiCard label="Total Inspections"  value={qual.summary?.total_inspections || 0} />
-                    <KpiCard label="Pass Rate"          value={fmtPct(qual.summary?.inspection_pass_rate)} color={parseFloat(qual.summary?.inspection_pass_rate || 0) >= 90 ? C.green : C.amber} />
+                    <KpiCard label="Pass Rate"          value={fmtPct(qual.summary?.inspection_pass_rate)} color={parseFloat(qual.summary?.inspection_pass_rate || 0)>= 90 ? C.green : C.amber} />
                     <KpiCard label="Total NCRs"         value={qual.summary?.total_ncrs || 0}        color="#374151" />
-                    <KpiCard label="Open NCRs"          value={qual.summary?.open_ncr || 0}          color={(qual.summary?.open_ncr || 0) > 0 ? C.red : C.green} warn={(qual.summary?.open_ncr || 0) > 0} />
-                    <KpiCard label="Critical NCRs"      value={qual.summary?.critical_ncrs || 0}     color={(qual.summary?.critical_ncrs || 0) > 0 ? C.red : C.green} />
-                    <KpiCard label="Open CAPAs"         value={qual.summary?.open_capa || 0}         color={(qual.summary?.open_capa || 0) > 0 ? C.amber : C.green} />
+                    <KpiCard label="Open NCRs"          value={qual.summary?.open_ncr || 0}          color={(qual.summary?.open_ncr || 0)> 0 ? C.red : C.green} warn={(qual.summary?.open_ncr || 0)> 0} />
+                    <KpiCard label="Critical NCRs"      value={qual.summary?.critical_ncrs || 0}     color={(qual.summary?.critical_ncrs || 0)> 0 ? C.red : C.green} />
+                    <KpiCard label="Open CAPAs"         value={qual.summary?.open_capa || 0}         color={(qual.summary?.open_capa || 0)> 0 ? C.amber : C.green} />
                     <KpiCard label="Rejection Qty"      value={qual.summary?.rejection_qty || 0}     color={C.amber} />
                   </div>
 
@@ -760,15 +910,14 @@ export default function Vendor360() {
                           <TD primary>{n.ncr_number || `NCR-${n.id}`}</TD>
                           <TD>{fmtDate(n.created_at)}</TD>
                           <TD>{n.defect_description || n.description || '—'}</TD>
-                          <td style={{ padding: '8px 12px' }}><Badge label={n.severity || '—'} color={n.severity === 'Critical' ? C.red : C.amber} bg={n.severity === 'Critical' ? '#fee2e2' : '#fef3c7'} /></td>
+                          <td style={{ padding: '8px 12px' }}><Badge label={n.severity || '—'} color={n.severity === 'Critical' ? C.red : C.amber} bg={n.severity === 'Critical' ? '#fee2e2' : '#ede9fe'} /></td>
                           <TD>{n.quantity_affected || '—'}</TD>
                           <td style={{ padding: '8px 12px' }}><Badge label={n.status || '—'} color={n.status === 'Closed' ? C.green : C.red} bg={n.status === 'Closed' ? '#dcfce7' : '#fee2e2'} /></td>
                         </tr>
-                      ))}
-                    />
+                      ))} />
                   </SectionCard>
 
-                  {(qual.capas || []).length > 0 && (
+                  {(qual.capas || []).length> 0 && (
                     <SectionCard title="CAPA Actions">
                       <Table
                         headers={['CAPA ID', 'NCR', 'Action', 'Due Date', 'Status', 'Verified']}
@@ -779,11 +928,10 @@ export default function Vendor360() {
                             <TD>{c.ncr_number || `NCR-${c.ncr_id}`}</TD>
                             <TD>{c.action_description || '—'}</TD>
                             <TD>{fmtDate(c.due_date)}</TD>
-                            <td style={{ padding: '8px 12px' }}><Badge label={c.status || '—'} color={c.status === 'closed' ? C.green : C.amber} bg={c.status === 'closed' ? '#dcfce7' : '#fef3c7'} /></td>
+                            <td style={{ padding: '8px 12px' }}><Badge label={c.status || '—'} color={c.status === 'closed' ? C.green : C.amber} bg={c.status === 'closed' ? '#dcfce7' : '#ede9fe'} /></td>
                             <TD>{fmtDate(c.verified_at)}</TD>
                           </tr>
-                        ))}
-                      />
+                        ))} />
                     </SectionCard>
                   )}
                 </div>
@@ -810,8 +958,7 @@ export default function Vendor360() {
                       open_po_value:   0,
                       at_risk:         proj.summary?.critical_projects || 0,
                     },
-                  } : null}
-                />
+                  } : null} />
               )}
 
               {/* ─── INVENTORY ────────────────────────────────────────────────── */}
@@ -820,11 +967,11 @@ export default function Vendor360() {
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14 }}>
                     <KpiCard label="Unique Items"      value={inv.summary?.unique_items || 0}          color={C.blue} />
                     <KpiCard label="Stock Value"       value={fmtINR(inv.summary?.stock_value)}        color={C.primary} />
-                    <KpiCard label="Critical Items"    value={inv.summary?.critical_materials || 0}    color={(inv.summary?.critical_materials || 0) > 0 ? C.red : C.green} />
-                    <KpiCard label="Long Lead Items"   value={inv.summary?.long_lead_items || 0}       color={(inv.summary?.long_lead_items || 0) > 0 ? C.amber : C.green} />
+                    <KpiCard label="Critical Items"    value={inv.summary?.critical_materials || 0}    color={(inv.summary?.critical_materials || 0)> 0 ? C.red : C.green} />
+                    <KpiCard label="Long Lead Items"   value={inv.summary?.long_lead_items || 0}       color={(inv.summary?.long_lead_items || 0)> 0 ? C.amber : C.green} />
                   </div>
 
-                  {(inv.critical_stock || []).filter(s => s.reorder_level != null && parseFloat(s.current_stock) <= parseFloat(s.reorder_level)).length > 0 && (
+                  {(inv.critical_stock || []).filter(s => s.reorder_level != null && parseFloat(s.current_stock) <= parseFloat(s.reorder_level)).length> 0 && (
                     <div style={{ ...C.card, padding: 16, border: '1px solid #fecaca', background: '#fff5f5' }}>
                       <div style={{ fontWeight: 700, fontSize: 13, color: C.red, marginBottom: 10 }}>⚠ Critical Stock Alerts</div>
                       {(inv.critical_stock || []).filter(s => s.reorder_level != null && parseFloat(s.current_stock) <= parseFloat(s.reorder_level)).map((item, i) => (
@@ -850,8 +997,7 @@ export default function Vendor360() {
                           <TD>{item.po_count}</TD>
                           <TD>{fmtDate(item.last_ordered)}</TD>
                         </tr>
-                      ))}
-                    />
+                      ))} />
                   </SectionCard>
                 </div>
               )}
@@ -862,10 +1008,10 @@ export default function Vendor360() {
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
                     <KpiCard label="Total Spend"         value={fmtINR(fin.summary?.total_spend)}              color={C.primary} />
                     <KpiCard label="Amount Paid"         value={fmtINR(fin.summary?.paid_amount)}              color={C.green} />
-                    <KpiCard label="Outstanding"         value={fmtINR(fin.summary?.outstanding_amount)}       color={fin.summary?.outstanding_amount > 0 ? C.amber : C.green} warn={fin.summary?.outstanding_amount > 0} />
+                    <KpiCard label="Outstanding"         value={fmtINR(fin.summary?.outstanding_amount)}       color={fin.summary?.outstanding_amount> 0 ? C.amber : C.green} warn={fin.summary?.outstanding_amount> 0} />
                     <KpiCard label="Total Bills"         value={fin.summary?.total_bills || 0} />
-                    <KpiCard label="Pending Bills"       value={fin.summary?.pending_bills || 0}               color={(fin.summary?.pending_bills || 0) > 0 ? C.amber : C.green} />
-                    <KpiCard label="Avg Payment Days"    value={fin.summary?.average_payment_days > 0 ? `${parseFloat(fin.summary.average_payment_days).toFixed(0)}d` : '—'} />
+                    <KpiCard label="Pending Bills"       value={fin.summary?.pending_bills || 0}               color={(fin.summary?.pending_bills || 0)> 0 ? C.amber : C.green} />
+                    <KpiCard label="Avg Payment Days"    value={fin.summary?.average_payment_days> 0 ? `${parseFloat(fin.summary.average_payment_days).toFixed(0)}d` : '—'} />
                     <KpiCard label="TDS Deducted"        value={fmtINR(fin.summary?.total_tds)} />
                   </div>
 
@@ -880,11 +1026,10 @@ export default function Vendor360() {
                           <TD>{fmtDate(b.due_date)}</TD>
                           <TD bold>{fmtINR(b.total_amount || b.amount)}</TD>
                           <TD>{fmtINR(b.balance)}</TD>
-                          <td style={{ padding: '8px 12px' }}><Badge label={b.status || '—'} color={b.status === 'Paid' || b.status === 'paid' ? C.green : C.amber} bg={b.status === 'Paid' || b.status === 'paid' ? '#dcfce7' : '#fef3c7'} /></td>
-                          <TD>{b.tds_amount > 0 ? fmtINR(b.tds_amount) : '—'}</TD>
+                          <td style={{ padding: '8px 12px' }}><Badge label={b.status || '—'} color={b.status === 'Paid' || b.status === 'paid' ? C.green : C.amber} bg={b.status === 'Paid' || b.status === 'paid' ? '#dcfce7' : '#ede9fe'} /></td>
+                          <TD>{b.tds_amount> 0 ? fmtINR(b.tds_amount) : '—'}</TD>
                         </tr>
-                      ))}
-                    />
+                      ))} />
                   </SectionCard>
                 </div>
               )}
@@ -902,7 +1047,11 @@ export default function Vendor360() {
                         <ComplianceRow doc="Bank Details"                   done={!!(reg.bank_name)} />
                         <ComplianceRow doc="MSME / Udyam Registration"     done={!!docs.compliance.msme_status} />
                         <ComplianceRow doc="ISO Certification"              done={!!(docs.compliance.iso_certificates)} />
-                        <ComplianceRow doc="Vendor Agreement Signed"        done={v.status === 'Active' || v.status === 'approved'} />
+                        {/* Case-insensitive: the approval flow used to write 'Active' while the
+              column default and every other writer use 'active'. The writer is
+              fixed and the rows normalised, but a reader that hard-codes one
+              spelling is how that drift stayed invisible for so long. */}
+          <ComplianceRow doc="Vendor Agreement Signed"        done={['active', 'approved'].includes(String(v.status || '').toLowerCase())} />
                       </div>
                     </SectionCard>
                   )}
@@ -935,8 +1084,7 @@ export default function Vendor360() {
               {tab === 'Health' && (
                 <VendorHealthWidget
                   vendorId={selectedId}
-                  onRecalculate={() => loadVendor(selectedId)}
-                />
+                  onRecalculate={() => loadVendor(selectedId)} />
               )}
 
               {/* ─── HEALTH TREND ─────────────────────────────────────────────── */}
@@ -952,7 +1100,9 @@ export default function Vendor360() {
             </div>
           </>
         )}
+        </div>
       </div>
-    </div>
+    </PageShell>
   );
 }
+

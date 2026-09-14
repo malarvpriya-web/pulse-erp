@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
-import { AlertTriangle, TrendingDown, Clock, CheckCircle } from 'lucide-react';
+import { AlertTriangle, TrendingDown, Clock, CheckCircle, BarChart3 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 
 const SEV_COLOR = {
   critical: { bg:'#fee2e2', color:'#991b1b' },
-  high:     { bg:'#fde68a', color:'#92400e' },
-  medium:   { bg:'#fef3c7', color:'#92400e' },
+  high:     { bg:'#ddd6fe', color:'#5b21b6' },
+  medium:   { bg:'#ede9fe', color:'#5b21b6' },
   low:      { bg:'#d1fae5', color:'#065f46' },
 };
 
@@ -14,32 +16,66 @@ export default function BottleneckAnalytics() {
   const [bottlenecks, setBottlenecks] = useState([]);
   const [chart,       setChart]       = useState([]);
   const [loading,     setLoading]     = useState(false);
+  const [departments, setDepartments] = useState([]);
+
+  // Bottlenecks are open task queues — a backlog by definition, so no period.
+  const filters = useDashboardFilters({
+    dimensions: { department: 'all' },
+    storageKey: 'bottleneck-analytics',
+  });
+  const { params } = filters;
 
   useEffect(() => {
+    let cancelled = false;
+    api.get('/operations/filter-options')
+      .then(r => { if (!cancelled) setDepartments(r.data?.departments || []); })
+      .catch(() => { /* falls back to "All Departments" only */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
     Promise.allSettled([
-      api.get('/operations/bottlenecks'),
-      api.get('/operations/workload-chart'),
+      api.get('/operations/bottlenecks', { params }),
+      api.get('/operations/workload-chart', { params }),
     ]).then(([bRes, cRes]) => {
+      if (cancelled) return;
       setBottlenecks(bRes.status==='fulfilled' ? (Array.isArray(bRes.value?.data) ? bRes.value.data : []) : []);
       setChart(cRes.status==='fulfilled'       ? (Array.isArray(cRes.value?.data) ? cRes.value.data : []) : []);
-    }).finally(() => setLoading(false));
-  }, []);
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [params]);
 
   const critical = bottlenecks.filter(b => b.severity === 'critical').length;
   const medium   = bottlenecks.filter(b => b.severity === 'medium').length;
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ marginBottom:24 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Bottleneck Analytics</h1>
-        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Identify and resolve operational bottlenecks</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={BarChart3}
+        eyebrow="Operations"
+        title="Bottleneck Analytics"
+        subtitle="Identify and resolve operational bottlenecks"
+      />
+    }>
+
+      <DashboardFilterBar
+        filters={filters}
+        showPeriod={false}
+        dimensions={[{
+          key: 'department',
+          label: 'Department',
+          allLabel: 'All Departments',
+          options: departments.map(d => ({ value: d, label: d })),
+        }]}
+      />
 
       {/* KPIs */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:16, marginBottom:24 }}>
         {[
           { label:'Critical Bottlenecks', value:critical,           color:'#ef4444', icon:AlertTriangle },
-          { label:'Medium Issues',        value:medium,            color:'#f59e0b', icon:TrendingDown },
+          { label:'Medium Issues',        value:medium,            color:'#7c5cf0', icon:TrendingDown },
           { label:'Total Identified',     value:bottlenecks.length,color:'#6366f1', icon:Clock },
         ].map(k => (
           <div key={k.label} style={{ background:'#fff', borderRadius:12, padding:20, border:'1px solid #f0f0f4' }}>
@@ -105,6 +141,6 @@ export default function BottleneckAnalytics() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -1,20 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 import {
   Plus, X, Search, MapPin, Clock, Calendar, AlertCircle, CheckCircle,
   Download, ChevronLeft, ChevronRight, List, LayoutGrid, TrendingUp,
+  LifeBuoy,
 } from 'lucide-react';
 
 const STATUS_COLOR = {
   Scheduled:     { bg: '#ede9fe', color: '#6B3FDB' },
-  'In Progress': { bg: '#fef3c7', color: '#92400e' },
+  'In Progress': { bg: '#ede9fe', color: '#5b21b6' },
   Completed:     { bg: '#d1fae5', color: '#065f46' },
   Cancelled:     { bg: '#fee2e2', color: '#991b1b' },
 };
 const PRIORITY_COLOR = {
   High:   { bg: '#fee2e2', color: '#991b1b' },
-  Medium: { bg: '#fef3c7', color: '#92400e' },
+  Medium: { bg: '#ede9fe', color: '#5b21b6' },
   Low:    { bg: '#f3f4f6', color: '#374151' },
   Normal: { bg: '#f3f4f6', color: '#374151' },
 };
@@ -28,7 +30,7 @@ const EMPTY_FORM = {
 const EMPTY_COMPLETE = {
   work_done: '', parts_used: [], labour_hours: '', travel_km: '',
   cost: '', start_time_actual: '', end_time_actual: '', customer_signature: '',
-  resolution_notes: '',
+  resolution_notes: '', customer_rating: 0, customer_feedback: '',
 };
 
 const DAY_NAMES  = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -97,6 +99,28 @@ export default function FieldVisitScheduler() {
     } finally { if (isMounted.current) setSaving(false); }
   };
 
+  // The backend (POST /field-visits) already resolves a ticket_number typed
+  // into "Ticket ID" and carries customer/site/serial data forward from it —
+  // this just previews that same lookup live so the form fields visibly
+  // fill in instead of the match only happening silently at save time. Never
+  // overwrites anything the user already typed.
+  const lookupTicket = async () => {
+    const ref = form.ticket_id.trim();
+    if (!ref) return;
+    try {
+      const { data } = await api.get('/servicedesk/tickets', { params: { search: ref, limit: 5 } });
+      const match = (data?.tickets || []).find(t => t.ticket_number === ref) || (data?.tickets || [])[0];
+      if (!match) return;
+      setForm(p => ({
+        ...p,
+        customer_name:   p.customer_name   || match.requester_name || '',
+        purpose:         p.purpose         || match.title || '',
+        serial_number:   p.serial_number   || match.serial_number || '',
+        amc_contract_id: p.amc_contract_id || match.amc_contract_id || '',
+      }));
+    } catch { /* best-effort preview only — save-time resolution is authoritative */ }
+  };
+
   const updateStatus = async (id, status) => {
     try {
       await api.put(`/servicedesk/field-visits/${id}`, { status });
@@ -135,6 +159,8 @@ export default function FieldVisitScheduler() {
         end_time_actual:    completeData.end_time_actual    || null,
         customer_signature: completeData.customer_signature || null,
         notes:              completeData.resolution_notes   || null,
+        customer_rating:    completeData.customer_rating    || null,
+        customer_feedback:  completeData.customer_feedback  || null,
       });
       toast.success('Visit marked as completed');
       setCompleting(null); setCompleteData(EMPTY_COMPLETE);
@@ -196,32 +222,28 @@ export default function FieldVisitScheduler() {
   const statCards = [
     { label: 'Total Visits',   value: visits.length,    icon: <TrendingUp  size={16} color="#6B3FDB" />, bg: '#ede9fe', color: '#6B3FDB' },
     { label: "Today's Visits", value: todayVisits,      icon: <Calendar    size={16} color="#2563eb" />, bg: '#dbeafe', color: '#2563eb' },
-    { label: 'Pending',        value: pendingVisits,    icon: <AlertCircle size={16} color="#d97706" />, bg: '#fef3c7', color: '#d97706' },
+    { label: 'Pending',        value: pendingVisits,    icon: <AlertCircle size={16} color="#6d28d9" />, bg: '#ede9fe', color: '#6d28d9' },
     { label: 'Completed',      value: completedVisits,  icon: <CheckCircle size={16} color="#059669" />, bg: '#d1fae5', color: '#059669' },
   ];
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
-      {/* ── Header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Field Service</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            {visits.length} visits · {todayVisits} today · {completedVisits} completed
-            {overdueVisits > 0 && <span style={{ color: '#ef4444', fontWeight: 600, marginLeft: 8 }}>· {overdueVisits} overdue</span>}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={handleExport}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LifeBuoy}
+        eyebrow="Service Desk"
+        title="Field Service"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={handleExport}>
             <Download size={14} /> Export
           </button>
-          <button onClick={() => setShowForm(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+          <button className="plh-cta" onClick={() => setShowForm(true)}>
             <Plus size={15} /> Schedule Visit
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+      {/* ── Header ── */}
+
 
       {/* ── KPI Cards ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 20 }}>
@@ -347,7 +369,7 @@ export default function FieldVisitScheduler() {
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                           {v?.status === 'Scheduled' && (
                             <button onClick={() => updateStatus(v.id, 'In Progress')}
-                              style={{ padding: '3px 8px', background: '#fef3c7', color: '#92400e', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Start</button>
+                              style={{ padding: '3px 8px', background: '#ede9fe', color: '#5b21b6', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Start</button>
                           )}
                           {(v?.status === 'Scheduled' || v?.status === 'In Progress') && (
                             <button onClick={() => { setCompleting(v.id); setCompleteData(EMPTY_COMPLETE); }}
@@ -501,7 +523,7 @@ export default function FieldVisitScheduler() {
               <div>
                 <label style={labelStyle}>Ticket ID</label>
                 <input value={form.ticket_id} onChange={e => setForm(p => ({ ...p, ticket_id: e.target.value }))}
-                  placeholder="SD-001" style={inputStyle} />
+                  onBlur={lookupTicket} placeholder="e.g. TKT-0001 or IPS-00001" style={inputStyle} />
               </div>
               <div>
                 <label style={labelStyle}>AMC Contract ID</label>
@@ -626,6 +648,32 @@ export default function FieldVisitScheduler() {
                   Parts total: ₹{completeData.parts_used.reduce((s, p) => s + (parseFloat(p.qty) * parseFloat(p.unit_cost || 0)), 0).toLocaleString('en-IN')}
                 </div>
               )}
+
+              {/* Customer satisfaction — feeds the Voice-of-Customer dashboard
+                  (service_visit / amc_visit, based on whether this visit is
+                  linked to an AMC contract). Optional: only captured if the
+                  customer is present to give it. */}
+              <div style={{ gridColumn: '1/-1', borderTop: '1px solid #f3f4f6', paddingTop: 14, marginTop: 4 }}>
+                <label style={labelStyle}>Customer Satisfaction (optional)</label>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                  {[1, 2, 3, 4, 5].map(n => (
+                    <button key={n} type="button"
+                      onClick={() => setCompleteData(d => ({ ...d, customer_rating: d.customer_rating === n ? 0 : n }))}
+                      title={`${n} star${n > 1 ? 's' : ''}`}
+                      style={{
+                        width: 36, height: 36, borderRadius: '50%', cursor: 'pointer', fontSize: 16,
+                        border: `2px solid ${completeData.customer_rating >= n ? '#6d28d9' : '#e5e7eb'}`,
+                        background: completeData.customer_rating >= n ? '#ede9fe' : '#fff',
+                      }}>
+                      ⭐
+                    </button>
+                  ))}
+                </div>
+                <textarea value={completeData.customer_feedback}
+                  onChange={e => setCompleteData(d => ({ ...d, customer_feedback: e.target.value }))}
+                  rows={2} placeholder="Any comments the customer shared about this visit..."
+                  style={{ ...inputStyle, resize: 'vertical' }} />
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
@@ -638,6 +686,6 @@ export default function FieldVisitScheduler() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

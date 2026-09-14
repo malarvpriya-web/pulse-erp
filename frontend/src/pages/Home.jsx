@@ -3,11 +3,14 @@ import {
   CheckSquare, Clock, Bell,
   RefreshCw, Megaphone, PartyPopper, CheckCheck,
   FileText, Download, LogIn, LogOut, MapPin,
-  Inbox, Send, ShieldCheck, Sparkles,
+  Inbox, Send, ShieldCheck, Sparkles, AlertCircle,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
-import FaceClockModal, { getLocationString } from '@/components/attendance/FaceClockModal';
+import CameraClockModal from '@/components/attendance/CameraClockModal';
+import PunchModeNotice from '@/components/attendance/PunchModeNotice';
+import { getLocationString } from '@/components/attendance/geo';
+import usePunchMode from '@/hooks/usePunchMode';
 import './Home.css';
 
 const CelebrationsBoard = lazy(() => import('@/components/dashboard/CelebrationsBoard'));
@@ -118,19 +121,32 @@ const ApprovalRow = ({ a }) => {
   );
 };
 
-const DocRow = ({ d }) => (
-  <div className="hm-doc-row">
-    <span className="hm-doc-icon"><FileText size={15} /></span>
-    <div className="hm-doc-info">
-      <span className="hm-doc-title">{d.title}</span>
-      {d.description && <span className="hm-doc-desc">{d.description}</span>}
-      {d.updated_at && <span className="hm-doc-date">Updated {fmtLongDate(d.updated_at)}</span>}
-    </div>
+// A Google Drive "share" link (…/file/d/ID/view or ?id=ID) opens Drive's own
+// viewer page, not the file — the HTML5 `download` attribute is a no-op for
+// cross-origin URLs like this, so clicking it just navigates there instead of
+// downloading anything. Drive's `uc?export=download` endpoint for the same
+// file id responds with a real Content-Disposition: attachment, which forces
+// an actual download regardless of the anchor's `download` attribute.
+const driveFileId = url => {
+  const m = String(url || '').match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || String(url || '').match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : null;
+};
+const downloadHref = d => {
+  const id = String(d.file_url || '').includes('drive.google.com') ? driveFileId(d.file_url) : null;
+  return id ? `https://drive.google.com/uc?export=download&id=${id}` : d.file_url;
+};
+
+// Single-column tile — full-width row so the document title is never
+// truncated; the card scrolls internally if the list runs long.
+const DocTile = ({ d }) => (
+  <div className="hm-doctile" title={d.description || d.title}>
+    <span className="hm-doctile-icon"><FileText size={14} /></span>
+    <span className="hm-doctile-title">{d.title}</span>
     {d.file_url
-      ? <a className="hm-doc-badge" href={d.file_url} target="_blank" rel="noopener noreferrer" title="View / download">
-          <Download size={11} /> View
+      ? <a className="hm-doctile-dl" href={downloadHref(d)} download title="Download">
+          <Download size={11} /> Download
         </a>
-      : <span className="hm-doc-badge hm-doc-badge--muted">Soon</span>}
+      : <span className="hm-doctile-dl hm-doctile-dl--muted">Soon</span>}
   </div>
 );
 
@@ -150,6 +166,19 @@ const CardShell = ({ icon, iconBg, title, action, children }) => (
 const Skeleton = () => <div className="hm-skeleton-list"><div className="hm-sk"/><div className="hm-sk"/><div className="hm-sk"/></div>;
 const Empty = ({ icon, text }) => <div className="hm-empty-state">{icon}<p>{text}</p></div>;
 
+// Shown when /home/summary itself failed. Without it a dropped request looked
+// exactly like "there is nothing here" — the Policies / Brand Vault panels
+// reported "no documents yet" for what was really a network or DB error.
+const Failed = ({ what, onRetry }) => (
+  <div className="hm-empty-state">
+    <AlertCircle size={28} color="#f59e0b" />
+    <p>Couldn't load {what}.</p>
+    <button type="button" className="hm-text-btn" onClick={onRetry}>
+      <RefreshCw size={11} /> Retry
+    </button>
+  </div>
+);
+
 export default function Home({ setPage }) {
   const { user: authUser, role: authRole } = useAuth();
   const role = (authRole || 'employee').toLowerCase();
@@ -158,15 +187,19 @@ export default function Home({ setPage }) {
 
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const ctrl = useRef(null);
 
   // ── attendance / quick clock-in ───────────────────────────────────────────
   const [attendance, setAttendance] = useState(null);
-  const [faceOpen, setFaceOpen]     = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [clockLoading, setClockLoading] = useState(false);
   const [now, setNow]     = useState(new Date());
   const [toast, setToast] = useState(null);
   const empId = authUser?.employee_id;
+  // Only field employees punch from the app; everyone else uses the office
+  // face/biometric device and sees a notice instead of a button.
+  const punch = usePunchMode(empId);
 
   // Anyone linked to an employee record punches in from Home — managers, HR and
   // finance staff clock in too. Employee logins that HR never linked still get
@@ -178,18 +211,33 @@ export default function Home({ setPage }) {
     setTimeout(() => setToast(null), 3200);
   };
 
+  // One in-flight request at a time. The controller is captured in a local so a
+  // superseded call (StrictMode's double effect, a refresh click, or a
+  // `pulse:*-updated` event landing mid-load) can tell that it is no longer the
+  // owner of the page state: without that check its `finally` flipped `loading`
+  // to false while the newer request was still running, so every panel briefly
+  // rendered its *empty* state — Policies and Brand Vault showed "No policy
+  // documents yet." / "No templates yet." instead of the skeleton.
   const load = useCallback(async () => {
     ctrl.current?.abort();
-    ctrl.current = new AbortController();
+    const myCtrl = new AbortController();
+    ctrl.current = myCtrl;
+    const isStale = () => myCtrl.signal.aborted || ctrl.current !== myCtrl;
     setLoading(true);
+    setLoadError(false);
     try {
-      const { data } = await api.get('/home/summary', { signal: ctrl.current.signal });
+      const { data } = await api.get('/home/summary', { signal: myCtrl.signal });
+      if (isStale()) return;
       setSummary(data);
       setAttendance(normalizeAttendance(data?.myAttendance));
     } catch (e) {
-      if (e?.code !== 'ERR_CANCELED') setSummary(null);
+      if (isStale() || e?.code === 'ERR_CANCELED') return;
+      // A failed fetch is NOT "you have no documents" — flag it so the panels
+      // offer a retry instead of an empty state that reads like real data.
+      setSummary(null);
+      setLoadError(true);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, []);
 
@@ -208,7 +256,7 @@ export default function Home({ setPage }) {
   const clockedIn = !!attendance?.check_in && !attendance?.check_out;
   const clockDone = !!attendance?.check_in && !!attendance?.check_out;
 
-  const handleClockAction = useCallback(async (faceData = null) => {
+  const handleClockAction = useCallback(async (proof = null) => {
     if (!empId) {
       showToast('Your login is not linked to an employee record — ask HR to link it.', 'err');
       return;
@@ -217,13 +265,16 @@ export default function Home({ setPage }) {
     try {
       const isClockIn = !attendance?.check_in;
       const time = new Date().toTimeString().slice(0, 5); // "HH:MM"
-      const location = isClockIn ? await getLocationString() : null;
+      // Clock-in carries the selfie + GPS the camera modal just captured; a
+      // clock-out re-reads GPS only (attendance_records holds ONE selfie_url,
+      // so sending a second photo would overwrite the arrival proof).
+      const location = proof?.location ?? (isClockIn ? await getLocationString() : null);
       const { data } = await api.post('/attendance/clock', {
         employee_id: empId,
         action: isClockIn ? 'in' : 'out',
         time,
         ...(location ? { location } : {}),
-        ...(faceData?.face_token ? { face_token: faceData.face_token } : {}),
+        ...(proof?.selfie_url ? { selfie_url: proof.selfie_url } : {}),
       });
       setAttendance(normalizeAttendance(data));
       showToast(isClockIn ? 'Clocked in successfully!' : 'Clocked out successfully!');
@@ -234,11 +285,11 @@ export default function Home({ setPage }) {
     }
   }, [attendance, empId]);
 
-  // Clock-in runs the face flow (geo/shift policy enforced server-side); clock-out
-  // punches directly — mirrors the EmployeeDashboard clock behaviour.
+  // Clock-in opens the camera (selfie + GPS are mandatory server-side for field
+  // staff); clock-out punches directly — mirrors the EmployeeDashboard behaviour.
   const onClockClick = () => {
     if (clockedIn || !empId) handleClockAction();
-    else setFaceOpen(true);
+    else setCameraOpen(true);
   };
 
   useEffect(() => {
@@ -266,6 +317,10 @@ export default function Home({ setPage }) {
   const announcements = summary?.announcements || [];
   const policies    = summary?.policies || [];
   const brandAssets = summary?.brandAssets || [];
+  // Panels whose query failed server-side: the request itself was a 200, but
+  // that slice came back empty because of a DB error, not because there is
+  // nothing to show. Treated as a load failure, not as an empty list.
+  const degraded    = summary?.degraded || [];
 
   const apprCount   = myApprovals.awaitingMyAction.length;
   const openTaskCt  = myTasks.length;
@@ -348,17 +403,22 @@ export default function Home({ setPage }) {
             </div>
           </div>
           <div className="hm-att-right">
-            {!clockedIn && !clockDone && (
-              <span className="hm-att-geo"><MapPin size={11} /> location & face verified</span>
+            {!clockedIn && !clockDone && punch.canPunch && (
+              <span className="hm-att-geo"><MapPin size={11} /> selfie & location required</span>
             )}
             {clockDone ? (
               <span className="hm-att-done-badge"><CheckCheck size={14} /> Day complete</span>
+            ) : punch.loading ? (
+              <span className="hm-att-geo">Checking your attendance setup…</span>
+            ) : !punch.canPunch ? (
+              /* Non-field staff punch on the office face/biometric device — show
+                 the reason rather than a button the server would reject. */
+              <PunchModeNotice reason={punch.reason} message={punch.message} compact />
             ) : (
               <button
                 className={`hm-att-btn ${clockedIn ? 'hm-att-btn--out' : 'hm-att-btn--in'}`}
                 onClick={onClockClick}
-                disabled={clockLoading || !empId}
-                title={!empId ? 'Your login is not linked to an employee record' : undefined}
+                disabled={clockLoading}
               >
                 {clockedIn ? <LogOut size={15} /> : <LogIn size={15} />}
                 {clockLoading ? 'Please wait…' : clockedIn ? 'Clock Out' : 'Clock In'}
@@ -378,6 +438,7 @@ export default function Home({ setPage }) {
             title="My Open Tasks"
           >
             {loading ? <Skeleton />
+              : loadError ? <Failed what="your tasks" onRetry={load} />
               : myTasks.length === 0
                 ? <Empty icon={<CheckCheck size={28} color="#d1d5db" />} text="All caught up!" />
                 : myTasks.map((t, i) => <TaskRow key={t.id || i} t={t} />)}
@@ -389,6 +450,7 @@ export default function Home({ setPage }) {
             title="My Pending Approvals"
           >
             {loading ? <Skeleton />
+              : loadError ? <Failed what="your approvals" onRetry={load} />
               : (
                 <>
                   <div className="hm-sub-hd"><Inbox size={11} /> Awaiting my action</div>
@@ -409,6 +471,7 @@ export default function Home({ setPage }) {
             title="Announcements"
           >
             {loading ? <Skeleton />
+              : loadError ? <Failed what="announcements" onRetry={load} />
               : announcements.length === 0
                 ? <Empty icon={<Megaphone size={28} color="#d1d5db" />} text="No active announcements." />
                 : announcements.map((ann, i) => (
@@ -423,15 +486,18 @@ export default function Home({ setPage }) {
                   ))}
           </CardShell>
 
-          {/* Slot 4 — Policies (all roles; replaces the old Live Activity Feed) */}
+          {/* Slot 4 — Policies (all roles; replaces the old Live Activity Feed).
+              Sourced from hr_policies — whatever's linked/uploaded via the Policy
+              Documents page (features/hr/pages/Policies.jsx) shows up here, live. */}
           <CardShell
             icon={<ShieldCheck size={13} color="#0ea5e9" />} iconBg="hm-icon-bg--announcements"
             title="Policies"
           >
             {loading ? <Skeleton />
+              : (loadError || degraded.includes('policies')) ? <Failed what="policies" onRetry={load} />
               : policies.length === 0
                 ? <Empty icon={<FileText size={28} color="#d1d5db" />} text="No policy documents yet." />
-                : policies.map((d, i) => <DocRow key={d.id || i} d={d} />)}
+                : <div className="hm-doc-grid">{policies.map((d, i) => <DocTile key={d.id || i} d={d} />)}</div>}
           </CardShell>
 
           {/* Slot 5 — Brand Vault: templates & brand assets (ppt template, logo,
@@ -441,9 +507,10 @@ export default function Home({ setPage }) {
             title={BRAND_VAULT_LABEL}
           >
             {loading ? <Skeleton />
+              : (loadError || degraded.includes('brandAssets')) ? <Failed what={BRAND_VAULT_LABEL.toLowerCase()} onRetry={load} />
               : brandAssets.length === 0
                 ? <Empty icon={<FileText size={28} color="#d1d5db" />} text="No templates yet." />
-                : brandAssets.map((d, i) => <DocRow key={d.id || i} d={d} />)}
+                : <div className="hm-doc-grid">{brandAssets.map((d, i) => <DocTile key={d.id || i} d={d} />)}</div>}
           </CardShell>
 
           {/* Slot 6 — Today's Celebrations (all roles) */}
@@ -466,13 +533,13 @@ export default function Home({ setPage }) {
         </div>
       </div>
 
-      {/* Face-recognition clock-in (geo/shift policy enforced server-side) */}
-      {faceOpen && empId && (
-        <FaceClockModal
+      {/* Camera clock-in for field staff — selfie + GPS, both enforced server-side */}
+      {cameraOpen && empId && punch.canPunch && (
+        <CameraClockModal
           employeeId={empId}
           action={clockedIn ? 'out' : 'in'}
-          onVerified={(fd) => { setFaceOpen(false); handleClockAction(fd); }}
-          onClose={() => setFaceOpen(false)}
+          onCaptured={(proof) => { setCameraOpen(false); handleClockAction(proof); }}
+          onClose={() => setCameraOpen(false)}
         />
       )}
 

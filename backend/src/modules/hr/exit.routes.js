@@ -3,6 +3,7 @@ import pool from '../shared/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { computeFnf } from './fnf.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
@@ -153,7 +154,7 @@ router.post('/requests', requireHRWrite, async (req, res) => {
 // completely bypassing computeClearanceBlockers and the F&F pay gate that
 // 'closed' is supposed to mean. Only POST /fnf/:id/pay may set 'closed' now;
 // other statuses (pending/active/rejected/cancelled) are untouched.
-router.put('/requests/:id', requireHRWrite, async (req, res) => {
+router.put('/requests/:id', requireHRWrite, captureBefore('exit_requests'), async (req, res) => {
   try {
     const { status, remarks } = req.body;
     if (status === 'closed') {
@@ -226,13 +227,22 @@ router.post('/initiate', requireHRWrite, async (req, res) => {
       [employee_id, separation_type, last_working_date, notice_period, reason]
     );
 
-    // Update employee status to match separation type
-    const newStatus = separation_type === 'termination' ? 'terminated'
-                    : separation_type === 'retirement'  ? 'left'
-                    : 'resigned';
+    // Move employee into notice period — NOT straight to the terminal status
+    // (resigned/terminated/left). Those are set by exitStatusSync.cron.js once
+    // last_working_date actually arrives. 'notice' is already recognized as
+    // "still working" by payroll (payroll.service.js ACTIVE_STATUSES) and
+    // attendance (attendance.repository.js), so pay/attendance continue
+    // uninterrupted through the notice period instead of being cut the moment
+    // HR clicks "initiate". Immediate login revocation (for terminations that
+    // need it) is a separate, already-independent action — see the Exit
+    // Clearance Engine's access_revoked toggle further down this file.
+    // Capitalized to match the live employees.status convention ('Active'/
+    // 'Probation' written at creation — see employee.service.js addEmployee)
+    // and the frontend's STATUS_STYLE.Notice badge, which is keyed on the
+    // exact string 'Notice'.
     await client.query(
-      `UPDATE employees SET status=$1 WHERE id=$2`,
-      [newStatus, employee_id]
+      `UPDATE employees SET status='Notice' WHERE id=$1`,
+      [employee_id]
     );
 
     await client.query('COMMIT');
@@ -475,7 +485,7 @@ router.get('/clearance/:employee_id/status', async (req, res) => {
 });
 
 // ── PUT /clearance/:employee_id ───────────────────────────────────────────────
-router.put('/clearance/:employee_id', requireHRWrite, async (req, res) => {
+router.put('/clearance/:employee_id', requireHRWrite, captureBefore('exit_clearance', { param: 'employee_id', column: 'employee_id' }), async (req, res) => {
   try {
     const {
       it_assets_returned, access_revoked, documents_collected, exit_interview_done,

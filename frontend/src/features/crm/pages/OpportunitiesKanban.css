@@ -25,9 +25,12 @@
 .ok-kpi-sep   { width: 1px; background: #e5e7eb; height: 32px; flex-shrink: 0; }
 
 /* ── Kanban board ── */
-.ok-board { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; flex: 1; min-height: 0; }
-@media (max-width: 1400px) { .ok-board { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 900px)  { .ok-board { grid-template-columns: repeat(2, 1fr); } }
+/* Column count is data-driven: the stage master decides how many lanes there
+   are, plus an Unmapped lane whenever unconfigured stages exist. A fixed
+   repeat(6) silently squeezed the 7th lane out of the grid. */
+.ok-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); gap: 12px; flex: 1; min-height: 0; overflow-x: auto; }
+@media (max-width: 1400px) { .ok-board { grid-auto-columns: minmax(200px, 1fr); } }
+@media (max-width: 900px)  { .ok-board { grid-auto-columns: minmax(220px, 1fr); } }
 
 .ok-col      { background: #f3f4f6; border-radius: 12px; display: flex; flex-direction: column; max-height: calc(100vh - 260px); }
 .ok-col-hd   { padding: 12px 14px 10px; border-radius: 12px 12px 0 0; background: #fff; border: 1px solid #f0f0f4; border-bottom: none; }
@@ -63,7 +66,7 @@
 
 .ok-card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; gap: 6px; }
 .ok-assignee    { font-size: 11px; color: #6b7280; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ok-unassigned  { font-size: 11px; color: #D97706; font-style: italic; }
+.ok-unassigned  { font-size: 11px; color: #6d28d9; font-style: italic; }
 .ok-move-sel    { font-size: 11px; border: 1px solid #e5e7eb; border-radius: 5px; padding: 2px 4px; background: #f9fafb; cursor: pointer; outline: none; max-width: 90px; }
 
 /* ── Overdue badge ── */
@@ -154,3 +157,31 @@
 .ok-toast        { position: fixed; top: 24px; right: 24px; z-index: 9999; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
 .ok-toast-success{ background: #10b981; color: #fff; }
 .ok-toast-error  { background: #ef4444; color: #fff; }
+
+/* ── Unmapped-stage warning ──
+   Opportunities whose stage is not in crm_pipeline_stages. They stay counted in
+   the pipeline total; this lane exists so they are visible rather than dropped. */
+.ok-col-warn {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-danger, #b3261e);
+}
+
+/* ── Load failure ──
+   Distinct from an empty board on purpose (see OpportunitiesKanban.jsx). */
+.ok-load-error {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 22px;
+  border: 1px solid var(--color-danger, #b3261e);
+  border-radius: 12px;
+  background: var(--color-danger-bg, #fdeceb);
+  color: var(--color-danger, #b3261e);
+}
+.ok-load-error-title { font-size: 14px; font-weight: 700; }
+.ok-load-error-msg   { font-size: 12px; margin-top: 2px; opacity: 0.9; }
+.ok-load-error button { margin-left: auto; }

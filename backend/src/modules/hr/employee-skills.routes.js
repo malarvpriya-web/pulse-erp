@@ -2,7 +2,7 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
-import { verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
+import { requirePermission, verifyToken, allowRoles } from '../../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
@@ -11,7 +11,12 @@ const HR_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'HR', '
 router.use(verifyToken);
 
 /* GET /employee-skills[?employee_id=X]  — list skills (single employee or all) */
-router.get('/', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied hr in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/', requirePermission('hr', 'view'), async (req, res) => {
   const { employee_id } = req.query;
   const cid = req.scope?.company_id ?? null;
   try {
@@ -42,7 +47,7 @@ router.get('/', async (req, res) => {
 });
 
 /* GET /employee-skills/categories — distinct skill categories */
-router.get('/categories', async (req, res) => {
+router.get('/categories', requirePermission('hr', 'view'), async (req, res) => {
   const cid = req.scope?.company_id ?? null;
   try {
     const { rows } = await pool.query(

@@ -1,18 +1,30 @@
 {
+  "_comment": "Copy to config.json and fill in. Metric codes MUST exist in the Pulse metric registry (GET /api/v1/iot/metrics) or the server quarantines the sample as UNKNOWN_METRIC instead of storing it.",
+
   "ingestUrl": "https://api.manifest-tech.in/api/v1/iot/ingest",
+  "heartbeatUrl": "https://api.manifest-tech.in/api/v1/iot/gateway/heartbeat",
   "deviceUid": "PULSE-42-AB12CD",
+  "gatewayUid": "GW-BLR-PLANT1-01",
+  "name": "Bengaluru Plant 1 gateway",
+  "siteLocation": "Bengaluru Plant 1, Panel Room A",
   "token": "paste-the-token-shown-once-at-provision-time",
+
   "pollSecs": 60,
+  "batchSize": 1000,
   "maxQueue": 50000,
+  "warnAt": 0.6,
+  "criticalAt": 0.85,
+  "maxBackoffSecs": 300,
+  "requestTimeoutMs": 15000,
 
   "source": {
     "type": "sim",
     "metrics": [
-      { "metric": "thd_i", "base": 4.0, "jitter": 0.6, "spikeTo": 9.0, "spikeEvery": 20 },
-      { "metric": "thd_v", "base": 2.2, "jitter": 0.4 },
-      { "metric": "pf",    "base": 0.98, "jitter": 0.01 },
-      { "metric": "kvar",  "base": 180, "jitter": 25 },
-      { "metric": "temp",  "base": 44, "jitter": 3 }
+      { "metric": "THD_I_L1", "base": 4.0, "jitter": 0.6, "spikeTo": 9.0, "spikeEvery": 20 },
+      { "metric": "THD_V_L1", "base": 2.2, "jitter": 0.4 },
+      { "metric": "PF",       "base": 0.98, "jitter": 0.01 },
+      { "metric": "KVAR",     "base": 180, "jitter": 25 },
+      { "metric": "TEMPERATURE", "base": 44, "jitter": 3 }
     ]
   },
 
@@ -22,10 +34,21 @@
     "port": 502,
     "unitId": 1,
     "timeoutMs": 2000,
+    "reconnectSecs": 10,
+
+    "_addressing_comment": "one_based treats 40001 as protocol address 0 (the classic 4xxxx convention). zero_based uses the number as-is. Get this wrong and every register reads one position off — which yields a plausible number from the WRONG quantity, not an error.",
+    "addressingMode": "one_based",
+
+    "_endianness_comment": "byteOrder/wordOrder must match the device's register map. A float32 read with the words swapped is not obviously wrong, it is just wrong. Verify against the device's own display before trusting the values.",
+    "byteOrder": "big",
+    "wordOrder": "big",
+
     "registers": [
-      { "metric": "thd_i", "address": 40001, "register": "holding", "type": "float32", "scale": 1 },
-      { "metric": "pf",    "address": 40003, "register": "holding", "type": "int16",   "scale": 0.001 },
-      { "metric": "kvar",  "address": 40004, "register": "holding", "type": "int32",   "scale": 1 }
+      { "metric": "THD_I_L1",   "address": 40001, "register": "holding", "type": "float32", "scale": 1,     "offset": 0, "unit": "%" },
+      { "metric": "PF",         "address": 40003, "register": "holding", "type": "int16",   "scale": 0.001, "offset": 0, "unit": "ratio" },
+      { "metric": "KVAR",       "address": 40004, "register": "holding", "type": "int32",   "scale": 1,     "offset": 0, "unit": "kVAr" },
+      { "metric": "TEMPERATURE","address": 40006, "register": "holding", "type": "int16",   "scale": 0.1,   "offset": 0, "unit": "degC" },
+      { "metric": "ENERGY_KWH", "address": 40010, "register": "holding", "type": "uint32",  "scale": 0.01,  "offset": 0, "unit": "kWh" }
     ]
   }
 }

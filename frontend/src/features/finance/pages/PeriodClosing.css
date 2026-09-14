@@ -4,7 +4,7 @@
 /* toast */
 .pc-toast{position:fixed;top:20px;right:24px;z-index:9999;display:flex;align-items:center;gap:8px;padding:12px 18px;border-radius:10px;font-size:13px;font-weight:500;box-shadow:0 4px 20px rgba(0,0,0,.12);}
 .pc-toast-success{background:#dcfce7;color:#16a34a;}
-.pc-toast-warning{background:#fef3c7;color:#92400e;}
+.pc-toast-warning{background:#ede9fe;color:#5b21b6;}
 .pc-toast-error{background:#fee2e2;color:#dc2626;}
 
 /* header */
@@ -34,7 +34,7 @@
 .pc-progress-fill{height:100%;border-radius:4px;transition:width .4s ease;}
 .pc-critical-info{font-size:11px;}
 .pc-crit-done{color:#10b981;font-weight:500;}
-.pc-crit-pend{color:#f59e0b;font-weight:500;}
+.pc-crit-pend{color:#7c5cf0;font-weight:500;}
 
 /* summary grid */
 .pc-summary-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px;}
@@ -46,14 +46,21 @@
 .pc-sum-val{display:block;font-size:18px;font-weight:700;color:#111827;margin-bottom:2px;}
 .pc-sum-sub{font-size:11px;color:#9ca3af;}
 
+/* States shown INSTEAD of the summary grid: loading, no period for the selected
+   month, or a failed load. The figures behind these cards drive a period-close
+   decision, so a failure has to read as a failure -- never as zero. */
+.pc-summary-note{padding:14px 16px;margin-bottom:16px;border-radius:10px;background:#faf9ff;border:1px solid #e9e4ff;font-size:13px;color:#5b21b6;line-height:1.55;}
+.pc-summary-note-error{background:#fef2f2;border-color:#fecaca;color:#b91c1c;}
+.pc-empty-row{text-align:center;padding:48px 16px;color:#9ca3af;font-size:13px;}
+
 /* tabs */
 .pc-tabs{display:flex;gap:2px;border-bottom:2px solid #f0f0f4;margin-bottom:16px;}
 .pc-tab{display:flex;align-items:center;gap:6px;padding:9px 16px;border:none;background:none;font-size:13px;color:#6b7280;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;}
 .pc-tab.active{color:#6B3FDB;border-bottom-color:#6B3FDB;font-weight:500;}
 
 /* warnings */
-.pc-warning-banner{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#fef3c7;border-radius:8px;font-size:13px;color:#92400e;margin-bottom:12px;}
-.pc-warning-action{margin-left:auto;padding:5px 12px;background:#f59e0b;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:500;}
+.pc-warning-banner{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#ede9fe;border-radius:8px;font-size:13px;color:#5b21b6;margin-bottom:12px;}
+.pc-warning-action{margin-left:auto;padding:5px 12px;background:#7c5cf0;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:500;}
 
 /* checklist actions */
 .pc-checklist-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;}
@@ -72,7 +79,7 @@
 .pc-cat-count{font-size:12px;color:#9ca3af;}
 .pc-cat-badge{font-size:11px;font-weight:500;padding:2px 8px;border-radius:20px;}
 .pc-cat-complete{background:#dcfce7;color:#16a34a;}
-.pc-cat-partial{background:#fef3c7;color:#92400e;}
+.pc-cat-partial{background:#ede9fe;color:#5b21b6;}
 .pc-cat-pending{background:#f3f4f6;color:#9ca3af;}
 
 /* check items */
@@ -119,7 +126,7 @@
 .pc-hist-actions{display:flex;gap:4px;}
 .pc-action-btn{background:none;border:1px solid #e5e7eb;border-radius:6px;padding:5px 7px;cursor:pointer;color:#9ca3af;display:flex;}
 .pc-action-btn:hover{color:#6B3FDB;border-color:#6B3FDB;}
-.pc-reopen-btn:hover{color:#f59e0b;border-color:#fcd34d;}
+.pc-reopen-btn:hover{color:#7c5cf0;border-color:#c4b5fd;}
 
 /* locked grid */
 .pc-locked-info{display:flex;gap:14px;padding:16px 20px;border-bottom:1px solid #f0f0f4;background:#fafafa;}
@@ -130,15 +137,15 @@
 @media(max-width:700px){.pc-locked-grid{grid-template-columns:repeat(3,1fr);}}
 .pc-locked-card{border-radius:10px;padding:14px;border:1px solid #f0f0f4;display:flex;flex-direction:column;gap:8px;}
 .pc-locked-closed{background:#f0fdf4;border-color:#bbf7d0;}
-.pc-locked-current{background:#fefce8;border-color:#fde68a;border:2px solid #f59e0b;}
+.pc-locked-current{background:#f5f3ff;border-color:#ddd6fe;border:2px solid #7c5cf0;}
 .pc-locked-future{background:#fafafa;}
 .pc-locked-card-header{display:flex;justify-content:space-between;align-items:flex-start;}
 .pc-locked-month{font-size:13px;font-weight:600;color:#374151;}
 .pc-locked-year{font-size:11px;color:#9ca3af;}
 .pc-locked-status{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:500;}
 .pc-unlock-btn,.pc-close-mini{width:100%;padding:5px 0;font-size:11px;border-radius:6px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:500;}
-.pc-unlock-btn{background:#fef3c7;color:#92400e;}
-.pc-unlock-btn:hover{background:#fde68a;}
+.pc-unlock-btn{background:#ede9fe;color:#5b21b6;}
+.pc-unlock-btn:hover{background:#ddd6fe;}
 .pc-close-mini{background:#E8E1FC;color:#7B3FE4;}
 .pc-close-mini:hover{background:#D4CAFE;}
 
@@ -146,7 +153,7 @@
 .pc-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:500;display:flex;align-items:center;justify-content:center;padding:24px;}
 .pc-confirm-modal{background:#fff;border-radius:16px;width:100%;max-width:460px;padding:28px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px;}
 .pc-confirm-icon{width:60px;height:60px;border-radius:50%;background:#E8E1FC;display:flex;align-items:center;justify-content:center;}
-.pc-confirm-icon-warn{background:#fef3c7;}
+.pc-confirm-icon-warn{background:#ede9fe;}
 .pc-confirm-modal h3{font-size:18px;font-weight:700;color:#111827;margin:0;}
 .pc-confirm-desc{font-size:13px;color:#6b7280;line-height:1.6;margin:0;}
 .pc-confirm-summary{width:100%;background:#f9fafb;border-radius:10px;padding:14px;}
@@ -155,14 +162,14 @@
 .pc-confirm-row span{color:#9ca3af;}
 .pc-confirm-row strong{color:#374151;}
 .pc-confirm-warning{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fee2e2;border-radius:8px;font-size:12px;color:#991b1b;width:100%;text-align:left;}
-.pc-warning-amber{background:#fef3c7;color:#92400e;}
+.pc-warning-amber{background:#ede9fe;color:#5b21b6;}
 .pc-confirm-footer{display:flex;gap:10px;width:100%;justify-content:flex-end;}
 .pc-confirm-btn{display:flex;align-items:center;gap:8px;padding:10px 20px;background:#6B3FDB;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;}
 .pc-confirm-btn:hover{background:#5B35D5;}
 .pc-confirm-btn:disabled{opacity:.6;cursor:not-allowed;}
-.pc-reopen-confirm-btn{display:flex;align-items:center;gap:8px;padding:10px 20px;background:#f59e0b;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;}
+.pc-reopen-confirm-btn{display:flex;align-items:center;gap:8px;padding:10px 20px;background:#7c5cf0;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;}
 .pc-mini-spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:pcspin .6s linear infinite;}
 @keyframes pcspin{to{transform:rotate(360deg);}}
 
 /* colours */
-.green{color:#10b981;}.red{color:#ef4444;}.amber{color:#f59e0b;}.purple{color:#7B3FE4;}.gray{color:#9ca3af;}
+.green{color:#10b981;}.red{color:#ef4444;}.amber{color:#7c5cf0;}.purple{color:#7B3FE4;}.gray{color:#9ca3af;}

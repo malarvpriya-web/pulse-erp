@@ -241,8 +241,8 @@
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: #fffbeb;
-  color: #f59e0b;
+  background: #f5f3ff;
+  color: #7c5cf0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -319,6 +319,7 @@
   background: rgba(0, 0, 0, 0.35);
   z-index: 100;
   animation: ed-fade-in 0.2s ease;
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
 

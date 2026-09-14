@@ -1,0 +1,605 @@
+/* pulse-hero — the Pulse "signature" page design language (prefix: plh-)
+ *
+ * Distilled from the two designs the product owner signed off on:
+ *   - System Health Monitor (features/admin/pages/SystemHealth.jsx) — the
+ *     purple gradient command-band, icon chip, inline meta stats, white CTA,
+ *     white metric cards and meter cards underneath.
+ *   - Home hero (pages/Home.css .hm-hero) — the frosted-glass KPI tiles and
+ *     the decorative radial orbs.
+ *
+ * Home.css itself is LOCKED (CLAUDE.md) — this file re-implements the same
+ * visual language under its own prefix so every other page can adopt it
+ * without touching Home.
+ *
+ * Colors come from the canonical ramp in global-overrides.css / theme.css:
+ * brand purple #6B3FDB, deep violet #4c1d95, indigo edge #6366f1.
+ */
+
+/* ══════════════════════════════════════════════════════════════════════
+   PAGE SHELL — root + frozen dock + scrolling body
+   ══════════════════════════════════════════════════════════════════════
+   `.page-content` (Layout.css) is the app's ONE scroll container and pays
+   --spacing-md (20px) of padding on every side. Two consequences drive the
+   shell below, both learned the hard way (manual §115):
+
+   1. A sticky child's constraint rect is the scroll container's CONTENT box,
+      not its padding box — so `position:sticky; top:0` pins 20px BELOW the
+      scrollport and page content scrolls through that 20px strip, visible
+      ABOVE the frozen header. It reads as a z-index bug. It is not.
+   2. `.pulse-page` then pays another 24px, so a page starts 44px down.
+
+   `.plh-page` cancels the container's padding outright (the same `margin:
+   -20px` archetype Home and GoodsReceipt already use), then pays its own
+   tighter gutters. With the root's top edge AT the scrollport top, the dock
+   can use a plain `top: 0` and land flush — no negative offset, no jump
+   between resting and stuck.
+══════════════════════════════════════════════════════════════════════ */
+.plh-page {
+  margin: calc(var(--spacing-md, 20px) * -1);
+  padding: 0;
+  background: var(--color-bg-page, #f8f9fc);
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+/* The frozen strip: hero + filter bar. Opaque and full-bleed so nothing can
+   scroll through beside or above it. */
+.plh-dock {
+  position: sticky;
+  /* NOT `top: 0`. A sticky element's constraint rect is the scroll container's
+     CONTENT box, and `.page-content` pays 20px of padding — so `top: 0` pins
+     the dock 20px BELOW the scrollport and the body scrolls through that strip
+     in full view above the frozen header (manual §115).
+     Cancelling the container's padding on `.plh-page` does NOT move the
+     constraint rect — measured, it still left the 20px strip. The offset has
+     to be negative here as well. With `.plh-page`'s -20px margin AND this
+     -20px, the hero sits 12px from the scrollport top both at rest and when
+     stuck: flush, and no jump as it pins. */
+  top: calc(var(--spacing-md, 20px) * -1);
+  z-index: 20;
+  background: var(--color-bg-page, #f8f9fc);
+  padding: 12px 20px 0;
+}
+/* Hairline + fade appear only once something has scrolled underneath, so a
+   short page shows no seam. Cheap: no scroll listener, just a sentinel. */
+.plh-dock::after {
+  content: '';
+  position: absolute; left: 0; right: 0; bottom: -10px; height: 10px;
+  background: linear-gradient(rgba(76, 29, 149, .07), transparent);
+  pointer-events: none;
+}
+
+.plh-body { padding: 0 20px 16px; }
+
+/* A dock with nothing frozen under it (no filter bar) needs no bottom gap. */
+.plh-dock > .plh-hero:last-child { margin-bottom: 12px; }
+
+/* ── EMBEDDED SHELL (a shell page mounted as another page's tab panel) ───────
+   Both offsets above are calibrated against `.page-content` being the parent.
+   Nested one page deep they misfire: the -20px margin makes the panel 40px
+   wider than the host, and the sticky dock freezes ON TOP of the host's tab
+   strip — opaque and `z-index: 20`, so it covers the tabs and swallows their
+   clicks (measured on Finance ▸ Payments: all five tabs were unclickable on
+   every tab but the first). Embedded, the host owns the gutters and the
+   scroll; this shell is just a block in its body. */
+.plh-page--embed { margin: 0; min-height: 0; background: transparent; }
+.plh-page--embed > .plh-dock {
+  position: static;
+  top: auto;
+  z-index: auto;
+  padding: 0;
+  background: transparent;
+}
+.plh-page--embed > .plh-dock::after { display: none; }
+.plh-page--embed > .plh-body { padding: 0; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   HERO BAND
+══════════════════════════════════════════════════════════════════════ */
+.plh-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  /* Compact by design (2026-08-20): the band is a persistent chrome strip, not
+     a landing-page hero. Every px here is a px the content below loses. */
+  padding: 12px 20px;
+  margin-bottom: 10px;
+  background: linear-gradient(135deg, #4c1d95 0%, #6B3FDB 55%, #6366f1 100%);
+  box-shadow: 0 4px 18px rgba(107, 63, 219, .22);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+/* Tone variants — same structure, different gradient.
+   ★ App-wide decision (2026-08-20): every page uses `violet`, which is also
+   PageHero's default. The rest are DORMANT, not dead — they cost nothing and
+   keep a future per-module colour scheme a one-file change in heroTones.js.
+   Do not apply one to a page without an explicit instruction.
+   The `amber` gradient was DELETED (2026-08-20) rather than left dormant —
+   "no orange anywhere" is easier to hold if the orange does not exist. */
+.plh-hero--violet   { background: linear-gradient(135deg, #4c1d95 0%, #6B3FDB 55%, #6366f1 100%); box-shadow: 0 4px 18px rgba(107, 63, 219, .22); }
+.plh-hero--midnight { background: linear-gradient(135deg, #150F3D 0%, #2b1d6e 45%, #4B2DCE 100%); box-shadow: 0 8px 32px rgba(21, 15, 61, .34); }
+.plh-hero--teal     { background: linear-gradient(135deg, #0f3d4c 0%, #0e7490 55%, #14b8a6 100%); box-shadow: 0 8px 32px rgba(14, 116, 144, .28); }
+.plh-hero--emerald  { background: linear-gradient(135deg, #064e3b 0%, #047857 55%, #10b981 100%); box-shadow: 0 8px 32px rgba(4, 120, 87, .26); }
+.plh-hero--rose     { background: linear-gradient(135deg, #4c0519 0%, #be123c 55%, #f43f5e 100%); box-shadow: 0 8px 32px rgba(190, 18, 60, .26); }
+.plh-hero--slate    { background: linear-gradient(135deg, #0f172a 0%, #334155 55%, #64748b 100%); box-shadow: 0 8px 32px rgba(15, 23, 42, .3); }
+.plh-hero--indigo   { background: linear-gradient(135deg, #1e1b4b 0%, #4338ca 55%, #818cf8 100%); box-shadow: 0 8px 32px rgba(67, 56, 202, .28); }
+
+/* decorative orbs — the Home/SystemHealth signature */
+.plh-hero::before,
+.plh-hero::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.plh-hero::before {
+  top: -120px; right: -60px; width: 360px; height: 360px;
+  background: radial-gradient(circle, rgba(255, 255, 255, .085) 0%, transparent 70%);
+}
+.plh-hero::after {
+  bottom: -110px; left: 22%; width: 280px; height: 280px;
+  background: radial-gradient(circle, rgba(255, 255, 255, .06) 0%, transparent 70%);
+}
+
+.plh-hero-l {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+.plh-hero-r {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  z-index: 1;
+  flex-wrap: wrap;
+}
+
+/* icon chip */
+.plh-hero-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .18);
+  border: 1px solid rgba(255, 255, 255, .16);
+  color: #fff;
+  flex-shrink: 0;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.plh-hero-icon svg { color: #fff; }
+
+.plh-hero-txt { min-width: 0; }
+
+/* Title — out-specifies global-overrides.css's
+   `.page-content h1[style] { color:#111827 !important }` so the title stays
+   white on the gradient (the exact trap SystemHealth had to work around). */
+.page-content h1.plh-title,
+h1.plh-title {
+  margin: 0 !important;
+  font-size: 17px !important;
+  font-weight: 800 !important;
+  color: #fff !important;
+  letter-spacing: -.3px !important;
+  line-height: 1.15 !important;
+}
+.page-content p.plh-sub,
+p.plh-sub {
+  margin: 1px 0 0 !important;
+  font-size: 11.5px !important;
+  color: rgba(255, 255, 255, .62) !important;
+  line-height: 1.5 !important;
+}
+.plh-eyebrow {
+  display: block;
+  font-size: 9px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: rgba(255, 255, 255, .55);
+  margin-bottom: 1px;
+}
+
+/* inline meta stats under the subtitle */
+.plh-meta {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  margin-top: 4px;
+}
+.plh-meta-item {
+  font-size: 12px;
+  color: rgba(255, 255, 255, .62);
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.plh-meta-item strong { font-weight: 800; color: #fff; }
+.plh-meta-item.is-good strong { color: #4ade80; }
+/* attention step = pale lavender on the gradient, never amber */
+.plh-meta-item.is-warn strong { color: #d8caff; }
+.plh-meta-item.is-bad  strong { color: #f87171; }
+
+/* role/status pill in the hero */
+.plh-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 11px; border-radius: 20px;
+  background: rgba(255, 255, 255, .15);
+  border: 1px solid rgba(255, 255, 255, .25);
+  color: rgba(255, 255, 255, .92);
+  font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+
+/* ── frosted KPI tiles (the Home hero pattern) ─────────────────────── */
+.plh-tiles { display: flex; gap: 10px; flex-wrap: wrap; }
+.plh-tile {
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .15);
+  border-radius: 10px;
+  padding: 6px 14px;
+  min-width: 76px;
+  text-align: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, .18), inset 0 1px 0 rgba(255, 255, 255, .1);
+  font-family: inherit;
+  color: inherit;
+  transition: background .2s, transform .2s, box-shadow .2s;
+}
+button.plh-tile { cursor: pointer; }
+button.plh-tile:hover {
+  background: rgba(255, 255, 255, .16);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .24);
+}
+.plh-tile-val {
+  font-size: 19px; font-weight: 900; color: #fff;
+  line-height: 1; display: block; letter-spacing: -.6px;
+}
+.plh-tile-label {
+  font-size: 9px; color: rgba(255, 255, 255, .62);
+  margin-top: 3px; display: block; font-weight: 600;
+  letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
+}
+
+/* ── hero CTA button (white-on-gradient) ───────────────────────────── */
+.page-content button.plh-cta,
+button.plh-cta {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #fff;
+  color: #6B3FDB;
+  border: none; border-radius: 9px;
+  padding: 8px 16px;
+  font-size: 12.5px; font-weight: 700;
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+  transition: transform .18s, box-shadow .18s;
+}
+button.plh-cta:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 7px 22px rgba(0, 0, 0, .24); }
+button.plh-cta:disabled { cursor: wait; opacity: .72; }
+
+/* ghost variant — secondary action on the gradient */
+.page-content button.plh-cta--ghost,
+button.plh-cta--ghost {
+  background: rgba(255, 255, 255, .14);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, .28);
+  box-shadow: none;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+button.plh-cta--ghost:hover:not(:disabled) { background: rgba(255, 255, 255, .24); }
+
+/* Icon-only CTA — square and compact, so a hero carrying several controls
+   doesn't turn into a row of wide pills. */
+.page-content button.plh-cta--icon,
+button.plh-cta--icon { padding: 8px; min-width: 32px; justify-content: center; }
+
+/* Segmented group — related controls (prev / today / next) read as ONE control
+   instead of three competing buttons. */
+.plh-group {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 9px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .28);
+  background: rgba(255, 255, 255, .14);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.page-content .plh-group button.plh-cta,
+.plh-group button.plh-cta {
+  border-radius: 0;
+  background: transparent;
+  color: #fff;
+  border: none;
+  border-right: 1px solid rgba(255, 255, 255, .22);
+  box-shadow: none;
+  padding: 8px 12px;
+}
+.plh-group button.plh-cta:last-child { border-right: none; }
+.plh-group button.plh-cta:hover:not(:disabled) { background: rgba(255, 255, 255, .2); transform: none; box-shadow: none; }
+.plh-group button.plh-cta:disabled { opacity: .45; }
+
+/* icon-only round action (Home's refresh) */
+.page-content button.plh-icon-btn,
+button.plh-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%;
+  background: rgba(255, 255, 255, .14);
+  border: 1px solid rgba(255, 255, 255, .24);
+  color: #fff; cursor: pointer; flex-shrink: 0;
+  transition: background .2s, transform .3s;
+}
+button.plh-icon-btn:hover { background: rgba(255, 255, 255, .26); transform: rotate(90deg); }
+button.plh-icon-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   STAT BAND — the white metric cards under the hero
+══════════════════════════════════════════════════════════════════════ */
+.plh-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.plh-stats--2 { grid-template-columns: repeat(2, 1fr); }
+.plh-stats--3 { grid-template-columns: repeat(3, 1fr); }
+.plh-stats--4 { grid-template-columns: repeat(4, 1fr); }
+.plh-stats--5 { grid-template-columns: repeat(5, 1fr); }
+.plh-stats--6 { grid-template-columns: repeat(6, 1fr); }
+
+.plh-stat {
+  background: #fff;
+  border: 1px solid #e9e4ff;
+  border-radius: 11px;
+  padding: 9px 12px;
+  display: flex; align-items: center; gap: 9px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .05);
+  text-align: left;
+  font-family: inherit;
+  animation: plh-fade-up .4s ease both;
+  transition: transform .18s, box-shadow .18s, border-color .18s;
+  min-width: 0;
+}
+button.plh-stat { cursor: pointer; }
+button.plh-stat:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(107, 63, 219, .14);
+  border-color: #d6ccff;
+}
+.plh-stat-ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+}
+.plh-stat-txt { min-width: 0; }
+.page-content .plh-stat-label,
+.plh-stat-label {
+  font-size: 9px !important; font-weight: 700;
+  color: #94a3b8; text-transform: uppercase; letter-spacing: .07em;
+  margin-bottom: 2px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.page-content .plh-stat-val,
+.plh-stat-val {
+  font-size: 18px !important; font-weight: 800;
+  color: #0f172a; line-height: 1.1;
+}
+.page-content .plh-stat-sub,
+.plh-stat-sub {
+  font-size: 10px !important; color: #64748b; margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Tone tints for the stat icon chip.
+ *
+ * ★ NO ORANGE/AMBER (owner instruction 2026-08-20). The "needs attention but
+ *   not critical" step is carried by a LAVENDER, not amber, so the palette
+ *   stays inside the violet theme.
+ *
+ * The categorical steps separate by lightness + saturation within one hue
+ * family rather than by hue, so they still read apart at chip size:
+ *   plum (deepest) → primary (brand) → lavender (mid) → mist (palest)
+ * Red and green are kept for genuine danger/success — those two carry meaning
+ * no amount of theming should erase.
+ */
+.plh-tone-primary  { background: #f5f3ff; color: #6B3FDB; }
+.plh-tone-plum     { background: #f3e8ff; color: #6b21a8; }
+.plh-tone-lavender { background: #ede9fe; color: #6d28d9; }
+.plh-tone-mist     { background: #f5f3ff; color: #8b5cf6; }
+/* `warning` keeps its name so existing callers keep working, but is now the
+   lavender step — not amber. */
+.plh-tone-warning  { background: #ede9fe; color: #6d28d9; }
+.plh-tone-success  { background: #dcfce7; color: #15803d; }
+.plh-tone-danger   { background: #fee2e2; color: #b91c1c; }
+.plh-tone-info     { background: #eef2ff; color: #4338ca; }
+.plh-tone-neutral  { background: #f1f5f9; color: #475569; }
+/* Retired: `teal` now resolves to the lavender step so no page can reintroduce
+   an off-theme accent through it. */
+.plh-tone-teal     { background: #ede9fe; color: #6d28d9; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   METER CARD — labelled progress bar (SystemHealth's coverage cards)
+══════════════════════════════════════════════════════════════════════ */
+.plh-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.plh-meter {
+  background: #fff;
+  border: 1px solid #e9e4ff;
+  border-radius: 11px;
+  padding: 10px 14px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .05);
+}
+.plh-meter-hd { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; gap: 10px; }
+.page-content .plh-meter-title,
+.plh-meter-title { font-size: 12px !important; font-weight: 700; color: #334155; }
+.page-content .plh-meter-pct,
+.plh-meter-pct { font-size: 12px !important; font-weight: 800; }
+.plh-meter-track {
+  height: 6px; background: #f1f5f9; border-radius: 99px;
+  overflow: hidden; margin-bottom: 6px; display: flex;
+}
+.plh-meter-fill { height: 100%; transition: width 1.2s ease; }
+.plh-meter-fill--success  { background: linear-gradient(90deg, #16a34a, #4ade80); }
+/* lavender, not amber — see the tone block above */
+.plh-meter-fill--warning  { background: linear-gradient(90deg, #6d28d9, #a78bfa); }
+.plh-meter-fill--lavender { background: linear-gradient(90deg, #6d28d9, #a78bfa); }
+.plh-meter-fill--danger   { background: linear-gradient(90deg, #dc2626, #f87171); }
+.plh-meter-fill--primary  { background: linear-gradient(90deg, #6B3FDB, #6366f1); }
+.plh-meter-fill--plum     { background: linear-gradient(90deg, #6b21a8, #c084fc); }
+.plh-meter-fill--info     { background: linear-gradient(90deg, #4338ca, #818cf8); }
+.plh-meter-legend { display: flex; gap: 14px; flex-wrap: wrap; }
+.page-content .plh-meter-legend span,
+.plh-meter-legend span { font-size: 11px !important; color: #64748b; }
+.plh-meter-legend strong { font-weight: 800; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   SECTION HEADING — the little purple bar + caps label
+══════════════════════════════════════════════════════════════════════ */
+.plh-section {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10px !important; font-weight: 800; color: #5B35D5;
+  letter-spacing: .1em; text-transform: uppercase;
+  margin: 12px 0 8px;
+}
+.plh-section::before {
+  content: '';
+  width: 3px; height: 12px; border-radius: 2px;
+  background: linear-gradient(#7B3FE4, #5B35D5);
+  flex-shrink: 0;
+}
+.plh-section-line { flex: 1; height: 1px; background: linear-gradient(90deg, #e9e4ff, transparent); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   ANIMATION
+══════════════════════════════════════════════════════════════════════ */
+@keyframes plh-fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes plh-spin { to { transform: rotate(360deg); } }
+.plh-spin { animation: plh-spin .8s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .plh-stat { animation: none; }
+  .plh-meter-fill { transition: none; }
+  .plh-spin { animation: none; }
+  button.plh-icon-btn:hover { transform: none; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   RESPONSIVE
+══════════════════════════════════════════════════════════════════════ */
+/* Short viewports — the 1366x768 laptop class, where the app's own chrome
+   (64px topbar + 40px of container padding) leaves only ~704px of scrollport.
+   Measured, not guessed: see the fit harness in §116.1.
+   The hero's inline meta is dropped first because it repeats numbers the stat
+   band below already shows — losing it costs no information. */
+@media (max-height: 820px) {
+  .plh-meta   { display: none; }
+  .plh-hero   { padding: 9px 18px; margin-bottom: 8px; }
+  .plh-dock   { padding: 9px 20px 0; }
+  .plh-stat   { padding: 7px 10px; }
+  .plh-stats  { gap: 8px; margin-bottom: 8px; }
+  .plh-meter  { padding: 8px 12px; }
+  .plh-meters { gap: 8px; margin-bottom: 8px; }
+  .plh-section { margin: 8px 0 6px; }
+  .plh-body   { padding: 0 20px 12px; }
+  .page-content .plh-stat-val, .plh-stat-val { font-size: 17px !important; }
+}
+
+@media (max-width: 900px) {
+  .plh-stats--4, .plh-stats--5, .plh-stats--6 { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 640px) {
+  .plh-hero { padding: 16px 18px; gap: 14px; }
+  .plh-hero-r { width: 100%; }
+  .plh-tiles { width: 100%; }
+  .plh-tile { flex: 1 1 0; min-width: 0; padding: 8px 6px; }
+  .page-content h1.plh-title, h1.plh-title { font-size: 17px !important; }
+  .plh-stats, .plh-stats--2, .plh-stats--3, .plh-stats--4, .plh-stats--5, .plh-stats--6 { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   TAB STRIP — for container pages whose children own the hero
+   ══════════════════════════════════════════════════════════════════════
+   A page that only switches between child pages must NOT render a hero of
+   its own, or two gradient bands stack. It styles its tab strip instead.
+   Same vocabulary as recruitment's .tp-tabs. */
+.tax-tabs {
+  display: flex; gap: 4px; overflow-x: auto;
+  background: #fff; border: 1px solid #e9e4ff; border-radius: 10px;
+  padding: 4px; box-shadow: 0 1px 4px rgba(0, 0, 0, .05);
+}
+.tax-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 16px; border: none; background: transparent; border-radius: 7px;
+  color: #64748b; font-size: 12.5px; font-weight: 500; font-family: inherit;
+  cursor: pointer; white-space: nowrap; transition: background .15s, color .15s;
+}
+.tax-tab:hover { background: #f5f3ff; color: #6B3FDB; }
+.tax-tab.is-on {
+  background: #f5f3ff; color: #6B3FDB; font-weight: 700;
+  box-shadow: inset 0 0 0 1px #ddd6fe;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   DOCK TOOLBAR — search + filter controls, frozen under the hero
+   ══════════════════════════════════════════════════════════════════════
+   The old <PageHeader> carried `search` and `filters` slots. Converting a
+   page must carry them across, not drop them — dropping them silently cost
+   29 controls across 17 inventory pages before this existed. */
+.plh-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: #fff; border: 1px solid #e9e4ff; border-radius: 10px;
+  padding: 6px 10px; margin-bottom: 10px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .05);
+}
+.plh-search {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--color-border, #e5e7eb); border-radius: 7px;
+  padding: 0 8px; background: #fff; color: #94a3b8;
+}
+.plh-search:focus-within {
+  border-color: var(--color-primary, #6B3FDB);
+  box-shadow: 0 0 0 3px rgba(107, 63, 219, .1);
+}
+.plh-search input {
+  border: none; outline: none; background: transparent;
+  padding: 6px 2px; font: inherit; font-size: 12.5px; min-width: 200px;
+  color: var(--color-text, #111827);
+}
+
+/* ── Stat extras: trend chip + loading skeleton ───────────────────────────
+   Added so the ~23 per-page `KpiCard` components can delegate to <Stat>
+   without dropping the props they already accept (trend, warn, loading). */
+.plh-trend {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 10px; font-weight: 800; color: #15803d;
+  margin-right: 5px; letter-spacing: -.01em;
+}
+.plh-trend.is-down { color: #b91c1c; }
+
+.plh-skel {
+  display: inline-block; width: 52px; height: 16px; border-radius: 5px;
+  background: linear-gradient(90deg, #f1f5f9 25%, #e9e4ff 50%, #f1f5f9 75%);
+  background-size: 200% 100%;
+  animation: plh-shimmer 1.2s ease-in-out infinite;
+  vertical-align: middle;
+}
+@keyframes plh-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plh-skel { animation: none; background: #f1f5f9; }
+}
+
+/* a stat that should take two grid columns (was a minWidth bump on Project360) */
+.plh-stat--wide { grid-column: span 2; }

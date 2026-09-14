@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, Map, Search, Pencil, Trash2 } from 'lucide-react';
+import { Plus, X, Map, Search, Pencil, Trash2, ShoppingCart } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function fmtL(n) {
   const v = parseFloat(n) || 0;
@@ -95,7 +96,16 @@ export default function Territories() {
   );
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={ShoppingCart}
+        eyebrow="Sales"
+        title="Sales Territories"
+        actions={<button className="plh-cta" onClick={openAdd}>
+          <Plus size={15}/> Add Territory
+        </button>}
+      />
+    }>
 
       <ConfirmDialog
         open={!!pendingHandleDelete}
@@ -106,16 +116,6 @@ export default function Territories() {
         onConfirm={handleDelete}
         onCancel={() => setPendingHandleDelete(null)}
       />
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Sales Territories</h1>
-          <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>{territories.length} territories defined</p>
-        </div>
-        <button onClick={openAdd}
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600 }}>
-          <Plus size={15}/> Add Territory
-        </button>
-      </div>
 
       <div style={{ position:'relative', marginBottom:16, maxWidth:320 }}>
         <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
@@ -208,6 +208,6 @@ export default function Territories() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

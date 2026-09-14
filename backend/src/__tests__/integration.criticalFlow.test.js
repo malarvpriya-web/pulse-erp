@@ -16,6 +16,15 @@ vi.mock('../services/ValidationEngineService.js', () => ({
 vi.mock('../services/RuleEngineService.js', () => ({
   evaluateRules: vi.fn().mockResolvedValue([]),
 }));
+// Same reason as the two above: captureBefore() SELECTs the row being changed so
+// the audit trail records what it changed FROM, and those queries consume slots
+// from this file's strict `mockResolvedValueOnce` queue — shifting every later
+// answer and failing an assertion for a reason unrelated to the route.
+// The middleware itself is covered by captureBefore.test.js and by a live probe.
+vi.mock('../middlewares/captureBefore.js', () => ({
+  captureBefore: () => (req, res, next) => next(),
+  default:       () => (req, res, next) => next(),
+}));
 
 import request            from 'supertest';
 import configPool         from '../config/db.js';
@@ -60,6 +69,20 @@ const OPPORTUNITY = {
   id: 5, opportunity_name: 'Power Inverter Deal', lead_id: 10,
   expected_value: 500000, stage: 'Qualification', probability_percentage: 50,
   created_at: new Date().toISOString(),
+};
+
+const PARTY = {
+  id: '11111111-2222-3333-4444-555555555555', party_code: 'CUST-008',
+  party_type: 'Customer', name: 'Manifest Tech', company_id: 1,
+};
+
+const ACCOUNT = {
+  id: 77, account_name: 'Manifest Tech', name: 'Manifest Tech',
+  party_id: PARTY.id, company_id: 1,
+};
+
+const CONTACT = {
+  id: 88, full_name: 'Raj Kumar', email: 'raj@manifest.com', account_id: 77,
 };
 
 const QUOTATION = {
@@ -141,10 +164,19 @@ describe('Step 1 — Create CRM Lead', () => {
     // POST /crm/leads query order (all via sharedPool):
     //   1. duplicate email check (SELECT id FROM leads WHERE company_id=$1 AND email=$2)
     //   2. CRM settings (SELECT auto_assign_owner ... FROM crm_settings WHERE company_id=$1)
-    //   3. INSERT INTO leads → LEAD
+    //   3. active territories (resolveAssignment → territoryAssignment.service)
+    //   4. INSERT INTO leads → LEAD
+    //
+    // Step 3 was added 2026-09-03 when territories started influencing
+    // assignment. The territory lookup runs on EVERY create, not only when
+    // auto-assign is on, because a manually-assigned lead still belongs to a
+    // territory and the stamp is what makes territory revenue reporting
+    // possible. An empty result here means "no territory matched", which is the
+    // path this case exercises.
     sharedPool.query
-      .mockResolvedValueOnce({ rows: [] })     // dup email check → no duplicate
-      .mockResolvedValueOnce({ rows: [] })     // CRM settings → no settings (auto features off)
+      .mockResolvedValueOnce({ rows: [] })      // dup email check → no duplicate
+      .mockResolvedValueOnce({ rows: [] })      // CRM settings → no settings (auto features off)
+      .mockResolvedValueOnce({ rows: [] })      // active territories → none configured
       .mockResolvedValueOnce({ rows: [LEAD] }); // INSERT leads → LEAD
 
     const res = await request(crmApp).post('/api/crm/leads')
@@ -170,16 +202,34 @@ describe('Step 2 — Convert Lead to Opportunity', () => {
     expect(res.status).toBe(401);
   });
 
-  it('converts a lead to an opportunity', async () => {
-    // Transaction runs on sharedPool.connect() → txClient
-    txClient.query
-      .mockResolvedValueOnce({ rows: [] })                              // BEGIN
-      .mockResolvedValueOnce({ rows: [LEAD], rowCount: 1 })            // SELECT lead FOR UPDATE
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                // SELECT dup check
-      .mockResolvedValueOnce({ rows: [OPPORTUNITY] })                  // INSERT opportunity
-      .mockResolvedValueOnce({ rows: [{ ...LEAD, status: 'converted' }] }) // UPDATE lead
-      .mockResolvedValueOnce({ rows: [] })                             // INSERT activity
-      .mockResolvedValueOnce({ rows: [] });                            // COMMIT
+  it('converts a lead to an opportunity — and materialises the customer', async () => {
+    // Dispatch on SQL rather than call order. Conversion legitimately grew a
+    // step count when it started creating the Account and Contact (audit C-05):
+    // before that fix it produced an opportunity owned by nobody, which is what
+    // severed the CRM→Sales chain. An ordered mock queue would have to be
+    // rewritten on every such change and asserts nothing about intent, so the
+    // stub answers by statement and the test asserts the resulting identity.
+    const seen = [];
+    txClient.query.mockImplementation(async (sql) => {
+      const q = String(sql);
+      seen.push(q);
+      if (/^\s*(BEGIN|COMMIT|ROLLBACK)/i.test(q))            return { rows: [] };
+      if (/FROM leads .*FOR UPDATE/is.test(q))                return { rows: [LEAD], rowCount: 1 };
+      if (/SELECT id FROM opportunities/i.test(q))            return { rows: [], rowCount: 0 };
+      if (/FROM crm_settings/i.test(q))                       return { rows: [] };
+      if (/MAX\(NULLIF\(regexp_replace\(party_code/i.test(q)) return { rows: [{ mx: 7 }] };
+      if (/FROM parties/i.test(q))                            return { rows: [], rowCount: 0 };
+      if (/INSERT INTO parties/i.test(q))                     return { rows: [PARTY] };
+      if (/FROM accounts/i.test(q))                           return { rows: [], rowCount: 0 };
+      if (/INSERT INTO accounts/i.test(q))                    return { rows: [ACCOUNT] };
+      if (/FROM contacts/i.test(q))                           return { rows: [], rowCount: 0 };
+      if (/INSERT INTO contacts/i.test(q))                    return { rows: [CONTACT] };
+      if (/INSERT INTO opportunities/i.test(q))               return { rows: [OPPORTUNITY] };
+      if (/INSERT INTO opportunity_stage_history/i.test(q))   return { rows: [] };
+      if (/UPDATE leads/i.test(q))                            return { rows: [{ ...LEAD, status: 'converted' }] };
+      if (/INSERT INTO lead_activities/i.test(q))             return { rows: [] };
+      return { rows: [] };
+    });
 
     const res = await request(crmApp).post('/api/crm/leads/10/convert')
       .set('Authorization', `Bearer ${adminToken()}`)
@@ -193,6 +243,18 @@ describe('Step 2 — Convert Lead to Opportunity', () => {
     expect(res.body).toHaveProperty('opportunity');
     expect(res.body.opportunity.opportunity_name).toBe('Power Inverter Deal');
     expect(res.body.lead.status).toBe('converted');
+
+    // The point of the fix: a converted lead now has a customer identity.
+    expect(res.body.account).toBeTruthy();
+    expect(res.body.party).toBeTruthy();
+    expect(res.body.account.party_id).toBe(PARTY.id);
+
+    // ...and the opportunity is written with that account, not NULL.
+    const oppInsert = seen.find(q => /INSERT INTO opportunities/i.test(q));
+    expect(oppInsert).toMatch(/account_id/);
+
+    // ...and an opening stage row exists, so velocity metrics have a t0.
+    expect(seen.some(q => /INSERT INTO opportunity_stage_history/i.test(q))).toBe(true);
   });
 
   it('rejects duplicate lead conversion', async () => {
@@ -575,10 +637,22 @@ describe('Step 12 — Service Ticket', () => {
     // verifyToken query only. The global chain reserves two further slots for
     // requirePermission, which would otherwise swallow the nextval and INSERT
     // mocks below — nextval would read {rows: []} and throw on rows[0].n.
+    //
+    // One more real DB call now sits between nextTicketNumber and the INSERT
+    // that wasn't here when this mock sequence was written: matchAutoAssignmentRule()
+    // (a local function in servicedesk.routes.js — NOT covered by the
+    // RuleEngineService/ValidationEngineService mocks above, since it's a
+    // different, ticket-module-local matcher against auto_assignment_rules, now
+    // wired into ticket creation instead of only the rule-preview button). It
+    // correctly no-ops on an empty rules array, but without a mock slot it
+    // silently ate the INSERT's {rows:[TICKET]} slot, leaving the real INSERT
+    // reading {rows:[]} and throwing on the now-undefined ticket row. Not a
+    // route bug — the route's new behavior is correct; this mock predates it.
     configPool.query.mockReset();
     configPool.query
       .mockResolvedValueOnce({ rows: [ACTIVE_USER] }) // verifyToken
       .mockResolvedValueOnce({ rows: [{ n: 1 }] })    // nextTicketNumber (SELECT nextval)
+      .mockResolvedValueOnce({ rows: [] })            // matchAutoAssignmentRule — no active auto_assignment_rules
       .mockResolvedValueOnce({ rows: [TICKET] });     // INSERT support_tickets
     configPool.query.mockResolvedValue({ rows: [] });
 

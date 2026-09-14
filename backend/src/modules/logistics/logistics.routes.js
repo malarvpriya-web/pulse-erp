@@ -2,13 +2,15 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { uploadFile } from '../../services/StorageService.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 
 const cid = (req) => req.scope?.company_id ?? null;
 
 /* ── GET /shipments ── */
-router.get('/shipments', async (req, res) => {
+router.get('/shipments', requirePermission('logistics', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, direction, courier } = req.query;
@@ -24,7 +26,7 @@ router.get('/shipments', async (req, res) => {
 });
 
 /* ── POST /shipments ── */
-router.post('/shipments', async (req, res) => {
+router.post('/shipments', requirePermission('logistics', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const {
@@ -48,7 +50,7 @@ router.post('/shipments', async (req, res) => {
 });
 
 /* ── PATCH /shipments/:id/deliver ── */
-router.patch('/shipments/:id/deliver', async (req, res) => {
+router.patch('/shipments/:id/deliver', requirePermission('logistics', 'edit'), captureBefore('shipments'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { actual_delivery } = req.body;
@@ -63,33 +65,77 @@ router.patch('/shipments/:id/deliver', async (req, res) => {
 });
 
 /* ── GET /shipments/:id/track ── */
-router.get('/shipments/:id/track', async (req, res) => {
+router.get('/shipments/:id/track', requirePermission('logistics', 'view'), async (req, res) => {
   try {
     const { rows: [shipment] } = await pool.query('SELECT * FROM shipments WHERE id=$1', [req.params.id]);
     if (!shipment) return res.status(404).json({ error: 'Shipment not found' });
 
+    // Without a courier token there is still real tracking information to give:
+    // the carrier, the AWB and the dispatch/delivery milestones this app records
+    // itself. Answering 503 threw all of that away and left the drawer showing an
+    // error for what is only a missing integration. The `source` field tells the
+    // UI which of the two it is looking at.
+    const localTracking = () => ({
+      courier_partner:   shipment.courier_partner || null,
+      tracking_number:   shipment.tracking_number || null,
+      current_status:    shipment.status || 'unknown',
+      dispatch_date:     shipment.dispatch_date,
+      expected_delivery: shipment.expected_delivery,
+      actual_delivery:   shipment.actual_delivery,
+      pod_image_url:     shipment.pod_image_url,
+      checkpoints: [
+        shipment.dispatch_date    && { label: 'Dispatched', date: shipment.dispatch_date },
+        shipment.expected_delivery && { label: 'Expected delivery', date: shipment.expected_delivery },
+        shipment.actual_delivery  && { label: 'Delivered', date: shipment.actual_delivery },
+      ].filter(Boolean),
+    });
+
     if (!process.env.SHIPROCKET_TOKEN) {
-      return res.status(503).json({ error: 'Live tracking unavailable: SHIPROCKET_TOKEN is not configured.' });
+      return res.json({
+        shipment,
+        tracking: localTracking(),
+        source: 'local',
+        live_tracking_available: false,
+        note: 'Showing the milestones recorded in Pulse. Live courier tracking needs SHIPROCKET_TOKEN to be set.',
+      });
     }
     if (!shipment.tracking_number) {
-      return res.status(422).json({ error: 'Shipment has no tracking number assigned.' });
+      return res.json({
+        shipment,
+        tracking: localTracking(),
+        source: 'local',
+        live_tracking_available: false,
+        note: 'This shipment has no AWB yet, so the courier has nothing to track.',
+      });
     }
 
-    const resp = await fetch(
-      `https://apiv2.shiprocket.in/v1/external/courier/track/awb/${shipment.tracking_number}`,
-      { headers: { Authorization: `Bearer ${process.env.SHIPROCKET_TOKEN}` }, signal: AbortSignal.timeout(8000) }
-    );
+    let resp;
+    try {
+      resp = await fetch(
+        `https://apiv2.shiprocket.in/v1/external/courier/track/awb/${shipment.tracking_number}`,
+        { headers: { Authorization: `Bearer ${process.env.SHIPROCKET_TOKEN}` }, signal: AbortSignal.timeout(8000) }
+      );
+    } catch {
+      // Courier unreachable or timed out — degrade to what we know rather than
+      // failing the panel outright.
+      return res.json({
+        shipment, tracking: localTracking(), source: 'local', live_tracking_available: false,
+        note: 'The courier did not respond. Showing the milestones recorded in Pulse.',
+      });
+    }
     if (!resp.ok) {
-      const body = await resp.text().catch(() => '');
-      return res.status(502).json({ error: `Shiprocket returned ${resp.status}`, detail: body });
+      return res.json({
+        shipment, tracking: localTracking(), source: 'local', live_tracking_available: false,
+        note: `The courier returned ${resp.status}. Showing the milestones recorded in Pulse.`,
+      });
     }
     const data = await resp.json();
-    res.json({ shipment, tracking: data, source: 'shiprocket' });
+    res.json({ shipment, tracking: data, source: 'shiprocket', live_tracking_available: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* ── POST /shipments/:id/pod ── */
-router.post('/shipments/:id/pod', async (req, res) => {
+router.post('/shipments/:id/pod', requirePermission('logistics', 'add'), async (req, res) => {
   try {
     const { pod_image_base64, delivery_date } = req.body;
     if (!pod_image_base64) return res.status(400).json({ error: 'pod_image_base64 is required' });
@@ -109,7 +155,7 @@ router.post('/shipments/:id/pod', async (req, res) => {
 });
 
 /* ── GET /eway-bills ── */
-router.get('/eway-bills', async (req, res) => {
+router.get('/eway-bills', requirePermission('logistics', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status } = req.query;
@@ -127,7 +173,7 @@ router.get('/eway-bills', async (req, res) => {
 });
 
 /* ── POST /eway-bills — manual entry (NIC API optional) ── */
-router.post('/eway-bills', async (req, res) => {
+router.post('/eway-bills', requirePermission('logistics', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const {
@@ -167,7 +213,7 @@ router.post('/eway-bills', async (req, res) => {
 });
 
 /* ── PATCH /eway-bills/:id/cancel ── */
-router.patch('/eway-bills/:id/cancel', async (req, res) => {
+router.patch('/eway-bills/:id/cancel', requirePermission('logistics', 'edit'), captureBefore('eway_bills'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -181,7 +227,7 @@ router.patch('/eway-bills/:id/cancel', async (req, res) => {
 });
 
 /* ── POST /eway-bills/generate — attempt NIC GST portal (legacy) ── */
-router.post('/eway-bills/generate', async (req, res) => {
+router.post('/eway-bills/generate', requirePermission('logistics', 'add'), async (req, res) => {
   try {
     const { shipment_id, from_gstin, to_gstin, vehicle_number,
             distance_km, goods_description, taxable_value } = req.body;
@@ -231,7 +277,7 @@ router.post('/eway-bills/generate', async (req, res) => {
 });
 
 /* ── GET /dashboard ── */
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', requirePermission('logistics', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const p = [companyId];

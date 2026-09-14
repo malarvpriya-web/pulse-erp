@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { Users, AlertTriangle } from 'lucide-react';
+import { Users, AlertTriangle, Network } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 export default function DepartmentWorkload() {
   const [data,    setData]    = useState([]);
@@ -14,14 +15,17 @@ export default function DepartmentWorkload() {
       .finally(() => setLoading(false));
   }, []);
 
-  const barColor = pct => pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#10b981';
+  const barColor = pct => pct >= 90 ? '#ef4444' : pct >= 70 ? '#7c5cf0' : '#10b981';
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ marginBottom:24 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Department Workload</h1>
-        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>Workload distribution across all departments</p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Network}
+        eyebrow="Operations"
+        title="Department Workload"
+        subtitle="Workload distribution across all departments"
+      />
+    }>
 
       {loading ? <div style={{ textAlign:'center', padding:40, color:'#9ca3af' }}>Loading...</div> : (
         <>
@@ -84,8 +88,8 @@ export default function DepartmentWorkload() {
                           </td>
                           <td style={{ padding:'10px 16px' }}>
                             <span style={{
-                              background: pct>=90?'#fee2e2':pct>=70?'#fef3c7':'#d1fae5',
-                              color:      pct>=90?'#991b1b':pct>=70?'#92400e':'#065f46',
+                              background: pct>=90?'#fee2e2':pct>=70?'#ede9fe':'#d1fae5',
+                              color:      pct>=90?'#991b1b':pct>=70?'#5b21b6':'#065f46',
                               padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600
                             }}>{pct>=90?'Overloaded':pct>=70?'High':'Normal'}</span>
                           </td>
@@ -99,6 +103,6 @@ export default function DepartmentWorkload() {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

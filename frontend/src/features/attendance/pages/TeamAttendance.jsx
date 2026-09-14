@@ -4,6 +4,7 @@ import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { Users, CheckCircle, Clock, XCircle, Search, Download, X, Calendar, FileEdit } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function getToday() { return new Date().toISOString().split('T')[0]; }
 const TODAY = getToday();
@@ -11,7 +12,7 @@ const TODAY = getToday();
 const STATUS_CONFIG = {
   Present:    { bg: '#d1fae5', color: '#065f46', icon: CheckCircle },
   Absent:     { bg: '#fee2e2', color: '#991b1b', icon: XCircle },
-  Late:       { bg: '#fef3c7', color: '#92400e', icon: Clock },
+  Late:       { bg: '#ede9fe', color: '#5b21b6', icon: Clock },
   'On Leave': { bg: '#dbeafe', color: '#1e40af', icon: Users },
   'Half Day': { bg: '#ede9fe', color: '#5b21b6', icon: Clock },
   WFH:        { bg: '#e0f2fe', color: '#075985', icon: Clock },
@@ -340,12 +341,18 @@ export default function TeamAttendance() {
   const labelStyle = { fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 };
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Attendance"
+        title="Team Attendance"
+      />
+    }>
 
       {/* ── Header ── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Team Attendance</h1>
+
           <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
             {isAdmin ? 'Company-wide attendance view' : "Your team's attendance"}
           </p>
@@ -387,7 +394,7 @@ export default function TeamAttendance() {
           {/* Bulk mark — admin only */}
           {isAdmin && (
             <button onClick={() => { setBulkDate(date); setShowBulkModal(true); }}
-              style={{ padding: '7px 14px', background: '#f59e0b', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              style={{ padding: '7px 14px', background: '#7c5cf0', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
               Bulk Mark
             </button>
           )}
@@ -408,7 +415,7 @@ export default function TeamAttendance() {
             { label: 'Total',    value: stats.total,   color: '#6366f1' },
             { label: 'Present',  value: stats.present, color: '#10b981' },
             { label: 'Absent',   value: stats.absent,  color: '#ef4444' },
-            { label: 'Late',     value: stats.late,    color: '#f59e0b' },
+            { label: 'Late',     value: stats.late,    color: '#7c5cf0' },
             { label: 'On Leave', value: stats.leave,   color: '#3b82f6' },
             { label: 'WFH',      value: stats.wfh,     color: '#0ea5e9' },
             ...(stats.weekend > 0 ? [{ label: 'Weekend', value: stats.weekend, color: '#6b7280' }] : []),
@@ -621,7 +628,7 @@ export default function TeamAttendance() {
                 Cancel
               </button>
               <button onClick={handleBulkMark} disabled={bulkLoading}
-                style={{ flex: 1, padding: '9px 0', background: bulkLoading ? '#fbbf24' : '#f59e0b', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: bulkLoading ? 'not-allowed' : 'pointer' }}>
+                style={{ flex: 1, padding: '9px 0', background: bulkLoading ? '#8b5cf6' : '#7c5cf0', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: bulkLoading ? 'not-allowed' : 'pointer' }}>
                 {bulkLoading ? 'Marking…' : 'Mark All Employees'}
               </button>
             </div>
@@ -716,6 +723,6 @@ export default function TeamAttendance() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

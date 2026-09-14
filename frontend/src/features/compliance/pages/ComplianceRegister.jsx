@@ -3,13 +3,14 @@ import {
   ShieldCheck, AlertTriangle, Clock, CalendarClock, RefreshCw, Plus, X, FileCheck2,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   certified:   { label: 'Certified',   bg: '#dcfce7', color: '#15803d' },
   in_progress: { label: 'In Progress', bg: '#ede9fe', color: '#4f46e5' },
   not_started: { label: 'Not Started', bg: '#f3f4f6', color: '#6b7280' },
   expired:     { label: 'Expired',     bg: '#fee2e2', color: '#dc2626' },
-  lapsed:      { label: 'Lapsed',      bg: '#fef3c7', color: '#92400e' },
+  lapsed:      { label: 'Lapsed',      bg: '#ede9fe', color: '#5b21b6' },
 };
 const CATEGORY_LABEL = { management_system: 'Management System', product: 'Product', regulatory: 'Regulatory' };
 const CARD = { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 11, padding: 16 };
@@ -121,15 +122,18 @@ export default function ComplianceRegister() {
   const rows = useMemo(() => catFilter === 'all' ? standards : standards.filter((s) => s.category === catFilter), [standards, catFilter]);
 
   return (
-    <div className="pulse-page">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <ShieldCheck size={22} color="#6B3FDB" />
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#111827' }}>Compliance Register</h1>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button onClick={load} style={btn}><RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh</button>
-          <button onClick={() => setDrawer({})} style={btnPrimary}><Plus size={14} /> Add standard</button>
-        </div>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={FileCheck2}
+        eyebrow="Compliance"
+        title="Compliance Register"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh</button>
+          <button className="plh-cta" onClick={() => setDrawer({})}><Plus size={14} /> Add standard</button>
+        </>}
+      />
+    }>
+
       <p style={{ margin: '0 0 16px', color: '#6b7280', fontSize: 13 }}>
         Certifications and standards the company holds — ISO, IEC, IEEE, BIS, RoHS, CE, UL — with status, evidence, and the audit calendar.
       </p>
@@ -137,7 +141,7 @@ export default function ComplianceRegister() {
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         <Kpi icon={ShieldCheck} label="Certified" value={summary.certified ?? 0} color="#059669" />
         <Kpi icon={Clock} label="In progress" value={summary.in_progress ?? 0} color="#6B3FDB" />
-        <Kpi icon={CalendarClock} label="Expiring ≤90d" value={summary.expiring_soon ?? 0} color="#d97706" />
+        <Kpi icon={CalendarClock} label="Expiring ≤90d" value={summary.expiring_soon ?? 0} color="#6d28d9" />
         <Kpi icon={AlertTriangle} label="Expired" value={summary.expired ?? 0} color="#dc2626" />
         <Kpi icon={AlertTriangle} label="Overdue audits" value={summary.overdue_audits ?? 0} color="#dc2626" />
       </div>
@@ -169,7 +173,7 @@ export default function ComplianceRegister() {
                     </td>
                     <td style={{ ...TD, color: '#6b7280' }}>{CATEGORY_LABEL[s.category] || s.category}</td>
                     <td style={TD}><Pill status={s.is_expired && s.status === 'certified' ? 'expired' : s.status} /></td>
-                    <td style={{ ...TD, color: s.is_expired ? '#dc2626' : s.expiring_soon ? '#d97706' : '#6b7280', fontWeight: s.is_expired || s.expiring_soon ? 700 : 400 }}>
+                    <td style={{ ...TD, color: s.is_expired ? '#dc2626' : s.expiring_soon ? '#6d28d9' : '#6b7280', fontWeight: s.is_expired || s.expiring_soon ? 700 : 400 }}>
                       {fmtDate(s.expiry_date)}
                     </td>
                     <td style={{ ...TD, color: '#6b7280' }}>{s.evidence_count > 0 ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><FileCheck2 size={13} />{s.evidence_count}</span> : '—'}</td>
@@ -201,6 +205,6 @@ export default function ComplianceRegister() {
       </div>
 
       {drawer !== null && <StandardDrawer item={drawer} onClose={() => setDrawer(null)} onSaved={() => { setDrawer(null); load(); }} />}
-    </div>
+    </PageShell>
   );
 }

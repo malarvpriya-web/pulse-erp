@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, Users, Package, Ticket, FileText, Eye, EyeOff, RefreshCw, X, Settings } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  Plus, Users, Package, Ticket, FileText, Eye, EyeOff, RefreshCw, X,
+  Settings, Contact,
+} from 'lucide-react';
 
 const CARD = { background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:'20px', marginBottom:16 };
 const STAT = { textAlign:'center', padding:'16px 24px' };
@@ -59,7 +63,7 @@ export default function CustomerPortalManagement() {
       await api.put(`/customer-portal/accounts/${id}`, { is_active: !current });
       showToast(`Account ${!current ? 'activated' : 'deactivated'}`);
       load();
-    } catch (err) { showToast('Failed', 'error'); }
+    } catch { showToast('Failed', 'error'); }
   };
 
   const addEquipment = async () => {
@@ -78,24 +82,25 @@ export default function CustomerPortalManagement() {
       await api.put(`/customer-portal/tickets/${id}`, { status });
       showToast('Ticket updated');
       load();
-    } catch (err) { showToast('Failed', 'error'); }
+    } catch { showToast('Failed', 'error'); }
   };
 
-  const STATUS_COLOR = { open:'#fef3c7', in_progress:'#dbeafe', closed:'#d1fae5', resolved:'#d1fae5' };
-  const STATUS_TEXT  = { open:'#92400e', in_progress:'#1e40af', closed:'#065f46', resolved:'#065f46' };
+  const STATUS_COLOR = { open:'#ede9fe', in_progress:'#dbeafe', closed:'#d1fae5', resolved:'#d1fae5' };
+  const STATUS_TEXT  = { open:'#5b21b6', in_progress:'#1e40af', closed:'#065f46', resolved:'#065f46' };
 
   return (
-    <div style={{ padding:'24px' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, color:'#111', margin:0 }}>Customer Portal</h1>
-          <p style={{ fontSize:13, color:'#6b7280', margin:'4px 0 0' }}>Manage customer login accounts, equipment, and support tickets</p>
-        </div>
-        <div style={{ display:'flex', gap:8 }}>
-          <button onClick={() => setShowAddEquipment(true)} style={BTN('#059669')}><Package size={14}/>Register Equipment</button>
-          <button onClick={() => setShowCreateAccount(true)} style={BTN()}><Plus size={14}/>Create Account</button>
-        </div>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="Service Desk"
+        title="Customer Portal"
+        subtitle="Manage customer login accounts, equipment, and support tickets"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setShowAddEquipment(true)}><Package size={14}/>Register Equipment</button>
+          <button className="plh-cta" onClick={() => setShowCreateAccount(true)}><Plus size={14}/>Create Account</button>
+        </>}
+      />
+    }>
 
       {/* Stats */}
       {dashboard && (
@@ -104,7 +109,7 @@ export default function CustomerPortalManagement() {
             { label:'Portal Accounts', value:dashboard.accounts?.total || 0, sub:`${dashboard.accounts?.active || 0} active`, color:'#6B3FDB' },
             { label:'Open Tickets', value:dashboard.tickets?.open || 0, sub:'awaiting response', color:'#dc2626' },
             { label:'Equipment Registered', value:Object.values(dashboard.equipment || {}).reduce((a,b)=>a+b,0), sub:'across all customers', color:'#059669' },
-            { label:'Warranty Active', value:dashboard.equipment?.active || 0, sub:'in-warranty units', color:'#d97706' },
+            { label:'Warranty Active', value:dashboard.equipment?.active || 0, sub:'in-warranty units', color:'#6d28d9' },
           ].map(s => (
             <div key={s.label} style={{ ...CARD, ...STAT, margin:0 }}>
               <div style={{ fontSize:28, fontWeight:800, color:s.color }}>{s.value}</div>
@@ -222,7 +227,7 @@ export default function CustomerPortalManagement() {
                   <td style={{ padding:'10px 12px', fontWeight:500 }}>{t.customer_name}</td>
                   <td style={{ padding:'10px 12px', color:'#374151', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.subject}</td>
                   <td style={{ padding:'10px 12px' }}>
-                    <span style={{ background:{high:'#fee2e2',medium:'#fef3c7',low:'#f0fdf4'}[t.priority]||'#f3f4f6', color:{high:'#991b1b',medium:'#92400e',low:'#166534'}[t.priority]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>
+                    <span style={{ background:{high:'#fee2e2',medium:'#ede9fe',low:'#f0fdf4'}[t.priority]||'#f3f4f6', color:{high:'#991b1b',medium:'#5b21b6',low:'#166534'}[t.priority]||'#374151', padding:'2px 8px', borderRadius:9999, fontSize:11, fontWeight:700, textTransform:'capitalize' }}>
                       {t.priority}
                     </span>
                   </td>
@@ -343,6 +348,6 @@ export default function CustomerPortalManagement() {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -1,5 +1,8 @@
 ﻿import { useEffect, useState, useCallback } from 'react';
 import api from '@/services/api/client';
+import { LayoutDashboard } from 'lucide-react';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
 
 const P = '#6B3FDB';
@@ -18,10 +21,10 @@ const cr = (n) => {
 
 const COST_COLORS = {
   MATERIAL: '#6B3FDB', ENGINEERING: '#2563eb', PRODUCTION: '#0891b2',
-  PROCUREMENT: '#0d9488', SALES_TRAVEL: '#d97706', INSTALLATION: '#dc2626',
+  PROCUREMENT: '#0d9488', SALES_TRAVEL: '#6d28d9', INSTALLATION: '#dc2626',
   COMMISSIONING: '#7c2d12', SERVICE: '#9f1239', AMC: '#065f46',
   QUALITY: '#6d28d9', FAT: '#4f46e5', TRANSPORT: '#0369a1',
-  LABOUR: '#1d4ed8', INVENTORY: '#047857', APPLICATION_ENGINEERING: '#b45309',
+  LABOUR: '#1d4ed8', INVENTORY: '#047857', APPLICATION_ENGINEERING: '#6d28d9',
   OTHER: '#6b7280',
 };
 
@@ -57,10 +60,29 @@ export default function ProjectProfitabilityDashboard({ setPage }) {
   const [sortBy, setSortBy]   = useState('profit');
   const [sortDir, setSortDir] = useState('desc');
 
+  const [options, setOptions] = useState({ statuses: [], project_types: [] });
+
+  // 'all' by default: profitability is cumulative per project, so a window would
+  // hide jobs that started earlier. Period filters by overlap.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'all',
+    dimensions: { status: 'all', project_type: 'all' },
+    storageKey: 'project-profitability',
+  });
+  const { params } = filters;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/projects/projects/filter-options')
+      .then(r => { if (!cancelled) setOptions(o => ({ ...o, ...(r.data || {}) })); })
+      .catch(() => { /* dropdowns fall back to "All" only */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get('/project-cost-engine/dashboard');
+      const res = await api.get('/project-cost-engine/dashboard', { params });
       setData(res.data);
     } catch {
       try {
@@ -68,9 +90,15 @@ export default function ProjectProfitabilityDashboard({ setPage }) {
         setData({ kpis: { ...res.data, total_contract_value: res.data.total_revenue }, projects: [] });
       } catch { setData(null); }
     } finally { setLoading(false); }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
+
+  const titleCase = (s) => String(s).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const filterDimensions = [
+    { key: 'status',       label: 'Status', allLabel: 'All Statuses', options: (options.statuses || []).map(v => ({ value: v, label: titleCase(v) })) },
+    { key: 'project_type', label: 'Type',   allLabel: 'All Types',    options: (options.project_types || []).map(v => ({ value: v, label: v })) },
+  ];
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>Loading profitability data…</div>;
   if (!data) return <div style={{ padding: 40, textAlign: 'center', color: '#dc2626' }}>Failed to load data.</div>;
@@ -99,28 +127,30 @@ export default function ProjectProfitabilityDashboard({ setPage }) {
   const sortIcon = (col) => sortBy === col ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
 
   return (
-    <div style={{ padding: '16px 18px 20px', margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111' }}>Project Profitability Dashboard</h2>
-          <p style={{ margin: '3px 0 0', color: '#6b7280', fontSize: 12.5 }}>Real-time cost &amp; revenue across all projects</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button onClick={() => setPage?.('CostTransactions')} style={{ padding: '8px 14px', background: LIGHT, border: `1px solid ${BORDER}`, borderRadius: 8, color: P, fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+    <PageShell dock={
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Projects"
+        title="Project Profitability Dashboard"
+        subtitle="Real-time cost & revenue across all projects"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('CostTransactions')}>
             Cost Transactions
           </button>
-          <button onClick={() => setPage?.('CostCentreTracking')} style={{ padding: '8px 14px', background: LIGHT, border: `1px solid ${BORDER}`, borderRadius: 8, color: P, fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('CostCentreTracking')}>
             Cost Centres
           </button>
-          <button onClick={() => setPage?.('CEOCommandCenter')} style={{ padding: '8px 14px', background: LIGHT, border: `1px solid ${BORDER}`, borderRadius: 8, color: P, fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+          <button className="plh-cta plh-cta--ghost" onClick={() => setPage?.('CEOCommandCenter')}>
             CEO View
           </button>
-          <button onClick={load} style={{ padding: '8px 14px', background: P, border: 'none', borderRadius: 8, color: '#fff', fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>
+          <button className="plh-cta" onClick={load}>
             ↻ Refresh
           </button>
-        </div>
-      </div>
+        </>}
+      />
+    }>
+
+      <DashboardFilterBar filters={filters} dimensions={filterDimensions} />
 
       {/* KPI Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: 10, marginBottom: 14 }}>
@@ -275,8 +305,8 @@ export default function ProjectProfitabilityDashboard({ setPage }) {
                       <td style={{ padding: '9px 12px', textAlign: 'right', color: isLoss ? '#dc2626' : '#059669', fontWeight: 600 }}>{pct(p.margin_pct)}</td>
                       <td style={{ padding: '9px 12px' }}>
                         <span style={{
-                          background: p.status === 'active' ? '#f0fdf4' : p.status === 'completed' ? LIGHT : '#fef9c3',
-                          color: p.status === 'active' ? '#059669' : p.status === 'completed' ? P : '#92400e',
+                          background: p.status === 'active' ? '#f0fdf4' : p.status === 'completed' ? LIGHT : '#ede9fe',
+                          color: p.status === 'active' ? '#059669' : p.status === 'completed' ? P : '#5b21b6',
                           borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 500,
                         }}>{p.status}</span>
                       </td>
@@ -440,6 +470,6 @@ export default function ProjectProfitabilityDashboard({ setPage }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

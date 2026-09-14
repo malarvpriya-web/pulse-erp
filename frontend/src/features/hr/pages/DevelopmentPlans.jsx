@@ -1,7 +1,9 @@
 // frontend/src/features/hr/pages/DevelopmentPlans.jsx
 import React, { useState, useEffect, useCallback } from 'react';
+import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ─── style tokens ──────────────────────────────────────────── */
 const INP = { width: '100%', boxSizing: 'border-box', padding: '7px 10px',
@@ -16,7 +18,7 @@ const BTN = (v = 'primary', sm = false) => ({
   ...(v === 'success' ? { background: '#16a34a', color: '#fff', border: 'none' } : {}),
 });
 
-const STATUS_COLORS = { active: '#6B3FDB', completed: '#16a34a', paused: '#d97706', cancelled: '#ef4444' };
+const STATUS_COLORS = { active: '#6B3FDB', completed: '#16a34a', paused: '#6d28d9', cancelled: '#ef4444' };
 const ACTION_TYPES  = ['task', 'training', 'stretch_assignment', 'mentoring', 'project', 'certification', 'secondment'];
 const ACTION_STATUS = ['pending', 'in_progress', 'completed', 'cancelled'];
 
@@ -31,7 +33,7 @@ function Spinner() {
 }
 
 function ProgressBar({ value }) {
-  const color = value >= 80 ? '#16a34a' : value >= 40 ? '#d97706' : '#6B3FDB';
+  const color = value >= 80 ? '#16a34a' : value >= 40 ? '#6d28d9' : '#6B3FDB';
   return (
     <div style={{ height: 6, background: '#e9e4ff', borderRadius: 3, overflow: 'hidden' }}>
       <div style={{ height: '100%', width: `${value}%`, background: color, transition: 'width .4s', borderRadius: 3 }} />
@@ -247,7 +249,14 @@ export default function DevelopmentPlans() {
   if (loading) return <div style={{ padding: 24 }}><Spinner /></div>;
 
   return (
-    <div style={{ padding: 24, background: '#f5f3ff', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Development Plans"
+        subtitle="Structured development plans, actions, and mentoring for succession candidates"
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeleteAction}
         title="Delete Action"
@@ -266,12 +275,7 @@ export default function DevelopmentPlans() {
         onConfirm={deletePlan}
         onCancel={() => setPendingDeletePlan(null)}
       />
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#4c1d95', fontSize: 22 }}>Development Plans</h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-          Structured development plans, actions, and mentoring for succession candidates
-        </p>
-      </div>
+
 
       {/* Flash */}
       {msg.text && (
@@ -580,7 +584,7 @@ export default function DevelopmentPlans() {
                     No actions yet. Click "+ Add Action" to build the development plan.
                   </div>
                 ) : (planDetail.actions || []).map(action => {
-                  const statusColors = { pending: '#9ca3af', in_progress: '#d97706', completed: '#16a34a', cancelled: '#ef4444' };
+                  const statusColors = { pending: '#9ca3af', in_progress: '#6d28d9', completed: '#16a34a', cancelled: '#ef4444' };
                   const ac = statusColors[action.status] || '#9ca3af';
                   return (
                     <div key={action.id}
@@ -735,7 +739,7 @@ export default function DevelopmentPlans() {
 
       {/* ── Mentoring Tab ── */}
       {tab === 'mentoring' && <MentoringList employees={employees} flash={flash} />}
-    </div>
+    </PageShell>
   );
 }
 

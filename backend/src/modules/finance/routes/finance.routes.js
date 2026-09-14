@@ -5,6 +5,7 @@ import coaRepo from '../repositories/chartOfAccounts.repository.js';
 import partiesRepo from '../repositories/parties.repository.js';
 import { billService, paymentService } from '../services/bill.service.js';
 import receiptService from '../services/receipt.service.js';
+import { postInvoicePaymentJournal } from '../services/invoicePaymentJournal.service.js';
 import expenseRepo from '../repositories/expense.repository.js';
 import journalRepo from '../repositories/journal.repository.js';
 import reportsService from '../services/reports.service.js';
@@ -16,6 +17,9 @@ import { logAudit } from '../../../services/AuditService.js';
 import { getInvoiceStats, getBillStats } from '../finance.controller.js';
 import { isDriveConfigured, ensureCustomerDocFolder, DOC_TYPES } from '../../../services/googleDrive.service.js';
 import { uploadFile } from '../../../services/StorageService.js';
+import { pickUpdatable } from '../../../shared/safeUpdate.js';
+import { respondError } from '../../../shared/pgErrors.js';
+import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -69,7 +73,7 @@ router.post('/accounts/seed-defaults', requirePermission('finance', 'add'), asyn
 
 router.post('/accounts', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const companyId = req.scope?.company_id ?? null;
     const account = await coaRepo.create({ ...req.body, company_id: companyId });
@@ -99,9 +103,76 @@ router.get('/accounts/tree', requirePermission('finance', 'view'), async (req, r
   }
 });
 
-router.put('/accounts/:id', requirePermission('finance', 'edit'), async (req, res) => {
+// CSV import for the Chart of Accounts. ChartOfAccounts.jsx has always shown an
+// Import button that posted a multipart file here, but the route did not exist —
+// every import returned 404 and the toast reported a generic failure. Unlike
+// /parties/import (which takes pre-parsed JSON rows) this one receives the raw
+// file, because that is what the button sends.
+router.post('/accounts/import', requirePermission('finance', 'add'), upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file provided' });
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const companyId = req.scope?.company_id ?? null;
+    const text = req.file.buffer.toString('utf8');
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return res.status(422).json({ error: 'The file has a header but no rows' });
+
+    // Minimal CSV split — quoted fields may contain commas.
+    const splitRow = (line) => {
+      const out = []; let cur = ''; let inQ = false;
+      for (const ch of line) {
+        if (ch === '"') { inQ = !inQ; continue; }
+        if (ch === ',' && !inQ) { out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      out.push(cur.trim());
+      return out;
+    };
+
+    const headers = splitRow(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, '_'));
+    const idx = (...names) => {
+      for (const n of names) { const i = headers.indexOf(n); if (i !== -1) return i; }
+      return -1;
+    };
+    const iCode = idx('code', 'account_code');
+    const iName = idx('name', 'account_name');
+    const iType = idx('account_type', 'type');
+    const iDesc = idx('description');
+    if (iCode === -1 || iName === -1) {
+      return res.status(422).json({ error: 'The file needs at least a code and a name column' });
+    }
+
+    const results = { imported: 0, errors: [] };
+    for (let r = 1; r < lines.length; r++) {
+      const cells = splitRow(lines[r]);
+      const code = (cells[iCode] || '').trim();
+      const name = (cells[iName] || '').trim();
+      try {
+        if (!code || !name) throw new Error('code and name are both required');
+        await coaRepo.create({
+          code,
+          name,
+          account_type: iType !== -1 ? (cells[iType] || '').trim() || 'Asset' : 'Asset',
+          description:  iDesc !== -1 ? (cells[iDesc] || '').trim() || null : null,
+          company_id:   companyId,
+        });
+        results.imported++;
+      } catch (err) {
+        results.errors.push({
+          row: r + 1,
+          code: code || '—',
+          error: err.code === '23505' ? 'An account with this code already exists' : err.message,
+        });
+      }
+    }
+    res.json(results);
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+router.put('/accounts/:id', requirePermission('finance', 'edit'), captureBefore('chart_of_accounts'), async (req, res) => {
+  try {
+    const { valid, errors } = await validate('finance', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const account = await coaRepo.update(req.params.id, req.body);
     res.json(account);
@@ -110,7 +181,7 @@ router.put('/accounts/:id', requirePermission('finance', 'edit'), async (req, re
   }
 });
 
-router.delete('/accounts/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/accounts/:id', requirePermission('finance', 'delete'), captureBefore('chart_of_accounts'), async (req, res) => {
   try {
     await coaRepo.softDelete(req.params.id);
     res.json({ message: 'Account deactivated' });
@@ -122,7 +193,7 @@ router.delete('/accounts/:id', requirePermission('finance', 'delete'), async (re
 // Parties (Customers & Suppliers)
 router.post('/parties', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const partyCode = await partiesRepo.getNextCode(req.body.party_type);
     const party = await partiesRepo.create({ ...req.body, party_code: partyCode, company_id: req.scope?.company_id ?? null });
@@ -163,7 +234,7 @@ router.get('/parties/:id', requirePermission('finance', 'view'), async (req, res
     }
     res.json(party);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
@@ -176,13 +247,13 @@ router.get('/parties/:id/outstanding', requirePermission('finance', 'view'), asy
     const balance = await partiesRepo.getOutstandingBalance(party.id, party.party_type);
     res.json({ outstanding_balance: balance });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
-router.put('/parties/:id', requirePermission('finance', 'edit'), async (req, res) => {
+router.put('/parties/:id', requirePermission('finance', 'edit'), captureBefore('parties'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const party = await partiesRepo.update(req.params.id, req.body);
     res.json(party);
@@ -229,7 +300,7 @@ router.get('/parties/:id/transactions', requirePermission('finance', 'view'), as
     const all = [...invoices, ...bills].sort((a, b) => new Date(b.txn_date) - new Date(a.txn_date));
     res.json(all);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
@@ -259,7 +330,7 @@ router.get('/parties/:id/ageing', requirePermission('finance', 'view'), async (r
     rows.forEach(r => { buckets[r.bucket] = parseFloat(r.amount); });
     res.json(buckets);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    respondError(res, error);
   }
 });
 
@@ -309,7 +380,7 @@ router.post('/parties/import', requirePermission('finance', 'add'), async (req, 
 
 // Invoices
 router.post('/invoices', requirePermission('finance', 'add'), async (req, res, next) => {
-  const { valid, errors } = await validate('finance', req.body).catch(() => ({ valid: true, errors: [] }));
+  const { valid, errors } = await validate('finance', req.body, { partial: false }).catch(() => ({ valid: true, errors: [] }));
   if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
   next();
 }, async (req, res, next) => {
@@ -420,7 +491,58 @@ router.get('/invoices/due-soon', requirePermission('finance', 'view'), invoiceCo
 router.get('/invoices/stats', requirePermission('finance', 'view'), getInvoiceStats);
 router.get('/invoices/:id', requirePermission('finance', 'view'), invoiceController.getById.bind(invoiceController));
 
-router.patch('/invoices/:id/send', requirePermission('finance', 'edit'), async (req, res) => {
+// Edit an invoice. Invoices.jsx has always had an edit drawer, but the PUT it
+// posts to was never built, so saving an edit 404'd silently. Only draft and
+// sent invoices are editable — once an invoice is paid or cancelled its totals
+// are referenced by journal entries and receipts, and changing them there would
+// desync the GL.
+router.put('/invoices/:id', requirePermission('finance', 'edit'), async (req, res) => {
+  try {
+    const companyId = req.scope?.company_id ?? null;
+    const { rows: [before] } = await pool.query(
+      `SELECT id, invoice_number, status, total_amount, company_id
+         FROM invoices WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!before) return res.status(404).json({ error: 'Invoice not found' });
+    if (companyId != null && before.company_id != null && String(before.company_id) !== String(companyId)) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    if (['paid', 'cancelled'].includes(String(before.status).toLowerCase())) {
+      return res.status(409).json({
+        error: `A ${String(before.status).toLowerCase()} invoice cannot be edited. Raise a credit note instead.`,
+      });
+    }
+
+    // pickUpdatable validates every key against the real invoices columns, so a
+    // caller cannot mass-assign status, company_id or paid_amount through here.
+    const safe = await pickUpdatable('invoices', req.body);
+    if (Object.keys(safe).length === 0) {
+      return res.status(422).json({ error: 'No updatable fields supplied' });
+    }
+
+    const keys = Object.keys(safe);
+    const sets = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
+    const vals = keys.map(k => safe[k]);
+    vals.push(req.params.id);
+
+    const { rows: [updated] } = await pool.query(
+      `UPDATE invoices SET ${sets}, updated_at = NOW() WHERE id = $${vals.length} RETURNING *`,
+      vals
+    );
+
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id, module: 'finance',
+      recordId: updated.id, recordType: 'invoice', action: 'update',
+      oldData: before, newData: updated, req,
+    });
+    res.json(updated);
+  } catch (err) {
+    respondError(res, err);
+  }
+});
+
+router.patch('/invoices/:id/send', requirePermission('finance', 'edit'), captureBefore('invoices'), async (req, res) => {
   try {
     const { rows: [inv] } = await pool.query(
       `UPDATE invoices SET status='sent', updated_at=NOW() WHERE id=$1 AND status NOT IN ('paid','cancelled') RETURNING id, status`,
@@ -432,20 +554,61 @@ router.patch('/invoices/:id/send', requirePermission('finance', 'edit'), async (
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/invoices/:id/mark-paid', requirePermission('finance', 'edit'), async (req, res) => {
+router.patch('/invoices/:id/mark-paid', requirePermission('finance', 'edit'), captureBefore('invoices'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { rows: [inv] } = await pool.query(
-      `UPDATE invoices SET status='paid', paid_amount=total_amount, balance_amount=0, updated_at=NOW()
-       WHERE id=$1 AND status NOT IN ('paid','cancelled') RETURNING id, status, total_amount`,
+    await client.query('BEGIN');
+    const { rows: [before] } = await client.query(
+      `SELECT id, invoice_number, total_amount, paid_amount, company_id FROM invoices
+       WHERE id=$1 AND status NOT IN ('paid','cancelled') FOR UPDATE`,
       [req.params.id]
     );
-    if (!inv) return res.status(404).json({ error: 'Invoice not found or already paid' });
+    if (!before) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Invoice not found or already paid' });
+    }
+    const amount = parseFloat(before.total_amount) - parseFloat(before.paid_amount || 0);
+
+    const { rows: [inv] } = await client.query(
+      `UPDATE invoices SET status='paid', paid_amount=total_amount, balance=0, updated_at=NOW()
+       WHERE id=$1 RETURNING id, status, total_amount`,
+      [req.params.id]
+    );
+
+    // Was a bare status flip with no journal entry — Cash/Bank never got
+    // debited and Accounts Receivable never got cleared, so only the formal
+    // Receipts screen actually moved the GL. Now posts the same way.
+    let paymentTx = null;
+    if (amount > 0) {
+      const { rows: [tx] } = await client.query(
+        `INSERT INTO payment_transactions (invoice_id, company_id, amount, payment_mode, paid_at, status, notes)
+         VALUES ($1, $2, $3, 'mark_paid', NOW(), 'captured', 'Marked paid via Finance > Invoices') RETURNING id`,
+        [req.params.id, before.company_id, amount]
+      );
+      paymentTx = tx;
+      await postInvoicePaymentJournal(client, {
+        paymentTransactionId: tx.id,
+        invoiceId: before.id,
+        invoiceNumber: before.invoice_number,
+        amount,
+        paymentMode: 'mark_paid',
+        companyId: before.company_id,
+        userId: req.user?.userId ?? req.user?.id,
+      });
+    }
+
+    await client.query('COMMIT');
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'finance', recordId: req.params.id, recordType: 'invoice', action: 'mark_paid', newData: { status: 'paid' }, req });
-    res.json(inv);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json({ ...inv, payment_transaction_id: paymentTx?.id ?? null });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
 });
 
-router.patch('/invoices/:id/attachment', requirePermission('finance', 'edit'), upload.single('file'), async (req, res) => {
+router.patch('/invoices/:id/attachment', requirePermission('finance', 'edit'), upload.single('file'), captureBefore('invoices'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file provided' });
     const file_url = await uploadFile(req.file.buffer, req.file.originalname, req.file.mimetype);
@@ -461,7 +624,7 @@ router.patch('/invoices/:id/attachment', requirePermission('finance', 'edit'), u
 // Bills
 router.post('/bills', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const bill = await billService.createBill({ ...req.body, company_id: req.scope?.company_id ?? null }, req.user.userId ?? req.user.id);
     logAudit({ userId: req.user?.userId, module: 'finance', recordId: bill.id, recordType: 'bill', action: 'create', newData: bill, req });
@@ -469,7 +632,9 @@ router.post('/bills', requirePermission('finance', 'add'), async (req, res) => {
     const ruleAlerts = ruleResults.filter(r => r.triggered);
     res.status(201).json({ ...bill, ...(ruleAlerts.length ? { rule_alerts: ruleAlerts } : {}) });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // A rejected po_id is the caller's mistake, not a server fault — reporting
+    // it as 500 tells the user to retry something that will never succeed.
+    res.status(error.status ?? 500).json({ error: error.message });
   }
 });
 
@@ -551,7 +716,7 @@ router.post('/bills/:id/resubmit', requirePermission('finance', 'edit'), async (
 // Payments
 router.post('/payments', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const payment = await paymentService.createPayment({ ...req.body, company_id: req.scope?.company_id ?? null }, req.user.userId ?? req.user.id);
     logAudit({ userId: req.user?.userId, module: 'finance', recordId: payment.id, recordType: 'payment', action: 'create', newData: payment, req });
@@ -575,7 +740,7 @@ router.get('/payments', requirePermission('finance', 'view'), async (req, res) =
 // Receipts
 router.post('/receipts', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const receipt = await receiptService.createReceipt({ ...req.body, company_id: req.scope?.company_id ?? null }, req.user.userId ?? req.user.id);
     res.status(201).json(receipt);
@@ -596,7 +761,7 @@ router.get('/receipts', requirePermission('finance', 'view'), async (req, res) =
 // Expense Claims
 router.post('/expenses', requirePermission('finance', 'add'), async (req, res) => {
   try {
-    const { valid, errors } = await validate('finance', req.body);
+    const { valid, errors } = await validate('finance', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
     const client = await pool.connect();
     try {

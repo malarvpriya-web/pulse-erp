@@ -2,11 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import {
-  Plus, Search, X, HelpCircle, ChevronDown, ChevronUp,
-  Pencil, Trash2, Copy, Check, BookOpen,
+  Plus, Search, X, HelpCircle, ChevronDown, ChevronUp, Pencil, Trash2,
+  Copy, Check, BookOpen, Landmark,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { CAT_STYLE, DIFF_STYLE } from '../shared/constants';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const CATEGORIES = ['HR', 'Technical', 'Behavioural', 'Situational', 'Cultural Fit', 'Domain'];
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
@@ -247,9 +248,14 @@ function QuestionRow({ q, onEdit, onDelete }) {
           >
             <Trash2 size={14} />
           </button>
-          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: '4px 6px', borderRadius: 6 }}>
+          {/* Indicator only -- the whole row is the toggle. It was a <button>
+              with no handler, which worked solely because the click bubbled to
+              the row, while presenting a second focusable control that did
+              nothing on its own. */}
+          <span aria-hidden="true"
+            style={{ display: 'inline-flex', alignItems: 'center', color: '#9ca3af', padding: '4px 6px' }}>
             {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
+          </span>
         </div>
       </div>
       {expanded && q.expected_answer && (
@@ -325,7 +331,18 @@ export default function QuestionBank() {
   });
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Landmark}
+        eyebrow="Recruitment"
+        title="Question Bank"
+        subtitle="Interview questions library for your hiring team"
+        actions={<button className="plh-cta"
+          onClick={openAdd}>
+          <Plus size={15} /> Add Question
+        </button>}
+      />
+    }>
       <ConfirmDialog
         open={!!pendingDeleteQ}
         title="Delete Question"
@@ -336,18 +353,7 @@ export default function QuestionBank() {
         onCancel={() => setPendingDeleteQ(null)}
       />
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Question Bank</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>Interview questions library for your hiring team</p>
-        </div>
-        <button
-          onClick={openAdd}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
-        >
-          <Plus size={15} /> Add Question
-        </button>
-      </div>
+
 
       {/* Stats row */}
       {stats && (
@@ -464,6 +470,6 @@ export default function QuestionBank() {
       {showModal && (
         <QuestionModal question={editingQ} onClose={() => { setShowModal(false); setEditingQ(null); }} onSaved={onSaved} />
       )}
-    </div>
+    </PageShell>
   );
 }

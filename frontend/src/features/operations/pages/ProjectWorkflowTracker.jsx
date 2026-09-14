@@ -3,10 +3,11 @@ import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { CheckCircle, Clock, AlertTriangle, Circle, FolderKanban, RefreshCw, Search, User, Calendar, TrendingUp } from 'lucide-react';
 import './ProjectWorkflowTracker.css';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_CONFIG = {
   'On Track':  { color: '#15803d', bg: '#dcfce7', icon: CheckCircle },
-  'At Risk':   { color: '#92400e', bg: '#fef3c7', icon: AlertTriangle },
+  'At Risk':   { color: '#5b21b6', bg: '#ede9fe', icon: AlertTriangle },
   'Delayed':   { color: '#b91c1c', bg: '#fee2e2', icon: AlertTriangle },
   'Completed': { color: '#4338ca', bg: '#e0e7ff', icon: CheckCircle },
   'Planning':  { color: '#6b7280', bg: '#f3f4f6', icon: Circle },
@@ -15,7 +16,7 @@ const STATUS_CONFIG = {
 const PROGRESS_COLOR = (pct) => {
   if (pct >= 80) return '#15803d';
   if (pct >= 50) return '#4f46e5';
-  if (pct >= 25) return '#f59e0b';
+  if (pct >= 25) return '#7c5cf0';
   return '#ef4444';
 };
 
@@ -63,22 +64,20 @@ export default function ProjectWorkflowTracker() {
   };
 
   return (
-    <div className="pwt-root">
-
-      {/* ── Header ── */}
-      <div className="pwt-header">
-        <div className="pwt-header-l">
-          <div className="pwt-header-icon"><FolderKanban size={18} /></div>
-          <div>
-            <h1 className="pwt-title">Project Workflow Tracker</h1>
-            <p className="pwt-sub">Track all projects across workflow stages</p>
-          </div>
-        </div>
-        <button className="pwt-refresh-btn" onClick={() => fetchData(true)} disabled={refreshing}>
+    <PageShell dock={
+      <PageHero
+        icon={FolderKanban}
+        eyebrow="Operations"
+        title="Project Workflow Tracker"
+        subtitle="Track all projects across workflow stages"
+        actions={<button className="plh-cta" onClick={() => fetchData(true)} disabled={refreshing}>
           <RefreshCw size={13} className={refreshing ? 'pwt-spin' : ''} />
           {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
-      </div>
+        </button>}
+      />
+    }>
+
+      {/* ── Header ── */}
 
       {/* ── KPI cards ── */}
       <div className="pwt-kpis">
@@ -172,7 +171,7 @@ export default function ProjectWorkflowTracker() {
           })}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

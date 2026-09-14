@@ -43,11 +43,11 @@ export const SAMPLE_TRAVELERS = [
 export const SAMPLE_TRIPS = [
   { id: 1, employee: 'Arjun Mehta', destination: 'Mumbai', travelDate: '2026-03-20', returnDate: '2026-03-21', status: 'Approved', color: '#6366f1' },
   { id: 2, employee: 'Priya Sharma', destination: 'Bengaluru', travelDate: '2026-03-25', returnDate: '2026-03-27', status: 'Approved', color: '#8b5cf6' },
-  { id: 3, employee: 'Rahul Verma', destination: 'Delhi', travelDate: '2026-03-25', returnDate: '2026-03-28', status: 'Pending', color: '#f59e0b' },
+  { id: 3, employee: 'Rahul Verma', destination: 'Delhi', travelDate: '2026-03-25', returnDate: '2026-03-28', status: 'Pending', color: '#7c5cf0' },
   { id: 4, employee: 'Sneha Iyer', destination: 'Chennai', travelDate: '2026-03-28', returnDate: '2026-03-29', status: 'Approved', color: '#10b981' },
-  { id: 5, employee: 'Kiran Das', destination: 'Hyderabad', travelDate: '2026-04-01', returnDate: '2026-04-02', status: 'Pending', color: '#f59e0b' },
+  { id: 5, employee: 'Kiran Das', destination: 'Hyderabad', travelDate: '2026-04-01', returnDate: '2026-04-02', status: 'Pending', color: '#7c5cf0' },
   { id: 6, employee: 'Vikram Singh', destination: 'Nagpur', travelDate: '2026-03-22', returnDate: '2026-03-23', status: 'Approved', color: '#6366f1' },
-  { id: 7, employee: 'Meera Joshi', destination: 'Bengaluru', travelDate: '2026-03-28', returnDate: '2026-03-30', status: 'Pending', color: '#f59e0b' },
+  { id: 7, employee: 'Meera Joshi', destination: 'Bengaluru', travelDate: '2026-03-28', returnDate: '2026-03-30', status: 'Pending', color: '#7c5cf0' },
 ];
 
 // TravelDashboard

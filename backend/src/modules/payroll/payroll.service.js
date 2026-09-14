@@ -17,11 +17,15 @@ async function findDefaultAccount(client, companyId, codes) {
   return rows[0]?.id ?? null;
 }
 
-const ACTIVE_STATUSES = `LOWER(status) IN ('active', 'probation')`;
+// 'notice' = employee has an exit initiated but hasn't reached their last
+// working date yet (see exit.routes.js POST /initiate) — still owed pay.
+const ACTIVE_STATUSES = `LOWER(status) IN ('active', 'probation', 'notice')`;
 
 const BASE_FIELDS = `
   id, office_id, first_name, last_name, department, designation,
-  basic_salary, account_number, ifsc_code, bank_name, state, work_state,
+  basic_salary, account_number, ifsc_code, bank_name,
+  (SELECT b.state FROM branches  b WHERE b.id = employees.branch_id)  AS state,
+  (SELECT c.state FROM companies c WHERE c.id = employees.company_id) AS work_state,
   EXTRACT(YEAR FROM AGE(NOW(), joining_date)) as years_of_service
 `;
 
@@ -372,7 +376,9 @@ export async function generatePayroll({ month, year, department, employee_id, co
   let q = `
     SELECT e.id, e.office_id, e.first_name, e.last_name, e.department, e.designation,
            e.company_email AS email, e.personal_email AS work_email, e.pan_number, e.account_number AS bank_account, e.joining_date,
-           e.status AS emp_status, e.state, e.work_state,
+           e.status AS emp_status,
+           (SELECT b.state FROM branches  b WHERE b.id = e.branch_id)  AS state,
+           (SELECT c.state FROM companies c WHERE c.id = e.company_id) AS work_state,
            COALESCE(esa.basic_salary, e.basic_salary, 0) AS basic_salary,
            EXTRACT(YEAR FROM AGE(NOW(), e.joining_date)) AS years_of_service,
            ss.components AS structure_components

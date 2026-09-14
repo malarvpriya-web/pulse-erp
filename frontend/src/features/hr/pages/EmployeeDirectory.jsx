@@ -7,6 +7,7 @@ import {
 import api from '@/services/api/client';
 import { usePagination } from '@/features/_shared/usePagination';
 import Pagination from '@/features/_shared/Pagination';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -17,7 +18,7 @@ const EX_STATUSES = new Set([
 
 const STATUS_CFG = {
   active:    { bg: '#dcfce7', color: '#15803d', chipBg: '#dcfce7', chipBorder: '#bbf7d0', label: 'Active'    },
-  probation: { bg: '#fef3c7', color: '#92400e', chipBg: '#fef3c7', chipBorder: '#fde68a', label: 'Probation' },
+  probation: { bg: '#ede9fe', color: '#5b21b6', chipBg: '#ede9fe', chipBorder: '#ddd6fe', label: 'Probation' },
   notice:    { bg: '#fee2e2', color: '#991b1b', chipBg: '#fee2e2', chipBorder: '#fecaca', label: 'On Notice' },
 };
 function statusCfg(s) {
@@ -26,9 +27,9 @@ function statusCfg(s) {
 
 const AVATAR_PALETTES = [
   { bg: '#ede9fe', color: '#6d28d9' }, { bg: '#dbeafe', color: '#1d4ed8' },
-  { bg: '#dcfce7', color: '#166534' }, { bg: '#fff7ed', color: '#c2410c' },
+  { bg: '#dcfce7', color: '#166534' }, { bg: '#fff7ed', color: '#5b21b6' },
   { bg: '#fdf4ff', color: '#9333ea' }, { bg: '#f0fdfa', color: '#0f766e' },
-  { bg: '#fef9c3', color: '#a16207' }, { bg: '#fce7f3', color: '#9d174d' },
+  { bg: '#ede9fe', color: '#6d28d9' }, { bg: '#fce7f3', color: '#9d174d' },
 ];
 function avatarPalette(name = '') {
   let h = 0;
@@ -133,7 +134,7 @@ function Badges({ emp }) {
         </span>
       )}
       {isAnni && (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#fffbeb', color: '#b45309', fontSize: '10px', fontWeight: 600, padding: '2px 7px', borderRadius: '20px', border: '1px solid #fde68a' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#f5f3ff', color: '#6d28d9', fontSize: '10px', fontWeight: 600, padding: '2px 7px', borderRadius: '20px', border: '1px solid #ddd6fe' }}>
           <Star size={9} /> {yrs}yr anniversary
         </span>
       )}
@@ -254,7 +255,7 @@ function ListTable({ employees, onSelect }) {
                       <div style={{ fontWeight: 600, color: '#111827', display: 'flex', alignItems: 'center', gap: '5px' }}>
                         {name}
                         {isBday  && <Cake size={11} color="#9333ea" title="Birthday this week" />}
-                        {isAnni  && <Star size={11} color="#d97706" title={`${yrs}yr anniversary`} />}
+                        {isAnni  && <Star size={11} color="#6d28d9" title={`${yrs}yr anniversary`} />}
                         {emp.on_leave_today && <BriefcaseMedical size={11} color="#0284c7" title="On leave today" />}
                       </div>
                       <div style={{ fontSize: '11px', color: '#9ca3af' }}>{emp.designation || '—'}</div>
@@ -301,7 +302,7 @@ function StatusChips({ employees, current, onChange }) {
   const chips = [
     { key: 'all',       label: 'All',        count: counts.all,       bg: '#f3f4f6', color: '#374151', activeBg: '#1f2937', activeColor: '#fff' },
     { key: 'active',    label: 'Active',     count: counts.active,    bg: '#dcfce7', color: '#15803d', activeBg: '#15803d', activeColor: '#fff' },
-    { key: 'probation', label: 'Probation',  count: counts.probation, bg: '#fef3c7', color: '#92400e', activeBg: '#92400e', activeColor: '#fff' },
+    { key: 'probation', label: 'Probation',  count: counts.probation, bg: '#ede9fe', color: '#5b21b6', activeBg: '#5b21b6', activeColor: '#fff' },
     { key: 'notice',    label: 'On Notice',  count: counts.notice,    bg: '#fee2e2', color: '#991b1b', activeBg: '#991b1b', activeColor: '#fff' },
   ];
 
@@ -413,7 +414,32 @@ export default function EmployeeDirectory({ setPage }) {
   const hasFilters = search || fDept || fStatus !== 'all';
 
   return (
-    <div style={{ padding: '24px' }} onClick={() => setShowSort(false)}>
+    <PageShell
+      onClick={() => setShowSort(false)}
+      dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Employee Directory"
+        actions={<>
+          {[
+              { mode: 'cards', Icon: LayoutGrid, title: 'Card view' },
+              { mode: 'list',  Icon: List,        title: 'List view' },
+            ].map(({ mode, Icon, title }) => (
+              <button className="plh-cta plh-cta--ghost"
+                key={mode}
+                title={title}
+                onClick={() => setView(mode)}>
+                <Icon size={14} />
+              </button>
+            ))}
+          <button className="plh-cta"
+            onClick={() => exportCSV(displayed)}>
+            <Download size={13} /> Export CSV
+          </button>
+        </>}
+      />
+    }>
 
       {/* Error banner */}
       {error && (
@@ -423,40 +449,7 @@ export default function EmployeeDirectory({ setPage }) {
       )}
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 700 }}>Employee Directory</h2>
-          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: '13px' }}>
-            {displayed.length} of {employees.length} employees
-            {departments.length > 0 && ` · ${departments.length} department${departments.length !== 1 ? 's' : ''}`}
-          </p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {/* View toggle */}
-          <div style={{ display: 'flex', background: '#f3f4f6', borderRadius: '8px', padding: '3px' }}>
-            {[
-              { mode: 'cards', Icon: LayoutGrid, title: 'Card view' },
-              { mode: 'list',  Icon: List,        title: 'List view' },
-            ].map(({ mode, Icon, title }) => (
-              <button
-                key={mode}
-                title={title}
-                onClick={() => setView(mode)}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '28px', borderRadius: '6px', border: 'none', cursor: 'pointer', background: viewMode === mode ? '#fff' : 'transparent', color: viewMode === mode ? '#374151' : '#9ca3af', boxShadow: viewMode === mode ? '0 1px 3px rgba(0,0,0,0.1)' : 'none', transition: 'all 0.15s' }}
-              >
-                <Icon size={14} />
-              </button>
-            ))}
-          </div>
-          {/* Export */}
-          <button
-            onClick={() => exportCSV(displayed)}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 600, color: '#374151', background: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '6px 12px', cursor: 'pointer' }}
-          >
-            <Download size={13} /> Export CSV
-          </button>
-        </div>
-      </div>
+
 
       {/* ── Search + Dept + Sort ────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
@@ -562,6 +555,6 @@ export default function EmployeeDirectory({ setPage }) {
           </div>
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -10,6 +10,15 @@
 services:
   backend:
     restart: "no"
+    environment:
+      # server.js refuses to boot without a storage decision: either an S3/R2
+      # provider, or an explicit acknowledgement that uploads live on local
+      # disk. A one-shot boot check throws its container away, so local-only
+      # is the truthful answer for CI. Deliberately NOT in docker-compose.yml:
+      # defaulting it there would let a real deployment quietly keep uploads
+      # on a container filesystem, which is the failure this guard exists to
+      # prevent.
+      ALLOW_LOCAL_STORAGE_ONLY: "true"
   frontend:
     restart: "no"
   db:

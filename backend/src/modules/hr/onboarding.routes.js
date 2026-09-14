@@ -77,6 +77,22 @@ router.patch('/progress/:employee_id/item', async (req, res) => {
   if (!category || !item_label) return res.status(400).json({ message: 'category and item_label required' });
   const companyId = cid(req);
   const completedBy = req.user?.employee_id ?? null;
+
+  // The row is keyed by (employee_id, category, item_label) — the same key the
+  // ON CONFLICT below uses. captureBefore() keys on ONE column, so aiming it at
+  // :employee_id would snapshot an arbitrary one of this employee's checklist
+  // items rather than the one being changed.
+  try {
+    const { rows: prior } = await pool.query(
+      `SELECT * FROM hr_onboarding_checklist_progress
+        WHERE employee_id = $1 AND category = $2 AND item_label = $3`,
+      [empId, category, item_label]
+    );
+    // No prior row means this item is being recorded for the first time; null
+    // is the honest before-image, not an empty object.
+    req._auditBefore = prior[0] ?? null;
+  } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
+
   try {
     const { rows } = await pool.query(`
       INSERT INTO hr_onboarding_checklist_progress

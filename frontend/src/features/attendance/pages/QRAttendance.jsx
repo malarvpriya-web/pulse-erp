@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
-import { Camera, CameraOff, QrCode } from 'lucide-react';
+import { Camera, CameraOff, QrCode, CalendarClock } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -175,14 +176,16 @@ export default function QRAttendance() {
   ];
 
   return (
-    <div style={{ padding: 24, maxWidth: 860, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarClock}
+        eyebrow="Attendance"
+        title="QR Attendance"
+        subtitle="Scan a QR code to mark attendance, or generate codes for your site/shift."
+      />
+    }>
       {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontWeight: 800, fontSize: 22, color: '#1f2937', margin: 0 }}>QR Attendance</h2>
-        <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-          Scan a QR code to mark attendance, or generate codes for your site/shift.
-        </p>
-      </div>
+
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24, borderBottom: `2px solid ${BORDER}` }}>
@@ -281,7 +284,7 @@ export default function QRAttendance() {
             </div>
             {'BarcodeDetector' in window
               ? <p style={{ margin: '6px 0 0', fontSize: 11, color: '#9ca3af', textAlign: 'center' }}>Point camera at QR code — auto-detects</p>
-              : <p style={{ margin: '6px 0 0', fontSize: 11, color: '#f59e0b', textAlign: 'center' }}>Auto-detection not supported in this browser. Use manual entry below.</p>
+              : <p style={{ margin: '6px 0 0', fontSize: 11, color: '#7c5cf0', textAlign: 'center' }}>Auto-detection not supported in this browser. Use manual entry below.</p>
             }
           </div>
 
@@ -446,8 +449,8 @@ export default function QRAttendance() {
                     <td style={{ padding: '10px 14px' }}>
                       <span style={{
                         padding: '2px 8px', borderRadius: 8, fontSize: 11, fontWeight: 700,
-                        background: s.scan_type === 'in' ? '#dcfce7' : '#fef3c7',
-                        color: s.scan_type === 'in' ? '#15803d' : '#b45309',
+                        background: s.scan_type === 'in' ? '#dcfce7' : '#ede9fe',
+                        color: s.scan_type === 'in' ? '#15803d' : '#6d28d9',
                       }}>
                         {s.scan_type === 'in' ? 'IN' : 'OUT'}
                       </span>
@@ -470,6 +473,6 @@ export default function QRAttendance() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

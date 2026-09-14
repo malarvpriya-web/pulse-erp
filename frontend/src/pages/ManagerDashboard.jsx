@@ -12,6 +12,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import api from '../services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import { fmtDate } from '@/utils/dateFormatter';
 import './ManagerDashboard.css';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -21,16 +22,25 @@ const fmtRupee = (n) => {
   return `₹${n}`;
 };
 
-const fmtMetric = (v) =>
-  typeof v === 'number' && v >= 1000 ? fmtRupee(v) : v;
+// OKR key results carry their own unit (Nos, Kg, Mtr). Only render a number as
+// rupees when nothing says otherwise — formatting a 162500 Kg target as
+// "₹1.6L" is what a blanket >= 1000 rupee rule produces.
+const fmtMetric = (v, unit) => {
+  if (typeof v !== 'number') return v;
+  if (unit) return `${v.toLocaleString('en-IN')} ${unit}`;
+  return v >= 1000 ? fmtRupee(v) : v;
+};
 
 const getInitials = (name = '') => name.charAt(0).toUpperCase();
 
 const STATUS_META = {
   present: { color: '#10b981', label: 'Present' },
   absent:  { color: '#ef4444', label: 'Absent'  },
-  late:    { color: '#f59e0b', label: 'Late'     },
+  late:    { color: '#6d28d9', label: 'Late'     },
   wfh:     { color: '#6366f1', label: 'WFH'      },
+  // No attendance row for today. Distinct from 'present' on purpose — defaulting
+  // an unmarked team to a green dot reports presence nobody recorded.
+  unknown: { color: '#d1d5db', label: 'No attendance marked today' },
 };
 
 const todayStr = () => {
@@ -38,7 +48,7 @@ const todayStr = () => {
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
 };
 
-const capColor = (pct) => pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#10b981';
+const capColor = (pct) => pct >= 90 ? '#ef4444' : pct >= 70 ? '#6d28d9' : '#10b981';
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 const Toast = ({ toast, onClose }) => {
@@ -149,7 +159,7 @@ const AnnouncementDrawer = ({ open, onClose, onPost }) => {
 // ── Meeting Scheduler Drawer ──────────────────────────────────────────────────
 const BLANK_MEETING = { title: '', date: '', time: '10:00', attendees: [], notes: '' };
 
-const MeetingDrawer = ({ open, onClose, teamMembers, onSchedule }) => {
+const MeetingDrawer = ({ open, onClose, teamMembers, onSchedule, upcoming = [] }) => {
   const [form, setForm] = useState(BLANK_MEETING);
 
   const toggle = (id) =>
@@ -242,6 +252,31 @@ const MeetingDrawer = ({ open, onClose, teamMembers, onSchedule }) => {
               onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
             />
           </div>
+
+          {/* Scheduled meetings were previously write-only — nothing in the app
+              read them back, so there was no way to tell a booking had worked. */}
+          <div style={{ marginTop: 22, borderTop: '1px solid #f0f0f4', paddingTop: 16 }}>
+            <label className="md-label">Your upcoming meetings</label>
+            {upcoming.length === 0 ? (
+              <p style={{ fontSize: 12, color: '#9ca3af', margin: '8px 0' }}>Nothing scheduled yet.</p>
+            ) : (
+              <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                {upcoming.slice(0, 6).map(m => (
+                  <div key={m.id} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                    gap: 10, padding: '8px 10px', background: '#faf9fc',
+                    border: '1px solid #f0f0f4', borderRadius: 8,
+                  }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#111827' }}>{m.title}</span>
+                    <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                      {fmtDate(m.meeting_date)}{m.meeting_time ? ` · ${String(m.meeting_time).slice(0, 5)}` : ''}
+                      {Number(m.attendee_count) > 0 ? ` · ${m.attendee_count} invited` : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div className="md-drawer-footer">
           <button className="md-btn-ghost" onClick={onClose}>Cancel</button>
@@ -293,6 +328,9 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
   const [directReports,     setDirectReports]     = useState([]);
   const [teamCapacity,      setTeamCapacity]      = useState([]);
   const [targetsData,       setTargetsData]       = useState([]);
+  const [budgetPeriod,      setBudgetPeriod]      = useState('');
+  const [reportsNote,       setReportsNote]       = useState('');
+  const [reportsSource,     setReportsSource]     = useState('');
   const [kpis,              setKpis]              = useState({
     teamSize: 0, pendingCount: 0, attendRate: '0%', budgetUsed: '0%', budgetAmount: '—',
   });
@@ -301,6 +339,7 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
   const [loading,      setLoading]      = useState(false);
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [meetingOpen,  setMeetingOpen]  = useState(false);
+  const [meetings,     setMeetings]     = useState([]);
   const [toast,        setToast]        = useState(null);
   const [approvalTab,  setApprovalTab]  = useState('leave');
   const [dismissed,    setDismissed]    = useState(new Set());
@@ -315,7 +354,7 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
     const [
       teamRes, leavesRes, timesheetsRes, travelRes,
       attendRes, budgetRes, onLeaveRes,
-      drRes, capacityRes, targetsRes,
+      drRes, capacityRes, targetsRes, teamDetailRes,
     ] = await Promise.allSettled([
       api.get('/employees', { params: deptParam }),
       api.get('/leaves/team', { params: { status: 'pending' } }),
@@ -323,18 +362,32 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
       api.get('/travel/requests', { params: { status: 'pending' } }),
       api.get('/attendance/today'),
       api.get('/manager/budget'),
-      api.get('/attendance/on-leave-today', { params: deptParam }),
+      api.get('/leaves/on-leave-today', { params: deptParam }),
       api.get('/employees/direct-reports'),
       api.get('/manager/team-capacity'),
       api.get('/manager/targets'),
+      api.get('/manager/team'),
     ]);
 
+    // /employees answers "how many people" for the KPI. It carries neither a
+    // rating nor an attendance state, so it is NOT what the team cards render —
+    // reading them off this response is what produced 0.0 for everyone and a
+    // green "Present" dot for the whole company. It stays as the fallback only.
+    let roster = null;
     if (teamRes.status === 'fulfilled') {
       const members = Array.isArray(teamRes.value.data)
         ? teamRes.value.data
         : (teamRes.value.data?.members || teamRes.value.data?.employees || []);
-      setTeamMembers(members);
+      roster = members;
       setKpis(prev => ({ ...prev, teamSize: members.length }));
+    }
+
+    if (teamDetailRes.status === 'fulfilled') {
+      const raw = teamDetailRes.value.data;
+      const detail = Array.isArray(raw) ? raw : (raw?.data || []);
+      setTeamMembers(detail.length ? detail : (roster || []));
+    } else if (roster) {
+      setTeamMembers(roster);
     }
 
     let leaveCount = 0;
@@ -380,7 +433,19 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
     }
 
     if (budgetRes.status === 'fulfilled' && Array.isArray(budgetRes.value.data?.categories)) {
-      setBudgetData(budgetRes.value.data.categories);
+      const b = budgetRes.value.data;
+      setBudgetData(b.categories);
+      setBudgetPeriod(b.period?.label || '');
+      // The Budget Used KPI was hardcoded to '0%' / '—' because nothing ever
+      // wrote to it — /manager/budget did not exist. It reads the same figures
+      // the chart does, so the card and the chart can never disagree.
+      if (b.summary) {
+        setKpis(prev => ({
+          ...prev,
+          budgetUsed:   `${b.summary.used_pct ?? 0}%`,
+          budgetAmount: `${fmtRupee(Math.round(b.summary.actual || 0))} of ${fmtRupee(Math.round(b.summary.budget || 0))}`,
+        }));
+      }
     }
 
     if (onLeaveRes.status === 'fulfilled') {
@@ -391,6 +456,8 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
     if (drRes.status === 'fulfilled') {
       const raw = drRes.value.data;
       setDirectReports(Array.isArray(raw) ? raw : (raw?.data || raw?.employees || []));
+      setReportsNote(Array.isArray(raw) ? '' : (raw?.reason || ''));
+      setReportsSource(Array.isArray(raw) ? '' : (raw?.source || ''));
     }
 
     if (capacityRes.status === 'fulfilled') {
@@ -473,11 +540,25 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
       });
       setMeetingOpen(false);
       showToast('Meeting scheduled successfully!', 'success');
+      loadMeetings();
     } catch (err) {
       const msg = err.response?.data?.error || err.message || 'Failed to schedule meeting';
       showToast(msg, 'error');
     }
   };
+
+  // Read the caller's own upcoming meetings back. Without this the drawer is a
+  // write-only form — there is no way to confirm a booking actually landed.
+  const loadMeetings = useCallback(async () => {
+    try {
+      const res = await api.get('/meetings');
+      setMeetings(Array.isArray(res.data?.meetings) ? res.data.meetings : []);
+    } catch {
+      setMeetings([]);
+    }
+  }, []);
+
+  useEffect(() => { loadMeetings(); }, [loadMeetings]);
 
   // ── derived ───────────────────────────────────────────────────────────────────
   const visibleLeaves     = pendingLeaves.filter(a => !dismissed.has(a.id));
@@ -493,6 +574,11 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
   const greetingName = user?.name?.split(' ')[0] || 'Manager';
   const deptLabel    = dept || 'Engineering';
   const getBudgetColor = (e) => e.actual > e.budget ? '#ef4444' : '#6366f1';
+
+  // Admin logins have no employees row, so they have no personal reporting line.
+  // The endpoint answers the org-level question instead and says so; the card
+  // relabels rather than passing org managers off as the caller's own reports.
+  const orgLines = reportsSource === 'org_reporting_lines';
 
   const apprTabs = [
     { key: 'leave',     label: 'Leave',     count: visibleLeaves.length,     Icon: Calendar },
@@ -516,7 +602,7 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
   );
 
   return (
-    <div className="md-root">
+    <div className={`md-root${hideHeader ? ' md-root--embedded' : ''}`}>
       <style>{`@keyframes md-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
       <Toast toast={toast} onClose={() => setToast(null)} />
 
@@ -534,14 +620,15 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
             <RefreshCw size={14} className={loading ? 'md-spin' : ''} />
             {loading ? 'Refreshing…' : 'Refresh'}
           </button>
-          <button className="md-icon-btn" title="Notifications"><Bell size={16} /></button>
+          {/* A second notifications bell used to sit here with no handler at
+              all, duplicating the Topbar's working bell one row above it. */}
         </div>
       </div>}
 
       {/* ── KPI Cards ──────────────────────────────────────────────────────── */}
       <div className="md-kpis">
         <KpiCard icon={Users}     label="Team Size"         value={kpis.teamSize}     sub="Active members"         color="#6366f1" onClick={() => setPage('EmployeesData')} />
-        <KpiCard icon={Clock}     label="Pending Approvals" value={kpis.pendingCount} sub="Leave · Sheet · Travel"  color="#f59e0b" onClick={() => setPage('LeaveApprovals')} />
+        <KpiCard icon={Clock}     label="Pending Approvals" value={kpis.pendingCount} sub="Leave · Sheet · Travel"  color="#6d28d9" onClick={() => setPage('LeaveApprovals')} />
         <KpiCard icon={UserCheck} label="Attendance Rate"   value={kpis.attendRate}   sub="Today's team rate"       color="#10b981" onClick={() => setPage('TeamAttendance')} />
         <KpiCard icon={Target}    label="Budget Used"       value={kpis.budgetUsed}   sub={kpis.budgetAmount}       color="#8b5cf6" onClick={() => setPage('BudgetManagement')} />
       </div>
@@ -595,7 +682,7 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
               {[
                 { key: 'present', label: 'Present', color: '#10b981' },
                 { key: 'absent',  label: 'Absent',  color: '#ef4444' },
-                { key: 'late',    label: 'Late',     color: '#f59e0b' },
+                { key: 'late',    label: 'Late',     color: '#6d28d9' },
                 { key: 'wfh',     label: 'WFH',      color: '#6366f1' },
               ].map(({ key, label, color }) => (
                 <div key={key} className="md-attend-item" style={{ '--ac': color }}>
@@ -626,7 +713,10 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
                 <EmptyState Icon={Users} message="No team members found" />
               ) : (
                 teamMembers.map((m) => {
-                  const meta = STATUS_META[m.status] || STATUS_META.present;
+                  // Not `|| STATUS_META.present`: an unrecognised value means we
+                  // do not know, and a green dot would assert attendance that
+                  // nobody marked.
+                  const meta = STATUS_META[m.status] || STATUS_META.unknown;
                   return (
                     <div key={m.id || m.name} className="md-team-row">
                       <div className="md-avatar">{getInitials(m.name || m.first_name)}</div>
@@ -649,7 +739,7 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
         <div className="md-card mg6">
           <div className="md-card-hd">
             <span className="md-card-title">
-              <Clock size={14} style={{ marginRight: 6, verticalAlign: 'middle', color: '#f59e0b' }} />
+              <Clock size={14} style={{ marginRight: 6, verticalAlign: 'middle', color: '#6d28d9' }} />
               Pending Approvals
               {totalPending > 0 && <span className="md-badge" style={{ marginLeft: 8 }}>{totalPending}</span>}
             </span>
@@ -737,7 +827,7 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
               Department Budget vs Actual
             </span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="md-card-sub">Current month (₹)</span>
+              <span className="md-card-sub">{budgetPeriod ? `${budgetPeriod} (₹)` : 'Budget vs actual (₹)'}</span>
               {budgetData.length > 0 && (
                 <ChartExpandButton title="Department Budget vs Actual" subtitle="Current month (₹)">
                   {budgetChart(440)}
@@ -764,7 +854,7 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
         <div className="md-card mg4">
           <div className="md-card-hd">
             <span className="md-card-title">
-              <Award size={14} style={{ marginRight: 6, verticalAlign: 'middle', color: '#f59e0b' }} />
+              <Award size={14} style={{ marginRight: 6, verticalAlign: 'middle', color: '#6d28d9' }} />
               Team Performance
             </span>
           </div>
@@ -772,21 +862,34 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
             {teamMembers.length === 0 ? (
               <EmptyState Icon={Users} message="No team data available" />
             ) : (
-              teamMembers.map((m) => (
-                <div key={m.id || m.name} className="md-perf-row">
-                  <div className="md-avatar md-avatar-sm">{getInitials(m.name || m.first_name)}</div>
-                  <div className="md-perf-info">
-                    <span className="md-perf-name">{m.name || `${m.first_name} ${m.last_name}`}</span>
-                    <div className="md-perf-bar-wrap">
-                      <div className="md-perf-bar" style={{ width: `${((m.rating || 0) / 5) * 100}%` }} />
+              teamMembers.map((m) => {
+                // `rating` is null when the member has no completed review.
+                // Previously this read `(m.rating || 0).toFixed(1)` against a
+                // response that never carried a rating at all, so every member
+                // scored a flat 0.0 — a real, and bad, review score. Clamped
+                // because parts of the schema score out of 100, not 5.
+                const rated = typeof m.rating === 'number' && m.rating > 0;
+                const pct   = rated ? Math.min(100, (m.rating / 5) * 100) : 0;
+                return (
+                  <div key={m.id || m.name} className="md-perf-row">
+                    <div className="md-avatar md-avatar-sm">{getInitials(m.name || m.first_name)}</div>
+                    <div className="md-perf-info">
+                      <span className="md-perf-name">{m.name || `${m.first_name} ${m.last_name}`}</span>
+                      <div className="md-perf-bar-wrap">
+                        <div className="md-perf-bar" style={{ width: `${pct}%` }} />
+                      </div>
                     </div>
+                    <span
+                      className="md-perf-rating"
+                      style={rated ? undefined : { color: '#9ca3af' }}
+                      title={rated ? (m.review_period || 'Latest review') : 'No completed review'}
+                    >
+                      <Award size={11} />
+                      {rated ? m.rating.toFixed(1) : '—'}
+                    </span>
                   </div>
-                  <span className="md-perf-rating">
-                    <Award size={11} />
-                    {(m.rating || 0).toFixed(1)}
-                  </span>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -800,17 +903,24 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
           <div className="md-card-hd">
             <span className="md-card-title">
               <GitBranch size={14} style={{ marginRight: 6, verticalAlign: 'middle', color: '#6366f1' }} />
-              Direct Reports
+              {orgLines ? 'Reporting Lines' : 'Direct Reports'}
             </span>
-            <span className="md-card-sub">{directReports.length} report{directReports.length !== 1 ? 's' : ''}</span>
+            <span className="md-card-sub">
+              {orgLines
+                ? `${directReports.length} manager${directReports.length !== 1 ? 's' : ''}`
+                : `${directReports.length} report${directReports.length !== 1 ? 's' : ''}`}
+            </span>
           </div>
           <div className="md-card-body">
             {loading ? <ShimmerRows /> : directReports.length === 0 ? (
-              <EmptyState Icon={GitBranch} message="No direct reports found" />
+              <EmptyState Icon={GitBranch} message={reportsNote || 'No direct reports found'} />
             ) : (
               directReports.map((m) => {
                 const name = m.name || `${m.first_name || ''} ${m.last_name || ''}`.trim();
-                const meta = STATUS_META[m.status] || STATUS_META.present;
+                // Falls back to 'unknown', not 'present' — /employees/direct-reports
+                // sends a real presence value, so an unrecognised one means we do
+                // not know, and a green dot would assert attendance nobody marked.
+                const meta = STATUS_META[m.status] || STATUS_META.unknown;
                 return (
                   <div key={m.id || name} className="md-dr-row">
                     <div className="md-avatar">{getInitials(name)}</div>
@@ -910,8 +1020,8 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
                         />
                       </div>
                       <div className="md-target-foot">
-                        <span>Actual: <strong>{fmtMetric(t.actual)}</strong></span>
-                        <span>Target: {fmtMetric(t.target)}</span>
+                        <span>Actual: <strong>{fmtMetric(t.actual, t.unit)}</strong></span>
+                        <span>Target: {fmtMetric(t.target, t.unit)}</span>
                       </div>
                     </div>
                   );
@@ -933,6 +1043,7 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
         onClose={() => setMeetingOpen(false)}
         teamMembers={teamMembers}
         onSchedule={handleScheduleMeeting}
+        upcoming={meetings}
       />
     </div>
   );

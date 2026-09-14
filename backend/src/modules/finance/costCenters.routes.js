@@ -3,6 +3,7 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
 router.use(requirePermission('finance', 'view'));
@@ -51,7 +52,7 @@ router.post('/', requirePermission('finance', 'add'), async (req, res) => {
 });
 
 // ── PUT /cost-centers/:id ─────────────────────────────────────────────────────
-router.put('/:id', requirePermission('finance', 'edit'), async (req, res) => {
+router.put('/:id', requirePermission('finance', 'edit'), captureBefore('cost_centers'), async (req, res) => {
   const { name, description, parent_id, is_active } = req.body;
   try {
     const { rows: [row] } = await pool.query(`
@@ -69,7 +70,7 @@ router.put('/:id', requirePermission('finance', 'edit'), async (req, res) => {
 });
 
 // ── DELETE /cost-centers/:id ──────────────────────────────────────────────────
-router.delete('/:id', requirePermission('finance', 'delete'), async (req, res) => {
+router.delete('/:id', requirePermission('finance', 'delete'), captureBefore('cost_centers'), async (req, res) => {
   try {
     const { rows: [linked] } = await pool.query(
       'SELECT COUNT(*) FROM journal_lines WHERE cost_center_id = $1', [req.params.id]

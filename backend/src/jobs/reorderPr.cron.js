@@ -3,6 +3,7 @@ import pool from '../config/db.js';
 import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 import purchaseRequestRepo from '../modules/procurement/repositories/purchaseRequest.repository.js';
 import advancedInventoryRepository from '../modules/inventory/repositories/advancedInventory.repository.js';
+import { scheduled } from './jobRun.js';
 
 // Automation Opportunity Audit §5.1 — "Inventory reorder -> auto-draft
 // Purchase Request". The audit assumed the trigger would have to be built
@@ -88,15 +89,34 @@ async function getReceivers(companyId) {
   return rows.map((r) => r.id);
 }
 
-async function draftPrFromSuggestion(suggestion, requesterEmployeeId) {
+async function draftPrFromSuggestion(suggestion, requesterEmployeeId, companyId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const prNumber = await purchaseRequestRepo.getNextNumber();
+    // companyId, and the client, both matter:
+    //  - getNextNumber() without a company falls back to the built-in 'PR'
+    //    prefix, ignoring the pr_prefix the company configured;
+    //  - without the transaction client the number is drawn on a different
+    //    connection, so it is not part of this unit of work.
+    const prNumber = await purchaseRequestRepo.getNextNumber(client, companyId || null);
     const pr = await purchaseRequestRepo.create(client, {
       request_number: prNumber,
       requested_by_employee_id: requesterEmployeeId,
       request_date: new Date(),
+      // company_id was never passed, so every auto-drafted requisition was
+      // created with a NULL company. findAll() scopes on pr.company_id (it was
+      // changed to do so in the 2026-09-02 pass, precisely because scoping via
+      // the requester's employee row hid every PR with no requester) — so a
+      // NULL-company requisition is invisible to EVERY company-scoped user.
+      // The reorder job's whole output was landing where nobody could see it,
+      // while its notification told them there were drafts waiting for review.
+      company_id: companyId || null,
+      // The notification below tells the reviewer these arrive "status: draft"
+      // and asks them to review before submitting for approval. Without an
+      // explicit status they were born 'pending_approval' — straight into the
+      // approval queue, skipping the review this job says it wants. Say which
+      // one is meant rather than letting the repository default decide.
+      status: 'draft',
       notes: `Auto-drafted: ${suggestion.item_code || suggestion.item_name} fell to or below its reorder point.`,
     });
     await purchaseRequestRepo.createItem(client, {
@@ -144,41 +164,48 @@ async function insertSummaryReminder(userId, companyId, count) {
 
 async function runReorderPrCheck() {
   const byCompany = await getPendingSuggestionsByCompany();
-  if (!byCompany.size) return;
+  // Counters, not row content — see jobRun.js. These answer "did it run and what
+  // did it do" without putting an item name or a quantity into a log file.
+  const counters = { companies: byCompany.size, suggestions: 0, drafted: 0, skipped: 0, failed: 0, notified: 0 };
+  if (!byCompany.size) return counters;
 
   for (const [companyId, suggestions] of byCompany) {
+    counters.suggestions += suggestions.length;
     const requesterEmployeeId = await getRequesterEmployeeId(companyId);
     if (!requesterEmployeeId) {
       console.warn(
         `[reorderPrCron] company ${companyId}: no active procurement_manager/procurement_exec with a linked employee record — skipping ${suggestions.length} pending suggestion(s)`
       );
+      counters.skipped += suggestions.length;
       continue;
     }
 
     let drafted = 0;
     for (const suggestion of suggestions) {
       try {
-        await draftPrFromSuggestion(suggestion, requesterEmployeeId);
+        await draftPrFromSuggestion(suggestion, requesterEmployeeId, companyId || null);
         drafted++;
       } catch (err) {
-        console.error(`[reorderPrCron] failed to draft PR for suggestion ${suggestion.id}:`, err.message);
+        counters.failed++;
+        console.error(`[reorderPrCron] failed to draft PR for suggestion ${suggestion.id} (company ${companyId}):`, err.message);
       }
     }
+    counters.drafted += drafted;
     if (!drafted) continue;
 
     const receivers = await getReceivers(companyId);
     for (const userId of receivers) {
       await insertSummaryReminder(userId, companyId, drafted);
+      counters.notified++;
     }
   }
+  return counters;
 }
 
 export function startReorderPrCron() {
   // Daily at 10:15 server local time — after the 09:xx reminder crons and
   // after checkAndCreateAlerts() has had the day's stock movements land.
-  cron.schedule('15 10 * * *', () => {
-    runReorderPrCheck().catch((err) => console.error('[reorderPrCron] failed:', err.message));
-  });
+  cron.schedule('15 10 * * *', scheduled('reorderPr', runReorderPrCheck));
   console.log('📦 Reorder auto-draft PR cron started (daily 10:15)');
 }
 

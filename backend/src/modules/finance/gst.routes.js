@@ -508,11 +508,11 @@ router.post('/rcm/self-invoice', async (req, res) => {
       const { rows: [je] } = await client.query(
         `INSERT INTO journal_entries
            (entry_number, entry_date, entry_type, reference_type, reference_id,
-            description, is_posted, status, created_by)
-         VALUES ($1,$2,'RCM',$3,$4,$5,true,'posted',$6) RETURNING *`,
+            description, is_posted, status, created_by, company_id)
+         VALUES ($1,$2,'RCM',$3,$4,$5,true,'posted',$6,$7) RETURNING *`,
         [entryNumber, invoice_date, 'rcm_self_invoice', si.id,
          `RCM Self-Invoice ${selfInvNumber} — ${bill.p_name || 'Unregistered Supplier'}`,
-         created_by || null]
+         created_by || null, companyOf(req)]
       );
 
       // ITC accounts (debit) and GST payable accounts (credit) per supply type
@@ -831,7 +831,7 @@ router.post('/e-invoice/generate', requirePermission('finance', 'add'), async (r
       SellerDtls: { Gstin: inv.supplier_gstin || 'SELLER_GSTIN', LglNm: inv.company_name || 'Seller Name' },
       BuyerDtls: { Gstin: inv.buyer_gstin || 'URP', LglNm: inv.buyer_name, Pos: inv.place_of_supply || '29' },
       ValDtls: {
-        AssVal: parseFloat(inv.taxable_amount || 0),
+        AssVal: parseFloat(inv.subtotal || 0),   // invoices has no taxable_amount — this was always 0
         CgstVal: parseFloat(inv.cgst || 0),
         SgstVal: parseFloat(inv.sgst || 0),
         IgstVal: parseFloat(inv.igst || 0),
@@ -913,7 +913,7 @@ router.get('/gstr9', requirePermission('finance', 'view'), async (req, res) => {
     const [salesRow, purchaseRow, itcRow] = await Promise.all([
       pool.query(`
         SELECT
-          COALESCE(SUM(taxable_amount), 0) AS taxable_value,
+          COALESCE(SUM(subtotal), 0) AS taxable_value,
           COALESCE(SUM(cgst), 0) AS cgst,
           COALESCE(SUM(sgst), 0) AS sgst,
           COALESCE(SUM(igst), 0) AS igst,
@@ -926,7 +926,7 @@ router.get('/gstr9', requirePermission('finance', 'view'), async (req, res) => {
 
       pool.query(`
         SELECT
-          COALESCE(SUM(taxable_amount), 0) AS taxable_value,
+          COALESCE(SUM(subtotal), 0) AS taxable_value,
           COALESCE(SUM(cgst), 0) AS cgst,
           COALESCE(SUM(sgst), 0) AS sgst,
           COALESCE(SUM(igst), 0) AS igst,

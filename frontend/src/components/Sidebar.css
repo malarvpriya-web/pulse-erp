@@ -77,6 +77,43 @@
 .sidebar ul::-webkit-scrollbar-thumb:hover { background: #D4CAFE !important; }
 .sidebar ul::-webkit-scrollbar-thumb:active { background: #D4CAFE !important; }
 
+/* Top-level domain band label. Collapsed rail (70px) has no room for text, so
+   it reads as a hairline rule; expanding cross-fades to the small-caps label
+   in the same 22px of height, keeping the icon column from shifting. */
+.sidebar-band {
+  position: relative;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  -webkit-user-select: none;
+  user-select: none;
+  pointer-events: none;
+}
+.sidebar-band-rule {
+  height: 1px;
+  width: 30px;
+  background: #D4CAFE;
+  border-radius: 1px;
+  transition: opacity 0.2s;
+}
+.sidebar-band-label {
+  position: absolute;
+  left: 18px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #8B79D9;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.sidebar:hover .sidebar-band-rule,
+.sidebar.expanded .sidebar-band-rule { opacity: 0; }
+.sidebar:hover .sidebar-band-label,
+.sidebar.expanded .sidebar-band-label { opacity: 1; }
+
 .nav-item {
   display: flex;
   align-items: center;
@@ -147,6 +184,8 @@
   scrollbar-color: #b0a4f5 #f3f0ff;
   animation: sm-fadein .12s ease;
 }
+.submenu-panel::-webkit-scrollbar { width: 6px; }
+.submenu-panel::-webkit-scrollbar-thumb { background: #b0a4f5; border-radius: 4px; }
 @keyframes sm-fadein { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
 
 .submenu-header {

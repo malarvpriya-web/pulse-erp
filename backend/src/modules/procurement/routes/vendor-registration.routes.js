@@ -13,6 +13,66 @@ import { uploadFile } from '../../../services/StorageService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { generateOtp } from '../../../utils/otp.js';
 import { dbRateLimit } from '../../../middlewares/rateLimit.js';
+import { requireProcurement } from '../procurement.authz.js';
+import { sendSignerOtp } from '../../../utils/mailer.js';
+
+/**
+ * How many wrong codes before the record locks, and for how long.
+ *
+ * `resendLimit` capped how often a NEW code could be requested; NOTHING capped
+ * how many times an EXISTING six-digit code could be guessed. One million
+ * possibilities against an endpoint that answers in milliseconds is not a
+ * secret — it is a delay.
+ */
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_LOCK_MINUTES = 30;
+
+/**
+ * The tenant a self-service registration lands in.
+ *
+ * It used to be `req.body.company_id` — on an endpoint that requires no session.
+ * An anonymous submitter could therefore place a registration into ANY tenant's
+ * approval queue, and from there into their vendor master. The tenant of a
+ * public portal is a property of the deployment, not of the request: it comes
+ * from VENDOR_PORTAL_COMPANY_ID, or is left NULL for a staff member to assign.
+ */
+function portalCompanyId() {
+  const v = parseInt(process.env.VENDOR_PORTAL_COMPANY_ID ?? '', 10);
+  return Number.isFinite(v) ? v : null;
+}
+
+/** An unguessable handle the registrant uses to read their own status. */
+const newAccessToken = () => crypto.randomBytes(24).toString('hex');
+
+/**
+ * Record a wrong code and lock the record once the budget is spent.
+ * Returns a response object when the caller should be refused, else null.
+ */
+async function registerOtpFailure(id, column) {
+  const { rows: [row] } = await pool.query(
+    `UPDATE vendor_registrations
+        SET ${column} = COALESCE(${column}, 0) + 1,
+            otp_locked_until = CASE WHEN COALESCE(${column}, 0) + 1 >= $2
+                                    THEN NOW() + ($3 || ' minutes')::interval
+                                    ELSE otp_locked_until END,
+            updated_at = NOW()
+      WHERE id = $1
+      RETURNING ${column} AS attempts, otp_locked_until`,
+    [id, OTP_MAX_ATTEMPTS, String(OTP_LOCK_MINUTES)]
+  );
+  const left = Math.max(0, OTP_MAX_ATTEMPTS - Number(row?.attempts ?? 0));
+  return left > 0
+    ? { status: 400, body: { error: `Invalid OTP. ${left} attempt${left === 1 ? '' : 's'} remaining before this registration is locked.` } }
+    : { status: 429, body: { error: `Too many incorrect codes. This registration is locked for ${OTP_LOCK_MINUTES} minutes. Request a new code after that.` } };
+}
+
+/** null when the record is not locked, else the refusal to send. */
+function lockedResponse(reg) {
+  if (reg.otp_locked_until && new Date(reg.otp_locked_until) > new Date()) {
+    return { status: 429, body: { error: 'Too many incorrect codes. Try again later, or request a new code.' } };
+  }
+  return null;
+}
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -103,8 +163,8 @@ router.post('/submit', submitLimit, async (req, res) => {
       contact_details,
       bank_name, account_number, ifsc, branch,
       technical_capability,
-      company_id,
     } = req.body;
+    // company_id is deliberately NOT read from the body — see portalCompanyId().
 
     if (!vendor_name || !email || !phone) {
       return res.status(400).json({ error: 'vendor_name, email, and phone are required' });
@@ -122,6 +182,7 @@ router.post('/submit', submitLimit, async (req, res) => {
 
     const emailOtp = genOTP();
     const mobileOtp = genOTP();
+    const accessToken = newAccessToken();
     const otpExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 min
 
     const { rows: [reg] } = await pool.query(`
@@ -136,10 +197,10 @@ router.post('/submit', submitLimit, async (req, res) => {
         technical_capability,
         email_otp, email_otp_expires,
         mobile_otp, mobile_otp_expires,
-        status, company_id
+        status, company_id, access_token
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'Draft',$33
-      ) RETURNING id, vendor_name, email, phone, status
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'Draft',$33,$34
+      ) RETURNING id, vendor_name, email, phone, status, access_token
     `, [
       vendor_name, vendor_type, products_services,
       gstin, pan, msme_status || false, udyam_number, iec, cin,
@@ -153,17 +214,34 @@ router.post('/submit', submitLimit, async (req, res) => {
       technical_capability,
       emailOtp, otpExpiry,
       mobileOtp, otpExpiry,
-      company_id || null,
+      portalCompanyId(),
+      accessToken,
     ]);
 
-    // In production, send OTPs via email/SMS. For now, return them in response (dev mode).
+    // The code goes to the address being verified, never back to the caller.
+    // Returning it — which this did whenever NODE_ENV was not 'production' —
+    // does not weaken the verification, it removes it: the submitter reads their
+    // own OTP out of their own response. Delivery failure is reported, not
+    // swallowed, because a registrant who never receives a code is stuck.
+    let delivered = true;
+    try {
+      await sendSignerOtp(reg.email, emailOtp, { documentTitle: `Vendor registration — ${reg.vendor_name}` });
+    } catch (mailErr) {
+      delivered = false;
+      console.error(`[vendor-registration] OTP email to registration ${reg.id} failed:`, mailErr.message);
+    }
+
     res.status(201).json({
-      message: 'Registration saved. OTPs sent to your email and phone.',
+      message: delivered
+        ? 'Registration saved. A verification code has been sent to your email address.'
+        : 'Registration saved, but the verification email could not be sent. Use Resend code, or contact the buyer.',
       registration_id: reg.id,
       vendor_name: reg.vendor_name,
-      // Remove these in production — send via actual email/SMS
-      _dev_email_otp: process.env.NODE_ENV !== 'production' ? emailOtp : undefined,
-      _dev_mobile_otp: process.env.NODE_ENV !== 'production' ? mobileOtp : undefined,
+      // The registrant's own handle on this record. Required by
+      // GET /status/:id — the id alone used to be enough, which made a
+      // sequential integer an index of every registration in the system.
+      access_token: reg.access_token,
+      email_otp_sent: delivered,
     });
   } catch (err) {
     console.error('[POST /vendor-registration/submit]', err.message);
@@ -176,19 +254,27 @@ router.post('/:id/verify-email', async (req, res) => {
   try {
     const { otp } = req.body;
     const { rows: [reg] } = await pool.query(
-      `SELECT id, email_otp, email_otp_expires, email_verified FROM vendor_registrations WHERE id=$1`,
+      `SELECT id, email_otp, email_otp_expires, email_verified, otp_locked_until FROM vendor_registrations WHERE id=$1`,
       [req.params.id]
     );
     if (!reg) return res.status(404).json({ error: 'Registration not found' });
     if (reg.email_verified) return res.json({ message: 'Email already verified' });
-    if (new Date(reg.email_otp_expires) < new Date()) {
+    const locked = lockedResponse(reg);
+    if (locked) return res.status(locked.status).json(locked.body);
+    if (!reg.email_otp || new Date(reg.email_otp_expires) < new Date()) {
       return res.status(400).json({ error: 'OTP expired. Please resend.' });
     }
-    if (reg.email_otp !== String(otp)) {
-      return res.status(400).json({ error: 'Invalid OTP' });
+    // Constant-time compare: a length-sensitive `!==` on a secret is a habit
+    // worth not having, even where the timing signal is small.
+    const okEmail = reg.email_otp.length === String(otp || '').length &&
+      crypto.timingSafeEqual(Buffer.from(reg.email_otp), Buffer.from(String(otp || '')));
+    if (!okEmail) {
+      const fail = await registerOtpFailure(req.params.id, 'email_otp_attempts');
+      return res.status(fail.status).json(fail.body);
     }
     await pool.query(
-      `UPDATE vendor_registrations SET email_verified=true, email_otp=NULL, email_otp_expires=NULL, updated_at=NOW() WHERE id=$1`,
+      `UPDATE vendor_registrations SET email_verified=true, email_otp=NULL, email_otp_expires=NULL,
+              email_otp_attempts=0, otp_locked_until=NULL, updated_at=NOW() WHERE id=$1`,
       [req.params.id]
     );
     res.json({ message: 'Email verified successfully' });
@@ -200,19 +286,25 @@ router.post('/:id/verify-mobile', async (req, res) => {
   try {
     const { otp } = req.body;
     const { rows: [reg] } = await pool.query(
-      `SELECT id, mobile_otp, mobile_otp_expires, mobile_verified FROM vendor_registrations WHERE id=$1`,
+      `SELECT id, mobile_otp, mobile_otp_expires, mobile_verified, otp_locked_until FROM vendor_registrations WHERE id=$1`,
       [req.params.id]
     );
     if (!reg) return res.status(404).json({ error: 'Registration not found' });
     if (reg.mobile_verified) return res.json({ message: 'Mobile already verified' });
-    if (new Date(reg.mobile_otp_expires) < new Date()) {
+    const lockedM = lockedResponse(reg);
+    if (lockedM) return res.status(lockedM.status).json(lockedM.body);
+    if (!reg.mobile_otp || new Date(reg.mobile_otp_expires) < new Date()) {
       return res.status(400).json({ error: 'OTP expired. Please resend.' });
     }
-    if (reg.mobile_otp !== String(otp)) {
-      return res.status(400).json({ error: 'Invalid OTP' });
+    const okMobile = reg.mobile_otp.length === String(otp || '').length &&
+      crypto.timingSafeEqual(Buffer.from(reg.mobile_otp), Buffer.from(String(otp || '')));
+    if (!okMobile) {
+      const fail = await registerOtpFailure(req.params.id, 'mobile_otp_attempts');
+      return res.status(fail.status).json(fail.body);
     }
     await pool.query(
-      `UPDATE vendor_registrations SET mobile_verified=true, mobile_otp=NULL, mobile_otp_expires=NULL, updated_at=NOW() WHERE id=$1`,
+      `UPDATE vendor_registrations SET mobile_verified=true, mobile_otp=NULL, mobile_otp_expires=NULL,
+              mobile_otp_attempts=0, otp_locked_until=NULL, updated_at=NOW() WHERE id=$1`,
       [req.params.id]
     );
     res.json({ message: 'Mobile verified successfully' });
@@ -225,20 +317,32 @@ router.post('/:id/resend-otp', resendLimit, async (req, res) => {
     const { type } = req.body; // 'email' | 'mobile'
     const newOtp = genOTP();
     const expiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    if (type === 'email') {
-      await pool.query(
-        `UPDATE vendor_registrations SET email_otp=$1, email_otp_expires=$2, updated_at=NOW() WHERE id=$3`,
-        [newOtp, expiry, req.params.id]
-      );
-    } else {
-      await pool.query(
-        `UPDATE vendor_registrations SET mobile_otp=$1, mobile_otp_expires=$2, updated_at=NOW() WHERE id=$3`,
-        [newOtp, expiry, req.params.id]
-      );
+    // The record has to exist. This UPDATE matched nothing for an unknown id and
+    // still answered "OTP resent", which is a lie to a legitimate user and a
+    // free existence oracle for anyone else.
+    const col = type === 'email' ? 'email' : 'mobile';
+    const { rows: [reg] } = await pool.query(
+      `UPDATE vendor_registrations
+          SET ${col}_otp=$1, ${col}_otp_expires=$2, ${col}_otp_attempts=0, otp_locked_until=NULL, updated_at=NOW()
+        WHERE id=$3 RETURNING id, email, vendor_name`,
+      [newOtp, expiry, req.params.id]
+    );
+    if (!reg) return res.status(404).json({ error: 'Registration not found' });
+
+    // Sent, never returned — see the note on POST /submit.
+    let resent = true;
+    if (col === 'email') {
+      try {
+        await sendSignerOtp(reg.email, newOtp, { documentTitle: `Vendor registration — ${reg.vendor_name}` });
+      } catch (mailErr) {
+        resent = false;
+        console.error(`[vendor-registration] OTP resend to registration ${reg.id} failed:`, mailErr.message);
+      }
     }
     res.json({
-      message: `OTP resent to ${type}`,
-      _dev_otp: process.env.NODE_ENV !== 'production' ? newOtp : undefined,
+      message: resent ? `A new code has been sent to your ${col}.`
+                      : 'The code could not be sent. Contact the buyer to continue.',
+      sent: resent,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -253,7 +357,14 @@ router.post('/:id/finalize', async (req, res) => {
     );
     if (!reg) return res.status(404).json({ error: 'Registration not found' });
     if (!reg.email_verified) {
-      return res.status(400).json({ error: 'Email not verified. Please verify OTP first.' });
+      return res.status(400).json({ error: 'Email not verified. Please verify the code sent to your email first.' });
+    }
+    // The mobile OTP was generated, stored, delivered and verifiable — and then
+    // never required, so it was decorative. If a channel is worth verifying it is
+    // worth checking; ALLOW_UNVERIFIED_MOBILE exists for a deployment with no SMS
+    // provider, and says so out loud rather than silently skipping the check.
+    if (!reg.mobile_verified && String(process.env.ALLOW_UNVERIFIED_MOBILE).toLowerCase() !== 'true') {
+      return res.status(400).json({ error: 'Mobile not verified. Please verify the code sent to your phone first.' });
     }
     const { rows: [updated] } = await pool.query(
       `UPDATE vendor_registrations SET status='Submitted', updated_at=NOW() WHERE id=$1 RETURNING *`,
@@ -272,8 +383,13 @@ router.get('/status/:id', async (req, res) => {
              email_verified, mobile_verified,
              scm_remarks, quality_remarks, finance_remarks, mgmt_remarks,
              rejection_reason
-      FROM vendor_registrations WHERE id=$1
-    `, [req.params.id]);
+      FROM vendor_registrations WHERE id=$1 AND access_token = $2
+    `, [req.params.id, String(req.query.token || req.get('X-Registration-Token') || '')]);
+    // The token is REQUIRED. With the sequential id alone, walking 1..n returned
+    // every registration in the database together with the internal SCM,
+    // quality, finance and management review remarks — to anyone, with no
+    // session. A wrong or missing token is a 404, not a 403: confirming that an
+    // id exists is itself the leak.
     if (!reg) return res.status(404).json({ error: 'Not found' });
     res.json(reg);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -287,7 +403,7 @@ router.get('/vendor-types', (_req, res) => res.json(VENDOR_TYPES));
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── GET /vendor-registration (list all registrations) ────────────────────────
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, requireProcurement('view'), async (req, res) => {
   try {
     const { status, search, vendor_type, page = 1, limit = 25 } = req.query;
     const companyId = cid(req);
@@ -320,7 +436,7 @@ router.get('/', verifyToken, async (req, res) => {
 });
 
 // ── GET /vendor-registration/:id (single) ────────────────────────────────────
-router.get('/:id', verifyToken, async (req, res) => {
+router.get('/:id', verifyToken, requireProcurement('view'), async (req, res) => {
   try {
     const { rows: [reg] } = await pool.query(`SELECT * FROM vendor_registrations WHERE id=$1`, [req.params.id]);
     if (!reg) return res.status(404).json({ error: 'Not found' });
@@ -337,7 +453,7 @@ router.get('/:id', verifyToken, async (req, res) => {
 });
 
 // ── GET /vendor-registration/stats/summary ───────────────────────────────────
-router.get('/stats/summary', verifyToken, async (req, res) => {
+router.get('/stats/summary', verifyToken, requireProcurement('view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const cFilter = companyId ? `WHERE (company_id=$1 OR company_id IS NULL)` : '';
@@ -359,7 +475,7 @@ router.get('/stats/summary', verifyToken, async (req, res) => {
 });
 
 // ── POST /vendor-registration/:id/documents ──────────────────────────────────
-router.post('/:id/documents', verifyToken, upload.single('file'), async (req, res) => {
+router.post('/:id/documents', verifyToken, requireProcurement('edit'), upload.single('file'), async (req, res) => {
   try {
     const { doc_type, file_name, drive_file_id, drive_file_url, expiry_date, remarks } = req.body;
     let { file_path } = req.body;
@@ -381,7 +497,7 @@ router.post('/:id/documents', verifyToken, upload.single('file'), async (req, re
 });
 
 // ── POST /vendor-registration/:id/drive-folder ───────────────────────────────
-router.post('/:id/drive-folder', verifyToken, async (req, res) => {
+router.post('/:id/drive-folder', verifyToken, requireProcurement('edit'), async (req, res) => {
   try {
     const { root_folder_id, root_folder_url, folder_map, vendor_name } = req.body;
     const { rows: [df] } = await pool.query(`

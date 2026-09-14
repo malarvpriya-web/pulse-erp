@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
+import { Building2 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useFY } from '@/context/FYContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = (v) => `₹${Number(v ?? 0).toLocaleString('en-IN')}`;
 const dash = (v) => (Number(v ?? 0) > 0 ? fmt(v) : '—');
@@ -20,8 +22,8 @@ const BUCKET_OPTIONS = [
 const KPI_CARDS = [
   { key: 'balance',     label: 'Total Outstanding', color: '#6366f1', bg: '#eff6ff', bucket: 'all' },
   { key: 'not_yet_due', label: 'Current (Not Due)',  color: '#10b981', bg: '#f0fdf4', bucket: 'not_yet_due' },
-  { key: 'due_1_30',    label: '1–30 Days',          color: '#f59e0b', bg: '#fefce8', bucket: 'due_1_30' },
-  { key: 'due_31_60',   label: '31–60 Days',         color: '#f97316', bg: '#fff7ed', bucket: 'due_31_60' },
+  { key: 'due_1_30',    label: '1–30 Days',          color: '#7c5cf0', bg: '#f5f3ff', bucket: 'due_1_30' },
+  { key: 'due_31_60',   label: '31–60 Days',         color: '#7c5cf0', bg: '#fff7ed', bucket: 'due_31_60' },
   { key: 'due_61_90',   label: '61–90 Days',         color: '#ef4444', bg: '#fef2f2', bucket: 'due_61_90' },
   { key: 'due_90plus',  label: '90+ Days',           color: '#7f1d1d', bg: '#fdf4ff', bucket: 'due_90plus' },
 ];
@@ -54,7 +56,7 @@ function exportCSV(rows, asOfDate) {
 
 const rowBg = (r) => {
   if (Number(r.due_90plus) > 0) return '#fff5f5';
-  if (Number(r.due_61_90) > 0) return '#fffbeb';
+  if (Number(r.due_61_90) > 0) return '#f5f3ff';
   return 'transparent';
 };
 
@@ -176,16 +178,15 @@ export default function SupplierOutstanding() {
   );
 
   return (
-    <div style={{ padding: 24, background: '#f8f9fc', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Building2}
+        eyebrow="Finance"
+        title="AP Ageing Report"
+      />
+    }>
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>AP Ageing Report</h1>
-        <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-          Accounts Payable — Supplier Outstanding
-          {summary ? ` · Total: ${fmt(summary.balance)} as of ${fmtDate(date)}` : ''}
-        </p>
-      </div>
 
       {/* ── KPI Cards ──────────────────────────────────────────────────────── */}
       {summary && (
@@ -314,8 +315,8 @@ export default function SupplierOutstanding() {
                   <TH>Supplier</TH>
                   <TH>GSTIN</TH>
                   <TH align="right" color="#10b981">Current</TH>
-                  <TH align="right" color="#f59e0b">1–30 Days</TH>
-                  <TH align="right" color="#f97316">31–60 Days</TH>
+                  <TH align="right" color="#7c5cf0">1–30 Days</TH>
+                  <TH align="right" color="#7c5cf0">31–60 Days</TH>
                   <TH align="right" color="#ef4444">61–90 Days</TH>
                   <TH align="right" color="#7f1d1d">90+ Days</TH>
                   <TH align="right">Total</TH>
@@ -348,10 +349,10 @@ export default function SupplierOutstanding() {
                       <td style={{ padding: '9px 14px', textAlign: 'right', color: '#10b981' }}>
                         {dash(r.not_yet_due)}
                       </td>
-                      <td style={{ padding: '9px 14px', textAlign: 'right', color: Number(r.due_1_30) > 0 ? '#f59e0b' : '#d1d5db' }}>
+                      <td style={{ padding: '9px 14px', textAlign: 'right', color: Number(r.due_1_30) > 0 ? '#7c5cf0' : '#d1d5db' }}>
                         {dash(r.due_1_30)}
                       </td>
-                      <td style={{ padding: '9px 14px', textAlign: 'right', color: Number(r.due_31_60) > 0 ? '#f97316' : '#d1d5db' }}>
+                      <td style={{ padding: '9px 14px', textAlign: 'right', color: Number(r.due_31_60) > 0 ? '#7c5cf0' : '#d1d5db' }}>
                         {dash(r.due_31_60)}
                       </td>
                       <td style={{ padding: '9px 14px', textAlign: 'right', color: Number(r.due_61_90) > 0 ? '#ef4444' : '#d1d5db' }}>
@@ -420,8 +421,8 @@ export default function SupplierOutstanding() {
                                     : 0;
                                   const dueColor = daysOverdue > 90 ? '#7f1d1d'
                                     : daysOverdue > 60 ? '#ef4444'
-                                    : daysOverdue > 30 ? '#f97316'
-                                    : daysOverdue > 0  ? '#f59e0b'
+                                    : daysOverdue > 30 ? '#7c5cf0'
+                                    : daysOverdue > 0  ? '#7c5cf0'
                                     : '#10b981';
                                   return (
                                     <tr key={b.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
@@ -440,8 +441,8 @@ export default function SupplierOutstanding() {
                                       <td style={{ padding: '7px 14px' }}>
                                         <span style={{
                                           padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
-                                          background: b.status?.toLowerCase() === 'partial' ? '#fef9c3' : '#fef2f2',
-                                          color: b.status?.toLowerCase() === 'partial' ? '#a16207' : '#dc2626',
+                                          background: b.status?.toLowerCase() === 'partial' ? '#ede9fe' : '#fef2f2',
+                                          color: b.status?.toLowerCase() === 'partial' ? '#6d28d9' : '#dc2626',
                                         }}>
                                           {b.status}
                                         </span>
@@ -465,8 +466,8 @@ export default function SupplierOutstanding() {
                       Totals ({filtered.length} supplier{filtered.length !== 1 ? 's' : ''})
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#10b981' }}>{fmt(totals.not_yet_due)}</td>
-                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#f59e0b' }}>{fmt(totals.due_1_30)}</td>
-                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#f97316' }}>{fmt(totals.due_31_60)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#7c5cf0' }}>{fmt(totals.due_1_30)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#7c5cf0' }}>{fmt(totals.due_31_60)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#ef4444' }}>{fmt(totals.due_61_90)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#7f1d1d' }}>{fmt(totals.due_90plus)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#dc2626' }}>{fmt(totals.balance)}</td>
@@ -554,6 +555,6 @@ export default function SupplierOutstanding() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

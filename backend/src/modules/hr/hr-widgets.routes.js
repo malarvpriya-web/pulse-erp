@@ -2,14 +2,19 @@
 // HR dashboard widget data: birthdays, anniversaries, expiring docs, pending confirmations
 import express from 'express';
 import pool from '../../config/db.js';
-import { verifyToken } from '../../middlewares/auth.middleware.js';
+import { requirePermission, verifyToken } from '../../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
 router.use(verifyToken);
 
 /* GET /hr-widgets/upcoming-birthdays?days=30 */
-router.get('/upcoming-birthdays', async (req, res) => {
+// Gated on the owning module 2026-09-04. A live probe with a plain
+// `employee` token returned other people's records from this router, and an
+// employee has no routine need for this register — their own record reaches
+// them through self-service. `employee` is denied hr in role_permissions,
+// which is what makes this gate real rather than decorative.
+router.get('/upcoming-birthdays', requirePermission('hr', 'view'), async (req, res) => {
   const days = Math.min(parseInt(req.query.days ?? '30', 10), 90);
   const cid = req.scope?.company_id ?? null;
   try {
@@ -43,7 +48,7 @@ router.get('/upcoming-birthdays', async (req, res) => {
 });
 
 /* GET /hr-widgets/upcoming-anniversaries?days=30 */
-router.get('/upcoming-anniversaries', async (req, res) => {
+router.get('/upcoming-anniversaries', requirePermission('hr', 'view'), async (req, res) => {
   const days = Math.min(parseInt(req.query.days ?? '30', 10), 90);
   const cid = req.scope?.company_id ?? null;
   try {
@@ -71,7 +76,7 @@ router.get('/upcoming-anniversaries', async (req, res) => {
 });
 
 /* GET /hr-widgets/pending-confirmations?days=14 — employees whose probation ends within N days */
-router.get('/pending-confirmations', async (req, res) => {
+router.get('/pending-confirmations', requirePermission('hr', 'view'), async (req, res) => {
   const days = parseInt(req.query.days ?? '14', 10);
   const cid = req.scope?.company_id ?? null;
   try {
@@ -95,7 +100,7 @@ router.get('/pending-confirmations', async (req, res) => {
 });
 
 /* GET /hr-widgets/expiring-documents?days=30 */
-router.get('/expiring-documents', async (req, res) => {
+router.get('/expiring-documents', requirePermission('hr', 'view'), async (req, res) => {
   const days = parseInt(req.query.days ?? '30', 10);
   const cid = req.scope?.company_id ?? null;
   try {
@@ -123,7 +128,7 @@ router.get('/expiring-documents', async (req, res) => {
 });
 
 /* GET /hr-widgets/upcoming-exits?days=30 — employees on notice with LWD coming up */
-router.get('/upcoming-exits', async (req, res) => {
+router.get('/upcoming-exits', requirePermission('hr', 'view'), async (req, res) => {
   const days = parseInt(req.query.days ?? '30', 10);
   const cid = req.scope?.company_id ?? null;
   try {

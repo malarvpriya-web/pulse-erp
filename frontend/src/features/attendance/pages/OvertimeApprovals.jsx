@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, createPortal } from 'react';
 import {
-  Zap, CheckCircle, X, Clock, AlertCircle, RefreshCw,
-  Download, Plus, Users, ChevronDown,
+  Zap, CheckCircle, X, Clock, AlertCircle, RefreshCw, Download, Plus,
+  Users, ChevronDown, CheckSquare,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P     = '#6B3FDB';
 const CARD  = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 20 };
@@ -22,7 +23,7 @@ const OT_TYPES = [
 const OT_MAP = Object.fromEntries(OT_TYPES.map(t => [t.value, t]));
 
 const STATUS_STYLE = {
-  pending:       { bg: '#fef3c7', color: '#92400e' },
+  pending:       { bg: '#ede9fe', color: '#5b21b6' },
   approved:      { bg: '#dcfce7', color: '#166534' },
   rejected:      { bg: '#fee2e2', color: '#991b1b' },
   auto_approved: { bg: '#e0f2fe', color: '#0369a1' },
@@ -243,7 +244,7 @@ function RejectModal({ record, onConfirm, onClose, loading }) {
       subtitle={`${record.emp_name} · ${record.attendance_date}`}
       onClose={onClose}
     >
-      <div style={{ padding: '10px 14px', background: '#fff7ed', borderRadius: 8, border: '1px solid #fed7aa', marginBottom: 18, fontSize: 13 }}>
+      <div style={{ padding: '10px 14px', background: '#fff7ed', borderRadius: 8, border: '1px solid #ddd6fe', marginBottom: 18, fontSize: 13 }}>
         <OTBadge type={record.ot_type} size="md" />
         <span style={{ marginLeft: 8, fontWeight: 700, color: P }}>{record.ot_hours}h</span>
         {record.reason && <div style={{ marginTop: 6, color: '#374151' }}>Reason: {record.reason}</div>}
@@ -621,7 +622,7 @@ export default function OvertimeApprovals() {
 
   // ── KPI cards ──────────────────────────────────────────────────────────────
   const kpis = [
-    { label: 'Pending Approvals', value: stats?.pending_count ?? '—',                       icon: Clock,        color: '#f59e0b', bg: '#fef3c7' },
+    { label: 'Pending Approvals', value: stats?.pending_count ?? '—',                       icon: Clock,        color: '#7c5cf0', bg: '#ede9fe' },
     { label: 'Total OT Hours',    value: stats ? `${stats.total_ot_hours.toFixed(1)}h` : '—', icon: Zap,         color: P,         bg: '#f5f3ff' },
     { label: 'Approved OT Hours', value: stats ? `${stats.approved_hours.toFixed(1)}h` : '—', icon: CheckCircle, color: '#10b981', bg: '#dcfce7' },
     { label: 'Total Records',     value: stats?.total_records ?? '—',                       icon: AlertCircle,  color: '#6b7280', bg: '#f3f4f6' },
@@ -630,39 +631,33 @@ export default function OvertimeApprovals() {
   const yearOpts = [currentYear - 1, currentYear, currentYear + 1];
 
   return (
-    <div style={{ padding: 24, margin: '0 auto' }}>
+    <PageShell dock={
+      <PageHero
+        icon={CheckSquare}
+        eyebrow="Attendance"
+        title="Overtime Approvals"
+        subtitle="Review, approve and track employee overtime records"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={exportCSV}>
+            <Download size={13} /> Export CSV
+          </button>
+          <button className="plh-cta plh-cta--ghost"
+            onClick={reload}>
+            <RefreshCw size={13} /> Refresh
+          </button>
+          <button className="plh-cta"
+            onClick={() => setShowRequest(true)}>
+            <Plus size={13} /> {isManager ? 'Log OT' : 'Request OT'}
+          </button>
+        </>}
+      />
+    }>
 
       {toast && <Toast msg={toast.msg} type={toast.type} />}
 
       {/* ── Header ──────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0 }}>Overtime Approvals</h1>
-          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-            Review, approve and track employee overtime records
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button
-            onClick={exportCSV}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151' }}
-          >
-            <Download size={13} /> Export CSV
-          </button>
-          <button
-            onClick={reload}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151' }}
-          >
-            <RefreshCw size={13} /> Refresh
-          </button>
-          <button
-            onClick={() => setShowRequest(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: P, color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
-          >
-            <Plus size={13} /> {isManager ? 'Log OT' : 'Request OT'}
-          </button>
-        </div>
-      </div>
+
 
       {/* ── KPI Cards ───────────────────────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16, marginBottom: 24 }}>
@@ -858,6 +853,6 @@ export default function OvertimeApprovals() {
           loading={reqLoading}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

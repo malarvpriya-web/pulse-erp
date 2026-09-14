@@ -8,6 +8,7 @@ import {
 } from 'recharts';
 import { TrendingUp, TrendingDown, Target, Award, AlertTriangle, Users } from 'lucide-react';
 import api from '@/services/api/client';
+import { Stat } from '@/components/pulse-ui';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -20,33 +21,23 @@ const fmtPct = n => `${parseFloat(n || 0).toFixed(1)}%`;
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
-  amber: '#d97706', blue: '#2563eb', border: '#e9e4ff',
+  amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff',
 };
 
 function KpiCard({ label, value, sub, color = C.primary, icon: Icon, trend }) {
-  return (
-    <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 18px', borderLeft: `4px solid ${color}` }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-        {Icon && <div style={{ width: 30, height: 30, borderRadius: 8, background: `${color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={15} color={color} /></div>}
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 800, color, marginTop: 4 }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>}
-      {trend !== undefined && trend !== null && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, marginTop: 6 }}>
-          {trend >= 0 ? <TrendingUp size={12} color={C.green} /> : <TrendingDown size={12} color={C.red} />}
-          <span style={{ color: trend >= 0 ? C.green : C.red, fontWeight: 700 }}>{Math.abs(trend).toFixed(1)}%</span>
-          <span style={{ color: '#9ca3af' }}>vs last period</span>
-        </div>
-      )}
-    </div>
-  );
+  // Delegates to the design-system card so this page's KPIs match every other
+  // page's. Signature unchanged, so no call site needed editing.
+  return <Stat label={label} value={value} sub={sub} color={color} icon={Icon} trend={trend} />;
 }
 
-export default function RevenueForecastPanel({ summary, customerData }) {
-  const [pipeline, setPipeline] = useState(null);
-  const [targets, setTargets]   = useState(null);
-  const [loading, setLoading]   = useState(true);
+// `pipeStages` / `salesKpi` / `teamTargets` are supplied by the parent from endpoints that
+// exist. This panel used to fetch /sales-command-center/pipeline and /targets itself —
+// neither has ever been a route, so every card below rendered empty from the day it shipped.
+// Live routes on that router: /summary, /team-targets, /salesperson-scorecard.
+export default function RevenueForecastPanel({ summary, customerData, pipeStages, salesKpi, teamTargets }) {
+  const [scc, setScc]         = useState(null);
+  const [perf, setPerf]       = useState([]);
+  const [loading, setLoading] = useState(true);
   const abortRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -55,13 +46,13 @@ export default function RevenueForecastPanel({ summary, customerData }) {
     abortRef.current = ctrl;
     setLoading(true);
     try {
-      const [pip, tgt] = await Promise.all([
-        api.get('/sales-command-center/pipeline').catch(() => ({ data: null })),
-        api.get('/sales-command-center/targets').catch(() => ({ data: null })),
+      const [sum, sp] = await Promise.all([
+        api.get('/sales-command-center/summary').catch(() => ({ data: null })),
+        api.get('/sales-command-center/salesperson-scorecard').catch(() => ({ data: null })),
       ]);
       if (ctrl.signal.aborted) return;
-      setPipeline(pip.data);
-      setTargets(tgt.data);
+      setScc(sum.data);
+      setPerf(Array.isArray(sp.data) ? sp.data : []);
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
@@ -70,26 +61,32 @@ export default function RevenueForecastPanel({ summary, customerData }) {
   useEffect(() => { load(); return () => abortRef.current?.abort(); }, [load]);
 
   const kpis = summary?.kpis || {};
-  const stages = pipeline?.stages || [];
-  const topPerf = pipeline?.top_performers || [];
-  const bottomPerf = pipeline?.bottom_performers || [];
   const forecastTrend = summary?.revenue_trend || [];
 
-  // Build funnel data from stages
-  const funnelData = stages.map((s, i) => ({
-    name: s.stage,
-    value: parseFloat(s.total_value || 0),
+  // Performers ranked on real achieved revenue; same rows sorted both ways.
+  const ranked = [...perf].sort((a, b) => (b.achieved_revenue || 0) - (a.achieved_revenue || 0));
+  const topPerf = ranked.slice(0, 6);
+  const bottomPerf = ranked.slice(-6).reverse();
+
+  // Funnel from /dashboard/sales — { stage, count, value }
+  const funnelData = (pipeStages || []).map((s, i) => ({
+    name: s.stage || 'Unknown',
+    value: parseFloat(s.value || 0),
     count: s.count,
     fill: [C.primary, C.blue, C.green, C.amber, C.red][i % 5],
   }));
 
-  // Target vs achievement
-  const tgtData = (targets?.by_salesperson || []).slice(0, 8).map(t => ({
-    name: t.name?.split(' ')[0] || 'Unknown',
-    target: parseFloat(t.target || 0),
-    achieved: parseFloat(t.achieved || 0),
-    pct: t.target > 0 ? Math.round((t.achieved / t.target) * 100) : 0,
+  // Target vs achievement from /sales-command-center/team-targets
+  const tgtData = (teamTargets || []).slice(0, 8).map(t => ({
+    name: t.group_name || t.region || t.business_unit || 'Default',
+    target: parseFloat(t.target_revenue || 0),
+    achieved: parseFloat(t.achieved_revenue || 0),
+    pct: parseFloat(t.achievement_pct || 0),
   }));
+
+  // /analytics/sales is the same source CeoDashboard read, so the two pages cannot
+  // disagree on this number. Falls back to the command centre's win rate.
+  const conversionRate = salesKpi?.conversionRate ?? scc?.win_rate;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -102,12 +99,19 @@ export default function RevenueForecastPanel({ summary, customerData }) {
           <KpiCard label="Revenue YTD" value={fmtL(kpis.revenue_ytd)} color={C.green} icon={Award} />
           <KpiCard
             label="Conversion Rate"
-            value={pipeline?.conversion_rate != null ? fmtPct(pipeline.conversion_rate) : '—'}
+            value={conversionRate != null ? fmtPct(conversionRate) : '—'}
             color={C.amber}
             icon={Target}
           />
-          <KpiCard label="Won Revenue" value={fmtL(pipeline?.won_revenue)} color={C.green} />
-          <KpiCard label="Lost Revenue" value={fmtL(pipeline?.lost_revenue)} color={C.red} />
+          <KpiCard label="Avg Deal Size" value={salesKpi?.avgDealSize != null ? fmtL(salesKpi.avgDealSize) : '—'} color={C.blue} sub="Won opportunities" />
+          <KpiCard
+            label="Achievement"
+            value={scc?.achievement_pct != null ? fmtPct(scc.achievement_pct) : '—'}
+            color={scc?.achievement_pct >= 100 ? C.green : scc?.achievement_pct >= 75 ? C.amber : C.red}
+            icon={Award}
+            sub={scc?.total_target ? `Target ${fmtL(scc.total_target)}` : undefined}
+          />
+          <KpiCard label="Gap to Target" value={fmtL(scc?.gap_value)} color={C.red} icon={AlertTriangle} sub="Shortfall this FY" />
         </div>
       </div>
 
@@ -159,7 +163,7 @@ export default function RevenueForecastPanel({ summary, customerData }) {
       {/* Target vs Achievement */}
       {tgtData.length > 0 && (
         <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 14, padding: '18px 20px' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 14 }}>Target vs Achievement — By Salesperson</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 14 }}>Target vs Achievement — By Team / Region / BU</div>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={tgtData} barGap={4}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
@@ -203,8 +207,8 @@ function PerformerTable({ title, data, color, icon: Icon }) {
         <tbody>
           {data.slice(0, 6).map((r, i) => (
             <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
-              <td style={{ padding: '8px 12px', fontWeight: 600, color: '#111827' }}>{r.name || r.salesperson_name || '—'}</td>
-              <td style={{ padding: '8px 12px', textAlign: 'right', color, fontWeight: 700 }}>{fmtL(r.revenue || r.achieved || 0)}</td>
+              <td style={{ padding: '8px 12px', fontWeight: 600, color: '#111827' }}>{r.salesperson_name || r.name || '—'}</td>
+              <td style={{ padding: '8px 12px', textAlign: 'right', color, fontWeight: 700 }}>{fmtL(r.achieved_revenue ?? r.revenue ?? r.achieved ?? 0)}</td>
               <td style={{ padding: '8px 12px', textAlign: 'right', color: '#6b7280' }}>
                 {r.achievement_pct != null ? fmtPct(r.achievement_pct) : '—'}
               </td>

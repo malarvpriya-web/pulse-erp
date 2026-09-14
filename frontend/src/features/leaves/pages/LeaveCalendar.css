@@ -58,7 +58,7 @@
 .lc-side-badge  { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; }
 .lc-side-status { font-size: 10px; font-weight: 600; }
 .lc-status-approved { color: #15803d; }
-.lc-status-pending  { color: #92400e; }
+.lc-status-pending  { color: #5b21b6; }
 
 .lc-summary-row  { display: flex; align-items: center; gap: 7px; padding: 5px 0; font-size: 12px; }
 .lc-summary-type { flex: 1; color: #374151; }

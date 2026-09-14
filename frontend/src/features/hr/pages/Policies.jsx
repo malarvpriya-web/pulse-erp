@@ -4,6 +4,7 @@ import api from "@/services/api/client";
 import { useAuth } from "@/context/AuthContext";
 import ResultDialog from "@/components/ResultDialog";
 import "./Policies.css";
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DEFAULT_CATEGORIES = [
   "Leave", "Travel", "Attendance", "Uniform",
@@ -145,17 +146,23 @@ export default function Policies() {
 
   useEffect(() => {
     abortRef.current?.abort();
-    abortRef.current = new AbortController();
-    const { signal } = abortRef.current;
+    const myCtrl = new AbortController();
+    abortRef.current = myCtrl;
+    const { signal } = myCtrl;
+    // StrictMode mounts this effect twice: the first batch settles (aborted)
+    // only after the second has started, so an unguarded
+    // `.finally(() => setLoading(false))` drops the skeleton while the real
+    // request is still running and the list renders as "no policies".
+    const isStale = () => signal.aborted || abortRef.current !== myCtrl;
 
     setLoading(true);
     Promise.all([
       fetchPolicies(signal),
       fetchMyAcknowledgements(signal),
       fetchAckCounts(signal),
-    ]).finally(() => setLoading(false));
+    ]).finally(() => { if (!isStale()) setLoading(false); });
 
-    return () => abortRef.current?.abort();
+    return () => myCtrl.abort();
   }, [fetchPolicies, fetchMyAcknowledgements, fetchAckCounts]);
 
   // ── Derived state ──────────────────────────────────────────────────────────
@@ -602,18 +609,16 @@ export default function Policies() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="pol-page">
+    <PageShell dock={
+      <PageHero
+        icon={Users}
+        eyebrow="Human Resources"
+        title="Policy Documents"
+      />
+    }>
       <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
 
-      <div className="pol-top">
-        <h1>Policy Documents</h1>
-        {dueForReview.length > 0 && (
-          <div className="pol-review-alert">
-            <Bell size={14} />
-            {dueForReview.length} {dueForReview.length === 1 ? "policy" : "policies"} due for review in the next 30 days
-          </div>
-        )}
-      </div>
+
 
       {categories.map((c) => renderPolicySection(`${c} Policy`, groupedByCategory[c] || [], c))}
 
@@ -711,6 +716,6 @@ export default function Policies() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -19,7 +19,7 @@
 .invd-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .invd-kpi  { background: #fff; border-radius: 11px; border: 1px solid #f0f0f4; padding: 12px 13px; display: flex; align-items: flex-start; gap: 10px; opacity: 0; animation: invd-rise .45s cubic-bezier(.22,1,.36,1) forwards; }
 .invd-kpi-alert { border-left: 3px solid #ef4444; }
-.invd-kpi-icon  { width: 32px; height: 32px; background: color-mix(in srgb, var(--c) 12%, transparent); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--c); flex-shrink: 0; }
+.invd-kpi-icon  { width: 32px; height: 32px; background: transparent; background: color-mix(in srgb, var(--c) 12%, transparent); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--c); flex-shrink: 0; }
 .invd-kpi-label { font-size: 12px; color: #6b7280; margin: 0 0 4px; }
 .invd-kpi-val   { font-size: 20px; font-weight: 700; color: #111827; margin: 0; }
 .invd-kpi-sub   { font-size: 11px; color: #9ca3af; margin: 3px 0 0; }

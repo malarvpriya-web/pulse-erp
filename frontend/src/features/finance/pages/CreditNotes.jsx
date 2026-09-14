@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { ReceiptIndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useFY } from '@/context/FYContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PURPLE = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -16,7 +18,7 @@ const REASON_LABELS = {
 };
 
 const STATUS_COLORS = {
-  draft:     ['#fef3c7', '#b45309'],
+  draft:     ['#ede9fe', '#6d28d9'],
   issued:    ['#dcfce7', '#15803d'],
   cancelled: ['#fee2e2', '#dc2626'],
 };
@@ -96,17 +98,15 @@ export default function CreditNotes({ setPage }) {
   const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <h2 style={{ fontWeight: 800, fontSize: 22, color: '#1f2937', margin: 0 }}>Credit Notes</h2>
-          <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>CDNR — credit notes issued to customers ({total} total)</p>
-        </div>
-        <button
-          onClick={() => setShowForm(v => !v)}
-          style={{ padding: '10px 20px', borderRadius: 8, background: PURPLE, color: '#fff', fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer' }}
-        >{showForm ? '✕ Close' : '+ New Credit Note'}</button>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={ReceiptIndianRupee}
+        eyebrow="Finance"
+        title="Credit Notes"
+        actions={<button className="plh-cta"
+          onClick={() => setShowForm(v => !v)}>{showForm ? '✕ Close' : '+ New Credit Note'}</button>}
+      />
+    }>
 
       {/* Create form */}
       {showForm && (
@@ -216,6 +216,6 @@ export default function CreditNotes({ setPage }) {
           </tbody>
         </table>
       </div>
-    </div>
+    </PageShell>
   );
 }

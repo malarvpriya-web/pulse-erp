@@ -160,13 +160,13 @@ router.get('/workflow-summary', async (req, res) => {
           [companyId],
         ),
 
-        // Orders — active sales orders
+        // Orders — active sales orders. Real column is order_status, not status.
         pool.query(
           `SELECT COUNT(*) AS count,
-                  COUNT(*) FILTER (WHERE status = 'pending') AS alerts,
+                  COUNT(*) FILTER (WHERE order_status = 'pending') AS alerts,
                   COALESCE(SUM(total_amount), 0)::numeric AS value
            FROM sales_orders
-           WHERE status NOT IN ('closed','cancelled')
+           WHERE order_status NOT IN ('closed','cancelled')
              AND ($1::int IS NULL OR company_id = $1)`,
           [companyId],
         ),
@@ -181,11 +181,11 @@ router.get('/workflow-summary', async (req, res) => {
           [companyId],
         ),
 
-        // Production orders in progress
+        // Production orders in progress — real column is planned_end_date, not scheduled_end
         pool.query(
           `SELECT COUNT(*) AS count,
                   COUNT(*) FILTER (WHERE status = 'on_hold') AS alerts,
-                  COUNT(*) FILTER (WHERE scheduled_end < NOW() AND status NOT IN ('completed','cancelled')) AS overdue
+                  COUNT(*) FILTER (WHERE planned_end_date < NOW() AND status NOT IN ('completed','cancelled')) AS overdue
            FROM production_orders
            WHERE status NOT IN ('completed','cancelled')
              AND ($1::int IS NULL OR company_id = $1)`,
@@ -222,13 +222,14 @@ router.get('/workflow-summary', async (req, res) => {
         ),
 
         // Service — open tickets (overdue = open > 7 days; separate from lead count)
+        // service_tickets doesn't exist — real table is support_tickets.
         pool.query(
           `SELECT COUNT(*) AS count,
-                  COUNT(*) FILTER (WHERE priority IN ('critical','high')) AS alerts,
+                  COUNT(*) FILTER (WHERE priority IN ('Critical','High')) AS alerts,
                   COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '7 days'
-                                     AND status NOT IN ('resolved','closed')) AS overdue
-           FROM service_tickets
-           WHERE status NOT IN ('resolved','closed')
+                                     AND status NOT IN ('Resolved','Closed')) AS overdue
+           FROM support_tickets
+           WHERE status NOT IN ('Resolved','Closed') AND deleted_at IS NULL
              AND ($1::int IS NULL OR company_id = $1)`,
           [companyId],
         ),

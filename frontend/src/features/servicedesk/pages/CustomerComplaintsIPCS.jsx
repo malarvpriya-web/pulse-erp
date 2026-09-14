@@ -21,12 +21,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Plus, Pencil, Download, FileText, Search, X, SlidersHorizontal,
-  ArrowUp, ArrowDown, AlertCircle, ArrowUpRight,
+  ArrowUp, ArrowDown, AlertCircle, ArrowUpRight, Contact,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { fmtDate } from '@/utils/dateFormatter';
 import { useAuth } from '@/context/AuthContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const PAGE_SIZES = [10, 20, 50, 100];
 
@@ -276,7 +277,14 @@ export default function CustomerComplaintsIPCS({ navigateTo }) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <div className="pulse-page" style={{ padding: 24, background: 'var(--color-bg-page, #f8f9fc)', minHeight: '100vh' }}>
+    <PageShell dock={
+      <PageHero
+        icon={Contact}
+        eyebrow="Service Desk"
+        title="Customer Complaints"
+        actions={canAdd && <button className="plh-cta" onClick={openNew}><Plus size={15} /> New</button>}
+      />
+    }>
       <ConfirmDialog
         open={!!confirmConvert}
         title="Raise a service ticket"
@@ -305,15 +313,6 @@ export default function CustomerComplaintsIPCS({ navigateTo }) {
       )}
 
       {/* ── header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1f2937', margin: 0 }}>Customer Complaints</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: 13 }}>
-            Complaint register (IPCS) &middot; {total} record{total === 1 ? '' : 's'}
-          </p>
-        </div>
-        {canAdd && <button onClick={openNew} style={primaryBtn}><Plus size={15} /> New</button>}
-      </div>
 
       {/* ── toolbar ── */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -566,6 +565,6 @@ export default function CustomerComplaintsIPCS({ navigateTo }) {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

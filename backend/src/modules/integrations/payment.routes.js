@@ -2,6 +2,7 @@
 import express from 'express';
 import crypto  from 'crypto';
 import pool    from '../../config/db.js';
+import { postInvoicePaymentJournal } from '../finance/services/invoicePaymentJournal.service.js';
 
 const router = express.Router();
 
@@ -45,7 +46,7 @@ router.get('/unpaid-invoices', async (req, res) => {
         pgo.razorpay_order_id,
         pgo.id                             AS pgo_id,
         GREATEST(0,
-          EXTRACT(day FROM CURRENT_DATE - i.due_date)::integer
+          (CURRENT_DATE - i.due_date)::integer
         )                                  AS days_overdue
       FROM invoices i
       LEFT JOIN parties   p   ON p.id  = i.customer_id
@@ -299,8 +300,20 @@ router.post('/verify', async (req, res) => {
     return res.status(400).json({ success: false, message: 'Payment signature verification failed' });
   }
 
+  const client = await pool.connect();
   try {
-    const { rows: [pgo] } = await pool.query(
+    await client.query('BEGIN');
+    // Lock and check the prior status first — /verify can be called more than
+    // once for the same order (client retry, double-click), and this is what
+    // stops a repeat call from inserting a second payment_transactions row
+    // and posting a second, duplicate journal entry for one real payment.
+    const { rows: [prior] } = await client.query(
+      `SELECT status FROM payment_gateway_orders WHERE razorpay_order_id = $1 FOR UPDATE`,
+      [razorpay_order_id]
+    );
+    const alreadyPaid = prior?.status === 'paid';
+
+    const { rows: [pgo] } = await client.query(
       `UPDATE payment_gateway_orders
        SET razorpay_payment_id = $1, status = 'paid', paid_at = NOW(),
            gateway_response = COALESCE(gateway_response, '{}'::jsonb) || $2::jsonb,
@@ -308,28 +321,44 @@ router.post('/verify', async (req, res) => {
        WHERE razorpay_order_id = $3
        RETURNING invoice_id, company_id, amount`,
       [razorpay_payment_id, JSON.stringify({ payment_id: razorpay_payment_id }), razorpay_order_id]
-    ).catch(() => ({ rows: [] }));
+    );
 
-    if (pgo?.invoice_id) {
+    if (pgo?.invoice_id && !alreadyPaid) {
       const cid = pgo.company_id ?? companyId;
 
-      await pool.query(
+      const { rows: [inv] } = await client.query(
         `UPDATE invoices SET status = 'paid', paid_amount = total_amount, updated_at = NOW()
-         WHERE id = $1`,
+         WHERE id = $1 RETURNING invoice_number`,
         [pgo.invoice_id]
-      ).catch(() => {});
+      );
 
-      await pool.query(
+      const { rows: [tx] } = await client.query(
         `INSERT INTO payment_transactions
            (invoice_id, company_id, amount, payment_mode, transaction_id, razorpay_payment_id, paid_at, status)
-         VALUES ($1, $2, $3, 'razorpay', $4, $4, NOW(), 'captured')`,
+         VALUES ($1, $2, $3, 'razorpay', $4, $4, NOW(), 'captured') RETURNING id`,
         [pgo.invoice_id, cid, pgo.amount, razorpay_payment_id]
-      ).catch(() => {});
+      );
+
+      // Was a status flip + payment_transactions row with no journal entry —
+      // Razorpay-collected cash never reached the GL. Same helper the
+      // Receipts screen posts through.
+      await postInvoicePaymentJournal(client, {
+        paymentTransactionId: tx.id,
+        invoiceId: pgo.invoice_id,
+        invoiceNumber: inv?.invoice_number,
+        amount: pgo.amount,
+        paymentMode: 'razorpay',
+        companyId: cid,
+      });
     }
 
+    await client.query('COMMIT');
     res.json({ success: true, payment_id: razorpay_payment_id });
   } catch (err) {
+    await client.query('ROLLBACK');
     res.status(500).json({ success: false, message: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -341,32 +370,60 @@ router.patch('/mark-paid', async (req, res) => {
   if (!invoice_id) return res.status(400).json({ success: false, message: 'invoice_id is required' });
 
   const companyId = getCompanyId(req);
+  const client = await pool.connect();
 
   try {
-    const { rows: [inv] } = await pool.query(
-      `SELECT id, total_amount, paid_amount, company_id FROM invoices WHERE id = $1`,
+    await client.query('BEGIN');
+    const { rows: [inv] } = await client.query(
+      `SELECT id, invoice_number, total_amount, paid_amount, company_id, status FROM invoices WHERE id = $1 FOR UPDATE`,
       [invoice_id]
     );
-    if (!inv) return res.status(404).json({ success: false, message: 'Invoice not found' });
+    if (!inv) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Invoice not found' });
+    }
+    if (inv.status === 'paid') {
+      await client.query('ROLLBACK');
+      return res.json({ success: true, message: 'Invoice already marked as paid' });
+    }
 
     const amount = parseFloat(inv.total_amount) - parseFloat(inv.paid_amount || 0);
     const paidAt = paid_date ? new Date(paid_date).toISOString() : new Date().toISOString();
 
-    await pool.query(
+    await client.query(
       `UPDATE invoices SET status = 'paid', paid_amount = total_amount, updated_at = NOW() WHERE id = $1`,
       [invoice_id]
     );
 
-    await pool.query(
+    const { rows: [tx] } = await client.query(
       `INSERT INTO payment_transactions
          (invoice_id, company_id, amount, payment_mode, transaction_id, paid_at, status, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, 'captured', $7)`,
-      [invoice_id, companyId, amount, payment_mode, reference_number || null, paidAt, `Manual: ${payment_mode}`]
-    ).catch(() => {});
+       VALUES ($1, $2, $3, $4, $5, $6, 'captured', $7) RETURNING id`,
+      [invoice_id, companyId ?? inv.company_id, amount, payment_mode, reference_number || null, paidAt, `Manual: ${payment_mode}`]
+    );
 
+    // Was a status flip + payment_transactions row with no journal entry —
+    // the cash/cheque this represents never reached Cash/Bank or cleared AR
+    // in the GL. Same helper the Receipts screen posts through.
+    if (amount > 0) {
+      await postInvoicePaymentJournal(client, {
+        paymentTransactionId: tx.id,
+        invoiceId: inv.id,
+        invoiceNumber: inv.invoice_number,
+        amount,
+        paymentDate: paid_date || null,
+        paymentMode: payment_mode,
+        companyId: companyId ?? inv.company_id,
+      });
+    }
+
+    await client.query('COMMIT');
     res.json({ success: true, message: 'Invoice marked as paid' });
   } catch (err) {
+    await client.query('ROLLBACK');
     res.status(500).json({ success: false, message: err.message });
+  } finally {
+    client.release();
   }
 });
 

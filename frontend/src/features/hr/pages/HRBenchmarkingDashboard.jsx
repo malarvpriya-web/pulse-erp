@@ -1,59 +1,116 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { LayoutDashboard } from 'lucide-react';
 import api from '@/services/api/client';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
+import './HRBenchmarkingDashboard.css';
 
-// ─── Shared primitives ────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────
+ * HR Benchmarking Dashboard — single-viewport cockpit.
+ *
+ * LAYOUT. Three bands of `rail + 5 metric cards`, then a chart band, then the
+ * benchmark strip; the page itself never scrolls. The five section headers this
+ * page used to stack down the left are one shared RAIL COLUMN per band, so a
+ * group label costs a column instead of a row — that is what buys the fit. The
+ * contract lives in HRBenchmarkingDashboard.css; read the header there before
+ * moving anything.
+ *
+ * ⚠ The 2026-08-20 hero codemod converted this page to `<PageShell>` WITHOUT
+ * carrying the root class across, and separately dropped the stylesheet import
+ * and re-expanded every class into an inline `style={{}}`. The sheet has been
+ * dead ever since and the page reverted to a ~1,700px scroller. Both are
+ * restored here: `className="hrb-root"` below is load-bearing, and so is the
+ * import above. Deleting either silently un-styles the whole page — nothing in
+ * esbuild, eslint or vitest can see it.
+ *
+ * LIVE DATA. Every figure comes from GET /analytics/hr-benchmarks; there are no
+ * client-side constants except the industry benchmarks in BENCHMARKS, which are
+ * labelled as such. The rule this page now keeps: a metric with no rows behind
+ * it is UNMEASURED, and an unmeasured metric NEVER renders a benchmark verdict.
+ * The API says which is which through its `*Available` flags — pass them as
+ * `has`, and the card shows the reason instead of scoring a fabricated zero.
+ * ────────────────────────────────────────────────────────────────────────── */
 
 const PURPLE = '#6B3FDB';
 const GREEN  = '#059669';
-const AMBER  = '#d97706';
+const AMBER  = '#6d28d9';
 const RED    = '#dc2626';
 const BLUE   = '#2563eb';
 const TEAL   = '#0891b2';
 const PINK   = '#db2777';
+const GREY   = '#9ca3af';
 
-function Section({ title, icon, children, accent = PURPLE }) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 9 }}>
-        <span style={{ fontSize: 17 }}>{icon}</span>
-        <h2 style={{ margin: 0, fontSize: 14.5, fontWeight: 800, color: '#111827' }}>{title}</h2>
-        <div style={{ flex: 1, height: 1, background: '#e5e7eb', marginLeft: 8 }} />
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
-        {children}
-      </div>
-    </div>
-  );
+/** Industry reference points. The ONLY hardcoded numbers on this page. */
+const BENCHMARKS = {
+  daysToHire: 30, timeToFill: 45, offerAcceptance: 70, offerDecline: 15,
+  training: 70, turnover: 10, engagement: 75, acquisition: 15,
+  compaRatio: 1.0, benefits: 80, female: 40, womenLeaders: 30,
+};
+
+const inr = (v) => `₹${Math.round(v).toLocaleString('en-IN')}`;
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/** Render a live figure. Never called with null — `has` gates that upstream. */
+function present(value, format) {
+  const n = Number(value);
+  switch (format) {
+    case 'pct':  return `${n}%`;
+    case 'days': return `${n} ${n === 1 ? 'day' : 'days'}`;
+    case 'inr':  return inr(n);
+    case 'ratio': return `${n.toFixed(2)}x`;
+    default:     return n.toLocaleString('en-IN');
+  }
 }
 
-function MetricCard({ label, value, unit = '', benchmark, benchmarkLabel, trend, accent = PURPLE, sub, loading, na, index = 0 }) {
-  const numVal  = parseFloat(value) || 0;
-  const numBench = parseFloat(benchmark);
-  const isGood = benchmark == null ? null
-    : trend === 'lower-is-better' ? numVal <= numBench
-    : numVal >= numBench;
-  const statusColor = benchmark == null || na ? '#6b7280'
-    : isGood ? GREEN : numVal >= numBench * 0.85 ? AMBER : RED;
+/**
+ * One metric card.
+ *
+ * @param {number|null} value the live figure
+ * @param {boolean} has whether the API measured it at all. FALSE renders
+ *   "Not measured" plus `noteWhenMissing` — and suppresses the benchmark line,
+ *   because scoring an unmeasured metric is how this page used to report "0
+ *   days to hire — Below target" on a company that had simply never linked a
+ *   candidate record to a joiner.
+ * @param {string} [noteWhenMissing] why it is unmeasured, in the user's terms
+ * @param {'higher'|'lower'} [trend] which direction beats the benchmark
+ */
+function MetricCard({
+  label, value, has, format = 'num', benchmark, benchmarkFormat, trend = 'higher',
+  accent = PURPLE, sub, noteWhenMissing, loading, index = 0,
+}) {
+  const measured = has && value != null && Number.isFinite(Number(value));
+  const n = Number(value);
+  const scored = measured && benchmark != null;
+  const onTarget = scored && (trend === 'lower' ? n <= benchmark : n >= benchmark);
+  const near = scored && !onTarget &&
+    (trend === 'lower' ? n <= benchmark * 1.15 : n >= benchmark * 0.85);
+  const statusColor = !scored ? GREY : onTarget ? GREEN : near ? AMBER : RED;
+  const benchText = `benchmark ${present(benchmark, benchmarkFormat || format)}`;
 
   return (
-    <div className="dk-anim" style={{ background: '#fff', border: `1px solid #e5e7eb`, borderRadius: 11, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4, position: 'relative', overflow: 'hidden', '--dk-i': index }}>
-      <div style={{ position: 'absolute', top: 0, left: 0, width: 3, height: '100%', background: accent, borderRadius: '11px 0 0 11px' }} />
-      <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 500, paddingLeft: 4 }}>{label}</div>
-      {loading
-        ? <div style={{ height: 27, width: 90, background: '#f3f4f6', borderRadius: 6 }} />
-        : na
-          ? <div style={{ fontSize: 20, fontWeight: 800, color: '#9ca3af', paddingLeft: 4 }}>N/A</div>
-          : <div style={{ fontSize: 24, fontWeight: 800, color: accent, paddingLeft: 4 }}>
-              {numVal > 0 ? (unit === '₹' ? `₹${numVal.toLocaleString('en-IN')}` : `${value}${unit}`) : '—'}
+    <div className="hrb-card dk-anim" style={{ '--dk-i': index }}>
+      <span className="hrb-card-accent" style={{ background: measured ? accent : GREY }} />
+      <div className="hrb-card-label" title={label}>{label}</div>
+
+      {loading ? <div className="hrb-card-skel" />
+        : measured
+          ? <div className="hrb-card-val" style={{ color: accent }} title={present(n, format)}>
+              {present(n, format)}
             </div>
-      }
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', paddingLeft: 4 }}>{sub}</div>}
-      {benchmark != null && !na && !loading && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 4 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
-          <span style={{ fontSize: 11, color: statusColor, fontWeight: 600 }}>
-            {isGood ? 'On target' : 'Below target'} — benchmark: {benchmarkLabel || benchmark}{unit}
+          : <div className="hrb-card-val" style={{ color: GREY, fontSize: 14 }}>Not measured</div>}
+
+      {!loading && (
+        measured
+          ? sub && <div className="hrb-card-sub" title={sub}>{sub}</div>
+          : noteWhenMissing && <div className="hrb-card-sub" title={noteWhenMissing}>{noteWhenMissing}</div>
+      )}
+
+      {!loading && scored && (
+        <div className="hrb-card-bm" style={{ color: statusColor }}>
+          <span className="hrb-dot" style={{ background: statusColor }} />
+          <span title={`${onTarget ? 'On target' : 'Below target'} — ${benchText}`}>
+            {onTarget ? 'On target' : 'Below target'} · {benchText}
           </span>
         </div>
       )}
@@ -61,72 +118,92 @@ function MetricCard({ label, value, unit = '', benchmark, benchmarkLabel, trend,
   );
 }
 
-function DistributionBar({ data = [], loading }) {
-  const total = data.reduce((s, d) => s + (d.count || 0), 0);
-  const BAND_COLORS = {
-    Exceptional: GREEN,
-    Exceeds:     BLUE,
-    Meets:       PURPLE,
-    Below:       AMBER,
-    PIP:         RED,
-  };
-  if (loading) return <div style={{ height: 80, background: '#f3f4f6', borderRadius: 8 }} />;
-  if (!total) return <div style={{ color: '#9ca3af', fontSize: 13, padding: '12px 0' }}>No appraisal data for last 12 months</div>;
+/** Section label column — replaces a full header row per group. */
+function Rail({ icon, title, note, accent }) {
+  return (
+    <div className="hrb-rail" style={{ '--hrb-rail': accent }}>
+      <span className="hrb-rail-ico">{icon}</span>
+      <span className="hrb-rail-title">{title}</span>
+      {note && <span className="hrb-rail-note" title={note}>{note}</span>}
+    </div>
+  );
+}
+
+function Panel({ title, children }) {
+  return (
+    <div className="hrb-panel">
+      <div className="hrb-panel-title" title={title}>{title}</div>
+      <div className="hrb-panel-body">{children}</div>
+    </div>
+  );
+}
+
+const BAND_COLORS = {
+  Exceptional: GREEN, Exceeds: BLUE, Meets: PURPLE, Below: AMBER, PIP: RED,
+};
+
+function DistributionBar({ data = [], total = 0, loading, scale }) {
+  if (loading) return <div className="hrb-card-skel" style={{ width: '100%', height: 56 }} />;
+  if (!total) {
+    return <div className="hrb-muted">No appraisal ratings recorded in this period</div>;
+  }
   return (
     <div>
-      <div style={{ display: 'flex', height: 24, borderRadius: 6, overflow: 'hidden', marginBottom: 10 }}>
+      <div className="hrb-stack">
         {data.map((d, i) => (
-          <div key={i} title={`${d.band}: ${d.count}`}
-            style={{ width: `${(d.count / total) * 100}%`, background: BAND_COLORS[d.band] || '#9ca3af', transition: 'width 0.4s ease' }} />
+          <div key={i} title={`${d.band}: ${d.count} of ${total}`}
+            style={{ width: `${(d.count / total) * 100}%`, background: BAND_COLORS[d.band] || GREY }} />
         ))}
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
+      <div className="hrb-legends">
         {data.map((d, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 2, background: BAND_COLORS[d.band] || '#9ca3af', flexShrink: 0 }} />
-            <span style={{ color: '#374151' }}>{d.band}</span>
-            <span style={{ color: '#6b7280' }}>({d.count}, {total > 0 ? Math.round((d.count / total) * 100) : 0}%)</span>
-          </div>
+          <span key={i} className="hrb-legend-item">
+            <span className="hrb-swatch" style={{ background: BAND_COLORS[d.band] || GREY }} />
+            {d.band} <span style={{ color: '#6b7280' }}>
+              {d.count} · {Math.round((d.count / total) * 100)}%
+            </span>
+          </span>
         ))}
+      </div>
+      <div className="hrb-card-sub" style={{ marginTop: 6 }}
+        title={`${total} reviews · ratings held on a ${scale}-point scale, banded as a percentage`}>
+        {total} review{total === 1 ? '' : 's'} · {scale}-point scale
       </div>
     </div>
   );
 }
 
-function GenderBar({ femalePct, malePct, femaleLabel = 'Female', maleLabel = 'Male', loading }) {
-  if (loading) return <div style={{ height: 40, background: '#f3f4f6', borderRadius: 8 }} />;
-  const f = parseFloat(femalePct) || 0;
-  const m = parseFloat(malePct) || 0;
-  if (!f && !m) return <div style={{ color: '#9ca3af', fontSize: 13 }}>No gender data available</div>;
+/**
+ * Gender split. `unknown` is drawn, not hidden — this page previously inferred
+ * the male share as `100 − female`, which turns an unrecorded gender into a
+ * man. Both shares are counted server-side now and the remainder is labelled.
+ */
+function GenderBar({ femalePct, malePct, known, total, loading, femaleLabel = 'Female', maleLabel = 'Male' }) {
+  if (loading) return <div className="hrb-card-skel" style={{ width: '100%', height: 40 }} />;
+  if (!known) return <div className="hrb-muted">No gender recorded for any of the {total} employees in scope</div>;
+  const f = Number(femalePct) || 0;
+  const m = Number(malePct) || 0;
+  const other = Math.max(0, 100 - f - m);
+  const unknown = total - known;
   return (
     <div>
-      <div style={{ display: 'flex', height: 20, borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
-        <div style={{ width: `${f}%`, background: PINK, transition: 'width 0.4s' }} />
-        <div style={{ width: `${m}%`, background: BLUE, transition: 'width 0.4s' }} />
-        <div style={{ flex: 1, background: '#e5e7eb' }} />
+      <div className="hrb-stack">
+        <div style={{ width: `${f}%`, background: PINK }} title={`${femaleLabel}: ${f}%`} />
+        <div style={{ width: `${m}%`, background: BLUE }} title={`${maleLabel}: ${m}%`} />
+        {other > 0 && <div style={{ width: `${other}%`, background: '#e5e7eb' }} title="Other / not stated" />}
       </div>
-      <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 2, background: PINK }} />
-          <span style={{ color: '#374151' }}>{femaleLabel} {f}%</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 2, background: BLUE }} />
-          <span style={{ color: '#374151' }}>{maleLabel} {m}%</span>
-        </div>
+      <div className="hrb-legends">
+        <span className="hrb-legend-item">
+          <span className="hrb-swatch" style={{ background: PINK }} />{femaleLabel} {f}%
+        </span>
+        <span className="hrb-legend-item">
+          <span className="hrb-swatch" style={{ background: BLUE }} />{maleLabel} {m}%
+        </span>
       </div>
-    </div>
-  );
-}
-
-function Card({ title, children, span }) {
-  return (
-    <div style={{
-      background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20,
-      gridColumn: span ? `span ${span}` : undefined,
-    }}>
-      {title && <div style={{ fontWeight: 700, fontSize: 13, color: '#374151', marginBottom: 14 }}>{title}</div>}
-      {children}
+      <div className="hrb-card-sub" style={{ marginTop: 6 }}
+        title={`Percentages are of the ${known} employees with a gender on file, out of ${total} in scope`}>
+        Of {known} with gender on file{unknown > 0 ? ` · ${unknown} not recorded` : ''}
+      </div>
     </div>
   );
 }
@@ -139,6 +216,15 @@ export default function HRBenchmarkingDashboard() {
   const [error,   setError]   = useState('');
   const abortRef = useRef(null);
 
+  // Period drives every windowed metric server-side (resolveRange). The API
+  // defaults to last12m, which is what the appraisal and turnover cards are
+  // conventionally read over, so that is this page's default too.
+  const filters = useDashboardFilters({
+    defaultPeriod: 'last12m',
+    storageKey: 'hr-benchmarking',
+  });
+  const { params } = filters;
+
   const load = useCallback(async () => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
@@ -146,248 +232,234 @@ export default function HRBenchmarkingDashboard() {
     setLoading(true);
     setError('');
     try {
-      const res = await api.get('/analytics/hr-benchmarks', { signal: ctrl.signal });
+      const res = await api.get('/analytics/hr-benchmarks', { params, signal: ctrl.signal });
       setData(res.data?.data || res.data);
     } catch (e) {
-      if (e.name !== 'AbortError') setError('Failed to load benchmarking data');
+      /* ⚠ Axios rejects a cancelled request with its own `CanceledError`
+       * (code `ERR_CANCELED`) — it NEVER throws a DOM `AbortError`. Testing for
+       * `AbortError` therefore matched nothing, so every abort was reported as a
+       * load failure. Under StrictMode the effect runs mount → cleanup → mount,
+       * the cleanup aborts request #1, and request #2 succeeds: the page painted
+       * a full set of correct benchmarks with "Failed to load benchmarking data"
+       * sitting above them. Not dev-only either — `load()` aborts the previous
+       * in-flight request, so a double-click on Refresh did the same in prod. */
+      if (e?.name !== 'CanceledError' && e?.code !== 'ERR_CANCELED') {
+        setError(e?.response?.data?.error || 'Failed to load benchmarking data');
+      }
     } finally {
-      setLoading(false);
+      // A superseded request must not clear the spinner the live one turned on.
+      if (abortRef.current === ctrl) setLoading(false);
     }
-  }, []);
+  }, [params]);
 
   useEffect(() => { load(); return () => abortRef.current?.abort(); }, [load]);
 
-  const R  = data?.recruitment   || {};
-  const P  = data?.performance   || {};
-  const RT = data?.retention     || {};
-  const C  = data?.compensation  || {};
-  const D  = data?.diversity     || {};
-
-  const fmt = v => v != null && v !== 0 ? v : null;
+  const R  = data?.recruitment  || {};
+  const P  = data?.performance  || {};
+  const RT = data?.retention    || {};
+  const C  = data?.compensation || {};
+  const D  = data?.diversity    || {};
+  const windowLabel = data?.period_label || 'selected period';
 
   return (
-    <div style={{ padding: '16px 18px 20px', background: '#f8f9fc', minHeight: '100vh' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: '#111827' }}>HR Benchmarking Dashboard</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-            Recruitment · Performance · Retention · Compensation · Diversity — live metrics vs industry benchmarks
-          </p>
-        </div>
-        <button onClick={load} disabled={loading}
-          style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', fontSize: 13, fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', color: '#374151', display: 'flex', alignItems: 'center', gap: 6 }}>
+    <PageShell className="hrb-root" dock={<>
+      <PageHero
+        icon={LayoutDashboard}
+        eyebrow="Human Resources"
+        title="HR Benchmarking Dashboard"
+        subtitle="Recruitment · Performance · Retention · Compensation · Diversity — live metrics against industry benchmarks"
+      />
+      <DashboardFilterBar
+        filters={filters}
+        actions={<button className="plh-cta" onClick={load} disabled={loading}>
           {loading ? 'Loading…' : '↻ Refresh'}
-        </button>
-      </div>
+        </button>}
+      />
+    </>}>
 
-      {error && (
-        <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, padding: '10px 16px', color: '#991b1b', fontSize: 13, marginBottom: 20 }}>{error}</div>
-      )}
+      {error && <div className="hrb-error">{error}</div>}
 
-      {/* ── 1. Recruitment & Hiring ───────────────────────────────────────── */}
-      <Section title="Recruitment & Hiring Metrics" icon="🎯" accent={PURPLE}>
-        <MetricCard
-          label="Avg Days to Hire"
-          value={fmt(R.avgDaysToHire)}
-          unit=" days"
-          benchmark={30}
-          trend="lower-is-better"
-          accent={PURPLE}
-          sub="Candidate application → joining"
-          loading={loading}
-        />
-        <MetricCard
-          label="Time to Fill"
-          value={R.timeToFill > 0 ? R.timeToFill : null}
-          unit=" days"
-          benchmark={45}
-          trend="lower-is-better"
-          accent={PURPLE}
-          sub="Job opening → offer extended"
-          loading={loading}
-          na={!R.timeToFill}
-        />
-        <MetricCard
-          label="Offer Acceptance Rate"
-          value={R.offerAcceptanceRate}
-          unit="%"
-          benchmark={70}
-          trend="higher-is-better"
-          accent={GREEN}
-          sub={`${R.totalAccepted || 0} accepted of ${R.totalOffered || 0} offers`}
-          loading={loading}
-        />
-        <MetricCard
-          label="Offer Exception Rate"
-          value={R.offerExceptionRate}
-          unit="%"
-          benchmark={15}
-          trend="lower-is-better"
-          accent={AMBER}
-          sub={`${R.totalDeclined || 0} declined / exceptions`}
-          loading={loading}
-        />
-        <MetricCard
-          label="Cost per Hire"
-          value={R.costPerHire > 0 ? R.costPerHire : null}
-          unit=""
-          accent={TEAL}
-          sub="From recruitment cost records"
-          loading={loading}
-          na={!R.costPerHire}
-        />
-      </Section>
+      <div className="hrb-body">
 
-      {/* ── 2. Performance & Productivity ────────────────────────────────── */}
-      <Section title="Employee Performance & Productivity" icon="📈" accent={BLUE}>
-        <MetricCard
-          label="Revenue per Employee"
-          value={P.revenuePerEmployee > 0 ? Math.round(P.revenuePerEmployee) : null}
-          unit=""
-          accent={BLUE}
-          sub="Annual revenue ÷ active headcount"
-          loading={loading}
-          na={!P.revenuePerEmployee}
-        />
-        <MetricCard
-          label="Training Effectiveness Score"
-          value={P.trainingEffectivenessScore}
-          unit="%"
-          benchmark={70}
-          trend="higher-is-better"
-          accent={BLUE}
-          sub={`${P.totalAssessments || 0} assessments · Pass rate ${P.trainingPassRate || 0}%`}
-          loading={loading}
-        />
-      </Section>
-
-      {/* Appraisal distribution — full-width card */}
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: '#374151', marginBottom: 14 }}>
-            📊 Performance Appraisal Ratings Distribution (last 12 months)
-          </div>
-          <DistributionBar data={P.appraisalDistribution || []} loading={loading} />
-        </div>
-      </div>
-
-      {/* ── 3. Retention & Engagement ─────────────────────────────────────── */}
-      <Section title="Retention & Engagement Metrics" icon="🔄" accent={GREEN}>
-        <MetricCard
-          label="Employee Turnover Rate"
-          value={RT.turnoverRate}
-          unit="%"
-          benchmark={10}
-          trend="lower-is-better"
-          accent={RED}
-          sub={`${RT.departed || 0} exits in last 12 months`}
-          loading={loading}
-        />
-        <MetricCard
-          label="Employee Engagement Score"
-          value={RT.engagementScore}
-          unit="%"
-          benchmark={75}
-          trend="higher-is-better"
-          accent={GREEN}
-          sub={`${RT.engagedCount || 0} engaged employees`}
-          loading={loading}
-        />
-        <MetricCard
-          label="Acquisition Rate"
-          value={RT.acquisitionRate}
-          unit="%"
-          benchmark={15}
-          trend="higher-is-better"
-          accent={TEAL}
-          sub={`${RT.newHires || 0} new hires last 12 months`}
-          loading={loading}
-        />
-      </Section>
-
-      {/* ── 4. Compensation & Benefits ────────────────────────────────────── */}
-      <Section title="Compensation & Benefits Metrics" icon="💰" accent={AMBER}>
-        <MetricCard
-          label="Compa-Ratio"
-          value={C.compaRatio}
-          unit="x"
-          benchmark={1.0}
-          trend="higher-is-better"
-          accent={AMBER}
-          sub={`Avg ÷ Median salary · ₹${(C.avgSalary||0).toLocaleString('en-IN')} avg`}
-          loading={loading}
-        />
-        <MetricCard
-          label="Median Salary"
-          value={C.medianSalary > 0 ? `₹${(C.medianSalary||0).toLocaleString('en-IN')}` : null}
-          accent={AMBER}
-          sub={`P25: ₹${(C.p25Salary||0).toLocaleString('en-IN')} · P75: ₹${(C.p75Salary||0).toLocaleString('en-IN')}`}
-          loading={loading}
-          na={!C.medianSalary}
-        />
-        <MetricCard
-          label="Benefits Utilization Rate"
-          value={C.benefitsUtilizationRate}
-          unit="%"
-          benchmark={80}
-          trend="higher-is-better"
-          accent={GREEN}
-          sub="Employees who used leave benefits"
-          loading={loading}
-        />
-      </Section>
-
-      {/* ── 5. Diversity & Inclusion ──────────────────────────────────────── */}
-      <Section title="Diversity & Inclusion Metrics" icon="🌍" accent={PINK}>
-        <MetricCard
-          label="Gender Diversity Ratio (Female)"
-          value={D.femalePct}
-          unit="%"
-          benchmark={40}
-          trend="higher-is-better"
-          accent={PINK}
-          sub={`${D.female || 0} female of ${D.total || 0} total`}
-          loading={loading}
-        />
-        <MetricCard
-          label="Women in Leadership"
-          value={D.leaderFemalePct}
-          unit="%"
-          benchmark={30}
-          trend="higher-is-better"
-          accent={PINK}
-          sub={`${D.leaderFemale || 0} of ${D.leaderTotal || 0} leadership roles`}
-          loading={loading}
-        />
-      </Section>
-
-      {/* Gender distribution bars */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12, marginBottom: 16 }}>
-        <Card title="Overall Gender Distribution">
-          <GenderBar femalePct={D.femalePct} malePct={D.malePct} loading={loading} />
-        </Card>
-        <Card title="Gender Representation in Leadership">
-          <GenderBar
-            femalePct={D.leaderFemalePct}
-            malePct={D.leaderTotal > 0 ? parseFloat((100 - D.leaderFemalePct).toFixed(1)) : 0}
-            femaleLabel="Female Leaders"
-            maleLabel="Male Leaders"
+        {/* ── 1. Recruitment & Hiring ─────────────────────────────────── */}
+        <div className="hrb-band">
+          <Rail icon="🎯" title="Recruitment & Hiring" note={windowLabel} accent={PURPLE} />
+          <MetricCard
+            label="Avg Days to Hire" index={0}
+            value={R.avgDaysToHire} has={R.timeToHireAvailable} format="days"
+            benchmark={BENCHMARKS.daysToHire} trend="lower" accent={PURPLE}
+            sub={`Application → joining · ${plural(R.timeToHireSample || 0, 'hire', 'hires')} matched`}
+            noteWhenMissing="No joiner linked back to a candidate record"
             loading={loading}
           />
-          {!loading && D.leaderTotal === 0 && (
-            <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 8 }}>
-              No employees with Manager / Director / Head / VP designation found
-            </div>
-          )}
-        </Card>
-      </div>
+          <MetricCard
+            label="Time to Fill" index={1}
+            value={R.timeToFill} has={R.timeToFillAvailable} format="days"
+            benchmark={BENCHMARKS.timeToFill} trend="lower" accent={PURPLE}
+            sub={`Opening → closed · ${plural(R.timeToFillSample || 0, 'requisition', 'requisitions')}`}
+            noteWhenMissing="No requisition closed in this period"
+            loading={loading}
+          />
+          <MetricCard
+            label="Offer Acceptance Rate" index={2}
+            value={R.offerAcceptanceRate} has={R.offerDataAvailable} format="pct"
+            benchmark={BENCHMARKS.offerAcceptance} trend="higher" accent={GREEN}
+            sub={`${R.totalAccepted || 0} accepted of ${R.totalOffered || 0} offers`}
+            noteWhenMissing="No offers issued in this period"
+            loading={loading}
+          />
+          <MetricCard
+            label="Offer Decline Rate" index={3}
+            value={R.offerDeclineRate} has={R.offerDataAvailable} format="pct"
+            benchmark={BENCHMARKS.offerDecline} trend="lower" accent={AMBER}
+            sub={`${R.totalDeclined || 0} declined of ${R.totalOffered || 0} offers`}
+            noteWhenMissing="No offers issued in this period"
+            loading={loading}
+          />
+          <MetricCard
+            label="Cost per Hire" index={4}
+            value={R.costPerHire} has={R.costPerHireAvailable} format="inr" accent={TEAL}
+            sub="From the recruitment cost ledger"
+            noteWhenMissing="No recruitment spend ledger exists yet"
+            loading={loading}
+          />
+        </div>
 
-      {/* Benchmark legend */}
-      <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: '14px 18px', fontSize: 12, color: '#166534' }}>
-        <strong>Benchmark reference:</strong> Days to hire &lt;30d · Offer acceptance &gt;70% · Turnover &lt;10% · Engagement &gt;75% · Compa-ratio ≥1.0 · Benefits utilization &gt;80% · Female representation &gt;40% · Women in leadership &gt;30%
+        {/* ── 2. Performance & Retention ──────────────────────────────── */}
+        <div className="hrb-band">
+          <Rail icon="📈" title="Performance & Retention" note={`${P.headcount ?? '—'} active employees`} accent={BLUE} />
+          <MetricCard
+            label="Revenue per Employee" index={5}
+            value={P.revenuePerEmployee} has={P.revenuePerEmployeeAvailable} format="inr" accent={BLUE}
+            sub={`${P.revenueBasis || 'paid invoices'} ÷ ${P.headcount || 0} active`}
+            noteWhenMissing="No paid invoices in this period"
+            loading={loading}
+          />
+          <MetricCard
+            label="Training Effectiveness" index={6}
+            value={P.trainingEffectivenessScore} has={P.trainingDataAvailable} format="pct"
+            benchmark={BENCHMARKS.training} trend="higher" accent={BLUE}
+            sub={`${P.totalAssessments || 0} assessments · ${P.trainingPassRate ?? 0}% passed`}
+            noteWhenMissing="No assessments submitted in this period"
+            loading={loading}
+          />
+          <MetricCard
+            label="Employee Turnover" index={7}
+            value={RT.turnoverRate} has={RT.turnoverRate != null} format="pct"
+            benchmark={BENCHMARKS.turnover} trend="lower" accent={RED}
+            sub={`${plural(RT.departed || 0, 'exit', 'exits')} of ${RT.headcount || 0} active`}
+            noteWhenMissing="No active headcount to measure against"
+            loading={loading}
+          />
+          <MetricCard
+            label="Engagement Score" index={8}
+            value={RT.engagementScore} has={RT.engagementAvailable} format="pct"
+            benchmark={BENCHMARKS.engagement} trend="higher" accent={GREEN}
+            sub={`${RT.engagedCount || 0} of ${RT.engagementReviewed || 0} reviewed score ≥ 75%`}
+            noteWhenMissing="No appraisal rating recorded in this period"
+            loading={loading}
+          />
+          <MetricCard
+            label="Acquisition Rate" index={9}
+            value={RT.acquisitionRate} has={RT.acquisitionRate != null} format="pct"
+            benchmark={BENCHMARKS.acquisition} trend="higher" accent={TEAL}
+            sub={`${RT.newHires || 0} joined in ${windowLabel.toLowerCase()}`}
+            noteWhenMissing="No active headcount to measure against"
+            loading={loading}
+          />
+        </div>
+
+        {/* ── 3. Compensation & Diversity ─────────────────────────────── */}
+        <div className="hrb-band">
+          <Rail
+            icon="💰" title="Pay & Diversity"
+            note={`pay on file for ${C.salaryCoveragePct ?? 0}% of staff`}
+            accent={AMBER}
+          />
+          <MetricCard
+            label="Compa-Ratio" index={10}
+            value={C.compaRatio} has={C.salaryDataAvailable} format="ratio"
+            benchmark={BENCHMARKS.compaRatio} benchmarkFormat="ratio" trend="higher" accent={AMBER}
+            sub={`Mean ÷ median · mean ${C.avgSalary != null ? inr(C.avgSalary) : '—'}`}
+            noteWhenMissing="No employee carries a basic salary"
+            loading={loading}
+          />
+          <MetricCard
+            label="Median Salary" index={11}
+            value={C.medianSalary} has={C.salaryDataAvailable} format="inr" accent={AMBER}
+            sub={C.p25Salary != null
+              ? `P25 ${inr(C.p25Salary)} · P75 ${inr(C.p75Salary)} · n=${C.salarySample}`
+              : ''}
+            noteWhenMissing="No employee carries a basic salary"
+            loading={loading}
+          />
+          <MetricCard
+            label="Benefits Utilization" index={12}
+            value={C.benefitsUtilizationRate} has={C.benefitsUtilizationRate != null} format="pct"
+            benchmark={BENCHMARKS.benefits} trend="higher" accent={GREEN}
+            sub={`${plural(C.benefitsUtilizers || 0, 'employee', 'employees')} applied for leave`}
+            noteWhenMissing="No active headcount to measure against"
+            loading={loading}
+          />
+          <MetricCard
+            label="Female Representation" index={13}
+            value={D.femalePct} has={D.genderDataAvailable} format="pct"
+            benchmark={BENCHMARKS.female} trend="higher" accent={PINK}
+            sub={`${D.female || 0} of ${D.genderKnown || 0} with gender on file (${D.genderCoveragePct ?? 0}% of staff)`}
+            noteWhenMissing="Gender is not recorded for anyone on the roster"
+            loading={loading}
+          />
+          <MetricCard
+            label="Women in Leadership" index={14}
+            value={D.leaderFemalePct} has={D.leaderDataAvailable} format="pct"
+            benchmark={BENCHMARKS.womenLeaders} trend="higher" accent={PINK}
+            sub={`${D.leaderFemale || 0} of ${D.leaderKnown || 0} leadership roles`}
+            noteWhenMissing="No leadership role has a gender on file"
+            loading={loading}
+          />
+        </div>
+
+        {/* ── charts ──────────────────────────────────────────────────── */}
+        <div className="hrb-band hrb-band--charts">
+          <Rail icon="📊" title="Distributions" note={windowLabel} accent={GREEN} />
+          <Panel title="Appraisal rating distribution">
+            <DistributionBar
+              data={P.appraisalDistribution || []}
+              total={P.appraisalTotal || 0}
+              scale={P.appraisalScale || 5}
+              loading={loading}
+            />
+          </Panel>
+          <Panel title="Gender split — all employees">
+            <GenderBar
+              femalePct={D.femalePct} malePct={D.malePct}
+              known={D.genderKnown || 0} total={D.total || 0}
+              loading={loading}
+            />
+          </Panel>
+          <Panel title="Gender split — leadership">
+            <GenderBar
+              femalePct={D.leaderFemalePct} malePct={D.leaderMalePct}
+              known={D.leaderKnown || 0} total={D.leaderTotal || 0}
+              femaleLabel="Female leaders" maleLabel="Male leaders"
+              loading={loading}
+            />
+          </Panel>
+        </div>
+
+        <div className="hrb-legend">
+          <strong>Industry benchmarks:</strong> days to hire &lt;{BENCHMARKS.daysToHire}d ·
+          time to fill &lt;{BENCHMARKS.timeToFill}d ·
+          offer acceptance &gt;{BENCHMARKS.offerAcceptance}% ·
+          turnover &lt;{BENCHMARKS.turnover}% ·
+          engagement &gt;{BENCHMARKS.engagement}% ·
+          compa-ratio ≥{BENCHMARKS.compaRatio.toFixed(1)}x ·
+          benefits utilization &gt;{BENCHMARKS.benefits}% ·
+          female representation &gt;{BENCHMARKS.female}% ·
+          women in leadership &gt;{BENCHMARKS.womenLeaders}%.
+          Cards marked <em>Not measured</em> have no source rows — they are not zeros.
+        </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

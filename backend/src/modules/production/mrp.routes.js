@@ -11,10 +11,13 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
-import { nextProdOrderNumber, nextPurchaseRequestNumber } from '../../shared/docNumber.js';
+import { nextProdOrderNumber } from '../../shared/docNumber.js';
+import prRepo from '../procurement/repositories/purchaseRequest.repository.js';
+import { employeeOf } from '../../shared/scope.js';
 import { runMRP, computeATP } from './mrpEngine.service.js';
 import { computeCTP } from './ctpEngine.service.js';
 import { copyRoutingToProductionOperations } from './routingCopy.service.js';
+import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
 const actor = (req) => ({ id: req.user?.userId || req.user?.id || null, name: req.user?.name || req.user?.email || 'System' });
@@ -173,13 +176,23 @@ router.post('/planned-orders/:id/convert', requirePermission('production', 'edit
     let ref, newId;
 
     if (po.order_type === 'buy') {
-      const prNo = await nextPurchaseRequestNumber(client);
-      const { rows: [pr] } = await client.query(`
-        INSERT INTO purchase_requests
-          (pr_number, item_code, item_name, quantity, unit, status, company_id, request_date, required_date, notes, priority)
-        VALUES ($1,$2,$3,$4,$5,'draft',$6,CURRENT_DATE,$7,$8,'medium') RETURNING id`,
-        [prNo, po.item_code, po.item_name, po.quantity, po.uom, po.company_id, po.need_date,
-         `Auto-created from MRP run #${po.run_id}`]);
+      // The number goes in `request_number`, which is what the procurement
+      // register reads. This wrote it to `pr_number` — the legacy column — so
+      // every MRP-converted requisition showed a blank PR No in Purchase
+      // Requests and could not be quoted, searched or approved by number.
+      // item_code is preserved alongside it for the planner's own reporting.
+      const pr = await prRepo.createSystemRequest(client, {
+        company_id: po.company_id,
+        item_id: po.item_id ?? null,
+        item_name: po.item_name,
+        quantity: po.quantity,
+        unit: po.uom,
+        required_date: po.need_date,
+        notes: `Auto-created from MRP run #${po.run_id}`,
+        requested_by_employee_id: await employeeOf(req, pool),
+      });
+      await client.query('UPDATE purchase_requests SET item_code=$2 WHERE id=$1', [pr.id, po.item_code]);
+      const prNo = pr.request_number;
       ref = prNo; newId = pr.id;
     } else {
       const prodNo = await nextProdOrderNumber(client);
@@ -214,6 +227,8 @@ router.post('/planned-orders/convert-all', requirePermission('production', 'edit
     const { rows } = await pool.query(
       `SELECT id FROM mrp_planned_orders WHERE run_id=$1 AND status='planned'${filt}`, vals);
     let converted = 0, failed = 0;
+    // Resolved once: employeeOf hits the DB and the loop can run over many rows.
+    const bulkRequesterEmpId = await employeeOf(req, pool);
     for (const r of rows) {
       const client = await pool.connect();
       try {
@@ -223,11 +238,19 @@ router.post('/planned-orders/convert-all', requirePermission('production', 'edit
         const a = actor(req);
         let ref, newId;
         if (po.order_type === 'buy') {
-          const prNo = await nextPurchaseRequestNumber(client);
-          const { rows: [pr] } = await client.query(`
-            INSERT INTO purchase_requests (pr_number,item_code,item_name,quantity,unit,status,company_id,request_date,required_date,notes,priority)
-            VALUES ($1,$2,$3,$4,$5,'draft',$6,CURRENT_DATE,$7,$8,'medium') RETURNING id`,
-            [prNo, po.item_code, po.item_name, po.quantity, po.uom, po.company_id, po.need_date, `Auto-created from MRP run #${po.run_id}`]);
+          // Same fix as the single-convert route above.
+          const pr = await prRepo.createSystemRequest(client, {
+            company_id: po.company_id,
+            item_id: po.item_id ?? null,
+            item_name: po.item_name,
+            quantity: po.quantity,
+            unit: po.uom,
+            required_date: po.need_date,
+            notes: `Auto-created from MRP run #${po.run_id}`,
+            requested_by_employee_id: bulkRequesterEmpId,
+          });
+          await client.query('UPDATE purchase_requests SET item_code=$2 WHERE id=$1', [pr.id, po.item_code]);
+          const prNo = pr.request_number;
           ref = prNo; newId = pr.id;
         } else {
           const prodNo = await nextProdOrderNumber(client);
@@ -274,7 +297,7 @@ router.post('/mps', requirePermission('production', 'edit'), async (req, res) =>
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/mps/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.put('/mps/:id', requirePermission('production', 'edit'), captureBefore('master_production_schedule'), async (req, res) => {
   try {
     const { product_id, product_name, due_date, quantity, quantity_produced, status, notes } = req.body || {};
     const { rows: [row] } = await pool.query(`
@@ -290,7 +313,7 @@ router.put('/mps/:id', requirePermission('production', 'edit'), async (req, res)
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/mps/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.delete('/mps/:id', requirePermission('production', 'edit'), captureBefore('master_production_schedule'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM master_production_schedule WHERE id = $1`, [req.params.id]);
     res.json({ ok: true });
@@ -325,7 +348,7 @@ router.post('/forecasts', requirePermission('production', 'edit'), async (req, r
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/forecasts/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.put('/forecasts/:id', requirePermission('production', 'edit'), captureBefore('demand_forecasts'), async (req, res) => {
   try {
     const { item_id, product_name, forecast_date, quantity, consumed_qty, uom, notes } = req.body || {};
     const { rows: [row] } = await pool.query(`
@@ -341,7 +364,7 @@ router.put('/forecasts/:id', requirePermission('production', 'edit'), async (req
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/forecasts/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.delete('/forecasts/:id', requirePermission('production', 'edit'), captureBefore('demand_forecasts'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM demand_forecasts WHERE id = $1`, [req.params.id]);
     res.json({ ok: true });
@@ -356,7 +379,10 @@ router.get('/item-planning', requirePermission('production', 'view'), async (req
     const cid = cidOf(req);
     const { rows } = await pool.query(`
       SELECT id, item_code, item_name, unit_of_measure, current_stock, reorder_level,
-             COALESCE(reorder_point,0) reorder_point, COALESCE(safety_stock,0) safety_stock,
+             -- reorder_point was dropped by 20260911000010_sca_spine_identity;
+             -- reorder_level is the single source of truth. Still emitted under
+             -- the old key so MRPPlanning.jsx keeps reading eoq.reorder_point.
+             COALESCE(reorder_level,0) reorder_point, COALESCE(safety_stock,0) safety_stock,
              COALESCE(lead_time_days,0) lead_time_days, COALESCE(min_order_qty,0) min_order_qty,
              COALESCE(max_order_qty,0) max_order_qty, COALESCE(lot_size_qty,0) lot_size_qty,
              COALESCE(lot_sizing_rule,'lot_for_lot') lot_sizing_rule, COALESCE(make_or_buy,'buy') make_or_buy,
@@ -368,13 +394,27 @@ router.get('/item-planning', requirePermission('production', 'view'), async (req
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/item-planning/:id', requirePermission('production', 'edit'), async (req, res) => {
+router.put('/item-planning/:id', requirePermission('production', 'edit'), captureBefore('inventory_items'), async (req, res) => {
   try {
     const f = req.body || {};
+    // The request still speaks `reorder_point` (the field MRPPlanning.jsx sends);
+    // the column it lands in is `reorder_level`, the survivor of
+    // 20260911000010_sca_spine_identity.
+    //
+    // ⚠ AND IT MARKS THE SOURCE MANUAL. inventoryPlanning.service.js recomputes
+    // `reorder_level = CASE WHEN reorder_point_source = 'manual' THEN
+    // reorder_level ELSE <calculated> END`, so a value a planner types here is
+    // silently recalculated away on the next planning run unless the override is
+    // recorded. planning.routes.js already does exactly this on its own edit
+    // path; this one had no reason to differ.
     const { rows: [row] } = await pool.query(`
       UPDATE inventory_items SET
         safety_stock    = COALESCE($2, safety_stock),
-        reorder_point   = COALESCE($3, reorder_point),
+        reorder_level   = COALESCE($3, reorder_level),
+        reorder_point_source = CASE WHEN $3::numeric IS NULL
+                                    THEN reorder_point_source ELSE 'manual' END,
+        safety_stock_source  = CASE WHEN $2::numeric IS NULL
+                                    THEN safety_stock_source ELSE 'manual' END,
         lead_time_days  = COALESCE($4, lead_time_days),
         min_order_qty   = COALESCE($5, min_order_qty),
         max_order_qty   = COALESCE($6, max_order_qty),
@@ -383,7 +423,8 @@ router.put('/item-planning/:id', requirePermission('production', 'edit'), async 
         make_or_buy     = COALESCE($9, make_or_buy),
         preferred_vendor_id = COALESCE($10, preferred_vendor_id),
         updated_at = NOW()
-      WHERE id = $1 RETURNING id, item_code, item_name, safety_stock, reorder_point, lead_time_days,
+      WHERE id = $1 RETURNING id, item_code, item_name, safety_stock,
+        reorder_level AS reorder_point, lead_time_days,
         min_order_qty, max_order_qty, lot_size_qty, lot_sizing_rule, make_or_buy, preferred_vendor_id`,
       [req.params.id, f.safety_stock, f.reorder_point, f.lead_time_days, f.min_order_qty, f.max_order_qty,
        f.lot_size_qty, f.lot_sizing_rule, f.make_or_buy, f.preferred_vendor_id]);

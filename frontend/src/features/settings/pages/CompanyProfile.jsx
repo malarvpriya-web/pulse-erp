@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Building2, Save, RefreshCw } from 'lucide-react';
+import { Building2, Save, RefreshCw, FileText } from 'lucide-react';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // GSTIN prefix → state mapping (first 2 digits)
 const GSTIN_PREFIX_TO_STATE = {
@@ -156,24 +157,20 @@ export default function CompanyProfile() {
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Loading...</div>;
 
   return (
-    <div style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ background: '#ede9fe', borderRadius: 10, padding: 10 }}><Building2 size={20} color="#6B3FDB" /></div>
-          <div>
-            <h1 style={{ fontSize: 20, fontWeight: 700, color: '#1f2937', margin: 0 }}>Company Profile</h1>
-            <p style={{ color: '#6b7280', margin: 0, fontSize: 13 }}>Legal identity, tax registration numbers, and contact details</p>
-          </div>
-        </div>
-        <button
+    <PageShell dock={
+      <PageHero
+        icon={FileText}
+        eyebrow="Settings"
+        title="Company Profile"
+        subtitle="Legal identity, tax registration numbers, and contact details"
+        actions={<button className="plh-cta"
           onClick={handleSave}
-          disabled={saving}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 20px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: saving ? 0.7 : 1 }}
-        >
+          disabled={saving}>
           {saving ? <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Save size={14} />}
           {saving ? 'Saving...' : 'Save Profile'}
-        </button>
-      </div>
+        </button>}
+      />
+    }>
 
       {/* Info banner */}
       <div style={{ background: '#f5f3ff', border: '1px solid #e9e4ff', borderRadius: 10, padding: '12px 16px', marginBottom: 24, fontSize: 13, color: '#5b21b6' }}>
@@ -275,6 +272,6 @@ export default function CompanyProfile() {
           <Save size={15} /> {saving ? 'Saving...' : 'Save Profile'}
         </button>
       </div>
-    </div>
+    </PageShell>
   );
 }

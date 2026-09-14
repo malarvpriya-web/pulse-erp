@@ -12,19 +12,20 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  CheckCircle, XCircle, Clock, Search, RefreshCw,
-  History, Users, ChevronRight, Filter, UserCheck
+  CheckCircle, XCircle, Clock, Search, RefreshCw, History, Users,
+  ChevronRight, Filter, UserCheck, CalendarDays,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 
 const STATUS_COLOR = {
   approved: { bg:'#d1fae5', color:'#065f46' },
   rejected: { bg:'#fee2e2', color:'#991b1b' },
-  pending:  { bg:'#fef3c7', color:'#92400e' },
+  pending:  { bg:'#ede9fe', color:'#5b21b6' },
   cancelled:{ bg:'#f3f4f6', color:'#6b7280' },
 };
 const sc = s => STATUS_COLOR[(s||'').toLowerCase()] || STATUS_COLOR.pending;
@@ -127,7 +128,7 @@ function HistoryDrawer({ leaveId, onClose }) {
         ) : (
           <div style={{ position:'relative' }}>
             {history.map((h, i) => {
-              const col = h.action === 'approved' ? '#10b981' : h.action === 'rejected' ? '#ef4444' : '#f59e0b';
+              const col = h.action === 'approved' ? '#10b981' : h.action === 'rejected' ? '#ef4444' : '#7c5cf0';
               return (
                 <div key={h.id} style={{ display:'flex', gap:12, marginBottom:20 }}>
                   <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
@@ -481,7 +482,7 @@ function TeamView({ uid, toast }) {
 
       {/* Summary pills */}
       <div style={{ display:'flex', gap:10, marginBottom:16, flexWrap:'wrap' }}>
-        {[['All', data.length,'#6366f1'],['Pending',statCounts.pending,'#f59e0b'],['Approved',statCounts.approved,'#10b981'],['Rejected',statCounts.rejected,'#ef4444']].map(([lbl,cnt,color]) => (
+        {[['All', data.length,'#6366f1'],['Pending',statCounts.pending,'#7c5cf0'],['Approved',statCounts.approved,'#10b981'],['Rejected',statCounts.rejected,'#ef4444']].map(([lbl,cnt,color]) => (
           <button key={lbl}
             onClick={() => setFStatus(lbl === 'All' ? '' : lbl.toLowerCase())}
             style={{ padding:'6px 14px', borderRadius:20, border:`1.5px solid ${fStatus===(lbl==='All'?'':lbl.toLowerCase())?color:'#e5e7eb'}`, background:fStatus===(lbl==='All'?'':lbl.toLowerCase())?color+'15':'#fff', color:fStatus===(lbl==='All'?'':lbl.toLowerCase())?color:'#6b7280', fontSize:12, fontWeight:600, cursor:'pointer' }}>
@@ -592,13 +593,14 @@ export default function LeaveApprovals({ initialQueue } = {}) {
   const activeQueue = QUEUES.find(q => q.id === activeTab);
 
   return (
-    <div style={{ padding:24, background:'#f9fafb', minHeight:'100vh' }}>
-      <div style={{ marginBottom:20 }}>
-        <h1 style={{ fontSize:22, fontWeight:700, color:'#1f2937', margin:0 }}>Leave Approvals</h1>
-        <p style={{ color:'#6b7280', margin:'4px 0 0', fontSize:13 }}>
-          {activeQueue?.description || 'Team leave overview'}
-        </p>
-      </div>
+    <PageShell dock={
+      <PageHero
+        icon={CalendarDays}
+        eyebrow="Leave"
+        title="Leave Approvals"
+      />
+    }>
+
 
       {/* Tabs */}
       <div style={{ display:'flex', gap:0, marginBottom:20, borderBottom:'2px solid #e5e7eb', overflowX:'auto' }}>
@@ -617,6 +619,6 @@ export default function LeaveApprovals({ initialQueue } = {}) {
         ? <TeamView uid={uid} toast={toast} />
         : activeQueue && <QueueTable key={activeTab} queue={activeQueue} uid={uid} toast={toast} />
       }
-    </div>
+    </PageShell>
   );
 }

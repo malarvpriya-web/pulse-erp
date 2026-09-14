@@ -20,6 +20,16 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 
 vi.mock('../config/db.js', () => ({ default: { query: vi.fn() } }));
+// captureBefore() SELECTs the row being changed so the audit trail records what
+// it changed FROM. Those queries consume slots from this file's strict
+// `mockResolvedValueOnce` queue, shifting every later answer and failing
+// assertions for a reason unrelated to the route under test. Stubbed here for
+// the same reason the platform engines are stubbed elsewhere; the middleware
+// itself is covered by captureBefore.test.js and by a live probe.
+vi.mock('../middlewares/captureBefore.js', () => ({
+  captureBefore: () => (req, res, next) => next(),
+  default:       () => (req, res, next) => next(),
+}));
 vi.mock('../modules/audit/repositories/audit.repository.js', () => ({
   default: { create: vi.fn().mockResolvedValue({}) },
 }));
@@ -127,7 +137,12 @@ describe('GET /api/admin/products', () => {
     expect(res.body[0].hsn_sac).toBe('85044030');
   });
 
-  it('200 returns empty array on DB error', async () => {
+  // This test used to assert the opposite — that a DB failure returns 200 with
+  // an empty array. That behaviour was the defect, not the contract: the Product
+  // Master screen wrote 14 columns that did not exist, every query threw, and
+  // `catch(e) { res.json([]) }` rendered it as "no products yet" for as long as
+  // the screen has existed. An empty list must never stand in for a broken query.
+  it('surfaces a DB error instead of reporting an empty catalogue', async () => {
     auth();
     pool.query.mockRejectedValueOnce(new Error('DB down'));
 
@@ -135,8 +150,8 @@ describe('GET /api/admin/products', () => {
       .get('/api/admin/products')
       .set('Authorization', `Bearer ${adminToken()}`);
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.body).not.toEqual([]);
   });
 });
 
