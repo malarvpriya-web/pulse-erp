@@ -287,6 +287,17 @@ jobs:
           PULSE_API: http://localhost:5000/api/v1
           PULSE_API_BASE: http://localhost:5000
           PULSE_FRONT_BASE: http://localhost:8080
+          # The token minter runs on the RUNNER and talks to Postgres directly.
+          # Its defaults are a developer machine's — postgres@localhost:5432/Pulse
+          # — but compose publishes the container on 5433 with user and database
+          # 'pulse', so it was refused on every address and the suite reported a
+          # bare AggregateError. DB_PASSWORD and JWT_SECRET already reach this
+          # step through GITHUB_ENV, and JWT_SECRET MUST be the one the backend
+          # container booted with or the token it mints is rejected.
+          DB_HOST: localhost
+          DB_PORT: "5433"
+          DB_USER: pulse
+          DB_NAME: pulse
         run: |
           set -o pipefail
           npm run test:analytics -- --reporter=list 2>&1 | tee e2e.log
