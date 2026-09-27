@@ -423,7 +423,7 @@ router.post('/form16a/generate', async (req, res) => {
         amount: parseFloat(t.total_tds),
       })),
       total_payment: totalPayment,
-      total_tds,
+      total_tds: totalTds,   // shorthand `total_tds` referenced no such identifier
       generated_at: new Date().toISOString(),
     };
 

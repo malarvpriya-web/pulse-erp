@@ -81,7 +81,9 @@ async function runInterviewReminderCheck() {
       }
     }
 
-    if (row.candidate_email && isEmailConfigured()) {
+    // await: isEmailConfigured reads the tenant's SMTP row since PULSE-01, and an
+    // un-awaited Promise is truthy — it would report configured when it is not.
+    if (row.candidate_email && await isEmailConfigured()) {
       await sendNotificationEmail(row.candidate_email, {
         title: 'Interview Reminder',
         message: `This is a reminder that your interview is scheduled for ${when}`

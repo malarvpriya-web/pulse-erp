@@ -38,6 +38,7 @@ import procurementRoutes      from "./src/modules/procurement/routes/procurement
 import vendorRoutes           from "./src/modules/procurement/routes/vendor.routes.js";
 import inventoryRoutes        from "./src/modules/inventory/routes/inventory.routes.js";
 import warehouseRoutes        from "./src/modules/warehouse/warehouse.routes.js";
+import scanRoutes             from "./src/modules/warehouse/scan.routes.js";
 import logisticsRoutes        from "./src/modules/logistics/logistics.routes.js";
 import serviceLevelRoutes    from "./src/modules/logistics/serviceLevel.routes.js";
 import scmPlanningRoutes    from "./src/modules/logistics/scmPlanning.routes.js";
@@ -75,6 +76,7 @@ import perfReportsRoutes     from "./src/modules/performance/routes/reports.rout
 import perfOKRRoutes         from "./src/modules/performance/routes/okr.routes.js";
 import recruitmentRoutes      from "./src/modules/recruitment/routes/recruitment.routes.js";
 import talentRoutes           from "./src/modules/talent/talent.routes.js";
+import candidateIntelligenceRoutes from "./src/modules/recruitment/routes/candidateIntelligence.routes.js";
 import leavesNewRoutes        from "./src/modules/leaves/routes/leaves.routes.js";
 import compOffRoutes          from "./src/modules/leaves/routes/compoff.routes.js";
 import encashmentRoutes       from "./src/modules/leaves/routes/encashment.routes.js";
@@ -112,6 +114,8 @@ import onboardingRoutes       from "./src/modules/hr/onboarding.routes.js";
 import crmRoutes              from "./src/modules/crm/routes/index.js";
 import { trackOpenRouter }    from "./src/modules/crm/routes/email.routes.js";
 import { publicRouter as webLeadPublicRoutes } from "./src/modules/crm/routes/webToLead.routes.js";
+import { publicRouter as careersPublicRoutes,
+         adminRouter  as careersAdminRoutes } from "./src/modules/recruitment/routes/careers.routes.js";
 import salesRoutes            from "./src/modules/sales/routes/sales.routes.js";
 import salesPartnersRoutes    from "./src/modules/sales/routes/partners.routes.js";
 import salesCommandCenterRoutes from "./src/modules/sales/routes/sales-command-center.routes.js";
@@ -133,6 +137,8 @@ import iotIngestRoutes        from "./src/modules/iot/routes/ingest.routes.js";
 import iotDevicesRoutes       from "./src/modules/iot/routes/devices.routes.js";
 import iotAlertsRoutes        from "./src/modules/iot/routes/alerts.routes.js";
 import iotOpsRoutes           from "./src/modules/iot/routes/ops.routes.js";
+import iotServiceRoutes       from "./src/modules/iot/routes/service.routes.js";
+import iotPilotRoutes, { deviceRouter as iotPilotDeviceRoutes } from "./src/modules/iot/routes/pilot.routes.js";
 import complianceRoutes       from "./src/modules/compliance/compliance.routes.js";
 import unifiedAssetsRoutes     from "./src/modules/assets/assets.routes.js";
 import rdRoutes                from "./src/modules/rd/rd.routes.js";
@@ -245,6 +251,8 @@ import { denialLogger } from "./src/middlewares/denialLogger.js";
 import { errorHandler }  from "./src/middlewares/errorHandler.js";
 import { runMigrations, verifyApplied } from "./src/config/migrations.js";
 import { startProbationCron }  from "./src/jobs/probation.cron.js";
+import { startCandidateRetentionCron } from "./src/jobs/candidateRetention.cron.js";
+import { startCandidateRecontactCron } from "./src/jobs/candidateRecontact.cron.js";
 import { startHealthMonitor }  from "./src/jobs/healthMonitor.cron.js";
 import { startDeliveryFollowupCron } from "./src/jobs/deliveryFollowup.cron.js";
 import { startEsignReminderCron } from "./src/jobs/esignReminder.cron.js";
@@ -284,6 +292,7 @@ import { startDocumentExpiryCron } from "./src/jobs/documentExpiry.cron.js";
 import { startCustomerHealthRecalcCron } from "./src/jobs/customerHealthRecalc.cron.js";
 import { startVendorHealthRecalcCron } from "./src/jobs/vendorHealthRecalc.cron.js";
 import { startProcurementAlertsCron } from "./src/jobs/procurementAlerts.cron.js";
+import { startPlanningRecalcCron } from "./src/jobs/planningRecalc.cron.js";
 import { startDepartmentDigestCron } from "./src/jobs/departmentDigest.cron.js";
 import './src/jobs/attendance.cron.js';
 import './src/jobs/leave.cron.js';
@@ -311,6 +320,18 @@ process.on('uncaughtException', (err) => {
   // encryption silently falls back to a weak derived key.
   if (process.env.NODE_ENV === 'production' && !process.env.ENCRYPTION_KEY) {
     REQUIRED.push('ENCRYPTION_KEY');
+  }
+  // …and long enough to be worth having. JWT_SECRET has had this check since
+  // auth.middleware.js:7; ENCRYPTION_KEY did not, so a one-character value passed
+  // boot and then protected every integration credential in the database.
+  // integrationConfig.js enforces the same floor at the point of use, because a
+  // cron or migration importing it never runs this block.
+  if (process.env.NODE_ENV === 'production'
+      && process.env.ENCRYPTION_KEY
+      && process.env.ENCRYPTION_KEY.length < 32) {
+    console.error('[startup] FATAL: ENCRYPTION_KEY is only '
+      + process.env.ENCRYPTION_KEY.length + ' characters; at least 32 are required in production.');
+    process.exit(1);
   }
   // BACKUP_S3_BUCKET is required in production — local backups are lost with
   // the container. ALLOW_LOCAL_BACKUPS_ONLY=true is the explicit opt-out for
@@ -372,6 +393,11 @@ const app = express();
 // Railway both terminate TLS at a single edge proxy, so 1 is correct there.
 // Set TRUST_PROXY_HOPS explicitly if you add a CDN or your own load balancer.
 // In development there is no proxy, so trust nothing and req.ip is the socket.
+// Device-facing IoT routes, matched on both the /api and /api/v1 mounts. These
+// authenticate with a device token rather than a user session and are rate
+// limited per device inside their own router — see the skip() below.
+const IOT_DEVICE_PATHS = /^\/api(?:\/v1)?\/iot\/(ingest|gateway\/heartbeat)$/;
+
 const TRUST_PROXY_HOPS = process.env.TRUST_PROXY_HOPS
   ? parseInt(process.env.TRUST_PROXY_HOPS, 10)
   : (process.env.NODE_ENV === 'production' ? 1 : 0);
@@ -432,10 +458,17 @@ const corsOrigin = process.env.FRONTEND_URL
 // route takes no session at all, so it needs none — and the exemption is scoped
 // to that single path rather than the whole /public prefix, so a future public
 // route has to opt in deliberately.
-const PUBLIC_CAPTURE_RE = /^\/api(?:\/v1)?\/public\/web-lead\//;
+// The careers portal joins this exemption for the same reason: a company's
+// website hosts the apply form, so the browser sends a cross-origin request
+// with no session at all. GET is included because the job LIST is fetched by
+// the same page; `credentials: false` below is what keeps this safe, since
+// reflecting an arbitrary origin AND allowing credentials would let any site
+// make authenticated calls with a logged-in user's cookies. These routes take
+// no session, so they need none.
+const PUBLIC_CAPTURE_RE = /^\/api(?:\/v1)?\/public\/(web-lead|careers)\//;
 
 app.use(cors((req, callback) => {
-  if (req.method === 'OPTIONS' || req.method === 'POST') {
+  if (req.method === 'OPTIONS' || req.method === 'POST' || req.method === 'GET') {
     if (PUBLIC_CAPTURE_RE.test(req.path)) {
       return callback(null, {
         origin: true,
@@ -470,7 +503,32 @@ app.use(memoryRateLimit({
   bucket:   'global',
   // Health checks come from the platform's prober on a single IP and must never
   // be throttled — a 429 here marks the instance unhealthy and triggers a restart.
-  skip: (req) => req.path === '/health' || req.path === '/api/health',
+  //
+  // IoT DEVICE TRAFFIC IS EXCLUDED, and this is a correctness fix rather than a
+  // convenience (measured 2026-09-14: a capacity run against 500 devices returned
+  // 4,500 429s and stored nothing).
+  //
+  // This limiter keys on req.ip and exists to shed scripted floods from human-
+  // facing endpoints. Several gateways at one customer site share ONE public IP,
+  // so a budget of 300/min per IP is not a device limit at all: it is a site
+  // limit that one chatty gateway can exhaust for every other device behind the
+  // same NAT, and it scales with the customer's network topology rather than
+  // with anything about the devices.
+  //
+  // The ingest and heartbeat routes carry their own per-DEVICE limiter, applied
+  // AFTER the device token has been verified (see modules/iot/routes/
+  // ingest.routes.js). That is the bound that actually corresponds to a device:
+  // it cannot be exhausted by a neighbour, and an unauthenticated caller never
+  // reaches it because deviceAuth runs first and rejects with 401.
+  //
+  // Set IOT_INGEST_SHARE_GLOBAL_RL=true to put device traffic back inside the IP
+  // budget — only useful if the deployment has no per-site NAT and wants one
+  // ceiling for everything.
+  skip: (req) => {
+    if (req.path === '/health' || req.path === '/api/health') return true;
+    if (String(process.env.IOT_INGEST_SHARE_GLOBAL_RL).toLowerCase() === 'true') return false;
+    return IOT_DEVICE_PATHS.test(req.path);
+  },
 }));
 
 // Capture raw body for webhook signature verification (Razorpay HMAC)
@@ -582,6 +640,7 @@ v1Router.use(["/vendors", "/rfqs", "/three-way-match"], verifyToken);
 v1Router.use("/",                vendorRoutes);
 v1Router.use("/inventory",       verifyToken, auditMutations('inventory'), inventoryRoutes);
 v1Router.use("/warehouse",       verifyToken, auditMutations('warehouse'), warehouseRoutes);
+v1Router.use("/scan",            verifyToken, auditMutations('warehouse'), scanRoutes);
 v1Router.use("/logistics",       verifyToken, auditMutations('logistics'), logisticsRoutes);
 v1Router.use("/service-level",   verifyToken, serviceLevelRoutes);
 v1Router.use("/scm",             verifyToken, auditMutations('inventory'), scmPlanningRoutes);
@@ -618,6 +677,18 @@ v1Router.use("/performance/increments",   verifyToken, auditMutations('performan
 v1Router.use("/performance/promotions",   verifyToken, auditMutations('performance'), perfPromoRoutes);
 v1Router.use("/performance/reports",      verifyToken, perfReportsRoutes);
 v1Router.use("/performance/okr",          verifyToken, auditMutations('performance'), perfOKRRoutes);
+// Careers-portal ADMINISTRATION (key rotation, origin list, submission log).
+// Mounted before the main recruitment router so /recruitment/careers-portal
+// is not swallowed by a /:id route, and gated by the same recruitment
+// permission as everything else in the module.
+v1Router.use("/recruitment",     verifyToken, auditMutations('recruitment'), careersAdminRoutes);
+// The redesign's endpoints (notes, timeline, Stage-1 screening, role
+// suitability, Talent Bank, recontacts, bulk actions, work queue). Mounted
+// BEFORE the main recruitment router for the same reason careersAdminRoutes is:
+// a literal path registered after a /:param route on the same prefix is
+// unreachable, and this keeps /recruitment/work-queue and
+// /recruitment/talent-bank safe from any future /:id route added there.
+v1Router.use("/recruitment",     verifyToken, auditMutations('recruitment'), candidateIntelligenceRoutes);
 v1Router.use("/recruitment",     verifyToken, auditMutations('recruitment'), recruitmentRoutes);
 v1Router.use("/talent",          verifyToken, auditMutations('hr'), talentRoutes);
 v1Router.use("/leaves-new",      verifyToken, auditMutations('leaves'), leavesNewRoutes); // backward-compat alias
@@ -676,6 +747,11 @@ v1Router.use("/exit",            verifyToken, auditMutations('hr'), exitRoutes);
 // Mounted AFTER verifyToken so roles are known, and after the audit floor so
 // what gets logged is what the handler received.
 v1Router.use("/public",          auditMutations('crm'), webLeadPublicRoutes);
+// Careers portal — anonymous job list + apply form. Mounted OUTSIDE
+// verifyToken under the same /public prefix, and kept to three routes whose
+// defences (portal key, origin allowlist, hourly cap counted from the table,
+// honeypot, duplicate suppression, file-type limit) live in careers.routes.js.
+v1Router.use("/public",          auditMutations('recruitment'), careersPublicRoutes);
 v1Router.use("/crm",             auditMutations('crm'), trackOpenRouter);
 // Journeys mount BEFORE the main crm router: /crm/journeys/* would otherwise
 // fall through to crmRoutes and 404 on a path it has never heard of.
@@ -788,9 +864,12 @@ v1Router.use("/voc",                auditMutations('servicedesk'), vocRoutes);  
 // POST /iot/gateway/heartbeat; everything else falls through to the user-authed
 // routers below, each of which denies a caller with no company scope (scope.js).
 v1Router.use("/iot",                auditMutations('iot'), iotIngestRoutes);              // device-token-gated
+v1Router.use("/iot",                auditMutations('iot'), iotPilotDeviceRoutes);         // POST /iot/pilot-evidence only — device-token-gated, from the commissioning tool
 v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotDevicesRoutes); // fleet + device 360 + provisioning
 v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotAlertsRoutes);  // alert centre + rule management
 v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotOpsRoutes);     // platform health, data quality, exports
+v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotServiceRoutes); // service parts -> inventory/genealogy/finance, metric + profile registry
+v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotPilotRoutes);   // hardware pilot evidence (user-authed routes)
 v1Router.use("/compliance",         verifyToken, auditMutations('compliance'), complianceRoutes);
 v1Router.use("/assets",             verifyToken, auditMutations('assets'), unifiedAssetsRoutes); // read-only consolidation over fixed_assets/assets_register/allocations
 v1Router.use("/rd",                 verifyToken, auditMutations('rd'), rdRoutes); // R&D artifact repo + patents + product lifecycle (PLM)
@@ -1045,6 +1124,13 @@ async function startServer() {
     logFeatureFlags();
     registerEventReactions();
     startProbationCron();
+// Candidate retention — anonymises candidates whose retention has expired or
+// who have withdrawn consent. Destroys data, so it logs every run; see the
+// job header for what it deliberately will NOT touch.
+startCandidateRetentionCron();
+// §18 Future Opportunity reminders. Separate from retention: one job keeps
+// candidates, the other forgets them, and they must be independently disableable.
+startCandidateRecontactCron();
     startHealthMonitor(pool);
     startDeliveryFollowupCron();
     startEsignReminderCron();
@@ -1086,6 +1172,9 @@ async function startServer() {
     startCustomerHealthRecalcCron();
     startVendorHealthRecalcCron();
     startProcurementAlertsCron();
+    // 02:30, ahead of mrpAutoRun (03:00) and reorderPr (10:15) — both consume
+    // the EOQ, reorder point and safety stock this job refreshes.
+    startPlanningRecalcCron();
   });
 }
 startServer().catch(err => {

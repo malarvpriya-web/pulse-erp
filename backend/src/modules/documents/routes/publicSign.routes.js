@@ -20,6 +20,7 @@ import { sendSignerOtp, sendSigningInvite } from '../../../utils/mailer.js';
 import { sendSms } from '../../../utils/sms.js';
 import { generateOtp } from '../../../utils/otp.js';
 import { dbRateLimit } from '../../../middlewares/rateLimit.js';
+import { resolveConfig } from '../../integrations/integrationConfig.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -396,7 +397,16 @@ router.post('/:token/payment/order', safe(async (req, res) => {
   const amount = Number(signing.payment_amount || 0);
   if (amount <= 0) return res.status(400).json({ success: false, error: 'Invalid payment amount configured.' });
 
-  const keyId = process.env.RAZORPAY_KEY_ID, keySecret = process.env.RAZORPAY_KEY_SECRET;
+  // PULSE-01 remaining risk 2. This route is PUBLIC (token-based, no session), so
+  // there is no caller tenant — but `document_signings.company_id` names the tenant
+  // that raised the document, which is the tenant whose Razorpay account must be
+  // paid. Reading process.env here meant every tenant's signing payments went to
+  // whichever keys the deployment happened to hold, and after the old config route
+  // exported a tenant's keys into process.env, that was whichever tenant saved last.
+  // resolveConfig falls back to the deployment env when the tenant has none, so a
+  // single-tenant install is unaffected.
+  const { RAZORPAY_KEY_ID: keyId, RAZORPAY_KEY_SECRET: keySecret } =
+    await resolveConfig(signing.company_id ?? null, 'razorpay');
 
   // Dev simulation when gateway not configured
   if (!keyId || !keySecret) {
@@ -429,7 +439,10 @@ router.post('/:token/payment/verify', safe(async (req, res) => {
   const { signing } = await resolve(req.params.token);
   if (!signing) return res.status(404).json({ success: false, error: 'Invalid link.' });
 
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  // Must be the SAME tenant's secret that created the order, or a genuine payment
+  // fails the HMAC check (or, worse, verifies against a neighbour's key).
+  const { RAZORPAY_KEY_SECRET: keySecret } =
+    await resolveConfig(signing.company_id ?? null, 'razorpay');
 
   // Dev simulation — accept without a real signature
   if (!keySecret) {

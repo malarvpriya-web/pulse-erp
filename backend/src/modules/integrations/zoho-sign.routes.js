@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'crypto';
 import pool from '../../config/db.js';
 import { companyOf } from '../../shared/scope.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { encrypt, resolveConfig } from './integrationConfig.js';
 
 const router = Router();
 
@@ -24,57 +25,27 @@ const FRIENDLY_ERRORS = {
   429: 'Zoho Sign rate limit reached — try again in a minute.',
 };
 
-// ── Crypto helpers (AES-256-GCM, same as integrations-config.routes.js) ────────
-function derivedKey() {
-  const raw = process.env.ENCRYPTION_KEY || 'pulse_erp_dev_insecure_key_change_in_prod';
-  return createHash('sha256').update(raw).digest();
-}
-
-function decrypt(b64) {
-  try {
-    const buf = Buffer.from(b64, 'base64');
-    const iv  = buf.subarray(0, 12);
-    const tag = buf.subarray(12, 28);
-    const enc = buf.subarray(28);
-    const decipher = createDecipheriv('aes-256-gcm', derivedKey(), iv);
-    decipher.setAuthTag(tag);
-    return JSON.parse(Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8'));
-  } catch {
-    return {};
-  }
-}
-
-function encrypt(obj) {
-  const iv  = randomBytes(12);
-  const key = derivedKey();
-  const cipher = createCipheriv('aes-256-gcm', key, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, enc]).toString('base64');
-}
-
 // ── Credential resolution: company_integrations DB → env var fallback ───────────
+// The AES-256-GCM helpers and the row read live in ./integrationConfig.js. This
+// file used to carry its own byte-identical copy; two copies of a decrypt path
+// drift, and after PULSE-01 there is exactly one place that reads or writes a
+// credential row.
 async function cfgFromDb(companyId) {
   if (!companyId && companyId !== 0) return {};
-  try {
-    const { rows } = await pool.query(
-      `SELECT credentials_enc FROM company_integrations
-       WHERE company_id = $1 AND integration_key = 'zoho-sign' LIMIT 1`,
-      [companyId]
-    );
-    return rows.length ? decrypt(rows[0].credentials_enc) : {};
-  } catch {
-    return {};
-  }
+  // resolveConfig() reads THIS tenant's encrypted row and falls back to the
+  // deployment's ZOHO_SIGN_* env vars for fields it has not set. It is the only
+  // place in the codebase that reads a credential from the environment.
+  return resolveConfig(companyId, 'zoho-sign').catch(() => ({}));
 }
 
-function resolveCfg(dbCfg = {}) {
+/** Map the resolved field names onto the shape the Zoho helpers expect. */
+function resolveCfg(cfg = {}) {
   return {
-    client_id:     dbCfg.ZOHO_SIGN_CLIENT_ID     || process.env.ZOHO_SIGN_CLIENT_ID     || '',
-    client_secret: dbCfg.ZOHO_SIGN_CLIENT_SECRET || process.env.ZOHO_SIGN_CLIENT_SECRET || '',
-    access_token:  dbCfg.ZOHO_SIGN_ACCESS_TOKEN  || process.env.ZOHO_SIGN_ACCESS_TOKEN  || '',
-    refresh_token: dbCfg.ZOHO_SIGN_REFRESH_TOKEN || process.env.ZOHO_SIGN_REFRESH_TOKEN || '',
-    dc:            dbCfg.ZOHO_SIGN_DC            || process.env.ZOHO_SIGN_DC            || 'IN',
+    client_id:     cfg.ZOHO_SIGN_CLIENT_ID     || '',
+    client_secret: cfg.ZOHO_SIGN_CLIENT_SECRET || '',
+    access_token:  cfg.ZOHO_SIGN_ACCESS_TOKEN  || '',
+    refresh_token: cfg.ZOHO_SIGN_REFRESH_TOKEN || '',
+    dc:            cfg.ZOHO_SIGN_DC            || 'IN',
   };
 }
 
@@ -116,7 +87,7 @@ function companyId(req) {
 }
 
 /* ── POST /test-connection — validate credentials live ── */
-router.post('/test-connection', async (req, res) => {
+router.post('/test-connection', requirePermission('admin', 'edit'), async (req, res) => {
   const cid = companyId(req);
   const db  = await cfgFromDb(cid);
   const body = req.body || {};
@@ -126,7 +97,8 @@ router.post('/test-connection', async (req, res) => {
   const fields = ['ZOHO_SIGN_CLIENT_ID', 'ZOHO_SIGN_CLIENT_SECRET', 'ZOHO_SIGN_ACCESS_TOKEN', 'ZOHO_SIGN_REFRESH_TOKEN', 'ZOHO_SIGN_DC'];
   for (const f of fields) {
     const bodyVal = body[f] && body[f] !== '***' ? body[f] : null;
-    merged[f] = bodyVal || db[f] || process.env[f] || (f === 'ZOHO_SIGN_DC' ? 'IN' : '');
+    // `db` is already resolveConfig()'s output, so the env fallback has happened.
+    merged[f] = bodyVal || db[f] || (f === 'ZOHO_SIGN_DC' ? 'IN' : '');
   }
 
   const c = resolveCfg(merged);
@@ -144,7 +116,17 @@ router.post('/test-connection', async (req, res) => {
 });
 
 /* ── GET /status ── */
-router.get('/status', async (req, res) => {
+// ⚠ GATED AT settings:view, NOT LEFT OPEN. Found while reviewing the PULSE-01 gate:
+// `IntegrationsHub.jsx` catches a 403 from `/integrations/config/all` and FALLS BACK
+// to these per-provider status endpoints, so leaving them open routed straight around
+// the gate — any authenticated employee could still enumerate which providers a tenant
+// uses, and read the SMTP host and port and the SendGrid account email. That is the
+// same reconnaissance the config read was gated for.
+//
+// `settings:view` (admin, super_admin, finance_manager, hr_manager) is the bar because
+// these return non-secret operational status rather than credentials, and those are the
+// roles that legitimately reach the integration pages.
+router.get('/status', requirePermission('settings', 'view'), async (req, res) => {
   const cid = companyId(req);
   const db  = await cfgFromDb(cid);
   const c   = resolveCfg(db);
@@ -263,7 +245,7 @@ router.post('/sync', async (req, res) => {
 });
 
 /* ── POST /refresh-token ── */
-router.post('/refresh-token', async (req, res) => {
+router.post('/refresh-token', requirePermission('admin', 'edit'), async (req, res) => {
   const cid = companyId(req);
   const db  = await cfgFromDb(cid);
   const c   = resolveCfg(db);
@@ -292,7 +274,10 @@ router.post('/refresh-token', async (req, res) => {
          DO UPDATE SET credentials_enc = EXCLUDED.credentials_enc, status = 'connected', updated_at = NOW()`,
         [cid, enc]
       ).catch(() => {});
-      process.env.ZOHO_SIGN_ACCESS_TOKEN = data.access_token;
+      // NOT written to process.env — see PULSE-01. process.env is process-global,
+      // so assigning the new token here made one tenant's credential the fallback
+      // every other tenant's resolveCfg() read. The row above is per-tenant and
+      // cfgFromDb() re-reads it on the next request, so nothing is lost.
       res.json({ success: true, message: 'Access token refreshed' });
     } else {
       const msg = data.error === 'invalid_client'

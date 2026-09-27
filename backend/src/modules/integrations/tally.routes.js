@@ -2,16 +2,27 @@
 import express from 'express';
 import pool    from '../../config/db.js';
 import { companyOf } from '../../shared/scope.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { resolveConfig, INTEGRATION_FIELDS } from './integrationConfig.js';
 
 const router = express.Router();
 
+/**
+ * The gateway to POST to. `configUrl` comes from getTallyConfig(), which already
+ * folds in this tenant's row and the deployment's TALLY_GATEWAY_URL — there is
+ * exactly one place that falls back to the environment, and it is resolveConfig()
+ * in ./integrationConfig.js. A second env read here would be a third precedence
+ * layer nobody could reason about.
+ */
 function getTallyURL(configUrl) {
-  return configUrl || process.env.TALLY_GATEWAY_URL || 'http://localhost:9000';
+  return configUrl || 'http://localhost:9000';
 }
 
 /* ── XML builder helpers ── */
 function buildVoucherXML({ voucher_type, date, narration, ledger_entries, company_name }) {
-  const company = company_name || process.env.TALLY_COMPANY || 'Manifest Technologies';
+  // Every caller passes cfg?.company_name, which getTallyConfig() has already
+  // resolved from the tenant's row, the hub, then the environment.
+  const company = company_name || 'Manifest Technologies';
   const entries = ledger_entries.map(e =>
     `<ALLLEDGERENTRIES.LIST><LEDGERNAME>${e.ledger_name}</LEDGERNAME><ISDEEMEDPOSITIVE>${e.amount >= 0 ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE><AMOUNT>${Math.abs(e.amount)}</AMOUNT></ALLLEDGERENTRIES.LIST>`
   ).join('');
@@ -54,20 +65,45 @@ async function callTally(xmlBody, urlOverride, timeoutMs = 8000) {
   }
 }
 
+/**
+ * This tenant's Tally settings.
+ *
+ * Tally is configured in two places and always was: this module's own page writes
+ * `tally_config`, while the Integrations hub writes a `company_integrations`
+ * row (TALLY_GATEWAY_URL / TALLY_COMPANY). The hub's values used to reach this
+ * code by being exported into process.env — which is exactly the PULSE-01 defect,
+ * because process.env is process-global and one tenant's gateway URL became
+ * every tenant's. They are merged here per tenant instead.
+ *
+ * Precedence: this module's dedicated page wins, then the hub, then the
+ * deployment's env vars. The dedicated page is more specific (it also carries the
+ * financial year and the per-entity sync toggles), so a value set there is the
+ * one the operator most recently meant.
+ */
 async function getTallyConfig(company_id) {
   const { rows } = await pool.query(
     `SELECT * FROM tally_config WHERE company_id = $1`, [company_id]
   ).catch(() => ({ rows: [] }));
-  return rows[0] || null;
+  const row = rows[0] || null;
+  const hub = await resolveConfig(company_id, 'tally').catch(() => ({}));
+
+  if (!row && !Object.keys(hub).length) return null;
+  return {
+    ...(row || {}),
+    tally_url:    row?.tally_url    || hub.TALLY_GATEWAY_URL || null,
+    company_name: row?.company_name || hub.TALLY_COMPANY     || null,
+  };
 }
 
 /* ── GET /api/integrations/tally/config ─────────────────────────── */
-router.get('/config', async (req, res) => {
+// Read gate matches the `/settings/tally` alias: `settings:view`, which the
+// finance roles hold. See the note there.
+router.get('/config', requirePermission('settings', 'view'), async (req, res) => {
   try {
     const cfg = await getTallyConfig(companyOf(req));
     res.json({
-      tally_url:    cfg?.tally_url    || process.env.TALLY_GATEWAY_URL || 'http://localhost:9000',
-      company_name: cfg?.company_name || process.env.TALLY_COMPANY     || '',
+      tally_url:    cfg?.tally_url    || 'http://localhost:9000',
+      company_name: cfg?.company_name || '',
       fy_start:     cfg?.fy_start     || null,
       fy_end:       cfg?.fy_end       || null,
       sync_ledgers:  cfg?.sync_ledgers  ?? true,
@@ -80,10 +116,23 @@ router.get('/config', async (req, res) => {
 });
 
 /* ── PUT /api/integrations/tally/config ─────────────────────────── */
-router.put('/config', async (req, res) => {
+router.put('/config', requirePermission('admin', 'edit'), async (req, res) => {
   try {
     const { tally_url, company_name, fy_start, fy_end, sync_ledgers, sync_invoices, sync_payments } = req.body;
     const company_id = companyOf(req);
+
+    // Same validator the Integrations hub applies to TALLY_GATEWAY_URL. Without
+    // it this endpoint accepted any string and stored it as an outbound target.
+    if (tally_url) {
+      const problem = INTEGRATION_FIELDS.tally.TALLY_GATEWAY_URL.validate(String(tally_url).trim());
+      if (problem) {
+        return res.status(400).json({
+          success: false,
+          code: 'INVALID_VALUE',
+          message: `Tally gateway URL ${problem}.`,
+        });
+      }
+    }
 
     await pool.query(`
       INSERT INTO tally_config
@@ -116,7 +165,17 @@ router.put('/config', async (req, res) => {
 });
 
 /* ── GET /api/integrations/tally/sync-status ─────────────────────── */
-router.get('/sync-status', async (req, res) => {
+// ⚠ GATED AT settings:view, NOT LEFT OPEN. Found while reviewing the PULSE-01 gate:
+// `IntegrationsHub.jsx` catches a 403 from `/integrations/config/all` and FALLS BACK
+// to these per-provider status endpoints, so leaving them open routed straight around
+// the gate — any authenticated employee could still enumerate which providers a tenant
+// uses, and read the SMTP host and port and the SendGrid account email. That is the
+// same reconnaissance the config read was gated for.
+//
+// `settings:view` (admin, super_admin, finance_manager, hr_manager) is the bar because
+// these return non-secret operational status rather than credentials, and those are the
+// roles that legitimately reach the integration pages.
+router.get('/sync-status', requirePermission('settings', 'view'), async (req, res) => {
   const company_id = companyOf(req);
 
   const { rows: logs } = await pool.query(

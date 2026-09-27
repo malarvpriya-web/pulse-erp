@@ -33,7 +33,9 @@
     "check:authz": "node scripts/audit/authz-regression.mjs",
     "check:audit": "node scripts/audit/before-image-probe.mjs",
     "check:audit-floor": "node scripts/audit/audit-floor-coverage-probe.mjs",
-    "check:manual": "node scripts/check-manual-sections.mjs"
+    "check:manual": "node scripts/check-manual-sections.mjs",
+    "lint": "eslint .",
+    "lint:errors": "eslint . --quiet"
   },
   "keywords": [],
   "author": "",
@@ -49,17 +51,22 @@
     "googleapis": "^171.4.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
+    "mammoth": "^1.12.3",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "node-zklib": "^1.3.0",
-    "nodemailer": "^8.0.7",
+    "nodemailer": "^10.0.10",
     "otplib": "^12.0.1",
     "pdf-lib": "^1.17.1",
+    "pdf-parse": "^2.4.5",
     "pdfkit": "^0.15.2",
     "pg": "^8.18.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^16.5.0",
     "nodemon": "^3.1.11",
     "supertest": "^7.2.2",
     "vitest": "^4.1.5"

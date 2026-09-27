@@ -50,6 +50,9 @@ const { default: pool }         = await import('../config/db.js');
 const { default: procRouter }   = await import('../modules/procurement/routes/procurement.routes.js');
 const { default: rfxRouter }    = await import('../modules/procurement/routes/rfx.routes.js');
 const { default: healthRouter } = await import('../modules/procurement/routes/vendorHealth.routes.js');
+
+// Static: this helper resolves the pool lazily, on purpose. See its header.
+import { withIqcPolicy } from './helpers/iqcPolicy.js';
 const { default: invRouter }    = await import('../modules/inventory/routes/inventory.routes.js');
 
 const TAG  = 'ZZRV';
@@ -233,6 +236,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await sweep();
+  // ⚠ talent.routes.js seeds 10 interview_questions into EVERY company at
+  // IMPORT time, so merely importing it anywhere in the run pins CO_B and the
+  // DELETE below fails on interview_questions_company_id_fkey. The company then
+  // survives the run, and the next run's counts start from a dirty tenant —
+  // which is how D15 goes red in a full suite while passing on its own.
+  await pool.query(`DELETE FROM interview_questions WHERE company_id = $1`, [CO_B]);
   await pool.query(`DELETE FROM companies WHERE id = $1`, [CO_B]);
 });
 
@@ -519,7 +528,13 @@ async function approvedPo({ quantity = 4, price = 25 } = {}) {
   return { poId: conv.body.po_id, lines };
 }
 
-/** A receipt that is being held for incoming inspection. */
+/**
+ * A receipt that is being held for incoming inspection.
+ *
+ * ⚠ Call this ONLY inside withHeldIqc() below. The hold is not a property of the
+ * receipt, it is company 1's live `require_iqc_before_stock` policy read at
+ * create time — and another suite mutates that row concurrently.
+ */
 async function heldReceipt() {
   const { poId, lines } = await approvedPo();
   const res = await buyer().post('/api/procurement/grn').send({
@@ -538,66 +553,77 @@ async function heldReceipt() {
 const ledgerFor = async (grnId) => (await pool.query(
   `SELECT * FROM stock_ledger WHERE reference_type='grn' AND reference_id::text = $1::text`, [String(grnId)])).rows;
 
+/**
+ * Pin company 1's IQC gate ON for the body, excluding the suite that flips it.
+ *
+ * These four tests used to read whatever the policy row happened to hold when
+ * they ran, and asserted the ambient value with a message that called a miss
+ * "fixture drift". It was not drift: integration.procurementLifecycle sets this
+ * same row false in four windows, files run in parallel against one database,
+ * and the overlap made this fail about 1 run in 5. See helpers/iqcPolicy.js.
+ */
+const withHeldIqc = (fn) => withIqcPolicy(true, CO_A, fn);
+
 describe('D8 — a pass recorded in Procurement releases the goods it clears', () => {
-  it('releases the held stock, and posts batch and ledger together', async () => {
-    const grn = await heldReceipt();
-    expect(grn.quality_status, 'fixture drift: the receipt was not held for IQC').toBe('pending');
-    expect(await ledgerFor(grn.id)).toHaveLength(0);
+  it('releases the held stock, and posts batch and ledger together', async () => withHeldIqc(async () => {
+      const grn = await heldReceipt();
+      expect(grn.quality_status, 'withHeldIqc did not pin the gate on').toBe('pending');
+      expect(await ledgerFor(grn.id)).toHaveLength(0);
 
-    const res = await buyer().post('/api/procurement/quality-inspections').send({
-      grn_id: grn.id, overall_result: 'pass', notes: `${TAG} incoming`,
-      items: [{ item_id: seed.item.id, parameter: 'visual', result: 'pass' }],
-    });
-    expect(res.status).toBe(201);
+      const res = await buyer().post('/api/procurement/quality-inspections').send({
+        grn_id: grn.id, overall_result: 'pass', notes: `${TAG} incoming`,
+        items: [{ item_id: seed.item.id, parameter: 'visual', result: 'pass' }],
+      });
+      expect(res.status).toBe(201);
 
-    // The screen used to stop at the inspection row and the goods stayed held.
-    const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
-    expect(after.quality_status).toBe('passed');
+      // The screen used to stop at the inspection row and the goods stayed held.
+      const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
+      expect(after.quality_status).toBe('passed');
 
-    const ledger = await ledgerFor(grn.id);
-    const { rows: batches } = await pool.query('SELECT * FROM inventory_batches WHERE grn_id = $1 AND deleted_at IS NULL', [grn.id]);
-    expect(ledger.length, 'a pass must post the held stock').toBe(1);
-    expect(batches.length, 'batch and ledger move together or not at all').toBe(1);
-    expect(Number(ledger[0].quantity_in)).toBe(Number(batches[0].quantity_available));
-    expect(res.body.stock_released).toBe(true);
-  }, 40_000);
+      const ledger = await ledgerFor(grn.id);
+      const { rows: batches } = await pool.query('SELECT * FROM inventory_batches WHERE grn_id = $1 AND deleted_at IS NULL', [grn.id]);
+      expect(ledger.length, 'a pass must post the held stock').toBe(1);
+      expect(batches.length, 'batch and ledger move together or not at all').toBe(1);
+      expect(Number(ledger[0].quantity_in)).toBe(Number(batches[0].quantity_available));
+      expect(res.body.stock_released).toBe(true);
+  }), 40_000);
 
-  it('does not release anything on a fail', async () => {
-    const grn = await heldReceipt();
-    const res = await buyer().post('/api/procurement/quality-inspections').send({
-      grn_id: grn.id, overall_result: 'fail', notes: `${TAG} rejected`,
-      items: [{ item_id: seed.item.id, parameter: 'visual', result: 'fail' }],
-    });
-    expect(res.status).toBe(201);
-    const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
-    expect(after.quality_status).toBe('failed');
-    expect(await ledgerFor(grn.id)).toHaveLength(0);
-    expect(res.body.stock_released).toBe(false);
-  }, 40_000);
+  it('does not release anything on a fail', async () => withHeldIqc(async () => {
+      const grn = await heldReceipt();
+      const res = await buyer().post('/api/procurement/quality-inspections').send({
+        grn_id: grn.id, overall_result: 'fail', notes: `${TAG} rejected`,
+        items: [{ item_id: seed.item.id, parameter: 'visual', result: 'fail' }],
+      });
+      expect(res.status).toBe(201);
+      const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
+      expect(after.quality_status).toBe('failed');
+      expect(await ledgerFor(grn.id)).toHaveLength(0);
+      expect(res.body.stock_released).toBe(false);
+  }), 40_000);
 
-  it('releases on a header-only pass, with no per-parameter lines', async () => {
-    // A verdict with no lines used to leave the receipt with zero tests, which
-    // the rollup reads as 'not_required' rather than 'passed'.
-    const grn = await heldReceipt();
-    const res = await buyer().post('/api/procurement/quality-inspections').send({
-      grn_id: grn.id, overall_result: 'pass', notes: `${TAG} header only`,
-    });
-    expect(res.status).toBe(201);
-    const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
-    expect(after.quality_status).toBe('passed');
-    expect(await ledgerFor(grn.id)).toHaveLength(1);
-  }, 40_000);
+  it('releases on a header-only pass, with no per-parameter lines', async () => withHeldIqc(async () => {
+      // A verdict with no lines used to leave the receipt with zero tests, which
+      // the rollup reads as 'not_required' rather than 'passed'.
+      const grn = await heldReceipt();
+      const res = await buyer().post('/api/procurement/quality-inspections').send({
+        grn_id: grn.id, overall_result: 'pass', notes: `${TAG} header only`,
+      });
+      expect(res.status).toBe(201);
+      const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
+      expect(after.quality_status).toBe('passed');
+      expect(await ledgerFor(grn.id)).toHaveLength(1);
+  }), 40_000);
 
-  it('will not file an inspection against another tenant\'s receipt', async () => {
-    const grn = await heldReceipt();
-    const res = await tenantB().post('/api/procurement/quality-inspections').send({
-      grn_id: grn.id, overall_result: 'pass', notes: `${TAG} foreign`,
-    });
-    expect(res.status).toBe(404);
-    const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
-    expect(after.quality_status).toBe('pending');
-    expect(await ledgerFor(grn.id)).toHaveLength(0);
-  }, 40_000);
+  it('will not file an inspection against another tenant\'s receipt', async () => withHeldIqc(async () => {
+      const grn = await heldReceipt();
+      const res = await tenantB().post('/api/procurement/quality-inspections').send({
+        grn_id: grn.id, overall_result: 'pass', notes: `${TAG} foreign`,
+      });
+      expect(res.status).toBe(404);
+      const { rows: [after] } = await pool.query('SELECT quality_status FROM goods_receipt_notes WHERE id = $1', [grn.id]);
+      expect(after.quality_status).toBe('pending');
+      expect(await ledgerFor(grn.id)).toHaveLength(0);
+  }), 40_000);
 });
 
 describe('D9 — a purchase order records who raised it', () => {
@@ -669,7 +695,17 @@ describe('D14 — a hand-booked batch is stock the ledger knows about', () => {
   });
 
   it('refuses another tenant\'s item, and writes nothing', async () => {
-    const before = await pool.query('SELECT COUNT(*)::int n FROM inventory_batches');
+    // Scoped to THIS suite's rows, not the whole table. An unscoped
+    // `COUNT(*) FROM inventory_batches` counts every tenant's batches, and
+    // integration.procurementLifecycle creates and sweeps batches concurrently
+    // (vitest runs 4 workers against the one database) — so the before/after
+    // pair moved for reasons that had nothing to do with the request under
+    // test, and this failed as `expected 24 to be 28`. Any batch this request
+    // managed to write would carry the tagged batch_number in its payload,
+    // so the tagged count is the one that actually answers "wrote nothing".
+    const countMine = () => pool.query(
+      'SELECT COUNT(*)::int n FROM inventory_batches WHERE batch_number LIKE $1', [`${TAG}%`]);
+    const before = await countMine();
     const res = await tenantB().post('/api/inventory/advanced/batches').send(batchBody());
     expect(res.status).toBe(404);
     // The MESSAGE matters, not just the status. There are two tenant guards
@@ -679,7 +715,7 @@ describe('D14 — a hand-booked batch is stock the ledger knows about', () => {
     // stripped the item predicate left this test passing for the wrong reason.
     // The item is checked first, so its message is what pins that guard.
     expect(res.body.error).toMatch(/Item not found/);
-    const after = await pool.query('SELECT COUNT(*)::int n FROM inventory_batches');
+    const after = await countMine();
     expect(after.rows[0].n).toBe(before.rows[0].n);
   });
 
@@ -854,15 +890,41 @@ describe('D15 — an approved purchase order actually notifies someone', () => {
     const { rows: [row] } = await pool.query('SELECT created_by FROM purchase_orders WHERE id = $1', [po.body.id]);
     expect(row.created_by, 'no recipient, so nothing could be delivered').toBe(seed.userWithEmployee.employee_id);
 
-    const before = await pool.query('SELECT COUNT(*)::int n FROM notifications');
+    // ⚠⚠ SCOPED TO THIS PO, not a global COUNT(*) over `notifications`.
+    //
+    // This was `SELECT COUNT(*) FROM notifications` with no filter at all, read
+    // before and after and asserted to have RISEN. Under the four-worker run any
+    // other suite sweeping its own notification rows in between made `after` the
+    // same or LOWER, and the test failed naming a procurement bug that was not
+    // there — 3 of 4 measured runs. A cross-suite count is not an assertion about
+    // this PO; the reference id is.
+    // ⚠ `notifications.module_name` for this path is 'Purchase Order' — Capitalised
+    // and spaced, not the lowercase 'procurement' module key. logAudit normalises
+    // its module names; notifications never did. Matched case-insensitively so the
+    // test does not break when that drift is eventually cleaned up.
+    const countForThisPo = async () => {
+      const { rows } = await pool.query(
+        `SELECT COUNT(*)::int n FROM notifications
+          WHERE reference_id = $1 AND module_name ILIKE 'purchase order'`,
+        [po.body.id]
+      );
+      return rows[0].n;
+    };
+
+    const before = await countForThisPo();
     const approved = await app.patch(`/api/procurement/purchase-orders/${po.body.id}/approve`).send({});
     expect(approved.status).toBe(200);
+
     // notifyWorkflowEvent is fire-and-forget by design — the approval must not
-    // wait on delivery — so give it a moment before reading the row.
-    await new Promise((r) => setTimeout(r, 1500));
-    const after = await pool.query('SELECT COUNT(*)::int n FROM notifications');
-    expect(after.rows[0].n, 'the toggle is on and the recipient resolves, so one must be delivered')
-      .toBeGreaterThan(before.rows[0].n);
+    // wait on delivery. Poll rather than sleep a fixed 1500ms: a fixed wait is
+    // either too short under worker contention (a flake) or wasted time.
+    let after = before;
+    for (let attempt = 0; attempt < 40 && after <= before; attempt++) {
+      await new Promise((r) => { setTimeout(r, 50); });
+      after = await countForThisPo();
+    }
+    expect(after, 'the toggle is on and the recipient resolves, so one must be delivered')
+      .toBeGreaterThan(before);
   }, 30_000);
 });
 

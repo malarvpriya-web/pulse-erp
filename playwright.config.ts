@@ -47,6 +47,20 @@ export default defineConfig({
 
     // ── Step 2+: each project reads the auth file ──────────────────────────
     {
+      name: 'ceo-drill',
+      testMatch: '**/99-ceo-drillthrough.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: AUTH_FILE },
+    },
+    // PULSE-01: the Integrations pages in a real browser — the GET/PUT round trip
+    // is the part only the page can prove.
+    {
+      name: 'integrations-authz',
+      testMatch: '**/30-integrations-authz.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: AUTH_FILE },
+    },
+    {
       name: 'smoke',
       testMatch: '**/01-smoke.spec.ts',
       dependencies: ['setup'],
@@ -271,6 +285,20 @@ export default defineConfig({
       // a browser: both historical failures were API-correct and screen-wrong.
       name: 'crm-pipeline',
       testMatch: '**/19-crm-pipeline-reconciliation.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: 'tests/.auth/user.json' },
+      timeout: 90_000,
+    },
+    {
+      // Industrial IoT. Three of the Phase 4 defects were purely front-end and
+      // API-correct — a late response overwriting the newly selected device, a
+      // 500 rendering as "no devices found", and company KPIs computed from a
+      // search-filtered list. None of them is reachable from an API test, which
+      // is why this project exists. It intercepts routes deliberately: the only
+      // way to test "a failure must not look like empty data" is to make the
+      // call fail.
+      name: 'iot',
+      testMatch: '**/20-iot.spec.ts',
       dependencies: ['setup'],
       use: { storageState: 'tests/.auth/user.json' },
       timeout: 90_000,

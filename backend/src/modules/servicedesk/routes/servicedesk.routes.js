@@ -6,6 +6,7 @@ import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { nextTicketNumber, nextServiceTicketNumber } from '../../../shared/docNumber.js';
 import { PROJECT_TYPES } from '../../../shared/projectTypes.js';
+import { vocabularyValues } from '../../../shared/masterVocabulary.js';
 import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
 import { pageParams } from '../../../shared/pagination.js';
 import { validateOptionalMobile } from '../../../shared/validators.js';
@@ -14,6 +15,8 @@ import { postStock } from '../../production/subcontracting.routes.js';
 import knowledgeWorkflowRoutes from './knowledgeWorkflow.routes.js';
 import { editArticle, transition } from '../services/knowledgeWorkflow.service.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { toCsvObjects } from '../../../shared/csv.js';
+import { deriveResponseFields } from '../services/voc.service.js';   // was used, never imported
 
 const router = express.Router();
 
@@ -23,7 +26,11 @@ const TICKET_STATUSES = ['Open', 'Analysis', 'In Progress', 'Pending', 'Resolved
 
 // Compass regions — the app-wide convention (leads.zone already holds exactly
 // these; projects.zone was realigned onto them in 20260716000003).
-const ZONES = ['North', 'South', 'East', 'West', 'Central'];
+// Fallback only. The live list is the master (master_zones / master_values PROJECT_TYPE); left as a plain
+// array this was a second master that disagreed with the first as soon as
+// anyone used the new "+ Add" pickers — an added value passed the dropdown and
+// was then written as NULL by an `includes()` that had never heard of it.
+const ZONE_FALLBACK = ['North', 'South', 'East', 'West', 'Central'];
 
 // ── access model ──────────────────────────────────────────────────────────────
 // Management endpoints (SLA config, engineers, contracts, customers, sites,
@@ -630,8 +637,8 @@ router.post('/tickets', svcSelfService, async (req, res) => {
     // inherits it through project_id. The Phase 1 column was dropped in
     // 20260716000003.
     const explicitAssignedTo = linkId(req.body.assigned_to);
-    const effZone         = oneOf(req.body.zone, ZONES);
-    const effServiceType  = oneOf(req.body.service_type, PROJECT_TYPES);
+    const effZone         = oneOf(req.body.zone, await vocabularyValues('ZONE', companyId, ZONE_FALLBACK));
+    const effServiceType  = oneOf(req.body.service_type, await vocabularyValues('PROJECT_TYPE', companyId, PROJECT_TYPES));
 
     // Auto-assignment rules (auto_assignment_rules) only ever ran from the
     // "test rule" preview button — a real ticket never had this matching logic
@@ -710,6 +717,15 @@ router.put('/tickets/:id', svcAdmin('edit'), async (req, res) => {
     );
     if (!oldRows[0]) return res.status(404).json({ error: 'Ticket not found' });
 
+    // Read once for the whole handler: the commissioning gate below and the
+    // UPDATE at the end both classify service_type, and resolving it twice from
+    // the master would let a value added between the two reads disagree with
+    // itself inside one request.
+    const [allowedZones, allowedServiceTypes] = await Promise.all([
+      vocabularyValues('ZONE', companyId, ZONE_FALLBACK),
+      vocabularyValues('PROJECT_TYPE', companyId, PROJECT_TYPES),
+    ]);
+
     const wasOpen = oldRows[0].status !== 'Resolved' && oldRows[0].status !== 'Closed';
     const nowClosed = status === 'Closed';
     const nowResolved = status === 'Resolved';
@@ -721,7 +737,7 @@ router.put('/tickets/:id', svcAdmin('edit'), async (req, res) => {
     // unrelated tickets on the same project are untouched.
     if (nowClosed) {
       const effProjectId    = project_id || oldRows[0].project_id;
-      const effServiceType  = PROJECT_TYPES.includes(service_type) ? service_type : oldRows[0].service_type;
+      const effServiceType  = allowedServiceTypes.includes(service_type) ? service_type : oldRows[0].service_type;
       if (effServiceType === 'Commissioning' && effProjectId) {
         const { rows: cwRows } = await pool.query(
           `SELECT id, status FROM commissioning_workflows
@@ -764,8 +780,8 @@ router.put('/tickets/:id', svcAdmin('edit'), async (req, res) => {
        // zone/service_type are dropped rather than stored when unrecognised, so
        // an unknown value leaves the previous one intact instead of corrupting it.
        project_id||null,
-       ZONES.includes(zone) ? zone : null,
-       PROJECT_TYPES.includes(service_type) ? service_type : null,
+       allowedZones.includes(zone) ? zone : null,
+       allowedServiceTypes.includes(service_type) ? service_type : null,
        issue_category_id||null,
        req.params.id, companyId]
     );
@@ -913,8 +929,8 @@ router.get('/filters', svcAdmin('view'), async (req, res) => {
       // IPS grid options. service_type mirrors the project-type list because an
       // IPS ticket traces back to an IPP — but it is set PER TICKET, not
       // inherited: an EPC project can legitimately raise a Commissioning ticket.
-      service_types : PROJECT_TYPES,
-      zones         : ZONES,
+      service_types : await vocabularyValues('PROJECT_TYPE', companyId, PROJECT_TYPES),
+      zones         : await vocabularyValues('ZONE', companyId, ZONE_FALLBACK),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1236,7 +1252,10 @@ router.put('/contracts/:id', svcAdmin('edit'), async (req, res) => {
            sla_response_hrs=$6, sla_resolution_hrs=$7, notes=$8, status=$9
        WHERE id=$10 AND ($11::int IS NULL OR company_id=$11) RETURNING *`,
       [customer_name||old[0].customer_name, contract_type||old[0].contract_type,
-       start_date||old[0].start_date, ed, Number(value)??old[0].value,
+       start_date||old[0].start_date, ed,
+       // `Number(value) ?? old` never fell through — Number(undefined) is NaN, not
+       // nullish — so omitting `value` wrote NaN to a money column.
+       value != null ? Number(value) : old[0].value,
        parseInt(sla_response_hrs)||old[0].sla_response_hrs, parseInt(sla_resolution_hrs)||old[0].sla_resolution_hrs,
        notes??old[0].notes, status, req.params.id, companyId]
     );
@@ -2224,16 +2243,10 @@ router.delete('/engineers/:id', svcAdmin('delete'), captureBefore('service_engin
 });
 
 // ── CSV exports ────────────────────────────────────────────────────────────────
-const toCSV = (rows, cols) => {
-  if (!rows.length) return cols.join(',') + '\n';
-  const header = cols.join(',');
-  const lines = rows.map(r => cols.map(c => {
-    const v = r[c] ?? '';
-    const s = String(v).replace(/"/g, '""');
-    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s}"` : s;
-  }).join(','));
-  return [header, ...lines].join('\n');
-};
+// Delegates to the shared writer, which additionally neutralises values a
+// spreadsheet would EVALUATE as formulas (a leading = + - @). See shared/csv.js.
+const toCSV = (rows, cols) =>
+  (rows.length ? toCsvObjects(rows, { columns: cols, minimal: true }) : cols.join(',') + '\n');
 
 router.get('/export/tickets', svcAdmin('view'), async (req, res) => {
   try {

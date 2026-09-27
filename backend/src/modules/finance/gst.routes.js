@@ -2,8 +2,18 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
+import { toCsvObjects } from '../../shared/csv.js';
+// ⚠ These four were CALLED but never imported — every e-invoice / e-way-bill
+// endpoint threw ReferenceError and answered 500. Caught by `npm run lint`.
+import {
+  buildIrpPayload, buildEwbPayload, irpConfigured, submitToIrp,
+} from './services/eInvoice.service.js';
 
 const router = express.Router();
+// The router-level requirePermission('finance','view') below is a floor, not a
+// gate on writes: every mutating route must name its own action. Without one, a
+// view-only finance role could file GST returns, record TDS and raise self
+// invoices. Audit logging records who did it; it does not authorise it.
 router.use(requirePermission('finance', 'view'));
 
 // ── GST Rate master ───────────────────────────────────────────────────────────
@@ -68,7 +78,7 @@ router.get('/filing-status', async (req, res) => {
   }
 });
 
-router.post('/filing-status', async (req, res) => {
+router.post('/filing-status', requirePermission('finance', 'edit'), async (req, res) => {
   const { period, return_type, status, reference_no, filed_at, notes } = req.body;
   if (!period || !return_type || !status) {
     return res.status(400).json({ error: 'period, return_type, status required' });
@@ -245,6 +255,7 @@ router.get('/gstr3b', async (req, res) => {
 });
 
 // ── Compute GST on invoice ────────────────────────────────────────────────────
+// Calculator only — reads the request body, writes nothing. 'view' is correct.
 router.post('/compute', (req, res) => {
   const { amount, gst_rate, seller_state, buyer_state, seller_gstin, buyer_gstin } = req.body;
   if (!amount || gst_rate === undefined) {
@@ -301,6 +312,7 @@ function computeSurcharge(section, tdsAmount, paymentAmount, deducteeType = 'com
 
 router.get('/tds/sections', (req, res) => res.json(TDS_SECTIONS));
 
+// Calculator only — reads the request body, writes nothing. 'view' is correct.
 router.post('/tds/compute', (req, res) => {
   const { section, amount, pan_available = true, deductee_type = 'company' } = req.body;
   const sectionData = TDS_SECTIONS[section];
@@ -348,7 +360,7 @@ router.get('/tds', async (req, res) => {
   }
 });
 
-router.post('/tds', async (req, res) => {
+router.post('/tds', requirePermission('finance', 'add'), async (req, res) => {
   const {
     party_id, party_name, party_pan, section,
     payment_date, payment_amount, challan_number,
@@ -452,7 +464,7 @@ router.get('/rcm/bills', async (req, res) => {
 //   DR  Input Tax Credit — CGST/SGST/IGST  (1020/1021/1022)
 //   CR  GST Payable     — CGST/SGST/IGST  (2010/2011/2012)
 // Both legs cancel each other in GSTR-3B Table 3.1(d) vs Table 4(A)(3).
-router.post('/rcm/self-invoice', async (req, res) => {
+router.post('/rcm/self-invoice', requirePermission('finance', 'add'), async (req, res) => {
   const { bill_id, invoice_date, gst_rate, supply_type = 'intrastate', notes, created_by } = req.body;
   if (!bill_id || !invoice_date) {
     return res.status(400).json({ error: 'bill_id and invoice_date are required' });
@@ -529,9 +541,10 @@ router.post('/rcm/self-invoice', async (req, res) => {
           `SELECT id FROM chart_of_accounts WHERE code=$1 LIMIT 1`, [l.code]
         );
         await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, narration, debit, credit)
-           VALUES ($1,$2,$3,$4,$5,0)`,
-          [je.id, acc?.id || null, l.code, l.desc, l.amt]
+          // company_id on the line, not only the entry (see §174.4 / §175.4).
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, narration, debit, credit, company_id)
+           VALUES ($1,$2,$3,$4,$5,0,$6)`,
+          [je.id, acc?.id || null, l.code, l.desc, l.amt, companyOf(req)]
         );
       }
       for (const l of taxLines) {
@@ -540,9 +553,9 @@ router.post('/rcm/self-invoice', async (req, res) => {
           `SELECT id FROM chart_of_accounts WHERE code=$1 LIMIT 1`, [l.code]
         );
         await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, narration, debit, credit)
-           VALUES ($1,$2,$3,$4,0,$5)`,
-          [je.id, acc?.id || null, l.code, l.desc, l.amt]
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, narration, debit, credit, company_id)
+           VALUES ($1,$2,$3,$4,0,$5,$6)`,
+          [je.id, acc?.id || null, l.code, l.desc, l.amt, companyOf(req)]
         );
       }
 
@@ -615,21 +628,12 @@ router.get('/rcm/gstr3b-table', async (req, res) => {
 });
 
 // ── CSV helpers ───────────────────────────────────────────────────────────────
-function csvEscape(val) {
-  if (val === null || val === undefined) return '';
-  const s = String(val);
-  return s.includes(',') || s.includes('"') || s.includes('\n')
-    ? `"${s.replace(/"/g, '""')}"`
-    : s;
-}
-
-function toCSV(rows) {
-  if (!rows.length) return '';
-  const headers = Object.keys(rows[0]);
-  const lines   = [headers.map(csvEscape).join(',')];
-  for (const row of rows) lines.push(headers.map(h => csvEscape(row[h])).join(','));
-  return lines.join('\r\n');
-}
+// The local csvEscape/toCSV this replaces quoted for commas, quotes and
+// newlines and stopped there — which leaves a party name beginning with = + - @
+// to be EVALUATED by whatever opens a GSTR return. `minimal: true` keeps the
+// conditional quoting, so the bytes of a well-formed return are unchanged and
+// only the injection is closed. See shared/csv.js.
+const toCSV = (rows) => (rows.length ? toCsvObjects(rows, { minimal: true }) : '');
 
 function fmtDate(d) {
   if (!d) return '';
@@ -803,99 +807,116 @@ router.get('/gstr3b/export', async (req, res) => {
   }
 });
 
-// ── POST /gst/e-invoice/generate — E-Invoice (IRN) stub ──────────────────────
+// ── POST /gst/e-invoice/generate — E-Invoice (IRN) ───────────────────────────
 // Legal mandate under GST Rule 48(4) for businesses with turnover > ₹5 Cr.
-// Stub: validates invoice, returns structured payload ready for IRP API submission.
-// Real integration requires NIC IRP API credentials configured in environment.
+//
+// Builds and VALIDATES a complete IRP payload (see eInvoice.service.js, which
+// documents what the old inline version got wrong — no ItemList, wrong date
+// format, placeholder seller details, an always-zero assessable value).
+// Submission itself is not implemented and says so with a distinct code rather
+// than returning something that looks like success.
 router.post('/e-invoice/generate', requirePermission('finance', 'add'), async (req, res) => {
   const { invoice_id } = req.body;
   const companyId = companyOf(req) ?? req.scope?.company_id ?? null;
   try {
-    const { rows: [inv] } = await pool.query(
-      `SELECT i.*, p.gstin AS buyer_gstin, p.name AS buyer_name
-       FROM invoices i LEFT JOIN parties p ON p.id = i.customer_id
-       WHERE i.id = $1 AND i.company_id = $2`, [invoice_id, companyId]
-    );
-    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
-    if (inv.irn) return res.status(409).json({ error: 'IRN already generated for this invoice', irn: inv.irn });
+    const { payload, problems, invoice } = await buildIrpPayload(pool, {
+      invoiceId: invoice_id, companyId,
+    });
 
-    // Build IRP-compatible payload (NIC API v1.03 format)
-    const irpPayload = {
-      Version: '1.1',
-      TranDtls: { TaxSch: 'GST', SupTyp: 'B2B', RegRev: 'N', EcmGstin: null },
-      DocDtls: {
-        Typ: 'INV',
-        No: inv.invoice_number,
-        Dt: new Date(inv.invoice_date).toLocaleDateString('en-IN').replace(/\//g, '/'),
-      },
-      SellerDtls: { Gstin: inv.supplier_gstin || 'SELLER_GSTIN', LglNm: inv.company_name || 'Seller Name' },
-      BuyerDtls: { Gstin: inv.buyer_gstin || 'URP', LglNm: inv.buyer_name, Pos: inv.place_of_supply || '29' },
-      ValDtls: {
-        AssVal: parseFloat(inv.subtotal || 0),   // invoices has no taxable_amount — this was always 0
-        CgstVal: parseFloat(inv.cgst || 0),
-        SgstVal: parseFloat(inv.sgst || 0),
-        IgstVal: parseFloat(inv.igst || 0),
-        TotInvVal: parseFloat(inv.total_amount || 0),
-      },
-    };
-
-    // If IRP credentials are configured, submit to NIC; otherwise return stub
-    const irpApiKey = process.env.IRP_API_KEY;
-    if (!irpApiKey) {
-      return res.status(200).json({
-        stub: true,
-        message: 'E-Invoice integration not configured. Set IRP_API_KEY, IRP_API_SECRET, IRP_GSTIN in environment to activate.',
-        irp_payload: irpPayload,
+    // The duplicate guard is real now. It used to test `inv.irn`, and invoices
+    // had no irn column, so it read undefined on every call and never fired.
+    if (invoice.irn) {
+      return res.status(409).json({
+        error: 'IRN already generated for this invoice',
+        irn: invoice.irn,
+        ack_no: invoice.irn_ack_no,
+        ack_date: invoice.irn_ack_date,
       });
     }
 
-    // Placeholder for real IRP API call
-    return res.status(501).json({ error: 'IRP API integration pending. Payload ready for submission.', irp_payload: irpPayload });
+    if (problems.length) {
+      return res.status(422).json({
+        error: 'This invoice cannot be sent to the IRP yet.',
+        code: 'EINVOICE_VALIDATION_FAILED',
+        problems,
+        irp_payload: payload,
+      });
+    }
+
+    if (!irpConfigured()) {
+      return res.status(503).json({
+        error: 'E-invoicing is not configured. Set IRP_API_KEY, IRP_API_SECRET and IRP_GSTIN.',
+        code: 'IRP_NOT_CONFIGURED',
+        validated: true,
+        irp_payload: payload,
+      });
+    }
+
+    // Throws 501 — see eInvoice.service.js. Deliberately not faked.
+    const ack = await submitToIrp(payload);
+    const { rows: [saved] } = await pool.query(
+      `UPDATE invoices
+          SET irn = $2, irn_ack_no = $3, irn_ack_date = $4,
+              irn_status = 'active', signed_qr_code = $5
+        WHERE id = $1 RETURNING id, invoice_number, irn, irn_ack_no, irn_ack_date`,
+      [invoice_id, ack.Irn, ack.AckNo, ack.AckDt, ack.SignedQRCode]
+    );
+    res.status(201).json(saved);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 
 // ── POST /gst/e-way-bill/generate — E-Way Bill stub ──────────────────────────
 // Legal mandate under GST Rule 138 for goods movement > ₹50,000.
 router.post('/e-way-bill/generate', requirePermission('finance', 'add'), async (req, res) => {
-  const { invoice_id, vehicle_number, transporter_id, transport_mode } = req.body;
+  const { invoice_id, vehicle_number, transporter_id, transport_mode, distance_km } = req.body;
   const companyId = companyOf(req) ?? req.scope?.company_id ?? null;
   try {
-    const { rows: [inv] } = await pool.query(
-      `SELECT i.*, p.gstin AS buyer_gstin, p.name AS buyer_name
-       FROM invoices i LEFT JOIN parties p ON p.id = i.customer_id
-       WHERE i.id = $1 AND i.company_id = $2`, [invoice_id, companyId]
-    );
-    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    const { payload, problems, invoice } = await buildEwbPayload(pool, {
+      invoiceId: invoice_id, companyId,
+      vehicleNumber: vehicle_number,
+      transporterId: transporter_id,
+      transportMode: transport_mode,
+      distanceKm: distance_km,
+    });
 
-    const ewaybPayload = {
-      supplyType: 'O',
-      docType: 'INV',
-      docNo: inv.invoice_number,
-      docDate: new Date(inv.invoice_date).toLocaleDateString('en-IN'),
-      fromGstin: inv.supplier_gstin || 'FROM_GSTIN',
-      toGstin: inv.buyer_gstin || 'URP',
-      vehicleNo: vehicle_number || '',
-      transporterId: transporter_id || '',
-      transportMode: transport_mode || '1',
-      totValue: parseFloat(inv.total_amount || 0),
-      cgstValue: parseFloat(inv.cgst || 0),
-      sgstValue: parseFloat(inv.sgst || 0),
-      igstValue: parseFloat(inv.igst || 0),
-    };
-
-    const ewaybApiKey = process.env.EWAYBILL_API_KEY;
-    if (!ewaybApiKey) {
-      return res.status(200).json({
-        stub: true,
-        message: 'E-Way Bill integration not configured. Set EWAYBILL_API_KEY in environment to activate.',
-        ewb_payload: ewaybPayload,
+    if (invoice.ewb_no) {
+      return res.status(409).json({
+        error: 'An e-way bill already exists for this invoice',
+        ewb_no: invoice.ewb_no,
+        valid_until: invoice.ewb_valid_until,
       });
     }
-    return res.status(501).json({ error: 'E-Way Bill API integration pending.', ewb_payload: ewaybPayload });
+
+    if (problems.length) {
+      return res.status(422).json({
+        error: 'This consignment cannot be sent to the e-way-bill portal yet.',
+        code: 'EWB_VALIDATION_FAILED',
+        problems,
+        ewb_payload: payload,
+      });
+    }
+
+    // Rule 138 applies above the consignment-value threshold; below it, no bill
+    // is required and generating one would be wrong rather than merely unneeded.
+    const EWB_THRESHOLD = 50000;
+    if (parseFloat(payload.ValDtls.TotInvVal || 0) < EWB_THRESHOLD) {
+      return res.status(422).json({
+        error: `Consignment value ${payload.ValDtls.TotInvVal} is below the ${EWB_THRESHOLD} e-way-bill threshold.`,
+        code: 'EWB_NOT_REQUIRED',
+        ewb_payload: payload,
+      });
+    }
+
+    return res.status(503).json({
+      error: 'E-way-bill submission is not implemented: it needs a provider, credentials and a sandbox run.',
+      code: 'EWB_NOT_IMPLEMENTED',
+      validated: true,
+      ewb_payload: payload,
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 

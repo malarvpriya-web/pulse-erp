@@ -15,6 +15,10 @@ import { CLOSED_PROJECT_STATUSES } from '../projectStatus.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+// Shared Voice-of-Customer derivation — the project-closure mirror below writes
+// voc_responses, so it must classify the same way servicedesk does. Was used and
+// never imported, which made a project close with a rating answer 500.
+import { deriveResponseFields } from '../../servicedesk/services/voc.service.js';
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? null;
@@ -29,6 +33,43 @@ const uid = (req) => req.user?.userId ?? req.user?.id ?? null;
 const RISK_LEVEL_ORDINAL = (col) => `(CASE LOWER(COALESCE(${col}, ''))
   WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 WHEN 'critical' THEN 4
   ELSE 0 END)`;
+
+/**
+ * One risk vocabulary for the whole module.
+ *
+ * There used to be two, and they disagreed. Reads scored labels through
+ * RISK_LEVEL_ORDINAL above (low|medium|high|critical = 1|2|3|4), while writes
+ * used a private `{ low: 1, medium: 2, high: 4 }` map with no 'critical' entry
+ * at all — so the same risk scored differently depending on which path you came
+ * through, and a risk saved as 'critical' fell to the `|| 2` default and was
+ * stored as medium. These ordinals now match RISK_LEVEL_ORDINAL exactly, so
+ * probability x impact lands in 1..16 either way.
+ *
+ * Numbers are accepted and banded, not dropped: Project Detail's form posted a
+ * 1-5 integer, which matched no key in the old label map, so EVERY risk added
+ * from that screen silently became medium x medium regardless of what the user
+ * picked. The columns are VARCHAR(20) labels, so a number has to be banded to a
+ * label to be stored at all.
+ */
+const RISK_ORDINAL = { low: 1, medium: 2, high: 3, critical: 4 };
+
+function riskLevelOf(value, fallback = 'medium') {
+  if (value == null || value === '') return fallback;
+  const raw = String(value).trim().toLowerCase();
+  if (RISK_ORDINAL[raw]) return raw;
+  const n = Number(raw);
+  if (Number.isFinite(n)) {
+    if (n <= 1) return 'low';
+    if (n <= 2) return 'medium';
+    if (n <= 3) return 'high';
+    return 'critical';
+  }
+  return fallback;
+}
+
+/** probability x impact on the 1-4 ordinal, so risk_score is always 1..16. */
+const riskScoreOf = (probability, impact) =>
+  RISK_ORDINAL[riskLevelOf(probability)] * RISK_ORDINAL[riskLevelOf(impact)];
 
 /** Surface a rejected allSettled leg instead of letting it read as "no rows". */
 function settledRows(result, label) {
@@ -51,6 +92,7 @@ function projectListFilters(req) {
     status: dimension(req.query, 'status'),
     zone: dimension(req.query, 'zone'),
     project_type: dimension(req.query, 'project_type'),
+    product_line_id: dimension(req.query, 'product_line_id'),
     date_from: range.from,
     date_to: range.to,
   };
@@ -364,7 +406,7 @@ router.get('/tasks/kanban/:project_id', requirePermission('projects', 'view'), a
 
 router.get('/tasks/:id', requirePermission('projects', 'view'), async (req, res) => {
   try {
-    const task = await taskRepository.findById(req.params.id);
+    const task = await taskRepository.findById(req.params.id, cid(req));
     if (!task) return res.status(404).json({ error: 'Task not found' });
     res.json(task);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -416,6 +458,16 @@ async function getProjectClosureBlockers(projectId) {
 
 router.post('/tasks', requirePermission('projects', 'add'), async (req, res) => {
   try {
+    // A task's tenant is its project's (tasks has no company_id of its own), so
+    // an unscoped project_id let a caller plant a task inside another company's
+    // project. Same guard the /resources and /risks POSTs already carry.
+    if (req.body.project_id) {
+      const owned = await pool.query(
+        `SELECT id FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`,
+        [req.body.project_id, cid(req)]
+      );
+      if (!owned.rows.length) return res.status(403).json({ error: 'Project not found in your company' });
+    }
     const closedStatus = await findClosedProjectStatus(req.body.project_id);
     if (closedStatus) return res.status(400).json({ error: `Cannot add a task — project is ${closedStatus}` });
     const task = await taskRepository.create({ ...req.body, created_by: await actingEmployeeId(req) });
@@ -426,8 +478,10 @@ router.post('/tasks', requirePermission('projects', 'add'), async (req, res) => 
 
 router.put('/tasks/:id', requirePermission('projects', 'edit'), async (req, res) => {
   try {
-    const old = await taskRepository.findById(req.params.id);
-    const task = await taskRepository.update(req.params.id, req.body);
+    const old = await taskRepository.findById(req.params.id, cid(req));
+    if (!old) return res.status(404).json({ error: 'Task not found' });
+    const task = await taskRepository.update(req.params.id, req.body, cid(req));
+    if (!task) return res.status(404).json({ error: 'Task not found' });
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'task', action: 'update', oldData: old, newData: task, req });
     res.json(task);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -435,9 +489,10 @@ router.put('/tasks/:id', requirePermission('projects', 'edit'), async (req, res)
 
 router.delete('/tasks/:id', requirePermission('projects', 'delete'), async (req, res) => {
   try {
-    const old = await taskRepository.findById(req.params.id);
+    const old = await taskRepository.findById(req.params.id, cid(req));
     if (!old) return res.status(404).json({ error: 'Task not found' });
-    await taskRepository.delete(req.params.id);
+    const removed = await taskRepository.delete(req.params.id, cid(req));
+    if (!removed) return res.status(404).json({ error: 'Task not found' });
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'task', action: 'delete', oldData: old, req });
     res.json({ message: 'Task deleted' });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -446,7 +501,7 @@ router.delete('/tasks/:id', requirePermission('projects', 'delete'), async (req,
 // ── Project Costs ─────────────────────────────────────────────────────────────
 router.get('/projects/:id/costs', requirePermission('projects', 'view'), async (req, res) => {
   try {
-    const costs = await projectCostRepository.findByProject(req.params.id);
+    const costs = await projectCostRepository.findByProject(req.params.id, cid(req));
     res.json(costs || { labour_cost: 0, material_cost: 0, expense_cost: 0, total_cost: 0 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -454,7 +509,7 @@ router.get('/projects/:id/costs', requirePermission('projects', 'view'), async (
 // Alias for frontend that calls /costing instead of /costs
 router.get('/projects/:id/costing', requirePermission('projects', 'view'), async (req, res) => {
   try {
-    const costs = await projectCostRepository.findByProject(req.params.id);
+    const costs = await projectCostRepository.findByProject(req.params.id, cid(req));
     res.json(costs || { labour_cost: 0, material_cost: 0, expense_cost: 0, total_cost: 0 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -614,8 +669,12 @@ router.post('/projects/:id/costs', requirePermission('projects', 'edit'), async 
 router.get('/projects/:id/budget-lines', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM project_budget_lines WHERE project_id=$1 ORDER BY sequence, id`,
-      [req.params.id]
+      `SELECT * FROM project_budget_lines bl
+        WHERE bl.project_id=$1
+          AND EXISTS (SELECT 1 FROM projects p
+                       WHERE p.id=bl.project_id AND ($2::int IS NULL OR p.company_id=$2))
+        ORDER BY bl.sequence, bl.id`,
+      [req.params.id, cid(req)]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -623,6 +682,11 @@ router.get('/projects/:id/budget-lines', requirePermission('projects', 'view'), 
 
 router.post('/projects/:id/budget-lines', requirePermission('projects', 'edit'), async (req, res) => {
   try {
+    const owned = await pool.query(
+      `SELECT id FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`,
+      [req.params.id, cid(req)]
+    );
+    if (!owned.rows.length) return res.status(403).json({ error: 'Project not found in your company' });
     const { wbs_code, category, description, budgeted_amount, sequence } = req.body;
     const { rows } = await pool.query(
       `INSERT INTO project_budget_lines
@@ -638,20 +702,35 @@ router.post('/projects/:id/budget-lines', requirePermission('projects', 'edit'),
 router.put('/projects/budget-lines/:id', requirePermission('projects', 'edit'), captureBefore('project_budget_lines'), async (req, res) => {
   try {
     const { wbs_code, category, description, budgeted_amount, actual_amount, sequence } = req.body;
+    // $4 and $5 arrive untyped, so `variance=$4-$5` asked Postgres to subtract
+    // unknown from unknown and every call to this endpoint died on
+    // `42725 operator is not unique` — for its own tenant as much as anyone
+    // else's. The casts are what make the expression resolvable.
     const { rows } = await pool.query(
       `UPDATE project_budget_lines SET
-         wbs_code=$1, category=$2, description=$3, budgeted_amount=$4,
-         actual_amount=$5, variance=$4-$5, sequence=$6, updated_at=NOW()
-       WHERE id=$7 RETURNING *`,
-      [wbs_code, category, description, budgeted_amount||0, actual_amount||0, sequence||0, req.params.id]
+         wbs_code=$1, category=$2, description=$3, budgeted_amount=$4::numeric,
+         actual_amount=$5::numeric, variance=$4::numeric-$5::numeric, sequence=$6, updated_at=NOW()
+       WHERE id=$7
+         AND EXISTS (SELECT 1 FROM projects p
+                      WHERE p.id=project_id AND ($8::int IS NULL OR p.company_id=$8))
+       RETURNING *`,
+      [wbs_code, category, description, budgeted_amount||0, actual_amount||0, sequence||0, req.params.id, cid(req)]
     );
+    if (!rows[0]) return res.status(404).json({ error: 'Budget line not found' });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.delete('/projects/budget-lines/:id', requirePermission('projects', 'delete'), captureBefore('project_budget_lines'), async (req, res) => {
   try {
-    await pool.query(`DELETE FROM project_budget_lines WHERE id=$1`, [req.params.id]);
+    const { rows } = await pool.query(
+      `DELETE FROM project_budget_lines bl WHERE bl.id=$1
+         AND EXISTS (SELECT 1 FROM projects p
+                      WHERE p.id=bl.project_id AND ($2::int IS NULL OR p.company_id=$2))
+       RETURNING id`,
+      [req.params.id, cid(req)]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Budget line not found' });
     res.json({ message: 'Budget line deleted' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -914,18 +993,26 @@ router.post('/projects/:id/risks', requirePermission('projects', 'edit'), async 
       [req.params.id, cid(req)]
     );
     if (!check.rows.length) return res.status(403).json({ error: 'Project not found in your company' });
-    const PROB = { low: 1, medium: 2, high: 4 };
-    const IMP  = { low: 1, medium: 2, high: 4 };
     const { title, description, category, probability, impact, mitigation_plan, contingency_plan, owner_id, review_date } = req.body;
-    const score = (PROB[probability] || 2) * (IMP[impact] || 2);
+    // project_risks.title is NOT NULL. Project Detail's risk form only ever
+    // collected a description, so this INSERT raised 23502 and the screen's
+    // catch swallowed it — every "Add Risk" from that page failed silently and
+    // the risk register stayed empty. Answer the contract breach as a 400
+    // instead of a 500, and say which field is missing.
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+    const prob = riskLevelOf(probability);
+    const imp = riskLevelOf(impact);
+    const score = riskScoreOf(prob, imp);
     const riskCode = `RSK-${Date.now().toString().slice(-6)}`;
     const { rows } = await pool.query(
       `INSERT INTO project_risks
          (project_id, company_id, risk_code, title, description, category,
           probability, impact, risk_score, mitigation_plan, contingency_plan, owner_id, review_date)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-      [req.params.id, cid(req), riskCode, title, description||null, category||'technical',
-       probability||'medium', impact||'medium', score, mitigation_plan||null,
+      [req.params.id, cid(req), riskCode, String(title).trim(), description||null, category||'technical',
+       prob, imp, score, mitigation_plan||null,
        contingency_plan||null, owner_id||null, review_date||null]
     );
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'risk', action: 'create', newData: rows[0], req });
@@ -935,19 +1022,26 @@ router.post('/projects/:id/risks', requirePermission('projects', 'edit'), async 
 
 router.put('/projects/risks/:id', requirePermission('projects', 'edit'), captureBefore('project_risks'), async (req, res) => {
   try {
-    const PROB = { low: 1, medium: 2, high: 4 };
-    const IMP  = { low: 1, medium: 2, high: 4 };
     const { title, description, category, probability, impact, status, mitigation_plan, contingency_plan, owner_id, review_date, closed_date } = req.body;
-    const score = (PROB[probability] || 2) * (IMP[impact] || 2);
+    // Same NOT NULL column as the POST — this full-field UPDATE would null it.
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+    const prob = riskLevelOf(probability);
+    const imp = riskLevelOf(impact);
+    const score = riskScoreOf(prob, imp);
     const { rows } = await pool.query(
+      // NO `updated_at` here: project_risks genuinely has no such column, and
+      // setting it made every risk edit fail with 42703. Third table in this
+      // module to inherit that line from one that does have it.
       `UPDATE project_risks SET
          title=$1, description=$2, category=$3, probability=$4, impact=$5,
          risk_score=$6, status=$7, mitigation_plan=$8, contingency_plan=$9,
-         owner_id=$10, review_date=$11, closed_date=$12, updated_at=NOW()
+         owner_id=$10, review_date=$11, closed_date=$12
        WHERE id=$13
          AND EXISTS (SELECT 1 FROM projects p WHERE p.id=project_id AND ($14::int IS NULL OR p.company_id=$14))
        RETURNING *`,
-      [title, description||null, category||'technical', probability||'medium', impact||'medium',
+      [String(title).trim(), description||null, category||'technical', prob, imp,
        score, status||'open', mitigation_plan||null, contingency_plan||null,
        owner_id||null, review_date||null, closed_date||null, req.params.id, cid(req)]
     );
@@ -1002,6 +1096,8 @@ router.post('/projects/:id/issues', requirePermission('projects', 'edit'), async
       title, description, issue_type, severity, priority,
       assigned_to, task_id, due_date, is_blocker, root_cause,
     } = req.body;
+    // raised_by FKs employees(id); uid() is a users.id, a different namespace.
+    const raisedBy = await actingEmployeeId(req);
     const issueCode = `ISS-${Date.now().toString().slice(-6)}`;
     const { rows } = await pool.query(
       `INSERT INTO project_issues
@@ -1011,7 +1107,7 @@ router.post('/projects/:id/issues', requirePermission('projects', 'edit'), async
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
       [req.params.id, cid(req), issueCode, title, description||null,
        issue_type||'general', severity||'medium', priority||'medium',
-       uid(req), assigned_to||null, task_id||null, due_date||null,
+       raisedBy, assigned_to||null, task_id||null, due_date||null,
        is_blocker||false, root_cause||null]
     );
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'issue', action: 'create', newData: rows[0], req });
@@ -1086,6 +1182,10 @@ router.post('/projects/:id/fat', requirePermission('projects', 'edit'), async (r
       test_location, client_witness, engineer_name, test_parameters, punch_points, remarks,
       production_order_id,
     } = req.body;
+    // created_by FKs employees(id), so uid() (a users.id) violated the FK and
+    // every FAT save answered 500 — for admin accounts in particular, whose
+    // users.id rarely collides with a valid employees.id.
+    const createdBy = await actingEmployeeId(req);
     const fatNo = `FAT-${Date.now().toString().slice(-6)}`;
     const { rows } = await pool.query(
       `INSERT INTO fat_trackers
@@ -1097,7 +1197,7 @@ router.post('/projects/:id/fat', requirePermission('projects', 'edit'), async (r
        product_name||null, scheduled_date||null, actual_date||null, status||'scheduled',
        test_location||null, client_witness||null, engineer_name||null,
        JSON.stringify(test_parameters||[]), JSON.stringify(punch_points||[]),
-       remarks||null, uid(req)]
+       remarks||null, createdBy]
     );
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'fat', action: 'create', newData: rows[0], req });
     res.status(201).json(rows[0]);
@@ -1190,6 +1290,8 @@ router.post('/projects/:id/sat', requirePermission('projects', 'edit'), async (r
       status, client_representative, client_witness_designation, engineer_name,
       test_parameters, punch_points, remarks, commissioning_report_id,
     } = req.body;
+    // created_by FKs employees(id) — same trap as the FAT insert above.
+    const createdBy = await actingEmployeeId(req);
     const satNo = `SAT-${Date.now().toString().slice(-6)}`;
     const { rows } = await pool.query(
       `INSERT INTO sat_trackers
@@ -1203,7 +1305,7 @@ router.post('/projects/:id/sat', requirePermission('projects', 'edit'), async (r
        actual_date||null, status||'scheduled', client_representative||null,
        client_witness_designation||null, engineer_name||null,
        JSON.stringify(test_parameters||[]), JSON.stringify(punch_points||[]),
-       remarks||null, uid(req)]
+       remarks||null, createdBy]
     );
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'sat', action: 'create', newData: rows[0], req });
     res.status(201).json(rows[0]);
@@ -1366,6 +1468,9 @@ router.post('/projects/:id/documents', requirePermission('projects', 'edit'), as
       document_name, document_type, document_number, revision,
       file_url, file_name, mime_type, file_size, description,
     } = req.body;
+    // uploaded_by FKs employees(id) — and the GET joins employees on it to show
+    // uploaded_by_name, so a users.id here is both an FK risk and a wrong name.
+    const uploadedBy = await actingEmployeeId(req);
     const { rows } = await pool.query(
       `INSERT INTO project_documents
          (project_id, company_id, document_name, document_type, document_number,
@@ -1373,7 +1478,7 @@ router.post('/projects/:id/documents', requirePermission('projects', 'edit'), as
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
       [req.params.id, cid(req), document_name, document_type||'general',
        document_number||null, revision||null, file_url||null, file_name||null,
-       mime_type||null, file_size||0, description||null, uid(req)]
+       mime_type||null, file_size||0, description||null, uploadedBy]
     );
     logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'document', action: 'upload', newData: rows[0], req });
     res.status(201).json(rows[0]);
@@ -1382,7 +1487,14 @@ router.post('/projects/:id/documents', requirePermission('projects', 'edit'), as
 
 router.delete('/projects/documents/:id', requirePermission('projects', 'delete'), captureBefore('project_documents'), async (req, res) => {
   try {
-    await pool.query(`DELETE FROM project_documents WHERE id=$1`, [req.params.id]);
+    const { rows } = await pool.query(
+      `DELETE FROM project_documents pd WHERE pd.id=$1
+         AND EXISTS (SELECT 1 FROM projects p
+                      WHERE p.id=pd.project_id AND ($2::int IS NULL OR p.company_id=$2))
+       RETURNING id`,
+      [req.params.id, cid(req)]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Document not found' });
     res.json({ message: 'Document deleted' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

@@ -3,6 +3,7 @@ import pool from '../shared/db.js';
 import { computePayroll, getMonthName } from './payrollEngine.js';
 import { logAudit } from '../../services/AuditService.js';
 import { sendPayslipEmail, isEmailConfigured } from '../../utils/mailer.js';
+import { companyOf } from '../../shared/scope.js';
 import PDFDocument from 'pdfkit';
 
 export const listPayroll = async (req, res) => {
@@ -362,7 +363,7 @@ export const generatePdfData = async (req, res) => {
 
 export const emailPayslip = async (req, res) => {
   try {
-    if (!isEmailConfigured()) {
+    if (!(await isEmailConfigured(companyOf(req)))) {
       return res.status(503).json({
         success: false,
         error: 'Email service is not configured. Set SMTP_HOST, SMTP_USER, and SMTP_PASS environment variables.',

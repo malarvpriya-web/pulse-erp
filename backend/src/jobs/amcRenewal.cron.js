@@ -77,6 +77,9 @@ async function insertReminder(userId, contract, notificationType) {
     await sendWhatsAppMessage({
       to: phone,
       template_name: 'amc_renewal_due',
+      // The tenant that owns the contract sends from its OWN WhatsApp account.
+      // sendWhatsAppMessage resolves credentials per company since PULSE-01.
+      companyId: contract.company_id ?? null,
       template_params: [contract.customer_name, contract.end_date, String(contract.days_left)],
     }).catch(() => {});
   }

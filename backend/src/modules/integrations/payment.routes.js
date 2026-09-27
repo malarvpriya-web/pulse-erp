@@ -2,19 +2,36 @@
 import express from 'express';
 import crypto  from 'crypto';
 import pool    from '../../config/db.js';
+import { companyOf } from '../../shared/scope.js';
+import { resolveConfig } from './integrationConfig.js';
 import { postInvoicePaymentJournal } from '../finance/services/invoicePaymentJournal.service.js';
 
 const router = express.Router();
 
 const getCompanyId = (req) => req.scope?.company_id ?? null;
 
+/**
+ * This tenant's Razorpay credentials.
+ *
+ * ⚠ PULSE-01: these four handlers read process.env.RAZORPAY_* directly, and the
+ * integration config route wrote a tenant's keys INTO process.env. The result was
+ * that whichever tenant saved last owned every other tenant's checkout — one
+ * company's customers paying into another company's Razorpay account, and
+ * /verify checking signatures with the wrong secret. Credentials are resolved
+ * per company now, with the deployment's env vars as the fallback for a
+ * single-tenant install that configures them in .env.
+ */
+async function razorpayKeys(req) {
+  const c = await resolveConfig(companyOf(req), 'razorpay');
+  return { keyId: c.RAZORPAY_KEY_ID || '', keySecret: c.RAZORPAY_KEY_SECRET || '' };
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    GET /api/payments/config-status
    Returns gateway mode without exposing env var names.
 ───────────────────────────────────────────────────────────────────────────── */
 router.get('/config-status', async (req, res) => {
-  const keyId     = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  const { keyId, keySecret } = await razorpayKeys(req);
 
   if (!keyId || !keySecret) {
     return res.json({ configured: false, mode: 'unconfigured' });
@@ -134,8 +151,7 @@ router.post('/create-order', async (req, res) => {
   if (!amount) return res.status(400).json({ success: false, message: 'amount is required' });
 
   const companyId = getCompanyId(req);
-  const keyId     = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  const { keyId, keySecret } = await razorpayKeys(req);
 
   if (!keyId || !keySecret) {
     if (process.env.NODE_ENV === 'production') {
@@ -195,8 +211,7 @@ router.post('/create-link', async (req, res) => {
   if (!invoice_id) return res.status(400).json({ success: false, message: 'invoice_id is required' });
 
   const companyId = getCompanyId(req);
-  const keyId     = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  const { keyId, keySecret } = await razorpayKeys(req);
 
   try {
     // Fetch invoice details
@@ -216,6 +231,22 @@ router.post('/create-link', async (req, res) => {
     const amountDue = parseFloat(inv.total_amount) - parseFloat(inv.paid_amount || 0);
 
     if (!keyId || !keySecret) {
+      // ⚠ Its three sibling handlers all refuse in production; this one did not,
+      // and handed back a FAKE payment link (`https://rzp.io/l/sim_…`) with
+      // `success: true` while recording the link as 'sent'. In production that
+      // means a customer is invoiced a URL that does not exist and the system
+      // believes it chased them. Guarded to match /create-order and /verify.
+      //
+      // It matters more since PULSE-01: a Razorpay row that fails to decrypt now
+      // resolves to no keys at all (FAIL_CLOSED_ON_DECRYPT), so this branch is
+      // reachable on a key rotation, not only on an unconfigured deployment.
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(503).json({
+          success: false,
+          error:   'payment_gateway_not_configured',
+          message: 'Payment gateway is not configured. Contact your administrator to enable payment links.',
+        });
+      }
       // Dev simulation
       const fakeUrl = `https://rzp.io/l/sim_${inv.invoice_number}_${Date.now()}`;
       await pool.query(`
@@ -281,7 +312,10 @@ router.post('/verify', async (req, res) => {
   }
 
   const companyId = getCompanyId(req);
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  // The secret that signs the verification HMAC must be the SAME tenant's secret
+  // that created the order, or every payment fails to verify (or worse, verifies
+  // against a neighbour's key).
+  const { keySecret } = await razorpayKeys(req);
 
   if (!keySecret) {
     if (process.env.NODE_ENV === 'production') {

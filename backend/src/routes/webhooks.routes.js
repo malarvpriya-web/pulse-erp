@@ -4,6 +4,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import pool from '../modules/shared/db.js';
 import { auditMutations } from '../middlewares/auditMutations.js';
+import { resolveConfig } from '../modules/integrations/integrationConfig.js';
 
 /*
  * The audit floor is mounted PER ROUTE here, not on the router, because the
@@ -22,6 +23,78 @@ import { auditMutations } from '../middlewares/auditMutations.js';
 
 const router = Router();
 
+/**
+ * ── Webhook signature verification: FAIL CLOSED ──────────────────────────────
+ *
+ * PULSE-01 remaining risk 4 was "webhook secrets are env-only". Closing it
+ * surfaced two worse problems in the checks themselves:
+ *
+ *  1. `/zoho-sign` verified only `if (secret) { if (incomingSig) { ... } }`.
+ *     A caller who simply OMITTED the signature header skipped verification
+ *     entirely — so anyone could POST a forged REQUEST_COMPLETED and mark any
+ *     document signed, with a secret correctly configured.
+ *  2. BOTH handlers skipped verification when no secret was configured at all.
+ *     A deployment that had not set RAZORPAY_WEBHOOK_SECRET would accept any
+ *     forged `payment.captured` and mark invoices paid — unauthenticated
+ *     financial fraud, reachable by anyone who knows the URL.
+ *
+ * Now: a missing signature is a rejection, and a missing SECRET is a rejection in
+ * production. Development still allows an unsigned call so a provider sandbox can
+ * be wired up locally, but it says so loudly every time.
+ *
+ * ⚠ The tenant is selected from UNVERIFIED payload data (the request/order id) —
+ * deliberately, and it is safe: it only chooses WHICH secret the HMAC is checked
+ * against, and the HMAC still has to pass. Pointing a forged call at another
+ * tenant's row does not help an attacker who does not hold that tenant's secret.
+ */
+const SIGNATURE_ALGO = 'sha256';
+
+function timingSafeEqualHex(a, b) {
+  const bufA = Buffer.from(String(a), 'utf8');
+  const bufB = Buffer.from(String(b), 'utf8');
+  // timingSafeEqual throws on a length mismatch, which is itself an answer.
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * @returns {{ ok: true } | { ok: false, status: number, error: string }}
+ */
+function verifyWebhook({ provider, secret, signature, rawBody, res: _res }) {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (!secret) {
+    if (isProduction) {
+      console.error(JSON.stringify({
+        ts: new Date().toISOString(), level: 'ERROR', event: 'webhook_secret_missing',
+        provider,
+        message: `No webhook secret is configured for ${provider}. The request was REJECTED rather than trusted. ` +
+                 'Set it under Integrations for the tenant, or in the server environment.',
+      }));
+      return { ok: false, status: 503, error: 'webhook_not_configured' };
+    }
+    console.warn(JSON.stringify({
+      ts: new Date().toISOString(), level: 'WARN', event: 'webhook_unverified',
+      provider,
+      message: `No webhook secret configured for ${provider} — accepting an UNVERIFIED payload because this is not production. ` +
+               'This would be rejected in production.',
+    }));
+    return { ok: true, unverified: true };
+  }
+
+  if (!signature) {
+    console.warn(`[Webhook/${provider}] No signature header — rejected`);
+    return { ok: false, status: 401, error: 'Missing webhook signature' };
+  }
+
+  const expected = crypto.createHmac(SIGNATURE_ALGO, secret).update(rawBody).digest('hex');
+  if (!timingSafeEqualHex(signature, expected)) {
+    console.warn(`[Webhook/${provider}] Signature mismatch — rejected`);
+    return { ok: false, status: 401, error: 'Invalid webhook signature' };
+  }
+  return { ok: true };
+}
+
 // ── POST /webhooks/zoho-sign ──────────────────────────────────────────────────
 // Receives status events from Zoho Sign and updates document_signings table.
 // Configure in Zoho Sign dashboard: Settings → Notifications → Webhook URL
@@ -31,23 +104,32 @@ const router = Router();
 // from Zoho Sign — enables HMAC-SHA256 signature verification.
 router.post('/zoho-sign', auditMutations('documents'), async (req, res) => {
   try {
-    const secret = process.env.ZOHO_SIGN_WEBHOOK_SECRET;
-    if (secret) {
-      const incomingSig = req.headers['x-zoho-sign-hmac'] || req.headers['x-zs-webhook-token'] || '';
-      if (incomingSig) {
-        const computed = crypto
-          .createHmac('sha256', secret)
-          .update(JSON.stringify(req.body))
-          .digest('hex');
-        if (incomingSig !== computed) {
-          console.warn('[Webhook/ZohoSign] Signature mismatch — rejected');
-          return res.status(401).json({ error: 'Invalid webhook signature' });
-        }
-      }
-    }
-
     const { requests: zsReq, notifications } = req.body || {};
     const requestId   = zsReq?.request_id;
+
+    // Which tenant owns the referenced document? Unverified input, used ONLY to
+    // pick the secret — the HMAC still has to pass. See verifyWebhook.
+    let webhookCompanyId = null;
+    if (requestId) {
+      const { rows } = await pool.query(
+        `SELECT company_id FROM document_signings WHERE sign_token = $1 LIMIT 1`, [requestId]
+      ).catch(() => ({ rows: [] }));
+      webhookCompanyId = rows[0]?.company_id ?? null;
+    }
+    // Per tenant where one is stored, deployment env otherwise — resolveConfig does
+    // that fallback. ZOHO_SIGN_WEBHOOK_SECRET is not an allowlisted tenant field
+    // today, so this reads the deployment value and starts honouring a tenant one
+    // the moment it is added to INTEGRATION_FIELDS.
+    const { ZOHO_SIGN_WEBHOOK_SECRET: tenantWebhookSecret } =
+      await resolveConfig(webhookCompanyId, 'zoho-sign').catch(() => ({}));
+    const verdict = verifyWebhook({
+      provider: 'ZohoSign',
+      secret: tenantWebhookSecret || process.env.ZOHO_SIGN_WEBHOOK_SECRET,
+      signature: req.headers['x-zoho-sign-hmac'] || req.headers['x-zs-webhook-token'] || '',
+      rawBody: req.rawBody || JSON.stringify(req.body),
+    });
+    if (!verdict.ok) return res.status(verdict.status).json({ error: verdict.error });
+
     const eventType   = notifications?.event_type   || '';
     const reqStatus   = (zsReq?.request_status || '').toLowerCase();
     const performedBy = notifications?.performed_by_email || '';
@@ -107,21 +189,29 @@ router.post('/zoho-sign', auditMutations('documents'), async (req, res) => {
 //   refund.created       → log refund (future: create credit note)
 router.post('/razorpay', auditMutations('finance'), async (req, res) => {
   try {
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
-
-    // Verify HMAC signature when secret is configured
-    if (webhookSecret) {
-      const signature = req.headers['x-razorpay-signature'] || '';
-      const rawBody   = req.rawBody || JSON.stringify(req.body);
-      const expected  = crypto
-        .createHmac('sha256', webhookSecret)
-        .update(rawBody)
-        .digest('hex');
-      if (signature !== expected) {
-        console.warn('[Webhook/Razorpay] Signature mismatch — rejected');
-        return res.status(401).json({ error: 'Invalid webhook signature' });
-      }
+    // The order row names the tenant whose Razorpay account this payment belongs
+    // to, and therefore whose webhook secret must sign it. Unverified input, used
+    // ONLY to pick the secret — the HMAC still has to pass. See verifyWebhook.
+    const orderIdForTenant =
+      req.body?.payload?.payment?.entity?.order_id ||
+      req.body?.payload?.payment_link?.entity?.payment?.order_id || null;
+    let webhookCompanyId = null;
+    if (orderIdForTenant) {
+      const { rows } = await pool.query(
+        `SELECT company_id FROM payment_gateway_orders WHERE razorpay_order_id = $1 LIMIT 1`,
+        [orderIdForTenant]
+      ).catch(() => ({ rows: [] }));
+      webhookCompanyId = rows[0]?.company_id ?? null;
     }
+    const { RAZORPAY_WEBHOOK_SECRET: tenantWebhookSecret } =
+      await resolveConfig(webhookCompanyId, 'razorpay').catch(() => ({}));
+    const verdict = verifyWebhook({
+      provider: 'Razorpay',
+      secret: tenantWebhookSecret || process.env.RAZORPAY_WEBHOOK_SECRET,
+      signature: req.headers['x-razorpay-signature'] || '',
+      rawBody: req.rawBody || JSON.stringify(req.body),
+    });
+    if (!verdict.ok) return res.status(verdict.status).json({ error: verdict.error });
 
     const event   = req.body?.event   || '';
     const payload = req.body?.payload || {};

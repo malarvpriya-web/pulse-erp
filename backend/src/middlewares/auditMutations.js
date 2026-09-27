@@ -44,7 +44,21 @@ const VERB_ACTION = { POST: 'create', PUT: 'update', PATCH: 'update', DELETE: 'd
 
 // Field names that must never reach the audit log, matched case-insensitively
 // anywhere in the key.
-const SECRET = /pass|pwd|secret|token|otp|apikey|api_key|authorization|credential|cvv|card_number|private_key/i;
+//
+// ⚠ A BARE `key` WAS ADDED AFTER PULSE-01, on purpose, and it is worth keeping.
+// The list used to spell out `apikey|api_key|private_key`, which left every other
+// key-shaped name in the clear. A controlled reproduction of the vulnerability
+// wrote `{"ENCRYPTION_KEY": "attacker_known_key"}` into `audit_logs` in
+// PLAINTEXT; `RAZORPAY_KEY_ID`, `AWS_SES_ACCESS_KEY_ID`, `accessKey` and
+// `privateKey` had the same hole. Enumerating separators (`_key`, `key_`) fixed
+// the snake_case names and still missed every camelCase one, so the enumeration
+// itself was the bug.
+//
+// The cost is over-redaction of innocent names that merely contain "key" —
+// `keyword`, `key_metrics`. That is the right side to err on: a redacted field
+// costs a reader one extra lookup, whereas a credential written to an audit log
+// cannot be un-written, and audit logs are widely readable and long-lived.
+const SECRET = /pass|pwd|secret|token|otp|key|authorization|credential|cvv|card_number/i;
 
 function redact(value, depth = 0) {
   if (value == null || depth > 4) return value;

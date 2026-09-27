@@ -21,22 +21,48 @@
 
 import nodemailer from 'nodemailer';
 import { evaluateConditions, renderTemplate } from '../../../services/workflowEngine.js';
+import { resolveConfig } from '../../integrations/integrationConfig.js';
 
-/** True when a real transport is configured. Checked, never assumed. */
+/**
+ * True when a real transport is configured. Checked, never assumed.
+ *
+ * A pure predicate over a config-shaped object — `process.env` or, since
+ * PULSE-01, one tenant's resolved SMTP settings. Kept synchronous and
+ * object-taking deliberately: `journeyEngine.test.js` drives it with literal
+ * `{ SMTP_HOST, SMTP_USER }` objects, and that contract is worth preserving.
+ */
 export function transportConfigured(env = process.env) {
   return Boolean(env.SMTP_HOST && env.SMTP_USER);
 }
 
-let _transport = null;
-function transport() {
-  if (_transport) return _transport;
-  _transport = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT || '587', 10),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+/**
+ * ⚠ PULSE-01 remaining risk 3: this cache WAS the cross-tenant leak, twice over.
+ *
+ * `_transport` was a single module-level singleton built from `process.env`. So
+ * even once credentials became per tenant, the FIRST tenant to send would have
+ * pinned its own mail server for every later tenant in that process — a cache
+ * keyed by nothing is a cross-tenant channel in its own right. Keyed by company
+ * now, and `null` (the deployment's own env fallback) is its own key.
+ */
+const _transports = new Map();
+function transport(companyId, cfg) {
+  const key = companyId == null ? '__deployment__' : String(companyId);
+  if (_transports.has(key)) return _transports.get(key);
+  const port = parseInt(cfg.SMTP_PORT || '587', 10);
+  const t = nodemailer.createTransport({
+    host: cfg.SMTP_HOST,
+    port,
+    secure: cfg.SMTP_SECURE === 'ssl' || cfg.SMTP_SECURE === 'true' || port === 465,
+    auth: { user: cfg.SMTP_USER, pass: cfg.SMTP_PASS },
   });
-  return _transport;
+  _transports.set(key, t);
+  return t;
+}
+
+/** Drop cached transports so a credential change takes effect without a restart. */
+export function resetTransportCache(companyId = undefined) {
+  if (companyId === undefined) { _transports.clear(); return; }
+  _transports.delete(companyId == null ? '__deployment__' : String(companyId));
 }
 
 /**
@@ -122,13 +148,21 @@ async function logEvent(client, enrollment, event, { step = null, detail = null,
 export async function deliver(client, { enrollment, step, context, sequence }) {
   const to = context.email;
   if (!to) return { delivered: false, reason: 'no_email_address' };
-  if (!transportConfigured()) return { delivered: false, reason: 'smtp_not_configured' };
+  // The enrolment's own tenant sends the journey email, not whichever tenant's
+  // credentials happened to be in process.env.
+  // `client` is the handle this run was GIVEN — see the executor note in
+  // resolveConfig. Reaching for the module-level pool here broke this engine's
+  // unit tests, which inject a fake pool on purpose: a pure unit test started
+  // opening a real connection and failed on DB auth instead of its assertion.
+  const smtp = await resolveConfig(enrollment.company_id ?? null, 'smtp', client);
+  if (!transportConfigured(smtp)) return { delivered: false, reason: 'smtp_not_configured' };
 
   const subject = renderTemplate(step.subject || sequence.name || '', context);
   const html    = renderTemplate(step.body_html || '', context);
 
-  const info = await transport().sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+  const fromAddress = smtp.SMTP_FROM || smtp.SMTP_USER;
+  const info = await transport(enrollment.company_id ?? null, smtp).sendMail({
+    from: fromAddress,
     to, subject, html,
   });
 
@@ -141,7 +175,7 @@ export async function deliver(client, { enrollment, step, context, sequence }) {
      VALUES ($1,$2,'outbound',$3,$4,$5,$6::jsonb,'sent',NOW(),$7,$8,false)
      RETURNING id`,
     [enrollment.lead_id, enrollment.contact_id, subject, html,
-     process.env.SMTP_FROM || process.env.SMTP_USER, JSON.stringify([to]),
+     fromAddress, JSON.stringify([to]),
      info?.messageId || null, enrollment.company_id]
   );
   return { delivered: true, emailId: logged.id };
@@ -380,4 +414,4 @@ export async function runDue(pool, opts = {}) {
   return tally;
 }
 
-export default { runDue, runEnrollment, dueEnrollments, nextSendAt, shouldSend, shouldExit, buildContext, transportConfigured };
+export default { runDue, runEnrollment, dueEnrollments, nextSendAt, shouldSend, shouldExit, buildContext, transportConfigured, resetTransportCache };

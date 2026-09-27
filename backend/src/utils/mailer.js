@@ -1,12 +1,36 @@
 import nodemailer from 'nodemailer';
+import { buildPurchaseOrderPdf } from './purchaseOrderPdf.js';
+import { resolveConfig } from '../modules/integrations/integrationConfig.js';
 
-// Build a transporter from env vars; returns null if SMTP is not configured.
-function createTransport() {
-  const host = process.env.SMTP_HOST;
-  const port = parseInt(process.env.SMTP_PORT || '587');
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM || user;
+/**
+ * Build a transporter for one tenant; null when SMTP is not configured.
+ *
+ * ── PULSE-01 remaining risk 3 ────────────────────────────────────────────────
+ * This read `process.env.SMTP_*` directly. That was safe only by accident: the
+ * integration config route used to EXPORT a tenant's SMTP credentials into
+ * process.env, so whichever tenant saved last owned outbound mail for every
+ * other tenant — payslips, invoices and offer letters included. Removing that
+ * export closed the leak but left this function deployment-only, so a tenant's
+ * own SMTP settings reached nothing.
+ *
+ * `companyId` is OPTIONAL and the default reproduces the previous behaviour
+ * exactly, so all nine senders and their eleven callers keep working unchanged.
+ * Pass it wherever a tenant is genuinely in hand; `resolveConfig` reads that
+ * tenant's encrypted row and falls back to the deployment's env vars per field.
+ *
+ * ⚠ DO NOT pass a tenant for platform mail — password resets, and anything sent
+ * before a session exists. Those must go out over the deployment's own server:
+ * routing an account-recovery message through mail infrastructure that a tenant
+ * administrator controls hands them the recovery channel. `sendPasswordResetOTP`
+ * below is deliberately the one sender with no companyId parameter.
+ */
+async function createTransport(companyId = null) {
+  const cfg = await resolveConfig(companyId, 'smtp');
+  const host = cfg.SMTP_HOST;
+  const port = parseInt(cfg.SMTP_PORT || '587', 10);
+  const user = cfg.SMTP_USER;
+  const pass = cfg.SMTP_PASS;
+  const from = cfg.SMTP_FROM || user;
 
   if (!host || !user || !pass) return null;
 
@@ -15,15 +39,25 @@ function createTransport() {
     transport: nodemailer.createTransport({
       host,
       port,
-      secure: port === 465,
+      // SMTP_SECURE is an explicit tenant choice where it is set; port 465 is the
+      // long-standing implicit default and stays the fallback.
+      secure: cfg.SMTP_SECURE === 'ssl' || cfg.SMTP_SECURE === 'true' || port === 465,
       auth: { user, pass },
     }),
   };
 }
 
-// Returns the configured transporter or null if SMTP env vars are absent.
-export function isEmailConfigured() {
-  return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+/**
+ * Is outbound mail configured for this tenant (or the deployment)?
+ *
+ * ⚠ ASYNC since PULSE-01 — it reads a row now. Every caller was updated; a
+ * forgotten `await` returns a Promise, which is truthy, so a missed one would
+ * make an unconfigured deployment look configured. `sourceParses` cannot catch
+ * that, so the callers are listed in the PULSE-01 report.
+ */
+export async function isEmailConfigured(companyId = null) {
+  const cfg = await resolveConfig(companyId, 'smtp');
+  return !!(cfg.SMTP_HOST && cfg.SMTP_USER && cfg.SMTP_PASS);
 }
 
 // Generic mirror of an in-app notification, used by notifications.repository.js
@@ -31,8 +65,8 @@ export function isEmailConfigured() {
 // other function in this file, it never throws in production — it's a
 // fire-and-forget side effect of create(), same contract as the push mirror, and
 // a delivery failure here must not affect the notification write.
-export async function sendNotificationEmail(toEmail, { title, message }) {
-  const mailer = createTransport();
+export async function sendNotificationEmail(toEmail, { title, message, companyId = null }) {
+  const mailer = await createTransport(companyId);
   if (!mailer) {
     console.log(`[mailer] SMTP not configured — notification email skipped for ${toEmail}: ${title}`);
     return { sent: false };
@@ -53,8 +87,8 @@ export async function sendNotificationEmail(toEmail, { title, message }) {
   return { sent: true };
 }
 
-export async function sendPayslipEmail(toEmail, { empName, month, year, periodLabel, gross, netPay, totalDeductions }) {
-  const mailer = createTransport();
+export async function sendPayslipEmail(toEmail, { empName, month, year, periodLabel, gross, netPay, totalDeductions, companyId = null }) {
+  const mailer = await createTransport(companyId);
   if (!mailer) {
     if (process.env.NODE_ENV === 'production') {
       throw new Error('Email service is not configured. Please contact your administrator.');
@@ -132,9 +166,9 @@ function esignShell(title, bodyHtml) {
  * Silently no-ops (dev) or throws (prod) when SMTP is unconfigured, matching
  * the rest of this module. Returns { sent: boolean, link } either way.
  */
-export async function sendSigningInvite(toEmail, { signerName, documentTitle, token, message, expiryDate }) {
+export async function sendSigningInvite(toEmail, { signerName, documentTitle, token, message, expiryDate, companyId = null }) {
   const link   = `${APP_BASE()}/sign/${token}`;
-  const mailer = createTransport();
+  const mailer = await createTransport(companyId);
   if (!mailer) {
     if (process.env.NODE_ENV === 'production') {
       throw new Error('Email service is not configured. Please contact your administrator.');
@@ -168,9 +202,9 @@ export async function sendSigningInvite(toEmail, { signerName, documentTitle, to
   return { sent: true, link };
 }
 
-export async function sendSigningReminder(toEmail, { signerName, documentTitle, token }) {
+export async function sendSigningReminder(toEmail, { signerName, documentTitle, token, companyId = null }) {
   const link   = `${APP_BASE()}/sign/${token}`;
-  const mailer = createTransport();
+  const mailer = await createTransport(companyId);
   if (!mailer) {
     if (process.env.NODE_ENV === 'production') throw new Error('Email service is not configured.');
     console.log(`[mailer] SMTP not configured — reminder link for ${toEmail}: ${link}`);
@@ -190,8 +224,8 @@ export async function sendSigningReminder(toEmail, { signerName, documentTitle, 
   return { sent: true, link };
 }
 
-export async function sendSignerOtp(toEmail, otp, { documentTitle } = {}) {
-  const mailer = createTransport();
+export async function sendSignerOtp(toEmail, otp, { documentTitle, companyId = null } = {}) {
+  const mailer = await createTransport(companyId);
   if (!mailer) {
     if (process.env.NODE_ENV === 'production') throw new Error('Email service is not configured.');
     console.log(`[mailer] SMTP not configured — signing OTP for ${toEmail}: ${otp}`);
@@ -215,12 +249,17 @@ export async function sendSignerOtp(toEmail, otp, { documentTitle } = {}) {
 // internal creator; the vendor learned about it by phone/email a human sent
 // separately. Fire-and-forget like sendNotificationEmail() (never throws) —
 // a delivery failure here must not undo a PO approval that already
-// committed. No PDF pipeline exists for POs anywhere in this codebase yet
-// (checked before building one) so this sends the same PO PDF/summary the
-// audit's flow describes as either/or — a formatted HTML/text summary of
-// the header + line items, not a generated PDF attachment.
-export async function sendPurchaseOrderToVendor(toEmail, { poNumber, vendorName, items, totalAmount, expectedDeliveryDate, termsConditions }) {
-  const mailer = createTransport();
+// committed.
+//
+// The HTML summary below is what a person reads in their client. Since 2026-09-15
+// it also carries the formal document as an ATTACHMENT (utils/purchaseOrderPdf.js)
+// — the artefact a vendor files and quotes back in a dispute.
+// ⚠ The attachment is best-effort BY DESIGN: if rendering fails the mail still
+// goes, without it. Losing the PDF costs the vendor a nicety; losing the mail
+// costs them the order. Note the PDF says `Rs.` where this body says `₹` — see
+// that module's header, pdfkit's built-in fonts cannot encode U+20B9.
+export async function sendPurchaseOrderToVendor(toEmail, { poNumber, vendorName, items, totalAmount, expectedDeliveryDate, termsConditions, companyId = null }) {
+  const mailer = await createTransport(companyId);
   if (!mailer) {
     console.log(`[mailer] SMTP not configured — PO email skipped for ${toEmail}: ${poNumber}`);
     return { sent: false };
@@ -238,9 +277,24 @@ export async function sendPurchaseOrderToVendor(toEmail, { poNumber, vendorName,
       <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right">${fmt(it.total_amount)}</td>
     </tr>`).join('');
 
+  let attachments;
+  try {
+    const pdf = await buildPurchaseOrderPdf({
+      poNumber, vendorName, items, totalAmount, expectedDeliveryDate, termsConditions,
+    });
+    attachments = [{
+      filename: `PO_${String(poNumber || 'order').replace(/[^\w.-]+/g, '_')}.pdf`,
+      content: pdf,
+      contentType: 'application/pdf',
+    }];
+  } catch (err) {
+    console.error(`[mailer] PO PDF render failed for ${poNumber}, sending without attachment:`, err.message);
+  }
+
   await mailer.transport.sendMail({
     from: mailer.from,
     to: toEmail,
+    ...(attachments ? { attachments } : {}),
     subject: `Purchase Order ${poNumber} — Approved`,
     text: [
       `Dear ${vendorName || 'Vendor'},`, '',
@@ -283,8 +337,8 @@ export async function sendPurchaseOrderToVendor(toEmail, { poNumber, vendorName,
 // had before sendPurchaseOrderToVendor above. Same fire-and-forget/never-throw
 // contract: a delivery failure must not undo an RFQ that already recorded
 // which vendors it was sent to.
-export async function sendRfqToVendor(toEmail, { rfqNumber, vendorName, items, requiredBy }) {
-  const mailer = createTransport();
+export async function sendRfqToVendor(toEmail, { rfqNumber, vendorName, items, requiredBy, companyId = null }) {
+  const mailer = await createTransport(companyId);
   if (!mailer) {
     console.log(`[mailer] SMTP not configured — RFQ email skipped for ${toEmail}: ${rfqNumber}`);
     return { sent: false };
@@ -335,7 +389,9 @@ export async function sendRfqToVendor(toEmail, { rfqNumber, vendorName, items, r
 }
 
 export async function sendPasswordResetOTP(toEmail, otp) {
-  const mailer = createTransport();
+  // NO companyId, deliberately — see the note on createTransport(). Account
+  // recovery must not travel over mail infrastructure a tenant admin controls.
+  const mailer = await createTransport(null);
 
   if (!mailer) {
     // In production this is a hard error — the admin must configure SMTP.

@@ -318,6 +318,45 @@ async function resolveLeaveTypeId(leave_type, company_id = null) {
 const ADMIN_HR_ROLES = new Set(['admin', 'super_admin', 'hr', 'hr_manager', 'hr_admin', 'hr_exec']);
 const isAdminOrHR = (role) => ADMIN_HR_ROLES.has((role || '').toLowerCase());
 
+/**
+ * Force a non-privileged caller's list query onto their OWN employee_id.
+ *
+ * `requirePermission('leaves','view')` is a MODULE grant, and the `employee`
+ * role holds it — every employee needs it to open their own leave page. It
+ * therefore admits every employee to the unfiltered list, and the only thing
+ * that was narrowing the result was the frontend volunteering
+ * `?employee_id=<me>` (AllLeaves.jsx: `isAdminOrHR ? {} : { employee_id: uid }`).
+ * A caller who simply omits that parameter — or supplies someone else's id —
+ * received the whole company's applications, reason free-text included.
+ *
+ * Scoping a list by what the client chose to send is not scoping. The server
+ * decides here:
+ *   admin / HR            → unrestricted, as before.
+ *   manager-queue request → left alone; the /applications handler already pins
+ *                           manager_id to the caller's own employee_id.
+ *   everyone else         → employee_id is overwritten with the caller's own,
+ *                           discarding whatever arrived in the query string.
+ *
+ * A non-privileged caller with no linked employee record has no own-rows to
+ * see, so they get none — never the unfiltered set.
+ */
+function scopeToSelf(req, filters) {
+  if (isAdminOrHR((req.user?.role || '').toLowerCase())) return filters;
+  if (filters.manager_status) return filters;          // approver queue, pinned below
+  const self = req.user?.employee_id ?? null;
+  return { ...filters, employee_id: self ?? -1 };
+}
+
+/** Single-record counterpart of scopeToSelf(): own row, or one you approve. */
+function canSeeApplication(req, application) {
+  if (isAdminOrHR((req.user?.role || '').toLowerCase())) return true;
+  const self = req.user?.employee_id ?? null;
+  if (self == null) return false;
+  return Number(application.employee_id) === Number(self)
+      || Number(application.manager_id)  === Number(self)
+      || Number(application.hr_id)       === Number(self);
+}
+
 // ── Generic status update — HR/Admin only; guards against bypassing workflow ──
 export async function handleStatusUpdate(req, res) {
   const role = (req.user?.role || '').toLowerCase();
@@ -565,16 +604,16 @@ router.put('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'edit'),
     `, [
       leave_name.trim(), Number(default_days) || 0, description?.trim() || '',
       carry_forward_allowed ?? oldRows[0].carry_forward_allowed,
-      Number(max_carry_forward_days) ?? oldRows[0].max_carry_forward_days,
+      max_carry_forward_days != null ? Number(max_carry_forward_days) : oldRows[0].max_carry_forward_days,
       is_encashable ?? oldRows[0].is_encashable,
       allow_half_day ?? oldRows[0].allow_half_day,
       requires_attachment ?? oldRows[0].requires_attachment,
-      Number(requires_medical_cert_days) ?? oldRows[0].requires_medical_cert_days,
+      requires_medical_cert_days != null ? Number(requires_medical_cert_days) : oldRows[0].requires_medical_cert_days,
       allow_negative_balance ?? oldRows[0].allow_negative_balance,
-      Number(min_notice_days) ?? oldRows[0].min_notice_days,
+      min_notice_days != null ? Number(min_notice_days) : oldRows[0].min_notice_days,
       max_consecutive_days != null ? Number(max_consecutive_days) : oldRows[0].max_consecutive_days,
       accrual_type || oldRows[0].accrual_type,
-      Number(accrual_days_per_month) ?? oldRows[0].accrual_days_per_month,
+      accrual_days_per_month != null ? Number(accrual_days_per_month) : oldRows[0].accrual_days_per_month,
       gender_restriction ?? oldRows[0].gender_restriction,
       allowed_in_probation ?? oldRows[0].allowed_in_probation,
       l2_required ?? oldRows[0].l2_required ?? false,
@@ -807,7 +846,7 @@ router.get('/applications', requirePermission('leaves', 'view'), async (req, res
       }
     }
 
-    const applications = await leavesRepository.findApplications(filters);
+    const applications = await leavesRepository.findApplications(scopeToSelf(req, filters));
     res.json(applications);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -818,6 +857,13 @@ router.get('/applications/:id', requirePermission('leaves', 'view'), async (req,
   try {
     const application = await leavesRepository.findById(req.params.id);
     if (!application) return res.status(404).json({ error: 'Application not found' });
+    // Same module-grant problem as the list route: 'leaves:view' admits every
+    // employee, so without this an employee could read any colleague's leave —
+    // and its reason — by walking the id. Own record, or one they are named on
+    // as approver; otherwise it does not exist as far as this caller is concerned.
+    if (!canSeeApplication(req, application)) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
     res.json(application);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1237,7 +1283,8 @@ router.get('/analytics', requirePermission('leaves', 'view'), async (req, res) =
 
 router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    res.json(await leavesRepository.findApplications({ ...req.query, company_id: req.scope?.company_id ?? null }));
+    res.json(await leavesRepository.findApplications(
+      scopeToSelf(req, { ...req.query, company_id: req.scope?.company_id ?? null })));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1255,7 +1302,10 @@ router.post('/', requirePermission('leaves', 'add'), handleApplyLeave);
 // menuCatalog.js) even though the frontend already lets them reach this page.
 router.get('/my', async (req, res) => {
   try {
-    const employeeId = req.user?.employee_id;
+    // `?? -1` matters: findApplications skips the employee_id clause when the
+    // value is falsy, so a caller whose account carries no employee_id used to
+    // fall through this "my leaves" route into the WHOLE company's list.
+    const employeeId = req.user?.employee_id ?? -1;
     res.json(await leavesRepository.findApplications({ ...req.query, employee_id: employeeId, company_id: req.scope?.company_id ?? null }));
   } catch (error) {
     res.status(500).json({ error: error.message });

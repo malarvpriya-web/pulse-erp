@@ -16,7 +16,13 @@ import { sendNotificationEmail, isEmailConfigured } from '../../../utils/mailer.
 // icon/colour mapping in NotificationDropdown.jsx / Topbar.jsx). A call whose
 // resolved event_key has no enabled rule row just no-ops here, same as before
 // this existed.
-async function dispatchRuleChannels(userId, eventKey, title, message) {
+/**
+ * `companyId` is a HINT from the caller. The authoritative tenant is the
+ * RECIPIENT's own company — a notification email goes out over the mail server of
+ * the company the person belongs to — so it is read from the users row below and
+ * the hint is only a fallback for a user row that carries no company.
+ */
+async function dispatchRuleChannels(userId, eventKey, title, message, companyId = null) {
   const { rows } = await pool.query(
     `SELECT nr.channel
      FROM notification_rules nr
@@ -28,16 +34,18 @@ async function dispatchRuleChannels(userId, eventKey, title, message) {
   const channels = (rows[0]?.channel || '').split(',').map((c) => c.trim());
   if (!channels.includes('email')) return;
 
-  const { rows: userRows } = await pool.query(`SELECT email FROM users WHERE id = $1`, [userId]);
+  const { rows: userRows } = await pool.query(`SELECT email, company_id FROM users WHERE id = $1`, [userId]);
   const toEmail = userRows[0]?.email;
   if (!toEmail) return;
 
-  await sendNotificationEmail(toEmail, { title, message });
+  await sendNotificationEmail(toEmail, {
+    title, message, companyId: userRows[0]?.company_id ?? companyId,
+  });
 }
 
 const notificationsRepository = {
   async create(data) {
-    const { user_id, title, message, module_name, reference_id, notification_type, event_key } = data;
+    const { user_id, title, message, module_name, reference_id, notification_type, event_key, company_id = null } = data;
     const result = await pool.query(
       `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -53,8 +61,9 @@ const notificationsRepository = {
       }).catch(() => {});
     }
     const resolvedEventKey = event_key || (module_name && notification_type ? `${module_name}.${notification_type}` : null);
-    if (isEmailConfigured() && user_id != null && resolvedEventKey) {
-      dispatchRuleChannels(user_id, resolvedEventKey, title, message).catch(() => {});
+    // await: see mailer.isEmailConfigured — un-awaited it is a truthy Promise.
+    if ((await isEmailConfigured(company_id)) && user_id != null && resolvedEventKey) {
+      dispatchRuleChannels(user_id, resolvedEventKey, title, message, company_id).catch(() => {});
     }
     return result.rows[0];
   },
