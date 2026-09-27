@@ -472,6 +472,27 @@ The nine risks Pass 1 recorded are closed (§12a). These are what is left, each 
 
 ---
 
+### ⚠ Before the staging deploy: the branch is missing 55 migrations this dev database has
+
+`backend/src/database/migrations` holds **55 files that are untracked in git and already applied to the development database** (verified against `schema_migrations`: 55 of 55 applied, 0 pending). They are not mine and predate this work — mostly IoT phase 4, finance and recruitment — but they change what step 1 above means.
+
+**The PULSE-01 work itself is self-contained and safe to deploy.** Every table it reads or writes is created by a **committed** migration, checked one by one:
+
+| Table | Created by | In git? |
+|---|---|---|
+| `company_integrations` | `20260623000001_company_integrations.js` | committed |
+| `company_settings` | `20260531000004_company_settings.js` | committed |
+| `tally_config` | `20260623000001_tally_config.js` | committed |
+| `document_signings` | `20260427000001_remaining_tables.js` | committed |
+| `payment_gateway_orders` | `20260604000006_payment_gateway_orders.js` | committed |
+| `access_denials` | `20260719000003_access_denials.js` | committed |
+
+So `20260926000014_pulse01_strip_unknown_integration_fields.js` will run on a fresh clone.
+
+⚠ But a staging environment built from this branch will be **55 migrations behind development**, so anything those 55 created will be missing and the comparison against dev will not be like-for-like. **Commit or reconcile them before treating a staging run as evidence** — otherwise a failure there tells you nothing about PULSE-01. See PULSE-08 in the ticket list.
+
+---
+
 ## 14. Rollback plan
 
 - **Code:** revert the branch. Safe and independent of the data migration — the old handler simply re-accepts unknown fields. **Reverting restores the CRITICAL vulnerability**, so treat it as an emergency measure only.
@@ -504,7 +525,7 @@ The nine risks Pass 1 recorded are closed (§12a). These are what is left, each 
 - [x] **Author review against those three challenge questions** — done in §12b. One decision (degrade-on-decrypt) **did not survive and was changed**; pushing on another found an ungated fallback path in the PULSE-01 gate itself. This is **not** a substitute for the item below
 - [ ] **Independent code review** by someone who did not write it. Pass 3 is evidence that review finds things here: reviewing my own diff turned up four defects of my own plus a hole in my own gate. Start at `backend/src/modules/integrations/integrationConfig.js` (the allowlist and the encryption contract), then `integrations-config.routes.js`, `settings-status.routes.js` and `webhooks.routes.js`. Things still worth a second opinion: whether `FAIL_CLOSED_ON_DECRYPT` should include more than `razorpay`; whether `settings:view` is the right bar for the status endpoints; and whether reducing integration management to admin/super_admin is acceptable operationally (§12b decision 1)
 - [x] **Deployment-procedure checks** (the mechanics, not a staging deploy): the new `ENCRYPTION_KEY` boot guard **refuses to start** on an 8-character key in production with its own FATAL message, and with a 48-character key it does **not** fire — boot proceeds and stops on a different, pre-existing production requirement (`FRONTEND_URL`), which proves the guard is not over-firing. `npm run migrate` re-run is a clean no-op (`Database schema is up to date`)
-- [ ] **Controlled deployment to staging**, then the §13 smoke tests against the deployed release. The live verification here was against a locally restarted dev server, which is evidence that the code works — **not** evidence that the deployment procedure works
+- [ ] **Controlled deployment to staging**, then the §13 smoke tests against the deployed release. ⚠ **Blocked until the 55 untracked migrations are reconciled** (§13) — this work is self-contained and would run, but staging would be 55 migrations behind dev and the comparison would prove nothing. The live verification here was against a locally restarted dev server, which is evidence that the code works — **not** evidence that the deployment procedure works
 - [x] **Tickets written** — `PULSE-01_FOLLOWUP_TICKETS.md`, six of them (PULSE-02 … PULSE-07), each with acceptance criteria and the reason it was left. Still needs someone to put them in the tracker
 - [ ] **A decision on committing.** The changes are uncommitted because two files carry unrelated pre-existing work (§14)
 

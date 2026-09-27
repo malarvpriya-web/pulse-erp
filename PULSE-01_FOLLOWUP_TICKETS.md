@@ -2,9 +2,9 @@ Written for: whoever picks these up — a backend engineer with repo access, not
 
 # Tickets arising from PULSE-01
 
-Six tickets. Each is something the PULSE-01 remediation found and deliberately did **not** fix, with the reason it was left. None of them blocks the PULSE-01 fix; three of them are real defects that will bite on their own schedule.
+Eight tickets. Each is something the PULSE-01 remediation found and deliberately did **not** fix, with the reason it was left. None of them blocks the PULSE-01 fix; three of them are real defects that will bite on their own schedule.
 
-Source: `PULSE-01_REMEDIATION.md` §12. Branch: `security/pulse-01-integration-config-authz`.
+Source: `PULSE-01_REMEDIATION.md` §12. PULSE-08 and PULSE-09 were found while scoping the commit, not during the remediation itself. Branch: `security/pulse-01-integration-config-authz`.
 
 ---
 
@@ -109,6 +109,40 @@ The config starts errors-only on purpose — switching a linter on across ~1,000
 - A field added to the Zoho Sign card in `IntegrationsHub.jsx`.
 - A test proving a tenant-set secret is preferred over the deployment one, **and** that the deployment one still works when the tenant has none.
 - ⚠ `assertAllowlistIsSafe()` will refuse the name if it ever collides with `FORBIDDEN_FIELD_NAMES`. It does not today; do not "fix" a future collision by editing that list.
+
+---
+
+## PULSE-08 — 55 migrations are applied to dev but untracked in git
+
+**Priority:** High (blocks any staging comparison) · **Effort:** S to commit, M to verify
+
+`backend/src/database/migrations` holds **55 files that git does not track and that `schema_migrations` says are already applied** to the development database (55 of 55 applied, 0 pending). Mostly IoT phase 4, finance and recruitment work. Consequences:
+
+- A fresh clone, CI run or staging deploy builds a schema **55 migrations behind development**, so dev-vs-staging comparisons are not like-for-like and a staging failure is uninterpretable.
+- `npm run migrate:status` reports `Pending: -6`, a negative number, because more migrations are recorded as applied than exist as files — the status command cannot describe this state honestly.
+- It is how `baseline.sql` and the manifest drift apart, which this repo has been bitten by before.
+
+This was found while scoping the PULSE-01 commit. The PULSE-01 work itself does **not** depend on any of the 55 — every table it touches is created by a committed migration, verified individually — so it is safe to deploy independently.
+
+**Acceptance criteria**
+- Each of the 55 either committed, or deleted and its effect folded into a committed migration, with a recorded decision per file.
+- `npm run migrate:status` reports a non-negative pending count.
+- A fresh database built from committed migrations plus `baseline.sql` matches development's `information_schema` — diff it, do not eyeball it.
+- ⚠ Do **not** simply `git add` all 55 without reading them. Some may be superseded by others already committed, and the runner's superseded-notice list already names six such cases.
+
+---
+
+## PULSE-09 — `tenant-leaks.json` is a scan artifact that is not gitignored
+
+**Priority:** Low (hygiene) · **Effort:** XS
+
+`tenant-leaks.json` sits untracked at the repo root. It is the output of a cross-tenant probe — company 1 vs 108, both as admin, across 121 endpoints — and its `findings` array is **empty**, so it records a clean result rather than open vulnerabilities. Its contents are endpoint paths and status codes, no tenant data.
+
+It is not in `.gitignore`, so a `git add .` would commit it, and a generated probe result is not source.
+
+**Acceptance criteria**
+- Added to `.gitignore` alongside the other generated report paths, or moved under an already-ignored reports directory.
+- ⚠ If a future run of that probe produces a **non-empty** `findings` array, that is a security finding and belongs in the tracker, not in an untracked file at the repo root.
 
 ---
 
